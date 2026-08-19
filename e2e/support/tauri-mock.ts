@@ -73,6 +73,14 @@ export interface TauriMockOptions {
   files?: Record<string, string>
 
   /**
+   * Model names the mocked Ollama reports on /api/tags. Default stays the
+   * empty list (fresh box); a spec that needs an ACTIVE Ollama model (the
+   * stale-chip surface) seeds one here so modelStore's validation does not
+   * drop the persisted activeModel at boot.
+   */
+  ollamaModels?: string[]
+
+  /**
    * ComfyUI world for Windows specs. Omit for the default: fresh box, no
    * install, nothing running (comfyui_status keeps rejecting either way).
    * `installed` starts the world with a working install at C:\ComfyUI.
@@ -856,7 +864,10 @@ export function tauriMockInit(opts: TauriMockOptions) {
         }
 
         if (url.includes('11434') || /\/tags(\?|$)/.test(url)) {
-          return Promise.resolve(JSON.stringify({ models: [] }))
+          const names = opts.ollamaModels ?? []
+          return Promise.resolve(JSON.stringify({
+            models: names.map((n) => ({ name: n, model: n, size: 4096, modified_at: '2026-01-01T00:00:00Z' })),
+          }))
         }
         return Promise.reject('error sending request: connection refused (e2e)')
       }
