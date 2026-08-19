@@ -55,3 +55,43 @@ DeleteButton, ToolBtn, IconBtn, PromptField, dazu WorkspaceOption im Chat)
 reichen data-testid als optionale Prop durch, Instanz-Wert schlaegt
 Fallback. Gates: tsc Baseline unveraendert (333 vorbestehende Fehler, kein
 neuer), vitest 4778 gruen, Playwright 11 gruen und 3 Env-geskippt.
+
+## Phase 3, Schritt 1: Mock-Ausbau (19.08.2026)
+
+Alle 99 lebenden Kommandos ohne case haben jetzt einen, erhoben aus der
+Rust-Quelle und jedem Frontend-Aufrufer (sechs Agenten, disjunkte
+Domaenen, Zusammenbau von Hand). Herkunftsnachweis pro Form mit
+Rust-Zeile: `qa/MOCK-NOTES.md`. Die Default-Welt bleibt die frische
+Box; abweichende Ausgangslagen fahren ueber die neuen Optionen in
+`TauriMockOptions` (`comfy`, `sys`, `trainer`, `voice`, Remote/OAuth,
+Import/LMS). Beweis der Abdeckung: Abgleich der CONTRACT-Fehlt-Liste
+gegen die case-Namen ergab leer, kein alter case verloren. Der volle
+Playwright-Bestand lief danach gruen (Regressionsgate).
+
+Offene Restspannung: die historischen Rejects `whisper_status` und
+`install_tts_status` blockieren die vollen Settings-Install-Reisen,
+Details in CONTRACT.md und MOCK-NOTES.md.
+
+## Korrektur zur Gate-Historie, gefunden am 19.08.2026
+
+Die "Playwright gruen"-Gates aus Phase 0 bis 2 waren KEINE Vollaeufe:
+die Laeufe wurden extern abgebrochen, Playwright listete die restlichen
+Tests markerlos als "did not run" und meldete trotzdem Exit 0. Echte
+Bilanz damals: 10 bis 11 von 37. Der erste ehrliche Volllauf deckte
+zwei Harness-Luecken auf, beide nur auf einem Entwickler-Mac sichtbar:
+
+1. localFetch faellt bei einem Proxy-Reject auf einen direkten
+   Browser-Fetch zurueck, und der traf hier ein ECHTES Ollama auf
+   11434, AirPlay auf Port 5000 und einen fremden Dev-Server auf 4000.
+   Der Mock versiegelt jetzt jeden localhost-Fetch ausser dem
+   Vite-Server selbst; die frische Box gilt auf jeder Maschine.
+2. seedOnboardingDone baute einen unmoeglichen Nutzer: onboardingDone
+   ohne Release-Notes-Stempel liest die App als Upgrader, seit 2.6.5
+   bootet der unter dem "What is new"-Blatt, das jede Bedienung
+   verdeckt. Der Seed stempelt jetzt wie das echte Onboarding-Finish.
+
+Danach der erste ehrliche Volllauf: 34 von 34 bestanden, 3 Env-Skips,
+0 rot, 2 Minuten statt 24. Merksatz fuers Verfahren: ein Playwright-
+Exit 0 beweist keinen Volllauf, die Bilanzzeile muss passed+skipped =
+Gesamtzahl aus `npx playwright test --list` ergeben. Diese Pruefung
+steht jetzt als Pflichtschritt im Schleifen-Prompt des Verfahrens.

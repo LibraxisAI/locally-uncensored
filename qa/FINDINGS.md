@@ -45,7 +45,13 @@ Aufraeumentscheidung fuer David.
   `ui/ToggleSwitch.tsx`, `AgentLog.tsx` (letzteres waere die einzige
   Bruecke zu den Freigabeknoepfen der agents/ToolCallCard; die echte
   Freigabe laeuft ueber chat/ToolCallBlock plus ApprovalDialog).
-- Dazu die 10 Backend-Kommandos ohne Aufrufer aus CONTRACT.md.
+- Dazu die Backend-Kommandos ohne Aufrufer aus CONTRACT.md. Am 19.08.
+  einzeln geprueft: `file_read` und `file_write` leben ueber das
+  Handy-Relay (remote.rs:580), bleiben. Acht sind echte Kandidaten:
+  `fs_info`, `get_chat_workspace_override`, `get_gpu_selection`,
+  `install_searxng`, `ollama_search`, `search_status`,
+  `searxng_status`, `tunnel_status`. Die drei SearXNG-Kommandos sehen
+  nach einem nie fertig gebauten Feature aus.
 
 ## Grenzen des Scanners, beim Lesen gefunden
 

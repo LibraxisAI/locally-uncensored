@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import pkg from '../../package.json' with { type: 'json' }
 
 /**
  * Network mock for the LU Cloud e2e specs: intercepts the Supabase auth host
@@ -194,12 +195,20 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
  * missing field from defaults, so the minimal shape is enough.
  */
 export async function seedOnboardingDone(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  await page.addInitScript((appVersion) => {
     window.localStorage.setItem(
       'chat-settings',
       JSON.stringify({ state: { settings: { onboardingDone: true, appMode: 'local' }, _version: 10 }, version: 10 }),
     )
-  })
+    // The real onboarding finish() stamps the notes version. Seeding
+    // onboardingDone without the stamp builds a user that cannot exist (it
+    // reads as an upgrader), and since 2.6.5 that user boots under the
+    // "What is new" sheet, which sits over every control a spec wants.
+    window.localStorage.setItem(
+      'lu_release_notes',
+      JSON.stringify({ state: { lastNotesVersion: appVersion }, version: 0 }),
+    )
+  }, pkg.version)
 }
 
 /** The purple Cloud light-switch in the header (right cluster). */

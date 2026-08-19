@@ -1,6 +1,6 @@
 # Contract: Backend-Kommandos gegen Frontend und Mock
 
-Stand 19.08.2026, Branch qa/sweep auf 2.6.5 (bf903044). Erhoben von
+Stand 19.08.2026 (Mock-Ausbau: 19.08.2026 abends), Branch qa/sweep auf 2.6.5 (bf903044). Erhoben von
 scan.mjs, die drei Listen summieren sich auf 171.
 
 ## Wie das Frontend die Kommandos erreicht
@@ -19,32 +19,89 @@ Der erste Scan zaehlte nur Weg 1 und meldete 25 von 171. Diese Zahl war
 falsch und haette fast zu der Fehlannahme gefuehrt, der grosse Rest sei
 toter Rust-Code.
 
-## Im Mock korrekt: 62
+## Im Mock korrekt: 161 Definitionen, 158 Namen
 
-Vom Frontend gerufen und in `e2e/support/tauri-mock.ts` mit einem
-case bedient. Diese Kommandos sind im Playwright-Harness fahrbar.
+Vom Frontend gerufen und in `e2e/support/tauri-mock.ts` mit einem case
+bedient. Die Differenz zwischen 161 und 158: `secret_set`, `secret_get`
+und `secret_delete` sind in `src-tauri/src/commands/secret.rs` je
+zweimal definiert (cfg-Plattformvarianten mit demselben Namen), der
+Scanner zaehlt Definitionen. Ein Name, ein case. Seit dem Mock-Ausbau (Phase 3) ist das die komplette lebende
+Kommandoflaeche; die Herkunft jeder Antwortform steht mit Rust-Zeile in
+`qa/MOCK-NOTES.md`. Die Default-Welt bleibt die frische Box: extern
+laeuft nichts, ComfyUI/LM Studio/Ollama nicht installiert bzw. leer,
+Piper ohne Stimmen. Wer eine andere Ausgangslage braucht, nimmt die
+Optionen (`comfy`, `sys`, `trainer`, `voice`, `remoteDevices`,
+`importableModels`, `lmsLoadedModels`, `oauthCallbackQuery`).
 
+- `backup_rag_chunks`
+- `backup_stores`
 - `bundled_embed_status`
 - `bundled_engine_status`
+- `cancel_character_training`
+- `cancel_comfyui_install`
 - `cancel_download`
+- `cancel_model_pull`
 - `cancel_proxy_stream`
+- `character_trainer_status`
+- `character_training_status`
+- `check_git_installed`
+- `check_model_sizes`
+- `clear_training_set`
+- `comfy_upload_image`
+- `comfy_ws_connect`
+- `comfy_ws_disconnect`
+- `comfyui_last_output`
 - `comfyui_status`
+- `delete_comfy_model`
+- `detect_all_comfyui_installs`
+- `detect_gpus`
 - `detect_model_path`
+- `disconnect_remote_device`
+- `download_model`
 - `download_model_to_path`
 - `download_progress`
+- `download_voice`
+- `execute_code`
+- `exit_app`
 - `fetch_external`
+- `fetch_external_bytes`
+- `find_comfyui`
+- `fix_comfyui_cors`
 - `fs_list`
 - `fs_read`
+- `fs_search`
 - `fs_write`
+- `get_comfy_gpu_status`
+- `get_current_time`
 - `get_ollama_host`
 - `hf_token_present`
+- `import_local_model`
+- `install_character_trainer`
+- `install_comfyui`
+- `install_comfyui_status`
+- `install_custom_node`
+- `install_lmstudio`
+- `install_lmstudio_status`
 - `install_mlx_diffusion`
 - `install_mlx_diffusion_status`
+- `install_ollama`
+- `install_ollama_status`
+- `install_python`
+- `install_python_status`
+- `install_tts`
 - `install_tts_status`
+- `install_whisper`
+- `install_whisper_status`
+- `installed_piper_voices`
 - `is_onboarding_done`
+- `kv_slot_action`
 - `list_bundled_models`
+- `list_importable_models`
+- `lmstudio_list_loaded`
+- `lmstudio_load_model`
 - `lmstudio_model_context`
 - `lmstudio_server_status`
+- `lmstudio_unload_model`
 - `mlx_generate`
 - `mlx_image_delete_model`
 - `mlx_image_install_model`
@@ -53,28 +110,73 @@ case bedient. Diese Kommandos sind im Playwright-Harness fahrbar.
 - `mlx_start`
 - `mlx_status`
 - `mlx_unload`
+- `oauth_start`
+- `oauth_wait`
+- `offload_local_models`
 - `pause_download`
+- `pick_folder`
+- `process_list`
 - `proxy_localhost`
 - `proxy_localhost_stream`
 - `proxy_localhost_stream_chunked`
+- `pull_model_stream`
+- `python_check`
 - `read_media_file`
+- `regenerate_remote_token`
+- `register_openai_host`
+- `remote_connected_devices`
+- `remote_qr_code`
+- `remote_server_status`
+- `repair_comfyui_env`
 - `repo_map`
+- `restart_remote_server`
+- `restore_rag_chunks`
+- `restore_stores`
 - `resume_download`
-- `secret_delete`
+- `save_binary_file_dialog`
+- `save_text_file_dialog`
+- `screenshot`
 - `secret_delete`
 - `secret_get`
-- `secret_get`
 - `secret_set`
-- `secret_set`
+- `set_chat_workspace_override`
+- `set_comfy_gpu_mode`
+- `set_comfyui_host`
+- `set_comfyui_path`
+- `set_comfyui_port`
+- `set_gpu_selection`
 - `set_hf_token`
+- `set_ollama_host`
 - `set_onboarding_done`
+- `set_remote_permissions`
 - `shell_execute`
+- `shell_task_kill`
+- `shell_task_list`
+- `shell_task_start`
+- `shell_task_status`
+- `show_window`
+- `stage_training_image`
 - `start_bundled_embed`
 - `start_bundled_engine`
+- `start_character_training`
+- `start_comfyui`
+- `start_lmstudio_server`
 - `start_ollama`
+- `start_remote_server`
+- `start_tunnel`
 - `stop_bundled_embed`
 - `stop_bundled_engine`
+- `stop_comfyui`
+- `stop_remote_server`
+- `stop_tunnel`
 - `swap_bundled_model`
+- `synthesize`
+- `synthesize_external`
+- `system_health`
+- `system_info`
+- `transcribe`
+- `tts_status`
+- `update_comfyui`
 - `video_cancel`
 - `video_delete_model`
 - `video_generate`
@@ -85,123 +187,30 @@ case bedient. Diese Kommandos sind im Playwright-Harness fahrbar.
 - `video_list_models`
 - `video_progress`
 - `video_status`
+- `waitlist_submit`
+- `web_fetch`
+- `web_search`
 - `whisper_status`
 
-## Im Mock fehlend: 99
+## Im Mock fehlend: 0
 
-Vom Frontend gerufen, aber ohne case im Mock. Jeder Test, der einen
-dieser Pfade beruehrt, laeuft in den Default-Zweig des Routers. Das ist
-die Driftgefahr: gruen im Harness, kaputt in der gebauten App. Diese
-Liste ist die Arbeitsvorlage fuer den Mock-Ausbau, nicht fuer die App.
-
-- `backup_rag_chunks` gerufen aus `src/components/layout/AppShell.tsx`
-- `backup_stores` gerufen aus `src/components/layout/AppShell.tsx`
-- `cancel_character_training` gerufen aus `src/api/trainer.ts`
-- `cancel_comfyui_install` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `cancel_model_pull` gerufen aus `src/stores/modelStore.ts`
-- `character_trainer_status` gerufen aus `src/api/trainer.ts`
-- `character_training_status` gerufen aus `src/api/trainer.ts`
-- `check_git_installed` gerufen aus `src/api/backend.ts`
-- `check_model_sizes` gerufen aus `src/api/comfyui.ts`, `src/api/discover.ts`
-- `clear_training_set` gerufen aus `src/api/trainer.ts`
-- `comfy_upload_image` gerufen aus `src/api/comfyui.ts`
-- `comfy_ws_connect` gerufen aus `src/api/comfyui-ws.ts`
-- `comfy_ws_disconnect` gerufen aus `src/api/comfyui-ws.ts`
-- `comfyui_last_output` gerufen aus `src/components/create/experimental/CreateContext.tsx`, `src/components/settings/SettingsPage.tsx`
-- `delete_comfy_model` gerufen aus `src/components/models/ModelManager.tsx`
-- `detect_all_comfyui_installs` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `detect_gpus` gerufen aus `src/components/settings/HardwareSettings.tsx`, `src/lib/hardware.ts`
-- `disconnect_remote_device` gerufen aus `src/components/settings/RemoteAccessSettings.tsx`
-- `download_model` gerufen aus `src/api/discover.ts`
-- `download_voice` gerufen aus `src/api/voice.ts`
-- `execute_code` gerufen aus `src/api/mcp/builtin-tools.ts`
-- `exit_app` gerufen aus `src/stores/updateStore.ts`
-- `fetch_external_bytes` gerufen aus `src/api/backend.ts`
-- `find_comfyui` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `fix_comfyui_cors` gerufen aus `src/components/create/experimental/CreateExperimental.tsx`
-- `fs_search` gerufen aus `src/api/mcp/builtin-tools.ts`
-- `get_comfy_gpu_status` gerufen aus `src/components/create/experimental/CreateContext.tsx`
-- `get_current_time` gerufen aus `src/api/mcp/builtin-tools.ts`
-- `import_local_model` gerufen aus `src/api/engine.ts`
-- `install_character_trainer` gerufen aus `src/api/trainer.ts`
-- `install_comfyui` gerufen aus `src/components/create/experimental/CreateContext.tsx`, `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `install_comfyui_status` gerufen aus `src/components/create/experimental/CreateContext.tsx`, `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `install_custom_node` gerufen aus `src/api/discover.ts`
-- `install_lmstudio` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `install_lmstudio_status` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `install_ollama` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `install_ollama_status` gerufen aus `src/components/onboarding/Onboarding.tsx`
-- `install_python` gerufen aus `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `install_python_status` gerufen aus `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `install_tts` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `install_whisper` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `install_whisper_status` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `installed_piper_voices` gerufen aus `src/api/voice.ts`
-- `kv_slot_action` gerufen aus `src/api/vram-handoff.ts`
-- `list_importable_models` gerufen aus `src/api/engine.ts`
-- `lmstudio_list_loaded` gerufen aus `src/api/lmstudio.ts`, `src/api/vram-handoff.ts`
-- `lmstudio_load_model` gerufen aus `src/api/lmstudio.ts`, `src/api/vram-handoff.ts`
-- `lmstudio_unload_model` gerufen aus `src/api/lmstudio.ts`, `src/api/vram-handoff.ts`, `src/components/layout/AppShell.tsx`, `src/hooks/useCreate.ts`
-- `oauth_start` gerufen aus `src/api/backend.ts`
-- `oauth_wait` gerufen aus `src/api/backend.ts`
-- `offload_local_models` gerufen aus `src/components/layout/AppShell.tsx`, `src/hooks/useCreate.ts`
-- `pick_folder` gerufen aus `src/components/chat/AgentWorkspaceDialog.tsx`, `src/components/chat/FileTree.tsx`, `src/components/layout/Sidebar.tsx`, `src/components/settings/SettingsPage.tsx`
-- `process_list` gerufen aus `src/api/mcp/builtin-tools.ts`
-- `pull_model_stream` gerufen aus `src/api/ollama.ts`
-- `python_check` gerufen aus `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `regenerate_remote_token` gerufen aus `src/stores/remoteStore.ts`
-- `register_openai_host` gerufen aus `src/api/backend.ts`
-- `remote_connected_devices` gerufen aus `src/stores/remoteStore.ts`
-- `remote_qr_code` gerufen aus `src/stores/remoteStore.ts`
-- `remote_server_status` gerufen aus `src/stores/remoteStore.ts`
-- `repair_comfyui_env` gerufen aus `src/components/create/experimental/CreateContext.tsx`, `src/components/settings/SettingsPage.tsx`
-- `restart_remote_server` gerufen aus `src/stores/remoteStore.ts`
-- `restore_rag_chunks` gerufen aus `src/components/layout/AppShell.tsx`
-- `restore_stores` gerufen aus `src/components/layout/AppShell.tsx`
-- `save_binary_file_dialog` gerufen aus `src/api/backend.ts`, `src/components/create/experimental/OutputView.tsx`
-- `save_text_file_dialog` gerufen aus `src/components/chat/ChatArtifactCard.tsx`, `src/lib/chat-export.ts`
-- `screenshot` gerufen aus `src/api/mcp/builtin-tools.ts`
-- `set_chat_workspace_override` gerufen aus `src/components/layout/Sidebar.tsx`, `src/stores/remoteStore.ts`
-- `set_comfy_gpu_mode` gerufen aus `src/components/layout/AppShell.tsx`, `src/components/settings/HardwareSettings.tsx`
-- `set_comfyui_host` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `set_comfyui_path` gerufen aus `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `set_comfyui_port` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `set_gpu_selection` gerufen aus `src/App.tsx`, `src/components/settings/HardwareSettings.tsx`
-- `set_ollama_host` gerufen aus `src/components/layout/AppShell.tsx`
-- `set_remote_permissions` gerufen aus `src/stores/remoteStore.ts`
-- `shell_task_kill` gerufen aus `src/api/agents/bg-tasks.ts`
-- `shell_task_list` gerufen aus `src/api/agents/bg-tasks.ts`
-- `shell_task_start` gerufen aus `src/api/agents/bg-tasks.ts`
-- `shell_task_status` gerufen aus `src/api/agents/bg-tasks.ts`
-- `show_window` gerufen aus `src/App.tsx`, `src/lib/fatal-error.ts`
-- `stage_training_image` gerufen aus `src/api/trainer.ts`
-- `start_character_training` gerufen aus `src/api/trainer.ts`
-- `start_comfyui` gerufen aus `src/api/comfy-restart.ts`, `src/api/discover.ts`, `src/api/vram-handoff.ts`, `src/components/create/experimental/CreateContext.tsx`, `src/components/onboarding/Onboarding.tsx`, `src/components/settings/SettingsPage.tsx`
-- `start_lmstudio_server` gerufen aus `src/components/models/ModelSelector.tsx`, `src/components/onboarding/Onboarding.tsx`, `src/components/settings/ProviderConfig.tsx`
-- `start_remote_server` gerufen aus `src/stores/remoteStore.ts`
-- `start_tunnel` gerufen aus `src/stores/remoteStore.ts`
-- `stop_comfyui` gerufen aus `src/api/comfy-restart.ts`, `src/api/discover.ts`, `src/api/vram-handoff.ts`, `src/components/settings/SettingsPage.tsx`
-- `stop_remote_server` gerufen aus `src/stores/remoteStore.ts`
-- `stop_tunnel` gerufen aus `src/stores/remoteStore.ts`
-- `synthesize` gerufen aus `src/api/voice.ts`
-- `synthesize_external` gerufen aus `src/api/voice.ts`
-- `system_health` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `system_info` gerufen aus `src/api/mcp/builtin-tools.ts`, `src/lib/hardware.ts`
-- `transcribe` gerufen aus `src/api/voice.ts`
-- `tts_status` gerufen aus `src/api/voice.ts`
-- `update_comfyui` gerufen aus `src/components/settings/SettingsPage.tsx`
-- `waitlist_submit` gerufen aus `src/api/waitlist.ts`
-- `web_fetch` gerufen aus `src/api/mcp/builtin-tools.ts`
-- `web_search` gerufen aus `src/api/mcp/builtin-tools.ts`
+Leer seit dem Mock-Ausbau am 19.08.2026. Bekannte Restspannungen, beide
+in MOCK-NOTES.md dokumentiert: die historischen Reject-Cases
+`whisper_status` und `install_tts_status` bleiben Rejects, weshalb der
+TTS-Install im Mock ueber `tts_status`-Polls abschliesst und das
+Whisper-Badge trotz complete rot bleibt. Wer die vollen
+Settings-Install-Reisen testet, ersetzt zuerst diese zwei Rejects.
 
 ## Kein Aufrufer gefunden: 10
 
-Kein literaler Aufruf ueber einen der drei Wege. Verdacht auf toten
-Code, aber vor dem Loeschen einzeln pruefen: sechs davon stehen in der
-endpointMap in `src/api/backend.ts`, sind also fuer den Dev-Pfad
-gemappt, ohne dass jemand sie ruft. `file_read` und `file_write` sind
-Namen von Agenten-Werkzeugen, nicht die Kommandos dahinter; das
-Werkzeug `file_read` ruft in Wahrheit `fs_read`.
+Kein literaler Aufruf ueber einen der drei Wege. Einzeln geprueft am
+19.08.2026: `file_read` und `file_write` sind NICHT tot, das
+Handy-Relay dispatcht sie in `src-tauri/src/commands/remote.rs:580`
+direkt als Rust-Funktionen; der Scanner sieht nur Frontend-Aufrufe.
+Die uebrigen acht sind nur in `main.rs` registriert und haben weder
+Frontend- noch Rust-interne Nutzer; die drei SearXNG-Kommandos sehen
+nach einem nie fertig gebauten Feature aus. Anschliessen oder loeschen
+ist Davids Entscheidung, in FINDINGS.md vorgemerkt.
 
 - `file_read` definiert in `src-tauri/src/commands/agent.rs`
 - `file_write` definiert in `src-tauri/src/commands/agent.rs`
@@ -218,7 +227,8 @@ Werkzeug `file_read` ruft in Wahrheit `fs_read`.
 
 - 161 der 171 Kommandos sind lebender Code. Die Rust-Seite ist nicht
   ueberwiegend tot, wie die erste Messung nahelegte.
-- 99 lebende Kommandos haben keinen Mock. Solange das so ist, beweist
-  ein gruener Playwright-Lauf fuer diese Pfade nichts.
-- Die zehn ohne Aufrufer sind ein eigener, kleiner Auftrag: pruefen,
-  dann entweder anschliessen oder loeschen.
+- Seit dem Mock-Ausbau haben alle 161 lebenden Kommandos einen case;
+  ein gruener Playwright-Lauf kann diese Pfade jetzt beweisen. Die
+  Formen stammen aus der Rust-Quelle, Zeilennachweis in MOCK-NOTES.md.
+- Von den zehn ohne Aufrufer leben zwei ueber das Handy-Relay, acht
+  warten auf Davids Anschliessen-oder-Loeschen-Entscheid.
