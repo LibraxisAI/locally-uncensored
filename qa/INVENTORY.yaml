@@ -3682,11 +3682,11 @@ elements:
     hint: "layout.dismiss.click-4"
     handle: "testid"
     precondition: "In der Kopfzeile steht der Hinweischip über ein veraltetes Ollama-Modell, die aktuelle Ansicht ist also nicht Create."
-    expected: "Der Chip verschwindet nicht dauerhaft, weil ein Effekt ihn sofort wieder aufbaut, solange das Modell im Health-Store als veraltet geführt wird."
-    status: "open"
-    notes: "Sieht nach Bug aus: Header.tsx:242 setzt nur den lokalen staleError auf null, der Effekt ab Header.tsx:114 setzt ihn im selben Durchlauf neu, weil jeder Pfad das Modell vorher in den Health-Store schreibt. Live gegenprüfen, ob der Chip wirklich stehen bleibt."
+    expected: "Ein Klick auf das X lässt den Chip verschwinden, und er bleibt für dieses Modell in dieser Sitzung weg."
+    status: "pass"
+    notes: "Bug bestätigt und gefixt (Commit 1f19b7b8): Dismiss setzte nur lokalen State, der Effekt baute den Chip sofort neu. Session-lokales dismissed-Set im Header, Test e2e/stale-chip-dismiss.spec.ts."
     line: 248
-    covered_by: []
+    covered_by: ["e2e/stale-chip-dismiss.spec.ts"]
   - id: "layout.dismiss.click-5"
     kind: "click"
     area: "layout"
