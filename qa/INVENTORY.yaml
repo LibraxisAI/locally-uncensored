@@ -6680,7 +6680,7 @@ commands:
     name: "backup_rag_chunks"
     file: "src-tauri/src/commands/system.rs"
     line: 313
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6688,7 +6688,7 @@ commands:
     name: "backup_stores"
     file: "src-tauri/src/commands/system.rs"
     line: 270
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6696,7 +6696,7 @@ commands:
     name: "bundled_embed_status"
     file: "src-tauri/src/commands/engine.rs"
     line: 1140
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6704,7 +6704,7 @@ commands:
     name: "bundled_engine_status"
     file: "src-tauri/src/commands/engine.rs"
     line: 660
-    invoked_from: []
+    invoked_from: ["src/api/builtin-ensure.ts","src/api/engine.ts","src/api/vram-handoff.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6712,7 +6712,7 @@ commands:
     name: "cancel_character_training"
     file: "src-tauri/src/commands/trainer.rs"
     line: 1154
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6720,7 +6720,7 @@ commands:
     name: "cancel_comfyui_install"
     file: "src-tauri/src/commands/install.rs"
     line: 69
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6728,7 +6728,7 @@ commands:
     name: "cancel_download"
     file: "src-tauri/src/commands/download.rs"
     line: 618
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6752,7 +6752,7 @@ commands:
     name: "character_trainer_status"
     file: "src-tauri/src/commands/trainer.rs"
     line: 771
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6760,7 +6760,7 @@ commands:
     name: "character_training_status"
     file: "src-tauri/src/commands/trainer.rs"
     line: 1139
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6776,7 +6776,7 @@ commands:
     name: "check_model_sizes"
     file: "src-tauri/src/commands/download.rs"
     line: 995
-    invoked_from: []
+    invoked_from: ["src/api/comfyui.ts","src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6784,7 +6784,7 @@ commands:
     name: "clear_training_set"
     file: "src-tauri/src/commands/trainer.rs"
     line: 844
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6792,7 +6792,7 @@ commands:
     name: "comfy_upload_image"
     file: "src-tauri/src/commands/proxy.rs"
     line: 631
-    invoked_from: []
+    invoked_from: ["src/api/comfyui.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6816,7 +6816,7 @@ commands:
     name: "comfyui_last_output"
     file: "src-tauri/src/commands/process.rs"
     line: 1534
-    invoked_from: []
+    invoked_from: ["src/components/create/experimental/CreateContext.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6824,7 +6824,7 @@ commands:
     name: "comfyui_status"
     file: "src-tauri/src/commands/process.rs"
     line: 1555
-    invoked_from: []
+    invoked_from: ["src/api/vram-handoff.ts","src/components/layout/AppShell.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6832,7 +6832,7 @@ commands:
     name: "delete_comfy_model"
     file: "src-tauri/src/commands/download.rs"
     line: 104
-    invoked_from: []
+    invoked_from: ["src/components/models/ModelManager.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6840,7 +6840,7 @@ commands:
     name: "detect_all_comfyui_installs"
     file: "src-tauri/src/commands/process.rs"
     line: 659
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6848,7 +6848,7 @@ commands:
     name: "detect_gpus"
     file: "src-tauri/src/commands/gpu.rs"
     line: 452
-    invoked_from: []
+    invoked_from: ["src/components/settings/HardwareSettings.tsx","src/lib/hardware.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6856,7 +6856,7 @@ commands:
     name: "detect_model_path"
     file: "src-tauri/src/commands/download.rs"
     line: 764
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6864,7 +6864,7 @@ commands:
     name: "disconnect_remote_device"
     file: "src-tauri/src/commands/remote.rs"
     line: 5044
-    invoked_from: []
+    invoked_from: ["src/components/settings/RemoteAccessSettings.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6872,7 +6872,7 @@ commands:
     name: "download_model"
     file: "src-tauri/src/commands/download.rs"
     line: 162
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6880,7 +6880,7 @@ commands:
     name: "download_model_to_path"
     file: "src-tauri/src/commands/download.rs"
     line: 879
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6888,7 +6888,7 @@ commands:
     name: "download_progress"
     file: "src-tauri/src/commands/download.rs"
     line: 755
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6896,7 +6896,7 @@ commands:
     name: "download_voice"
     file: "src-tauri/src/commands/tts.rs"
     line: 157
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6904,7 +6904,7 @@ commands:
     name: "execute_code"
     file: "src-tauri/src/commands/agent.rs"
     line: 274
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6912,7 +6912,7 @@ commands:
     name: "exit_app"
     file: "src-tauri/src/commands/system.rs"
     line: 242
-    invoked_from: []
+    invoked_from: ["src/stores/updateStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6952,7 +6952,7 @@ commands:
     name: "find_comfyui"
     file: "src-tauri/src/commands/process.rs"
     line: 1655
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6960,7 +6960,7 @@ commands:
     name: "fix_comfyui_cors"
     file: "src-tauri/src/commands/process.rs"
     line: 885
-    invoked_from: []
+    invoked_from: ["src/components/create/experimental/CreateExperimental.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6976,7 +6976,7 @@ commands:
     name: "fs_list"
     file: "src-tauri/src/commands/filesystem.rs"
     line: 276
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts","src/components/chat/FileTree.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6984,7 +6984,7 @@ commands:
     name: "fs_read"
     file: "src-tauri/src/commands/filesystem.rs"
     line: 172
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts","src/hooks/useCodex.ts","src/lib/staged-apply.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -6992,7 +6992,7 @@ commands:
     name: "fs_search"
     file: "src-tauri/src/commands/filesystem.rs"
     line: 358
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7000,7 +7000,7 @@ commands:
     name: "fs_write"
     file: "src-tauri/src/commands/filesystem.rs"
     line: 244
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts","src/lib/staged-apply.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7016,7 +7016,7 @@ commands:
     name: "get_comfy_gpu_status"
     file: "src-tauri/src/commands/process.rs"
     line: 1701
-    invoked_from: []
+    invoked_from: ["src/components/create/experimental/CreateContext.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7024,7 +7024,7 @@ commands:
     name: "get_current_time"
     file: "src-tauri/src/commands/system.rs"
     line: 376
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7040,7 +7040,7 @@ commands:
     name: "get_ollama_host"
     file: "src-tauri/src/commands/process.rs"
     line: 1931
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7048,7 +7048,7 @@ commands:
     name: "hf_token_present"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 57
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7056,7 +7056,7 @@ commands:
     name: "import_local_model"
     file: "src-tauri/src/commands/engine.rs"
     line: 967
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7064,7 +7064,7 @@ commands:
     name: "install_character_trainer"
     file: "src-tauri/src/commands/trainer.rs"
     line: 555
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7072,7 +7072,7 @@ commands:
     name: "install_comfyui"
     file: "src-tauri/src/commands/install.rs"
     line: 712
-    invoked_from: []
+    invoked_from: ["src/components/create/experimental/CreateContext.tsx","src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7080,7 +7080,7 @@ commands:
     name: "install_comfyui_status"
     file: "src-tauri/src/commands/install.rs"
     line: 1201
-    invoked_from: []
+    invoked_from: ["src/components/create/experimental/CreateContext.tsx","src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7088,7 +7088,7 @@ commands:
     name: "install_custom_node"
     file: "src-tauri/src/commands/install.rs"
     line: 3311
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7096,7 +7096,7 @@ commands:
     name: "install_lmstudio"
     file: "src-tauri/src/commands/install.rs"
     line: 2166
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7104,7 +7104,7 @@ commands:
     name: "install_lmstudio_status"
     file: "src-tauri/src/commands/install.rs"
     line: 2416
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7112,7 +7112,7 @@ commands:
     name: "install_mlx_diffusion"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 77
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7120,7 +7120,7 @@ commands:
     name: "install_mlx_diffusion_status"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 82
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7128,7 +7128,7 @@ commands:
     name: "install_ollama"
     file: "src-tauri/src/commands/install.rs"
     line: 1437
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7136,7 +7136,7 @@ commands:
     name: "install_ollama_status"
     file: "src-tauri/src/commands/install.rs"
     line: 1896
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7144,7 +7144,7 @@ commands:
     name: "install_python"
     file: "src-tauri/src/commands/install.rs"
     line: 2722
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7152,7 +7152,7 @@ commands:
     name: "install_python_status"
     file: "src-tauri/src/commands/install.rs"
     line: 2946
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7168,7 +7168,7 @@ commands:
     name: "install_tts"
     file: "src-tauri/src/commands/install.rs"
     line: 3168
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7176,7 +7176,7 @@ commands:
     name: "install_tts_status"
     file: "src-tauri/src/commands/install.rs"
     line: 3297
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7184,7 +7184,7 @@ commands:
     name: "install_whisper"
     file: "src-tauri/src/commands/install.rs"
     line: 3009
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7192,7 +7192,7 @@ commands:
     name: "install_whisper_status"
     file: "src-tauri/src/commands/install.rs"
     line: 3105
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7200,7 +7200,7 @@ commands:
     name: "installed_piper_voices"
     file: "src-tauri/src/commands/tts.rs"
     line: 123
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7208,7 +7208,7 @@ commands:
     name: "is_onboarding_done"
     file: "src-tauri/src/commands/system.rs"
     line: 340
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7216,7 +7216,7 @@ commands:
     name: "kv_slot_action"
     file: "src-tauri/src/commands/engine.rs"
     line: 378
-    invoked_from: []
+    invoked_from: ["src/api/vram-handoff.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7224,7 +7224,7 @@ commands:
     name: "list_bundled_models"
     file: "src-tauri/src/commands/engine.rs"
     line: 724
-    invoked_from: []
+    invoked_from: ["src/api/builtin-ensure.ts","src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7232,7 +7232,7 @@ commands:
     name: "list_importable_models"
     file: "src-tauri/src/commands/engine.rs"
     line: 943
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7240,7 +7240,7 @@ commands:
     name: "lmstudio_list_loaded"
     file: "src-tauri/src/commands/install.rs"
     line: 2507
-    invoked_from: []
+    invoked_from: ["src/api/lmstudio.ts","src/api/vram-handoff.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7248,7 +7248,7 @@ commands:
     name: "lmstudio_load_model"
     file: "src-tauri/src/commands/install.rs"
     line: 2550
-    invoked_from: []
+    invoked_from: ["src/api/lmstudio.ts","src/api/vram-handoff.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7256,7 +7256,7 @@ commands:
     name: "lmstudio_model_context"
     file: "src-tauri/src/commands/install.rs"
     line: 2631
-    invoked_from: []
+    invoked_from: ["src/api/lmstudio.ts","src/api/vram-handoff.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7264,7 +7264,7 @@ commands:
     name: "lmstudio_server_status"
     file: "src-tauri/src/commands/install.rs"
     line: 2471
-    invoked_from: []
+    invoked_from: ["src/components/models/ModelSelector.tsx","src/components/onboarding/Onboarding.tsx","src/components/settings/ProviderConfig.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7272,7 +7272,7 @@ commands:
     name: "lmstudio_unload_model"
     file: "src-tauri/src/commands/install.rs"
     line: 2683
-    invoked_from: []
+    invoked_from: ["src/api/lmstudio.ts","src/api/vram-handoff.ts","src/components/layout/AppShell.tsx","src/hooks/useCreate.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7280,7 +7280,7 @@ commands:
     name: "mlx_generate"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 42
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7288,7 +7288,7 @@ commands:
     name: "mlx_image_delete_model"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 72
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7296,7 +7296,7 @@ commands:
     name: "mlx_image_install_model"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 62
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7304,7 +7304,7 @@ commands:
     name: "mlx_image_install_status"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 67
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7312,7 +7312,7 @@ commands:
     name: "mlx_image_models"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 47
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7320,7 +7320,7 @@ commands:
     name: "mlx_start"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 32
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7328,7 +7328,7 @@ commands:
     name: "mlx_status"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 27
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7336,7 +7336,7 @@ commands:
     name: "mlx_unload"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 37
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7360,7 +7360,7 @@ commands:
     name: "offload_local_models"
     file: "src-tauri/src/commands/process.rs"
     line: 2401
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx","src/hooks/useCreate.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7376,7 +7376,7 @@ commands:
     name: "pause_download"
     file: "src-tauri/src/commands/download.rs"
     line: 596
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7384,7 +7384,7 @@ commands:
     name: "pick_folder"
     file: "src-tauri/src/commands/system.rs"
     line: 222
-    invoked_from: ["src/components/chat/FileTree.tsx"]
+    invoked_from: ["src/components/chat/AgentWorkspaceDialog.tsx","src/components/chat/FileTree.tsx","src/components/layout/Sidebar.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7392,7 +7392,7 @@ commands:
     name: "process_list"
     file: "src-tauri/src/commands/system.rs"
     line: 34
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7432,7 +7432,7 @@ commands:
     name: "python_check"
     file: "src-tauri/src/commands/install.rs"
     line: 2962
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7440,7 +7440,7 @@ commands:
     name: "read_media_file"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 175
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts","src/components/create/experimental/OutputView.tsx","src/components/create/experimental/galleryUrl.ts","src/lib/local-media-url.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7448,7 +7448,7 @@ commands:
     name: "regenerate_remote_token"
     file: "src-tauri/src/commands/remote.rs"
     line: 4953
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7464,7 +7464,7 @@ commands:
     name: "remote_connected_devices"
     file: "src-tauri/src/commands/remote.rs"
     line: 5029
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7472,7 +7472,7 @@ commands:
     name: "remote_qr_code"
     file: "src-tauri/src/commands/remote.rs"
     line: 4983
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7480,7 +7480,7 @@ commands:
     name: "remote_server_status"
     file: "src-tauri/src/commands/remote.rs"
     line: 4909
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7488,7 +7488,7 @@ commands:
     name: "repair_comfyui_env"
     file: "src-tauri/src/commands/install.rs"
     line: 1041
-    invoked_from: []
+    invoked_from: ["src/components/create/experimental/CreateContext.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7496,7 +7496,7 @@ commands:
     name: "repo_map"
     file: "src-tauri/src/commands/repo_map.rs"
     line: 599
-    invoked_from: []
+    invoked_from: ["src/api/agents/repo-map.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7504,7 +7504,7 @@ commands:
     name: "restart_remote_server"
     file: "src-tauri/src/commands/remote.rs"
     line: 4851
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7512,7 +7512,7 @@ commands:
     name: "restore_rag_chunks"
     file: "src-tauri/src/commands/system.rs"
     line: 328
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7520,7 +7520,7 @@ commands:
     name: "restore_stores"
     file: "src-tauri/src/commands/system.rs"
     line: 282
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7528,7 +7528,7 @@ commands:
     name: "resume_download"
     file: "src-tauri/src/commands/download.rs"
     line: 665
-    invoked_from: []
+    invoked_from: ["src/api/discover.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7544,7 +7544,7 @@ commands:
     name: "save_text_file_dialog"
     file: "src-tauri/src/commands/filesystem.rs"
     line: 460
-    invoked_from: []
+    invoked_from: ["src/components/chat/ChatArtifactCard.tsx","src/lib/chat-export.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7552,7 +7552,7 @@ commands:
     name: "screenshot"
     file: "src-tauri/src/commands/system.rs"
     line: 71
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7624,7 +7624,7 @@ commands:
     name: "set_chat_workspace_override"
     file: "src-tauri/src/commands/agent.rs"
     line: 459
-    invoked_from: []
+    invoked_from: ["src/components/layout/Sidebar.tsx","src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7632,7 +7632,7 @@ commands:
     name: "set_comfy_gpu_mode"
     file: "src-tauri/src/commands/process.rs"
     line: 1681
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx","src/components/settings/HardwareSettings.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7640,7 +7640,7 @@ commands:
     name: "set_comfyui_host"
     file: "src-tauri/src/commands/process.rs"
     line: 1783
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7648,7 +7648,7 @@ commands:
     name: "set_comfyui_path"
     file: "src-tauri/src/commands/process.rs"
     line: 1708
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7656,7 +7656,7 @@ commands:
     name: "set_comfyui_port"
     file: "src-tauri/src/commands/process.rs"
     line: 1831
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7664,7 +7664,7 @@ commands:
     name: "set_gpu_selection"
     file: "src-tauri/src/commands/gpu.rs"
     line: 478
-    invoked_from: ["src/App.tsx"]
+    invoked_from: ["src/App.tsx","src/components/settings/HardwareSettings.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7672,7 +7672,7 @@ commands:
     name: "set_hf_token"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 52
-    invoked_from: []
+    invoked_from: ["src/api/mlx-image.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7680,7 +7680,7 @@ commands:
     name: "set_ollama_host"
     file: "src-tauri/src/commands/process.rs"
     line: 1889
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7688,7 +7688,7 @@ commands:
     name: "set_onboarding_done"
     file: "src-tauri/src/commands/system.rs"
     line: 349
-    invoked_from: []
+    invoked_from: ["src/components/layout/AppShell.tsx","src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7696,7 +7696,7 @@ commands:
     name: "set_remote_permissions"
     file: "src-tauri/src/commands/remote.rs"
     line: 5058
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7704,7 +7704,7 @@ commands:
     name: "shell_execute"
     file: "src-tauri/src/commands/shell.rs"
     line: 186
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7712,7 +7712,7 @@ commands:
     name: "shell_task_kill"
     file: "src-tauri/src/commands/bg_tasks.rs"
     line: 372
-    invoked_from: []
+    invoked_from: ["src/api/agents/bg-tasks.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7720,7 +7720,7 @@ commands:
     name: "shell_task_list"
     file: "src-tauri/src/commands/bg_tasks.rs"
     line: 380
-    invoked_from: []
+    invoked_from: ["src/api/agents/bg-tasks.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7728,7 +7728,7 @@ commands:
     name: "shell_task_start"
     file: "src-tauri/src/commands/bg_tasks.rs"
     line: 356
-    invoked_from: []
+    invoked_from: ["src/api/agents/bg-tasks.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7736,7 +7736,7 @@ commands:
     name: "shell_task_status"
     file: "src-tauri/src/commands/bg_tasks.rs"
     line: 364
-    invoked_from: []
+    invoked_from: ["src/api/agents/bg-tasks.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7752,7 +7752,7 @@ commands:
     name: "stage_training_image"
     file: "src-tauri/src/commands/trainer.rs"
     line: 806
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7760,7 +7760,7 @@ commands:
     name: "start_bundled_embed"
     file: "src-tauri/src/commands/engine.rs"
     line: 1003
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7768,7 +7768,7 @@ commands:
     name: "start_bundled_engine"
     file: "src-tauri/src/commands/engine.rs"
     line: 461
-    invoked_from: []
+    invoked_from: ["src/api/builtin-ensure.ts","src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7776,7 +7776,7 @@ commands:
     name: "start_character_training"
     file: "src-tauri/src/commands/trainer.rs"
     line: 860
-    invoked_from: []
+    invoked_from: ["src/api/trainer.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7784,7 +7784,7 @@ commands:
     name: "start_comfyui"
     file: "src-tauri/src/commands/process.rs"
     line: 1199
-    invoked_from: []
+    invoked_from: ["src/api/comfy-restart.ts","src/api/discover.ts","src/api/vram-handoff.ts","src/components/create/experimental/CreateContext.tsx","src/components/onboarding/Onboarding.tsx","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7792,7 +7792,7 @@ commands:
     name: "start_lmstudio_server"
     file: "src-tauri/src/commands/install.rs"
     line: 2434
-    invoked_from: []
+    invoked_from: ["src/components/models/ModelSelector.tsx","src/components/onboarding/Onboarding.tsx","src/components/settings/ProviderConfig.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7800,7 +7800,7 @@ commands:
     name: "start_ollama"
     file: "src-tauri/src/commands/process.rs"
     line: 951
-    invoked_from: []
+    invoked_from: ["src/components/onboarding/Onboarding.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7808,7 +7808,7 @@ commands:
     name: "start_remote_server"
     file: "src-tauri/src/commands/remote.rs"
     line: 4660
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7816,7 +7816,7 @@ commands:
     name: "start_tunnel"
     file: "src-tauri/src/commands/remote.rs"
     line: 5084
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7824,7 +7824,7 @@ commands:
     name: "stop_bundled_embed"
     file: "src-tauri/src/commands/engine.rs"
     line: 1128
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7832,7 +7832,7 @@ commands:
     name: "stop_bundled_engine"
     file: "src-tauri/src/commands/engine.rs"
     line: 642
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts","src/api/vram-handoff.ts","src/stores/modelStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7840,7 +7840,7 @@ commands:
     name: "stop_comfyui"
     file: "src-tauri/src/commands/process.rs"
     line: 1493
-    invoked_from: []
+    invoked_from: ["src/api/comfy-restart.ts","src/api/discover.ts","src/api/vram-handoff.ts","src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7848,7 +7848,7 @@ commands:
     name: "stop_remote_server"
     file: "src-tauri/src/commands/remote.rs"
     line: 4871
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7856,7 +7856,7 @@ commands:
     name: "stop_tunnel"
     file: "src-tauri/src/commands/remote.rs"
     line: 5317
-    invoked_from: []
+    invoked_from: ["src/stores/remoteStore.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7864,7 +7864,7 @@ commands:
     name: "swap_bundled_model"
     file: "src-tauri/src/commands/engine.rs"
     line: 697
-    invoked_from: []
+    invoked_from: ["src/api/engine.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7872,7 +7872,7 @@ commands:
     name: "synthesize"
     file: "src-tauri/src/commands/tts.rs"
     line: 224
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7880,7 +7880,7 @@ commands:
     name: "synthesize_external"
     file: "src-tauri/src/commands/tts.rs"
     line: 338
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7888,7 +7888,7 @@ commands:
     name: "system_health"
     file: "src-tauri/src/commands/health.rs"
     line: 240
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7896,7 +7896,7 @@ commands:
     name: "system_info"
     file: "src-tauri/src/commands/system.rs"
     line: 20
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts","src/lib/hardware.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7904,7 +7904,7 @@ commands:
     name: "transcribe"
     file: "src-tauri/src/commands/whisper.rs"
     line: 277
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7912,7 +7912,7 @@ commands:
     name: "tts_status"
     file: "src-tauri/src/commands/tts.rs"
     line: 79
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7928,7 +7928,7 @@ commands:
     name: "update_comfyui"
     file: "src-tauri/src/commands/install.rs"
     line: 1220
-    invoked_from: []
+    invoked_from: ["src/components/settings/SettingsPage.tsx"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7936,7 +7936,7 @@ commands:
     name: "video_cancel"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 134
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7944,7 +7944,7 @@ commands:
     name: "video_delete_model"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 119
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7952,7 +7952,7 @@ commands:
     name: "video_generate"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 124
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7960,7 +7960,7 @@ commands:
     name: "video_install_mlx"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 99
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7968,7 +7968,7 @@ commands:
     name: "video_install_mlx_status"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 104
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7976,7 +7976,7 @@ commands:
     name: "video_install_model"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 109
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7984,7 +7984,7 @@ commands:
     name: "video_install_model_status"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 114
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -7992,7 +7992,7 @@ commands:
     name: "video_list_models"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 94
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -8000,7 +8000,7 @@ commands:
     name: "video_progress"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 129
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -8008,7 +8008,7 @@ commands:
     name: "video_status"
     file: "src-tauri/src/commands/media_cmds.rs"
     line: 89
-    invoked_from: []
+    invoked_from: ["src/api/mlx-video.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -8024,7 +8024,7 @@ commands:
     name: "web_fetch"
     file: "src-tauri/src/commands/search.rs"
     line: 465
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -8032,7 +8032,7 @@ commands:
     name: "web_search"
     file: "src-tauri/src/commands/search.rs"
     line: 283
-    invoked_from: []
+    invoked_from: ["src/api/mcp/builtin-tools.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
@@ -8040,7 +8040,7 @@ commands:
     name: "whisper_status"
     file: "src-tauri/src/commands/whisper.rs"
     line: 205
-    invoked_from: []
+    invoked_from: ["src/api/voice.ts"]
     mock: "unknown"
     status: "open"
     notes: ""
