@@ -78,7 +78,7 @@ export function ParamGroups() {
     <div className="py-1">
       {/* QUALITY */}
       <Section title="Quality" icon={Gauge} defaultOpen
-        right={<Button variant="ghost" size="sm" icon={RotateCcw} iconOnly title="Reset to model defaults" onClick={s.resetParamsToModelDefaults} />}
+        right={<Button data-testid="create.reset-to-model-defaults.click" variant="ghost" size="sm" icon={RotateCcw} iconOnly title="Reset to model defaults" onClick={s.resetParamsToModelDefaults} />}
       >
         {showSteps && <Slider label="Steps" min={1} max={60} step={1} value={s.steps} onChange={s.setSteps} />}
         {showCfg && <Slider label={isVideo ? 'Guidance' : 'CFG scale'} min={0} max={30} step={0.5} value={s.cfgScale} onChange={s.setCfgScale} format={(v) => v.toFixed(1)} />}
@@ -95,6 +95,7 @@ export function ParamGroups() {
         <div className="flex flex-wrap items-center gap-1 pt-1">
           {isVideo && VIDEO_RES_PRESETS.map((p) => (
             <button
+              data-testid="create.video-res-preset.apply"
               key={p.label}
               onClick={() => { const d = presetForOrientation(p, s.height > s.width); s.setSize(d.width, d.height) }}
               className={cn(
@@ -106,6 +107,7 @@ export function ParamGroups() {
             >{p.label}</button>
           ))}
           <button
+            data-testid="create.swap-orientation.click"
             aria-label="Swap orientation"
             title="Swap portrait and landscape"
             onClick={() => s.setSize(s.height, s.width)}
@@ -116,6 +118,7 @@ export function ParamGroups() {
           </button>
           {ASPECT_RATIOS.map((r) => (
             <button
+              data-testid="create.aspect-ratio.apply"
               key={r.label}
               onClick={() => { const d = applyAspect(s.width, s.height, r.w, r.h); s.setSize(d.width, d.height) }}
               className="px-1.5 py-0.5 rounded border border-white/[0.08] t-control text-gray-400 hover:text-gray-200 hover:bg-white/[0.06] transition-colors"
@@ -129,6 +132,7 @@ export function ParamGroups() {
             s.hiresFixEnabled ? 'border-white/15 bg-white/[0.05]' : 'border-white/[0.07]',
           )}>
             <button
+              data-testid="create.hires-fix.toggle"
               type="button"
               className="flex w-full items-center justify-between px-3 py-2 text-left"
               onClick={() => s.setHiresFixEnabled(!s.hiresFixEnabled)}
@@ -226,7 +230,7 @@ export function ParamGroups() {
                   into models/loras later never appeared — and with an empty
                   list the whole section was invisible, which read as "no LoRA
                   support at all". Always show it, let the user re-scan. */}
-              <button onClick={() => { void refreshModelLists() }} title="Re-scan ComfyUI's models/loras folder" className="t-control text-gray-500 hover:text-gray-300 inline-flex items-center gap-1">
+              <button data-testid="create.re-scan-comfyui.click" onClick={() => { void refreshModelLists() }} title="Re-scan ComfyUI's models/loras folder" className="t-control text-gray-500 hover:text-gray-300 inline-flex items-center gap-1">
                 <RotateCcw className="w-3 h-3" /> Rescan
               </button>
             </div>
@@ -238,7 +242,7 @@ export function ParamGroups() {
                 const active = s.selectedLoras.find((l) => l.name === name)
                 return (
                   <div key={name} className={cn('rounded-md border transition-colors', active ? 'border-white/15 bg-white/[0.06]' : 'border-white/[0.06]')}>
-                    <button onClick={() => s.toggleLora(name)} className="w-full flex items-center justify-between px-2.5 py-1.5 t-control text-left text-gray-300">
+                    <button data-testid="create.lora.toggle" onClick={() => s.toggleLora(name)} className="w-full flex items-center justify-between px-2.5 py-1.5 t-control text-left text-gray-300">
                       <span className="truncate">{name.replace(/\.safetensors$/, '')}</span>
                       <span className={cn('t-mono', active ? 'text-emerald-400' : 'text-gray-600')}>{active ? 'on' : 'off'}</span>
                     </button>

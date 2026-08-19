@@ -101,7 +101,7 @@ export function BackendSelector({ open, backends, onClose }: Props) {
 
         <div className="space-y-1">
           {backends.map(backend => (
-            <button
+            <button data-testid="onboarding.backend-selector.select-backend"
               key={backend.id}
               onClick={() => setSelected(backend.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
@@ -123,7 +123,7 @@ export function BackendSelector({ open, backends, onClose }: Props) {
 
         <p className="text-[0.65rem] text-gray-500 text-center leading-relaxed">
           You can add, remove, or switch backends anytime in{' '}
-          <button
+          <button data-testid="onboarding.backend-selector.open-provider-settings"
             onClick={openSettings}
             className="text-gray-300 hover:text-white underline underline-offset-2 transition-colors"
           >
@@ -143,13 +143,13 @@ export function BackendSelector({ open, backends, onClose }: Props) {
         </label>
 
         <div className="flex items-center justify-center gap-3 pt-1">
-          <button
+          <button data-testid="onboarding.backend-selector.dismiss"
             onClick={dismiss}
             className="px-4 py-1.5 rounded-lg text-[0.7rem] text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
           >
             {builtinActive ? 'Keep built-in engine' : 'Skip'}
           </button>
-          <button
+          <button data-testid="onboarding.backend-selector.confirm-selection"
             onClick={handleConfirm}
             className="px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
           >

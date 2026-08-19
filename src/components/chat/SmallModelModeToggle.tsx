@@ -17,7 +17,7 @@ export function SmallModelModeToggle() {
   const updateSettings = useSettingsStore((s) => s.updateSettings)
 
   return (
-    <button
+    <button data-testid="chat.small-model-mode.toggle"
       onClick={() => updateSettings({ smallModelMode: !on })}
       title={
         on

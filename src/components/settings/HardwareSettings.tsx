@@ -109,6 +109,7 @@ export function HardwareSettings() {
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[0.7rem] text-gray-700 dark:text-gray-300 font-medium">Vendor</span>
           <button
+            data-testid="settings.re-detect-gpus.click"
             onClick={detect}
             disabled={loading}
             className="text-[0.6rem] text-gray-500 hover:text-gray-300 inline-flex items-center gap-1 disabled:opacity-50"

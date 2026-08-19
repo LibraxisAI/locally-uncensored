@@ -57,7 +57,7 @@ export function ABCompare() {
       {/* Header */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center px-3 py-2 border-b border-white/5">
         <div className="flex items-center gap-3 justify-self-start">
-          <button
+          <button data-testid="chat.abcompare-exit.click"
             onClick={() => { setComparing(false); reset() }}
             className="p-1 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
           >
@@ -161,11 +161,11 @@ export function ABCompare() {
             className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-[0.7rem] text-white placeholder-gray-500 focus:outline-none focus:border-white/25 disabled:opacity-40"
           />
           {isStreaming ? (
-            <button onClick={stopCompare} className="px-3 py-2 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors">
+            <button data-testid="chat.abcompare-stop.click" onClick={stopCompare} className="px-3 py-2 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors">
               <Square size={14} />
             </button>
           ) : (
-            <button
+            <button data-testid="chat.abcompare-send.click"
               onClick={handleSend}
               disabled={!input.trim() || !modelA || !modelB}
               className="px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15 transition-colors disabled:opacity-30"

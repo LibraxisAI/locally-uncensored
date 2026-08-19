@@ -53,7 +53,7 @@ export function CodeBlock({ code, language }: Props) {
     <div className="relative group rounded-lg overflow-hidden my-1.5 border border-gray-200 dark:border-white/5">
       <div className="flex items-center justify-between px-3 py-1 bg-gray-50 dark:bg-white/5 border-b border-gray-200 dark:border-white/5">
         <span className="text-[0.6rem] text-gray-400 font-mono">{language || 'code'}</span>
-        <button
+        <button data-testid="chat.copy-code.click"
           onClick={handleCopy}
           className="flex items-center gap-1 text-[0.6rem] text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
           aria-label="Copy code"
@@ -75,7 +75,7 @@ export function CodeBlock({ code, language }: Props) {
         {displayCode}
       </SyntaxHighlighter>
       {isLong && (
-        <button
+        <button data-testid="chat.code-block.expand"
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center justify-center gap-1 py-1 bg-gray-50 dark:bg-white/5 text-[0.55rem] text-gray-400 hover:text-gray-700 dark:hover:text-white border-t border-gray-200 dark:border-white/5 transition-colors"
         >

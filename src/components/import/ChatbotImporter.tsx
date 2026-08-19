@@ -147,7 +147,7 @@ export function ChatbotImporter() {
         <div className="flex items-start gap-2 p-2 rounded border border-red-500/20 bg-red-500/[0.06] text-red-300">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="text-[0.6rem] whitespace-pre-wrap">{error}</span>
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-200 ml-auto"><X size={10} /></button>
+          <button data-testid="import.error-banner.dismiss" onClick={() => setError(null)} className="text-red-400 hover:text-red-200 ml-auto"><X size={10} /></button>
         </div>
       )}
 
@@ -163,7 +163,7 @@ export function ChatbotImporter() {
               {selected.size} selected
             </span>
             <div className="flex gap-2">
-              <button
+              <button data-testid="import.select-all-conversations.toggle"
                 onClick={allSelected ? selectNone : selectAll}
                 className="text-gray-400 hover:text-white"
                 disabled={importing}
@@ -203,7 +203,7 @@ export function ChatbotImporter() {
           </div>
 
           <div className="flex items-center gap-2 pt-1">
-            <button
+            <button data-testid="import.import-selected-to-rag.click"
               onClick={handleImport}
               disabled={!someSelected || importing || !conversationId}
               className="px-3 py-1.5 rounded text-[0.7rem] font-medium bg-blue-500 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white inline-flex items-center gap-1.5"

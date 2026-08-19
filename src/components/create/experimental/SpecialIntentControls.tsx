@@ -78,6 +78,7 @@ function FileChip({
         }}
       />
       <button
+        data-testid="create.file-chip.open-picker"
         onClick={() => inputRef.current?.click()}
         className={cn(
           't-control flex items-center gap-1.5 px-2.5 h-[var(--control-h-sm)] rounded-md border transition-colors',
@@ -90,7 +91,7 @@ function FileChip({
         <span className="max-w-[140px] truncate">{value ?? empty}</span>
       </button>
       {value && (
-        <button onClick={onClear} className="p-1 text-gray-500 hover:text-gray-300" title="Remove" aria-label="Remove">
+        <button data-testid="create.remove.click" onClick={onClear} className="p-1 text-gray-500 hover:text-gray-300" title="Remove" aria-label="Remove">
           <X size={11} />
         </button>
       )}
@@ -202,6 +203,7 @@ function CharacterPanel() {
             return (
               <div key={c.id} className="flex items-center">
                 <button
+                  data-testid="create.cloud-character.select"
                   onClick={() =>
                     setSelectedCharacter(
                       active
@@ -221,6 +223,7 @@ function CharacterPanel() {
                   <span className="t-label text-gray-500">{FAMILY_LABEL[c.base_family] ?? c.base_family}</span>
                 </button>
                 <button
+                  data-testid="create.cloud-character.delete"
                   onClick={() => {
                     void deleteLora(c.id)
                       .then(() => {
@@ -344,7 +347,7 @@ function LocalTrainControls() {
       <div className="flex flex-col items-center gap-1.5">
         <div className="flex items-center gap-2">
           <span className="t-label text-gray-500">Trains fully on your GPU. One time setup, about 3 GB.</span>
-          <Button size="sm" variant="secondary" icon={Download} loading={busy === 'install'} disabled={busy === 'install'} onClick={startInstall}>
+          <Button data-testid="create.trainer-setup.start" size="sm" variant="secondary" icon={Download} loading={busy === 'install'} disabled={busy === 'install'} onClick={startInstall}>
             {busy === 'install' ? 'Setting up…' : 'Set up trainer'}
           </Button>
         </div>
@@ -357,7 +360,7 @@ function LocalTrainControls() {
       <div className="flex flex-col items-center gap-1.5">
         <div className="flex items-center gap-2">
           <span className="t-label text-gray-500">Z Image training base files are missing (about 19 GB, one time).</span>
-          <Button size="sm" variant="secondary" icon={Download} loading={busy === 'bases'} disabled={busy === 'bases'} onClick={startBases}>
+          <Button data-testid="create.trainer-bases.download" size="sm" variant="secondary" icon={Download} loading={busy === 'bases'} disabled={busy === 'bases'} onClick={startBases}>
             {busy === 'bases' ? 'Downloading…' : 'Download base files'}
           </Button>
         </div>
@@ -398,6 +401,7 @@ function LocalTrainControls() {
               not ready, which is exactly when a customer with a stale torch
               build could not reach it (bob80817, D#102). */}
           <button
+            data-testid="create.trainer.reinstall"
             type="button"
             onClick={startInstall}
             disabled={busy === 'install'}
@@ -443,6 +447,7 @@ function LocalCharacterShelf() {
         const active = selectedCharacter?.id === `local:${c.file}`
         return (
           <button
+            data-testid="create.local-character.select"
             key={c.file}
             onClick={() => {
               if (active) {
@@ -562,6 +567,7 @@ function VoiceChip({
         }}
       />
       <button
+        data-testid="create.voice-chip.open-menu"
         onClick={() => setOpen((o) => !o)}
         className={cn(
           't-control flex items-center gap-1.5 px-2.5 h-[var(--control-h-sm)] rounded-md border transition-colors',
@@ -574,7 +580,7 @@ function VoiceChip({
         <span className="max-w-[150px] truncate">{value ?? 'Add voice'}</span>
       </button>
       {value && (
-        <button onClick={onClear} className="p-1 text-gray-500 hover:text-gray-300" title="Remove voice" aria-label="Remove voice">
+        <button data-testid="create.remove-voice.click" onClick={onClear} className="p-1 text-gray-500 hover:text-gray-300" title="Remove voice" aria-label="Remove voice">
           <X size={11} />
         </button>
       )}
@@ -590,6 +596,7 @@ function VoiceChip({
             {!makerOpen ? (
               <>
                 <button
+                  data-testid="create.voice-chip.upload-audio"
                   onClick={() => { inputRef.current?.click() }}
                   className="w-full flex items-center gap-2 t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06]"
                 >
@@ -597,6 +604,7 @@ function VoiceChip({
                 </button>
                 {isCloud && (
                   <button
+                    data-testid="create.voice-maker.open"
                     onClick={() => setMakerOpen(true)}
                     className="w-full flex items-center gap-2 t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06]"
                   >
@@ -609,6 +617,7 @@ function VoiceChip({
                     <div className="max-h-36 overflow-y-auto scrollbar-thin">
                       {audioItems.map((g) => (
                         <button
+                          data-testid="create.voice-from-gallery.select"
                           key={g.id}
                           onClick={() => {
                             onPickVoice(g.jobId as string, g.prompt.slice(0, 40) || 'Generated audio')
@@ -664,6 +673,7 @@ function VoiceChip({
                   )}
                 </div>
                 <Button
+                  data-testid="create.voice-maker.submit"
                   variant="primary"
                   size="sm"
                   icon={Wand2}
@@ -728,6 +738,7 @@ function MusicControls() {
         </div>
         {canLyrics ? (
           <button
+            data-testid="create.music-lyrics.toggle"
             onClick={() => setLyricsOpen((o) => !o)}
             className={cn(
               't-control flex items-center gap-1.5 px-2.5 h-[var(--control-h-sm)] rounded-md border transition-colors',
@@ -745,6 +756,7 @@ function MusicControls() {
         )}
         <div className="relative">
           <button
+            data-testid="create.music-howto.toggle"
             onClick={() => {
               setHowtoOpen((o) => !o)
               if (!musicHowtoSeen) setMusicHowtoSeen(true)
@@ -902,6 +914,7 @@ function LocalExtendControls() {
           }}
         />
         <button
+          data-testid="create.extend-local-picker.open"
           onClick={() => setOpen((o) => !o)}
           disabled={busy}
           className={cn(
@@ -918,6 +931,7 @@ function LocalExtendControls() {
         </button>
         {value && (
           <button
+            data-testid="create.clear.click-2"
             onClick={() => { setSource(null); setPickedLabel(null) }}
             className="p-1 text-gray-500 hover:text-gray-300" title="Clear" aria-label="Clear"
           >
@@ -934,6 +948,7 @@ function LocalExtendControls() {
               className="lu-elevated absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 z-50 w-72 rounded-lg p-1 max-h-64 overflow-y-auto scrollbar-thin"
             >
               <button
+                data-testid="create.extend-local.upload-clip"
                 onClick={() => inputRef.current?.click()}
                 className="w-full flex items-center gap-2 t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06]"
               >
@@ -942,6 +957,7 @@ function LocalExtendControls() {
               {clips.length > 0 && <div className="t-label text-gray-600 px-2.5 py-1 border-t border-white/[0.06] mt-1">Your local videos</div>}
               {clips.map((g) => (
                 <button
+                  data-testid="create.extend-local-clip.select"
                   key={g.id}
                   onClick={() => { void fromGallery(g) }}
                   className="w-full flex items-center gap-2 t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06]"
@@ -970,6 +986,7 @@ function CloudExtendControls() {
     <div className="flex items-center justify-center">
       <div ref={ref} className="relative flex items-center">
         <button
+          data-testid="create.extend-cloud-picker.open"
           onClick={() => setOpen((o) => !o)}
           className={cn(
             't-control flex items-center gap-1.5 px-2.5 h-[var(--control-h-sm)] rounded-md border transition-colors',
@@ -984,7 +1001,7 @@ function CloudExtendControls() {
           </span>
         </button>
         {extendSource && (
-          <button onClick={() => setExtendSource(null)} className="p-1 text-gray-500 hover:text-gray-300" title="Clear" aria-label="Clear">
+          <button data-testid="create.clear.click-3" onClick={() => setExtendSource(null)} className="p-1 text-gray-500 hover:text-gray-300" title="Clear" aria-label="Clear">
             <X size={11} />
           </button>
         )}
@@ -1004,6 +1021,7 @@ function CloudExtendControls() {
               )}
               {clips.map((g) => (
                 <button
+                  data-testid="create.extend-cloud-clip.select"
                   key={g.id}
                   onClick={() => {
                     setExtendSource({

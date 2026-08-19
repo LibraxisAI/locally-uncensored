@@ -32,7 +32,7 @@ export function Modal({ open, onClose, title, children, hideHeader, maxWidth = '
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
         >
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+          <div data-testid="ui.modal.close-backdrop" className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
           <motion.div
             className={
               `relative z-10 w-full ${panelRadius} ${panelPad} border border-gray-200 dark:border-white/10 ` +
@@ -44,7 +44,7 @@ export function Modal({ open, onClose, title, children, hideHeader, maxWidth = '
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
           >
             {hideHeader ? (
-              <button
+              <button data-testid="ui.close.click"
                 onClick={onClose}
                 className="absolute top-3 right-3 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
                 aria-label="Close"
@@ -54,7 +54,7 @@ export function Modal({ open, onClose, title, children, hideHeader, maxWidth = '
             ) : (
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
-                <button
+                <button data-testid="ui.close.click-2"
                   onClick={onClose}
                   className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
                   aria-label="Close"

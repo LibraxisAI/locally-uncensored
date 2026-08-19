@@ -51,7 +51,7 @@ export function PlanBar() {
     <div className="w-full max-w-[70%] mx-auto px-3 pb-1 flex justify-center">
       <div className="w-full rounded-md border border-blue-500/20 bg-blue-500/[0.04]">
         <div className="flex items-center gap-1.5 px-2 py-1">
-          <button
+          <button data-testid="chat.plan-bar.toggle"
             onClick={() => setExpanded((v) => !v)}
             title={expanded ? 'Collapse the plan' : 'Show every step'}
             className="flex items-center gap-1.5 min-w-0 flex-1 text-left"
@@ -74,7 +74,7 @@ export function PlanBar() {
               </span>
             )}
           </button>
-          <button
+          <button data-testid="chat.clear-the-plan.click"
             onClick={() => clearTodos(activeConversationId)}
             title="Clear the plan"
             className="flex items-center justify-center w-4 h-4 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors shrink-0"

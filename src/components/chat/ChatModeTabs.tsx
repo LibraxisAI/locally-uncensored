@@ -17,7 +17,7 @@ export function ChatModeTabs() {
       {TABS.map(({ mode, label, icon: Icon, disabled, tag }) => {
         const isActive = chatMode === mode
         return (
-          <button
+          <button data-testid="chat.mode-tab.select"
             key={mode}
             onClick={() => !disabled && setChatMode(mode)}
             disabled={disabled}

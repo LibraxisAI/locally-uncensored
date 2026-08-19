@@ -40,7 +40,7 @@ export function ThinkingBlock({ thinking, streaming }: Props) {
 
     return (
         <div className="mb-0.5">
-            <button
+            <button data-testid="chat.toggle-thinking-details.click"
                 onClick={() => setOpen((o) => !o)}
                 className="flex items-center gap-1.5 py-0.5 text-left hover:opacity-80 transition-opacity"
                 aria-label="Toggle thinking details"

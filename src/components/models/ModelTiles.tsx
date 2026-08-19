@@ -194,7 +194,7 @@ export function ModelTile({ variants, vramGb, isInstalled, dlState, onDownload, 
           </div>
           <p className="text-[0.62rem] text-gray-500 dark:text-gray-400 leading-snug mt-0.5 line-clamp-2">{shortBlurb(sel)}</p>
         </div>
-        <button
+        <button data-testid="models.details.click-2"
           onClick={() => onInfo(sel)}
           className="shrink-0 p-1 rounded-md hover:bg-gray-200 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
           title="Details"
@@ -208,7 +208,7 @@ export function ModelTile({ variants, vramGb, isInstalled, dlState, onDownload, 
         {/* Variant / size selector — only when the family ships several quants */}
         {variants.length > 1 ? (
           <div className="relative" ref={pickerRef}>
-            <button
+            <button data-testid="models.choose-a-size-quality.click"
               onClick={() => setPickerOpen(o => !o)}
               className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200 dark:hover:bg-white/10 text-[0.58rem] font-medium text-gray-700 dark:text-gray-200 transition-colors"
               title="Choose a size / quality"
@@ -222,7 +222,7 @@ export function ModelTile({ variants, vramGb, isInstalled, dlState, onDownload, 
                   const vFit = computeFit(v.sizeGB, vramGb)
                   const vInst = isInstalled(v) || dlState(v)?.status === 'complete'
                   return (
-                    <button
+                    <button data-testid="models.variant-picker-entry.select"
                       key={v.name}
                       onClick={() => { setChosen(v.name); setPickerOpen(false) }}
                       className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/[0.06] ${v.name === sel.name ? 'bg-gray-100 dark:bg-white/[0.06]' : ''}`}
@@ -247,7 +247,7 @@ export function ModelTile({ variants, vramGb, isInstalled, dlState, onDownload, 
         <div className={`flex items-center gap-1 shrink-0 ${sel.pulls ? '' : 'ml-auto'}`}>
           {externalOnly ? (
             sel.url ? (
-              <button
+              <button data-testid="models.view-on-huggingface.click"
                 onClick={() => onOpenUrl(sel.url!)}
                 className="flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200 dark:hover:bg-white/10 text-[0.62rem] font-medium text-gray-700 dark:text-gray-200 transition-colors"
                 title="View on HuggingFace"
@@ -264,7 +264,7 @@ export function ModelTile({ variants, vramGb, isInstalled, dlState, onDownload, 
               <Loader2 size={11} className="animate-spin" /> Downloading…
             </span>
           ) : (
-            <button
+            <button data-testid="models.model-tile.download"
               onClick={() => onDownload(sel)}
               className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/[0.16] border border-gray-200 dark:border-white/[0.08] text-gray-800 dark:text-gray-100 text-[0.62rem] font-semibold shadow-sm transition-colors"
               title={sel.sizeGB ? `Download ${sel.sizeGB} GB` : 'Download'}
@@ -338,7 +338,7 @@ export function BundleTile({ bundle, vramGb, complete, downloading, hasErrors, o
           )}
         </div>
         {bundle.url && (
-          <button
+          <button data-testid="models.view-on-huggingface.click-2"
             onClick={() => onOpenUrl(bundle.url!)}
             className="shrink-0 p-1 rounded-md hover:bg-gray-200 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
             title="View on HuggingFace"
@@ -365,14 +365,14 @@ export function BundleTile({ bundle, vramGb, complete, downloading, hasErrors, o
             </span>
           ) : hasErrors ? (
             <>
-              <button
+              <button data-testid="models.retry-failed-downloads.click"
                 onClick={onRetry}
                 className="flex items-center gap-1 px-2 py-1 rounded-md bg-red-100 dark:bg-red-500/15 hover:bg-red-200 dark:hover:bg-red-500/25 text-red-700 dark:text-red-400 text-[0.62rem] font-medium transition-colors"
                 title="Retry failed downloads"
               >
                 <RefreshCw size={11} /> Retry
               </button>
-              <button
+              <button data-testid="models.clear-this-failed-download-so-you-can-start-over.click"
                 onClick={onClear}
                 className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-gray-200 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 text-[0.62rem] transition-colors"
                 title="Clear this failed download so you can start over or pick another model"
@@ -381,7 +381,7 @@ export function BundleTile({ bundle, vramGb, complete, downloading, hasErrors, o
               </button>
             </>
           ) : (
-            <button
+            <button data-testid="models.bundle-tile.install"
               onClick={onInstall}
               className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/[0.16] border border-gray-200 dark:border-white/[0.08] text-gray-800 dark:text-gray-100 text-[0.62rem] font-semibold shadow-sm transition-colors"
               title={`Install all ${bundle.files.length} files (${bundle.totalSizeGB} GB)`}

@@ -195,6 +195,7 @@ function WorkflowsModalInner() {
       <div className="flex flex-col">
         <div className="px-5 pt-4 pb-3 border-b border-gray-200 dark:border-white/[0.06]">
           <button
+            data-testid="create.workflows-help.back"
             onClick={() => setHelpOpen(false)}
             className="flex items-center gap-2 text-gray-400 hover:text-gray-200 transition-colors lu-focus-ring rounded-md"
           >
@@ -215,6 +216,7 @@ function WorkflowsModalInner() {
           it; the tab switcher is centered on its own row so it never fights
           the title for the middle. */}
       <button
+        data-testid="create.how-it-works.click"
         onClick={() => setHelpOpen(true)}
         title="How it works"
         aria-label="How it works"
@@ -270,6 +272,7 @@ function WorkflowsModalInner() {
                   />
                   <div className="shrink-0 whitespace-nowrap">
                     <Button
+                      data-testid="create.workflow-import.choose-file"
                       variant="secondary"
                       icon={FileJson}
                       onClick={() => fileInputRef.current?.click()}
@@ -287,6 +290,7 @@ function WorkflowsModalInner() {
                 />
                 <div className="mt-2">
                   <Button
+                    data-testid="create.workflow-import.install-pasted"
                     variant="primary"
                     disabled={!importJson.trim()}
                     onClick={() => importWorkflowJson(importJson)}
@@ -351,6 +355,7 @@ function WorkflowsModalInner() {
                             </div>
                           </div>
                           <DeleteButton
+                            data-testid="create.workflow.delete"
                             armed={confirmId === workflow.id}
                             label="workflow"
                             onClick={() => armDelete(workflow.id, () => removeWorkflow(workflow.id))}
@@ -392,6 +397,7 @@ function WorkflowsModalInner() {
                   ]}
                 />
                 <Button
+                  data-testid="create.refresh-the-model-list.click"
                   variant="ghost"
                   size="sm"
                   icon={RefreshCw}
@@ -455,6 +461,7 @@ function WorkflowsModalInner() {
                 </div>
                 <div className="shrink-0 whitespace-nowrap">
                   <Button
+                    data-testid="create.tag.create"
                     variant="primary"
                     icon={Plus}
                     disabled={!newTagName.trim()}
@@ -493,6 +500,7 @@ function WorkflowsModalInner() {
                             className={INPUT}
                           />
                           <Button
+                            data-testid="create.save.click"
                             variant="ghost"
                             size="sm"
                             icon={Check}
@@ -501,6 +509,7 @@ function WorkflowsModalInner() {
                             onClick={finishRenameTag}
                           />
                           <Button
+                            data-testid="create.cancel.click"
                             variant="ghost"
                             size="sm"
                             icon={X}
@@ -515,6 +524,7 @@ function WorkflowsModalInner() {
                             {tag.name}
                           </span>
                           <Button
+                            data-testid="create.rename.click"
                             variant="ghost"
                             size="sm"
                             icon={Pencil}
@@ -523,6 +533,7 @@ function WorkflowsModalInner() {
                             onClick={() => { setEditingTagId(tag.id); setEditingTagName(tag.name) }}
                           />
                           <DeleteButton
+                            data-testid="create.tag.delete"
                             armed={confirmId === tag.id}
                             label="tag"
                             onClick={() => armDelete(tag.id, () => deleteTag(tag.id))}
@@ -614,13 +625,16 @@ function DeleteButton({
   armed,
   label,
   onClick,
+  'data-testid': testId,
 }: {
   armed: boolean
   label: string
   onClick: () => void
+  'data-testid'?: string
 }) {
   return (
     <Button
+      data-testid={testId ?? 'create.workflows-delete-button.arm'}
       variant={armed ? 'danger' : 'ghost'}
       size="sm"
       icon={Trash2}

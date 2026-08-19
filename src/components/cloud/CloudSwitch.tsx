@@ -33,7 +33,7 @@ export function CloudSwitch() {
   }
 
   return (
-    <button
+    <button data-testid="cloud.cloud.click"
       role="switch"
       aria-checked={on}
       aria-label="Cloud"

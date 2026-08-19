@@ -98,7 +98,7 @@ export function WorkflowBuilder({ workflowId, onSave, onCancel }: WorkflowBuilde
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center gap-2">
-        <button onClick={onCancel} className="p-1 rounded hover:bg-white/10 text-gray-400">
+        <button data-testid="agents.workflow-builder.back" onClick={onCancel} className="p-1 rounded hover:bg-white/10 text-gray-400">
           <ArrowLeft size={14} />
         </button>
         <h3 className="text-[0.75rem] font-semibold text-white">
@@ -129,7 +129,7 @@ export function WorkflowBuilder({ workflowId, onSave, onCancel }: WorkflowBuilde
         {steps.map((step, index) => (
           <div key={step.id} className={`rounded-lg border ${STEP_TYPE_COLORS[step.type]} transition-all`}>
             {/* Step header */}
-            <div
+            <div data-testid="agents.workflow-builder.toggle-step-editor"
               className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer"
               onClick={() => setExpandedStep(expandedStep === step.id ? null : step.id)}
             >
@@ -139,13 +139,13 @@ export function WorkflowBuilder({ workflowId, onSave, onCancel }: WorkflowBuilde
               </span>
               <span className="text-[0.65rem] text-gray-300 flex-1 truncate">{step.label}</span>
               <div className="flex items-center gap-0.5">
-                <button onClick={(e) => { e.stopPropagation(); moveStep(index, -1) }} className="p-0.5 rounded hover:bg-white/10 text-gray-600" disabled={index === 0}>
+                <button data-testid="agents.workflow-builder.move-step-up" onClick={(e) => { e.stopPropagation(); moveStep(index, -1) }} className="p-0.5 rounded hover:bg-white/10 text-gray-600" disabled={index === 0}>
                   <ChevronUp size={10} />
                 </button>
-                <button onClick={(e) => { e.stopPropagation(); moveStep(index, 1) }} className="p-0.5 rounded hover:bg-white/10 text-gray-600" disabled={index === steps.length - 1}>
+                <button data-testid="agents.workflow-builder.move-step-down" onClick={(e) => { e.stopPropagation(); moveStep(index, 1) }} className="p-0.5 rounded hover:bg-white/10 text-gray-600" disabled={index === steps.length - 1}>
                   <ChevronDown size={10} />
                 </button>
-                <button onClick={(e) => { e.stopPropagation(); removeStep(step.id) }} className="p-0.5 rounded hover:bg-red-500/20 text-gray-600 hover:text-red-400">
+                <button data-testid="agents.workflow-builder.remove-step" onClick={(e) => { e.stopPropagation(); removeStep(step.id) }} className="p-0.5 rounded hover:bg-red-500/20 text-gray-600 hover:text-red-400">
                   <Trash2 size={10} />
                 </button>
               </div>
@@ -232,7 +232,7 @@ export function WorkflowBuilder({ workflowId, onSave, onCancel }: WorkflowBuilde
         {/* Add step buttons */}
         <div className="flex flex-wrap gap-1 pt-1">
           {(['prompt', 'tool', 'user_input', 'memory_save', 'condition', 'loop'] as WorkflowStepType[]).map(type => (
-            <button
+            <button data-testid="agents.workflow-builder.add-step"
               key={type}
               onClick={() => addStep(type)}
               className="text-[0.6rem] px-2 py-0.5 rounded border border-white/10 text-gray-500 hover:text-gray-300 hover:border-white/20 transition-colors"
@@ -246,10 +246,10 @@ export function WorkflowBuilder({ workflowId, onSave, onCancel }: WorkflowBuilde
 
       {/* Save / Cancel */}
       <div className="flex gap-2 pt-2">
-        <GlowButton onClick={handleSave} className="flex-1 text-xs flex items-center justify-center gap-1.5" disabled={!name.trim()}>
+        <GlowButton data-testid="agents.workflow-builder.save" onClick={handleSave} className="flex-1 text-xs flex items-center justify-center gap-1.5" disabled={!name.trim()}>
           <Save size={12} /> Save
         </GlowButton>
-        <GlowButton variant="secondary" onClick={onCancel} className="flex-1 text-xs flex items-center justify-center gap-1.5">
+        <GlowButton data-testid="agents.workflow-builder.cancel" variant="secondary" onClick={onCancel} className="flex-1 text-xs flex items-center justify-center gap-1.5">
           <X size={12} /> Cancel
         </GlowButton>
       </div>

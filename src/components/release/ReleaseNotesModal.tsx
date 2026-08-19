@@ -24,14 +24,14 @@ export function ReleaseNotesModal() {
   return (
     <AnimatePresence>
       {open && note && (
-        <motion.div
+        <motion.div data-testid="release.notes.close-backdrop"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm"
           onClick={close}
         >
-          <motion.div
+          <motion.div data-testid="release.notes.panel-click-noop"
             initial={{ opacity: 0, y: 10, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.97 }}
@@ -41,7 +41,7 @@ export function ReleaseNotesModal() {
           >
             <div className="relative h-[130px] bg-[#1b1b1b] border-b border-white/[0.06] overflow-hidden">
               <UpdateDemo version={note.version} />
-              <button
+              <button data-testid="release.close.click"
                 onClick={close}
                 className="absolute top-2 right-2 p-1.5 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/10 transition-colors"
                 title="Close"
@@ -71,7 +71,7 @@ export function ReleaseNotesModal() {
 
               {note.details && note.details.length > 0 && (
                 <>
-                  <button
+                  <button data-testid="release.notes.toggle-details"
                     onClick={() => setExpanded(!expanded)}
                     className="flex items-center gap-1 text-[0.62rem] text-violet-300/90 hover:text-violet-200 transition-colors"
                     aria-expanded={expanded}
@@ -102,7 +102,7 @@ export function ReleaseNotesModal() {
               )}
 
               <div className="flex items-center gap-2 pt-1">
-                <button
+                <button data-testid="release.notes.dismiss"
                   onClick={close}
                   className="flex-1 flex items-center justify-center h-8 rounded-lg bg-white text-black text-[0.7rem] font-semibold hover:bg-gray-200 transition-colors"
                 >

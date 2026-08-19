@@ -23,7 +23,7 @@ export function Section({ title, icon: Icon, help, collapsible = true, defaultOp
   return (
     <div className="border-b border-white/[0.05] last:border-b-0">
       <div className="flex items-center justify-between py-2.5">
-        <button onClick={toggle} className={cn('flex items-center gap-1.5 group', !collapsible && 'cursor-default')}>
+        <button data-testid="create.settings-section.toggle" onClick={toggle} className={cn('flex items-center gap-1.5 group', !collapsible && 'cursor-default')}>
           {collapsible && (
             <ChevronRight size={13} className={cn('text-gray-600 transition-transform', open && 'rotate-90')} />
           )}

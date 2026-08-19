@@ -10,10 +10,11 @@ interface Props {
   maxHeight?: number
   autoFocus?: boolean
   className?: string
+  'data-testid'?: string
 }
 
 // Auto-grow textarea — grow logic ported from PromptInput.tsx:46-51.
-export function PromptField({ value, onChange, placeholder, onSubmit, maxHeight = 220, autoFocus, className }: Props) {
+export function PromptField({ value, onChange, placeholder, onSubmit, maxHeight = 220, autoFocus, className, 'data-testid': testId }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -25,6 +26,7 @@ export function PromptField({ value, onChange, placeholder, onSubmit, maxHeight 
 
   return (
     <textarea
+      data-testid={testId}
       ref={ref}
       value={value}
       autoFocus={autoFocus}

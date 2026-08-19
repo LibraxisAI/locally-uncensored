@@ -96,6 +96,7 @@ export function DownloadBadge() {
     <div ref={ref} className="relative">
       {/* Icon trigger */}
       <button
+        data-testid="layout.downloads.toggle-tray"
         onClick={() => { setOpen(!open); autoOpened.current = false }}
         className={`relative p-1 rounded-md transition-colors ${
           hasAny
@@ -132,6 +133,7 @@ export function DownloadBadge() {
               </span>
               {(textEntries.some(([, s]) => s.complete) || comfyEntries.some(([, d]) => d.status === 'complete') || mlxEntries.some(e => e.status === 'complete')) && (
                 <button
+                  data-testid="layout.downloads.clear-completed"
                   onClick={() => {
                     textEntries.filter(([, s]) => s.complete).forEach(([n]) => dismissPull(n))
                     comfyEntries.filter(([, d]) => d.status === 'complete').forEach(([id]) => useDownloadStore.getState().dismiss(id))
@@ -161,12 +163,12 @@ export function DownloadBadge() {
                       <p className="text-[0.7rem] font-mono text-gray-700 dark:text-gray-300 truncate">{name}</p>
                       <div className="flex items-center gap-0.5 shrink-0">
                         {!state.complete && !state.paused && (
-                          <button onClick={() => pausePull(name)} className="p-0.5 rounded hover:bg-yellow-500/20 text-gray-400 hover:text-yellow-400 transition-colors" title="Pause"><Pause size={11} /></button>
+                          <button data-testid="layout.pause.click" onClick={() => pausePull(name)} className="p-0.5 rounded hover:bg-yellow-500/20 text-gray-400 hover:text-yellow-400 transition-colors" title="Pause"><Pause size={11} /></button>
                         )}
                         {state.paused && (
-                          <button onClick={() => pullModel(name)} className="p-0.5 rounded hover:bg-green-500/20 text-gray-400 hover:text-green-400 transition-colors" title="Resume"><Play size={11} /></button>
+                          <button data-testid="layout.resume.click" onClick={() => pullModel(name)} className="p-0.5 rounded hover:bg-green-500/20 text-gray-400 hover:text-green-400 transition-colors" title="Resume"><Play size={11} /></button>
                         )}
-                        <button onClick={() => dismissPull(name)} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss"><X size={11} /></button>
+                        <button data-testid="layout.dismiss.click" onClick={() => dismissPull(name)} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss"><X size={11} /></button>
                       </div>
                     </div>
                     {state.complete ? (
@@ -207,12 +209,12 @@ export function DownloadBadge() {
                       <p className={`${isBundle ? 'text-[0.7rem] font-medium' : 'text-[0.7rem] font-mono'} text-gray-700 dark:text-gray-300 truncate`}>{bundleName}</p>
                       <div className="flex items-center gap-0.5 shrink-0">
                         {files.some(f => f.d.status === 'error') && (
-                          <button onClick={() => files.filter(f => f.d.status === 'error').forEach(f => useDownloadStore.getState().retry(f.id))} className="p-0.5 rounded hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-colors" title="Retry failed"><RotateCcw size={11} /></button>
+                          <button data-testid="layout.retry-failed.click" onClick={() => files.filter(f => f.d.status === 'error').forEach(f => useDownloadStore.getState().retry(f.id))} className="p-0.5 rounded hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-colors" title="Retry failed"><RotateCcw size={11} /></button>
                         )}
                         {allComplete ? (
-                          <button onClick={() => files.forEach(f => useDownloadStore.getState().dismiss(f.id))} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss"><X size={11} /></button>
+                          <button data-testid="layout.dismiss.click-2" onClick={() => files.forEach(f => useDownloadStore.getState().dismiss(f.id))} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss"><X size={11} /></button>
                         ) : (
-                          <button onClick={() => files.forEach(f => useDownloadStore.getState().cancel(f.id))} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors" title="Cancel all"><X size={11} /></button>
+                          <button data-testid="layout.cancel-all.click" onClick={() => files.forEach(f => useDownloadStore.getState().cancel(f.id))} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors" title="Cancel all"><X size={11} /></button>
                         )}
                       </div>
                     </div>
@@ -231,6 +233,7 @@ export function DownloadBadge() {
                           {/* Retry all failed files in bundle */}
                           {files.some(f => f.d.status === 'error') && (
                             <button
+                              data-testid="layout.retry-failed-downloads.click"
                               onClick={() => files.filter(f => f.d.status === 'error').forEach(f => useDownloadStore.getState().retry(f.id))}
                               className="flex items-center gap-1 text-[0.55rem] text-red-400 hover:text-red-300 transition-colors"
                               title="Retry failed downloads"
@@ -250,6 +253,7 @@ export function DownloadBadge() {
                                   {d.status === 'complete' ? <span className="text-green-400">Done</span>
                                     : d.status === 'error' ? (
                                       <button
+                                        data-testid="layout.downloads.retry-file"
                                         onClick={() => useDownloadStore.getState().retry(id)}
                                         className="flex items-center gap-0.5 text-red-400 hover:text-red-300 transition-colors"
                                         title={d.error || 'Download failed, click to retry'}
@@ -280,7 +284,7 @@ export function DownloadBadge() {
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <p className="text-[0.7rem] text-gray-700 dark:text-gray-300 truncate">{e.label}</p>
                       {e.status !== 'installing' && (
-                        <button onClick={() => useMlxInstallStore.getState().dismiss(e.kind)} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors shrink-0" title="Dismiss"><X size={11} /></button>
+                        <button data-testid="layout.dismiss.click-3" onClick={() => useMlxInstallStore.getState().dismiss(e.kind)} className="p-0.5 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-colors shrink-0" title="Dismiss"><X size={11} /></button>
                       )}
                     </div>
                     {e.status === 'complete' ? (

@@ -78,6 +78,7 @@ export function PermissionSettings() {
                 return (
                   <button
                     key={value}
+                    data-testid="settings.agent-permission.set-level"
                     onClick={() => setGlobalPermission(key, value)}
                     className={`px-2 py-0.5 rounded text-[0.55rem] font-medium transition-all ${
                       isActive
@@ -99,6 +100,7 @@ export function PermissionSettings() {
       })}
 
       <button
+        data-testid="settings.agent-permissions.reset"
         onClick={resetToDefaults}
         className="text-[0.6rem] text-gray-500 hover:text-gray-300 transition-colors mt-2"
       >

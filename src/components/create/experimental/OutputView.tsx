@@ -220,9 +220,10 @@ export function ResultView({ item, onFullscreen, onSendToEditor }: ResultProps) 
         )}
         <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           {onSendToEditor && item.type === 'image' && !item.unavailable && (
-            <IconBtn title="Edit with mask" onClick={onSendToEditor}><Wand2 size={14} /></IconBtn>
+            <IconBtn data-testid="create.edit-with-mask.click" title="Edit with mask" onClick={onSendToEditor}><Wand2 size={14} /></IconBtn>
           )}
           <IconBtn
+            data-testid="create.result.download"
             title={item.unavailable ? 'Download needs the local engine' : 'Download'}
             disabled={item.unavailable}
             onClick={download}
@@ -230,7 +231,7 @@ export function ResultView({ item, onFullscreen, onSendToEditor }: ResultProps) 
             <Download size={14} />
           </IconBtn>
           {!isAudio && (
-            <IconBtn title="Fullscreen" onClick={onFullscreen}><Maximize2 size={14} /></IconBtn>
+            <IconBtn data-testid="create.fullscreen.click" title="Fullscreen" onClick={onFullscreen}><Maximize2 size={14} /></IconBtn>
           )}
         </div>
       </div>
@@ -250,9 +251,10 @@ export function ResultView({ item, onFullscreen, onSendToEditor }: ResultProps) 
   )
 }
 
-function IconBtn({ children, title, onClick, disabled }: { children: React.ReactNode; title: string; onClick: () => void; disabled?: boolean }) {
+function IconBtn({ children, title, onClick, disabled, 'data-testid': testId }: { children: React.ReactNode; title: string; onClick: () => void; disabled?: boolean; 'data-testid'?: string }) {
   return (
     <button
+      data-testid={testId ?? 'create.result-icon-button.click'}
       onClick={onClick}
       title={title}
       disabled={disabled}

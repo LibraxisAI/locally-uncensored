@@ -61,7 +61,7 @@ export function BenchmarkView() {
         {benchError && (
           <div className="mb-3 px-3 py-2 rounded-md bg-red-500/10 border border-red-500/25 text-[0.6rem] text-red-300 flex items-start gap-2">
             <span className="flex-1">{benchError}</span>
-            <button
+            <button data-testid="models.benchmark-error.dismiss"
               onClick={() => useBenchmarkStore.getState().setError(null)}
               className="text-red-400 hover:text-red-200 transition-colors"
             >
@@ -71,14 +71,14 @@ export function BenchmarkView() {
         )}
         {/* Header */}
         <div className="flex items-center gap-2 mb-4">
-          <button onClick={() => setView('models')} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-white/5 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors">
+          <button data-testid="models.benchmark-back-to-models.click" onClick={() => setView('models')} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-white/5 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors">
             <ArrowLeft size={16} />
           </button>
           <Trophy size={16} className="text-amber-400" />
           <h1 className="text-[0.8rem] font-semibold text-gray-800 dark:text-gray-200">Benchmark</h1>
           <div className="ml-auto flex items-center gap-1">
             {pending.length > 0 && (
-              <button
+              <button data-testid="models.benchmark-remaining.run"
                 onClick={runPending}
                 disabled={isRunning}
                 title={`Benchmark the ${pending.length} model(s) with no result yet, one after another`}
@@ -89,7 +89,7 @@ export function BenchmarkView() {
               </button>
             )}
             {leaderboard.length > 0 && (
-              <button
+              <button data-testid="models.download-the-table-as-markdown.click"
                 onClick={exportReport}
                 title="Download the table as Markdown"
                 className="flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 text-[0.6rem] hover:bg-gray-200 dark:hover:bg-white/10 transition-colors"
@@ -99,7 +99,7 @@ export function BenchmarkView() {
               </button>
             )}
             {leaderboard.length > 0 && (
-              <button
+              <button data-testid="models.delete-every-recorded-benchmark-run.click"
                 onClick={() => { if (confirmClear) { clearResults(); setConfirmClear(false) } else setConfirmClear(true) }}
                 onBlur={() => setConfirmClear(false)}
                 title="Delete every recorded benchmark run"
@@ -123,7 +123,7 @@ export function BenchmarkView() {
               {stale.length} model{stale.length === 1 ? '' : 's'} in this table {stale.length === 1 ? 'is' : 'are'} no longer installed:{' '}
               {stale.slice(0, 3).join(', ')}{stale.length > 3 ? ` and ${stale.length - 3} more` : ''}.
             </p>
-            <button
+            <button data-testid="models.benchmark-stale-results.prune"
               onClick={() => pruneMissing(names)}
               className="shrink-0 px-2 py-1 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[0.6rem] hover:bg-amber-500/25 transition-colors"
             >
@@ -243,7 +243,7 @@ export function BenchmarkView() {
                 </div>
                 <div className="shrink-0">
                   {isThisRunning ? (
-                    <button
+                    <button data-testid="models.benchmark-row.stop"
                       onClick={stopBenchmark}
                       className="flex items-center gap-1 px-2 py-1 rounded-md bg-red-500/15 text-red-500 text-[0.6rem] hover:bg-red-500/25 transition-colors"
                     >
@@ -251,7 +251,7 @@ export function BenchmarkView() {
                       {currentStep}/{totalSteps}
                     </button>
                   ) : (
-                    <button
+                    <button data-testid="models.benchmark-row.run"
                       onClick={() => runBenchmark(model.name)}
                       disabled={isRunning}
                       className="flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 text-[0.6rem] hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-gray-200 transition-colors disabled:opacity-30"

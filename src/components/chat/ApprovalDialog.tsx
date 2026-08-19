@@ -46,7 +46,7 @@ export function ApprovalDialog({ toolCall, onApprove, onReject }: Props) {
           <code className="text-[0.65rem] text-gray-700 dark:text-gray-300 font-medium truncate flex-1 min-w-0">
             {toolCall.toolName}
           </code>
-          <button
+          <button data-testid="chat.approval-args.toggle"
             onClick={() => setArgsOpen((v) => !v)}
             title={argsOpen ? 'Hide arguments' : 'Show arguments'}
             className="shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
@@ -57,13 +57,13 @@ export function ApprovalDialog({ toolCall, onApprove, onReject }: Props) {
             />
           </button>
           <div className="shrink-0 flex items-center gap-1 ml-1">
-            <button
+            <button data-testid="chat.approval.reject"
               onClick={onReject}
               className="px-2 py-0.5 rounded text-[0.6rem] text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5 border border-gray-200 dark:border-white/10 transition-colors"
             >
               Reject
             </button>
-            <button
+            <button data-testid="chat.approval.approve"
               onClick={onApprove}
               className="px-2 py-0.5 rounded text-[0.6rem] text-gray-800 dark:text-gray-100 bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/15 border border-gray-300 dark:border-white/15 transition-colors font-medium"
             >

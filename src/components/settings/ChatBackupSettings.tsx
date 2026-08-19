@@ -64,12 +64,14 @@ export function ChatBackupSettings() {
       </div>
       <div className="flex gap-2">
         <button
+          data-testid="settings.chat-backup.export"
           onClick={handleExport}
           className="flex-1 text-[0.65rem] flex items-center justify-center gap-1.5 px-2 py-1.5 rounded border border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:border-gray-400 dark:hover:border-white/20 transition-colors"
         >
           <Download size={12} /> Export all chats
         </button>
         <button
+          data-testid="settings.chat-backup.import"
           onClick={() => fileRef.current?.click()}
           className="flex-1 text-[0.65rem] flex items-center justify-center gap-1.5 px-2 py-1.5 rounded border border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:border-gray-400 dark:hover:border-white/20 transition-colors"
         >

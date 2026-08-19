@@ -64,7 +64,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
 
   return (
     <div className="relative">
-      <button
+      <button data-testid="chat.plugins-menu.toggle"
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1 px-2 py-0.5 rounded border border-gray-200 dark:border-white/[0.06] hover:border-gray-400 dark:hover:border-white/15 text-gray-500 transition-colors text-[0.55rem]"
       >
@@ -83,7 +83,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div data-testid="chat.plugins-menu.dismiss" className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className={`absolute right-0 z-50 w-56 rounded-lg bg-white dark:bg-[#262626] border border-gray-200 dark:border-white/10 shadow-xl py-1.5 ${openUpward ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
 
             {/* ── Chat Tools toggle (v2.5.3) ──────────────── */}
@@ -94,7 +94,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
                   <span className="text-[0.6rem] font-medium text-gray-600 dark:text-gray-300">Chat Tools</span>
                   <span className="text-[0.5rem] text-gray-400 truncate">web · file · image · video</span>
                 </div>
-                <button
+                <button data-testid="chat.chat-tools.toggle"
                   onClick={(e) => { e.stopPropagation(); if (canUseTools) updateSettings({ chatToolsEnabled: !chatToolsEnabledSetting }) }}
                   disabled={!canUseTools}
                   title={!canUseTools ? reason : chatToolsEnabled ? 'Disable tools in plain chat' : 'Enable web/file/image/video tools in plain chat'}
@@ -121,7 +121,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
 
             {/* ── Caveman Mode Dropdown ───────────────────── */}
             <div className="px-2.5">
-              <button
+              <button data-testid="chat.caveman-modes.toggle"
                 onClick={() => { setCavemanOpen(!cavemanOpen); setPersonaOpen(false) }}
                 className="w-full flex items-center justify-between py-1.5 group"
               >
@@ -142,7 +142,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
                   {CAVEMAN_MODES.map((mode) => {
                     const isActive = (cavemanMode || 'off') === mode.value
                     return (
-                      <button
+                      <button data-testid="chat.caveman-mode.select"
                         key={mode.value}
                         onClick={() => { updateSettings({ cavemanMode: mode.value }); setCavemanOpen(false) }}
                         className={`w-full flex items-center justify-between px-2 py-1 rounded text-left transition-colors ${
@@ -170,7 +170,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
             {/* ── Personas Dropdown ───────────────────────── */}
             <div className="px-2.5">
               <div className="w-full flex items-center justify-between py-1.5 gap-2">
-                <button
+                <button data-testid="chat.persona-list.toggle"
                   onClick={() => { setPersonaOpen(!personaOpen); setCavemanOpen(false) }}
                   className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
                 >
@@ -187,7 +187,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
                     chat noch kein an/aus toggle" — it was hidden for the
                     default Unrestricted persona). */}
                 {activeConvId && (
-                  <button
+                  <button data-testid="chat.persona-for-chat.toggle"
                     onClick={(e) => {
                       e.stopPropagation()
                       setConversationPersonaEnabled(activeConvId, !personaEnabledOnChat)
@@ -210,7 +210,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
                   {allPersonas.map((p) => {
                     const isActive = p.id === activePersona?.id
                     return (
-                      <button
+                      <button data-testid="chat.persona.select"
                         key={p.id}
                         onClick={() => { setActivePersona(p.id); setPersonaOpen(false) }}
                         className={`w-full flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors ${
@@ -232,7 +232,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
 
             {/* ── Group chat (v1) ─────────────────────────── */}
             <div className="px-2.5">
-              <button
+              <button data-testid="chat.group-chat.toggle"
                 onClick={() => { setGroupOpen(!groupOpen); setCavemanOpen(false); setPersonaOpen(false) }}
                 className="w-full flex items-center justify-between py-1.5"
               >
@@ -255,7 +255,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
                     const on = groupModels.includes(m.name)
                     const full = !on && groupModels.length >= GROUP_CHAT_MAX
                     return (
-                      <button
+                      <button data-testid="chat.group-chat-model.toggle"
                         key={m.name}
                         disabled={full}
                         onClick={() =>
@@ -281,7 +281,7 @@ export function PluginsDropdown({ openUpward = false }: { openUpward?: boolean }
                     <p className="px-2 text-[0.5rem] text-gray-400">One more model turns this into a group.</p>
                   )}
                   {groupModels.length > 0 && (
-                    <button
+                    <button data-testid="chat.group-chat.clear"
                       onClick={() => setGroupModels(activeConvId, [])}
                       className="w-full px-2 py-1 rounded text-left text-[0.55rem] text-gray-500 hover:bg-gray-50 dark:hover:bg-white/[0.04] hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
                     >

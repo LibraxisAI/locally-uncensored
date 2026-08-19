@@ -111,7 +111,7 @@ export function ContextDropdown() {
 
   return (
     <div className="relative">
-      <button
+      <button data-testid="chat.context-window.toggle"
         onClick={() => setOpen((o) => !o)}
         disabled={busy}
         title={`Context window: ${ctx.provider === 'lmstudio' ? "LM Studio's loaded context" : ctx.provider === 'builtin' ? "the built-in engine's loaded context" : 'Ollama num_ctx'}. Changing it reloads the model so it takes effect now.`}
@@ -123,7 +123,7 @@ export function ContextDropdown() {
         <ChevronDown size={8} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {applyError && !open && (
-        <div
+        <div data-testid="chat.click-to-dismiss.click"
           onClick={() => setApplyError(null)}
           title="Click to dismiss"
           className="absolute right-0 top-full mt-1 z-50 w-64 p-2 rounded-md border border-red-500/25 bg-white dark:bg-[#1a1a1a] shadow-xl cursor-pointer"
@@ -138,20 +138,20 @@ export function ContextDropdown() {
       )}
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div data-testid="chat.context-window.dismiss" className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-lg bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-white/10 shadow-xl p-1 flex flex-col gap-0.5">
-            <button onClick={() => apply(0)} className={rowCls(selected === 0)}>
+            <button data-testid="chat.context-window.auto" onClick={() => apply(0)} className={rowCls(selected === 0)}>
               <span>Auto{ctx.provider === 'ollama' ? ` · ${fmt(effectiveContextWindow(ctx.modelMax, 0))}` : ctx.provider === 'builtin' ? ' · 8K' : ''}</span>
               {selected === 0 && <Check size={10} />}
             </button>
             {options.map((p) => (
-              <button key={p} onClick={() => apply(p)} className={rowCls(selected === p)}>
+              <button data-testid="chat.context-window.preset" key={p} onClick={() => apply(p)} className={rowCls(selected === p)}>
                 <span>{fmt(p)}</span>
                 {selected === p && <Check size={10} />}
               </button>
             ))}
             {showMax && (
-              <button onClick={() => apply(ctx.modelMax)} className={rowCls(selected === ctx.modelMax)}>
+              <button data-testid="chat.context-window.max" onClick={() => apply(ctx.modelMax)} className={rowCls(selected === ctx.modelMax)}>
                 <span>{fmt(ctx.modelMax)} · max</span>
                 {selected === ctx.modelMax && <Check size={10} />}
               </button>

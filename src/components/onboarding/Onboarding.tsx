@@ -759,9 +759,9 @@ export function Onboarding() {
       {/* Drag region + window controls */}
       {isTauri && (
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-50 flex items-center justify-end select-none">
-          <button onClick={handleMinimize} className={winBtn} aria-label="Minimize"><Minus size={14} strokeWidth={1.5} /></button>
-          <button onClick={handleMaximize} className={winBtn} aria-label="Maximize"><Square size={11} strokeWidth={1.5} /></button>
-          <button onClick={handleClose} className={`${winBtn} hover:bg-red-500 hover:text-white`} aria-label="Close"><XIcon size={14} strokeWidth={1.5} /></button>
+          <button data-testid="onboarding.minimize.click" onClick={handleMinimize} className={winBtn} aria-label="Minimize"><Minus size={14} strokeWidth={1.5} /></button>
+          <button data-testid="onboarding.maximize.click" onClick={handleMaximize} className={winBtn} aria-label="Maximize"><Square size={11} strokeWidth={1.5} /></button>
+          <button data-testid="onboarding.close.click" onClick={handleClose} className={`${winBtn} hover:bg-red-500 hover:text-white`} aria-label="Close"><XIcon size={14} strokeWidth={1.5} /></button>
         </div>
       )}
 
@@ -786,7 +786,7 @@ export function Onboarding() {
             <p className={`text-[0.75rem] leading-relaxed ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
               Private, local AI chat that works right away. No extra software to install. No servers, no tracking, everything stays on your machine.
             </p>
-            <button
+            <button data-testid="onboarding.welcome.start"
               onClick={() => {
                 setStep('backends')
                 runDetection()
@@ -829,7 +829,7 @@ export function Onboarding() {
                   LU runs its own engine on your machine. Nothing to install. Pick a starter model next.
                 </p>
 
-                <button
+                <button data-testid="onboarding.backends.select-builtin"
                   onClick={() => setSelectedBackend(BUILTIN_BACKEND_ID)}
                   className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg border text-left transition-all ${
                     selectedBackend === BUILTIN_BACKEND_ID
@@ -846,7 +846,7 @@ export function Onboarding() {
                 </button>
 
                 <div className="flex items-center justify-center gap-2 pt-1">
-                  <button onClick={selectBackendAndContinue} className={primaryBtn}>
+                  <button data-testid="onboarding.backends.continue" onClick={selectBackendAndContinue} className={primaryBtn}>
                     Continue <ArrowRight size={14} />
                   </button>
                 </div>
@@ -873,7 +873,7 @@ export function Onboarding() {
 
                 <div className="space-y-1.5 text-left">
                   {detectedBackends.map(b => (
-                    <button
+                    <button data-testid="onboarding.backends.select-detected"
                       key={b.id}
                       onClick={() => setSelectedBackend(b.id)}
                       className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-left transition-all ${
@@ -894,10 +894,10 @@ export function Onboarding() {
                 </div>
 
                 <div className="flex items-center justify-center gap-2 pt-1">
-                  <button onClick={runDetection} className={secondaryBtn} title="Scan again">
+                  <button data-testid="onboarding.scan-again.click" onClick={runDetection} className={secondaryBtn} title="Scan again">
                     <RefreshCw size={12} /> Re-Scan
                   </button>
-                  <button
+                  <button data-testid="onboarding.backends.continue-detected"
                     onClick={selectBackendAndContinue}
                     className={primaryBtn}
                   >
@@ -934,7 +934,7 @@ export function Onboarding() {
                     Ollama in that situation is just noise and forces a
                     second 200 MB download. */}
                 {!ollamaInstalling && !ollamaReady && !lmstudioOfflineDetected && (
-                  <button
+                  <button data-testid="onboarding.backends.install-ollama"
                     onClick={async () => {
                       setOllamaInstalling(true)
                       setOllamaError('')
@@ -1046,7 +1046,7 @@ export function Onboarding() {
                     install and skips straight to bootstrap+server-start
                     instead of re-downloading. */}
                 {!lmstudioInstalling && !lmstudioReady && !ollamaInstalling && !ollamaReady && (
-                  <button
+                  <button data-testid="onboarding.backends.install-lmstudio"
                     onClick={async () => {
                       setLmstudioInstalling(true)
                       setLmstudioError('')
@@ -1149,7 +1149,7 @@ export function Onboarding() {
                   <p className="text-[0.65rem] text-red-400">
                     {lmstudioError}
                     {lmstudioError.toLowerCase().includes('didn\'t come up') && (
-                      <button
+                      <button data-testid="onboarding.backends.start-lmstudio-server"
                         onClick={() => { backendCall('start_lmstudio_server').catch(() => {}); setLmstudioError('') }}
                         className={`block mt-1 ${secondaryBtn}`}
                       >
@@ -1167,7 +1167,7 @@ export function Onboarding() {
                     </summary>
                     <div className="space-y-1 mt-2 max-h-[30vh] overflow-y-auto scrollbar-thin pr-1">
                       {LOCAL_BACKENDS.filter(b => b.id !== 'ollama' && b.id !== 'lmstudio').map(b => (
-                        <button
+                        <button data-testid="onboarding.backends.open-backend-website"
                           key={b.id}
                           onClick={() => openExternal(b.url)}
                           className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg border transition-all group text-left ${
@@ -1192,12 +1192,12 @@ export function Onboarding() {
 
                 <div className="flex items-center justify-center gap-2 pt-1">
                   {!ollamaInstalling && !lmstudioInstalling && !ollamaReady && !lmstudioReady && (
-                    <button onClick={runDetection} className={secondaryBtn}>
+                    <button data-testid="onboarding.backends.rescan-empty" onClick={runDetection} className={secondaryBtn}>
                       <RefreshCw size={12} /> Re-Scan
                     </button>
                   )}
                   {(ollamaReady || lmstudioReady || (!ollamaInstalling && !lmstudioInstalling)) && (
-                    <button
+                    <button data-testid="onboarding.backends.continue-without-backend"
                       onClick={() => setStep(nextStepAfterBackends())}
                       className={(ollamaReady || lmstudioReady) ? primaryBtn : `${secondaryBtn} opacity-60`}
                     >
@@ -1254,7 +1254,7 @@ export function Onboarding() {
                 </div>
                 <div className="space-y-1.5 max-h-44 overflow-y-auto">
                   {comfyChoices.map((c) => (
-                    <button
+                    <button data-testid="onboarding.comfyui.pick-install"
                       key={c.path}
                       onClick={() => pickComfyInstall(c)}
                       className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${
@@ -1280,7 +1280,7 @@ export function Onboarding() {
                     </button>
                   ))}
                 </div>
-                <button
+                <button data-testid="onboarding.comfyui.reject-all-installs"
                   onClick={() => { setComfyChoices([]); setComfyFound({ found: false, complete: false }) }}
                   className={`text-[0.55rem] ${isDark ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'} underline`}
                 >
@@ -1314,7 +1314,7 @@ export function Onboarding() {
                     </p>
                   </div>
                 )}
-                <button
+                <button data-testid="onboarding.comfyui.install"
                   onClick={async () => {
                     // P14 pre-flight, install Python first if missing,
                     // then proceed with the original ComfyUI flow. Both
@@ -1373,7 +1373,7 @@ export function Onboarding() {
                 >
                   <Download size={14} /> Install ComfyUI (Recommended)
                 </button>
-                <button
+                <button data-testid="onboarding.comfyui.use-existing-install"
                   onClick={() => {
                     const input = document.createElement('input')
                     input.type = 'text'
@@ -1399,7 +1399,7 @@ export function Onboarding() {
                         isDark ? 'bg-black border-white/10 text-white' : 'bg-white border-gray-300 text-gray-900'
                       }`}
                     />
-                    <button
+                    <button data-testid="onboarding.comfyui.connect-path"
                       onClick={async () => {
                         if (!comfyPathInput.trim()) return
                         try {
@@ -1472,7 +1472,7 @@ export function Onboarding() {
                       })()}
                     </span>
                     {/* Cancel button (Bug #1 — techx69) */}
-                    <button
+                    <button data-testid="onboarding.comfyui.cancel-install"
                       onClick={async () => {
                         try { await backendCall('cancel_comfyui_install') } catch {}
                       }}
@@ -1535,7 +1535,7 @@ export function Onboarding() {
                   found-but-incomplete carcass shouldn't qualify — that
                   install will fail at first generation. */}
               {((comfyFound?.found && comfyFound.complete !== false) || comfyReady) && (
-                <button
+                <button data-testid="onboarding.comfyui.continue"
                   onClick={() => setStep('models')}
                   className={primaryBtn}
                 >
@@ -1544,7 +1544,7 @@ export function Onboarding() {
               )}
               {!comfyInstalling && !pythonInstalling && (!comfyFound?.found || comfyFound.complete === false) && !comfyReady && (
                 <>
-                  <button
+                  <button data-testid="onboarding.comfyui.rescan"
                     onClick={() => {
                       setComfyDetecting(true)
                       setComfyFound(null)
@@ -1557,7 +1557,7 @@ export function Onboarding() {
                   >
                     <RefreshCw size={12} /> Re-Scan
                   </button>
-                  <button
+                  <button data-testid="onboarding.comfyui.skip"
                     onClick={() => setStep('models')}
                     className={`${secondaryBtn} opacity-60`}
                   >
@@ -1590,11 +1590,11 @@ export function Onboarding() {
                 (P4) the tabs are hidden; reintroduce only if the list grows. */}
             {ONBOARDING_MODELS.some(m => m.uncensored) && ONBOARDING_MODELS.some(m => !m.uncensored) && (
               <div className="flex gap-4 justify-center">
-                <button onClick={() => setModelSubTab('uncensored')} className={`flex items-center gap-2 transition-all ${modelSubTab === 'uncensored' ? 'opacity-100' : 'opacity-40 hover:opacity-70'}`}>
+                <button data-testid="onboarding.models.filter-unfiltered" onClick={() => setModelSubTab('uncensored')} className={`flex items-center gap-2 transition-all ${modelSubTab === 'uncensored' ? 'opacity-100' : 'opacity-40 hover:opacity-70'}`}>
                   <div className={`w-1 h-4 rounded-full ${modelSubTab === 'uncensored' ? 'bg-red-500' : 'bg-red-500/50'}`} />
                   <span className="text-[0.65rem] font-semibold uppercase tracking-wider">Unfiltered</span>
                 </button>
-                <button onClick={() => setModelSubTab('mainstream')} className={`flex items-center gap-2 transition-all ${modelSubTab === 'mainstream' ? 'opacity-100' : 'opacity-40 hover:opacity-70'}`}>
+                <button data-testid="onboarding.models.filter-mainstream" onClick={() => setModelSubTab('mainstream')} className={`flex items-center gap-2 transition-all ${modelSubTab === 'mainstream' ? 'opacity-100' : 'opacity-40 hover:opacity-70'}`}>
                   <div className={`w-1 h-4 rounded-full ${modelSubTab === 'mainstream' ? 'bg-blue-500' : 'bg-blue-500/50'}`} />
                   <span className="text-[0.65rem] font-semibold uppercase tracking-wider">Mainstream</span>
                 </button>
@@ -1636,7 +1636,7 @@ export function Onboarding() {
                 const selected = selectedModels.includes(model.name)
                 const pulled = pulledModels.includes(model.name) || (model.filename ? downloads[model.filename]?.status === 'complete' : false)
                 return (
-                  <button
+                  <button data-testid="onboarding.models.toggle-model"
                     key={model.name}
                     onClick={() => !pulled && !isDownloading && toggleModel(model.name)}
                     disabled={pulled || isDownloading}
@@ -1680,7 +1680,7 @@ export function Onboarding() {
 
             <div className="flex items-center gap-2 pt-1">
               {selectedModels.length > 0 && !isDownloading ? (
-                <button
+                <button data-testid="onboarding.models.download-selected"
                   onClick={handleDownloadSelected}
                   className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.7rem] font-medium transition-all ${
                     isDark ? 'bg-white text-black hover:bg-gray-200' : 'bg-gray-900 text-white hover:bg-gray-800'
@@ -1689,7 +1689,7 @@ export function Onboarding() {
                   <Download size={14} /> Install {selectedModels.length} model{selectedModels.length > 1 ? 's' : ''}
                 </button>
               ) : !isDownloading ? (
-                <button
+                <button data-testid="onboarding.models.skip"
                   onClick={() => setStep('embeddings')}
                   className={`flex-1 flex items-center justify-center gap-1.5 ${secondaryBtn}`}
                 >
@@ -1764,11 +1764,11 @@ export function Onboarding() {
 
             <div className="flex items-center gap-2 pt-1">
               {embeddingsAlreadyHave !== true && !embeddingsPulled && !embeddingsPulling && (
-                <button onClick={handlePullEmbeddings} className={primaryBtn} style={{ flex: 1 }}>
+                <button data-testid="onboarding.embeddings.install" onClick={handlePullEmbeddings} className={primaryBtn} style={{ flex: 1 }}>
                   <Download size={14} /> Install nomic-embed-text ({embedsViaBundled ? '84 MB' : '274 MB'})
                 </button>
               )}
-              <button
+              <button data-testid="onboarding.embeddings.continue"
                 onClick={() => setStep('done')}
                 disabled={embeddingsPulling}
                 className={`${secondaryBtn} ${embeddingsPulling ? 'opacity-40 cursor-not-allowed' : ''}`}
@@ -1804,7 +1804,7 @@ export function Onboarding() {
                 ? `Connected to ${detectedBackends.find(b => b.id === selectedBackend)?.name || detectedBackends[0].name}. You're ready to go.`
                 : 'You can configure backends and install models anytime from Settings and the Models tab.'}
             </p>
-            <button onClick={finish} className={primaryBtn}>
+            <button data-testid="onboarding.done.finish" onClick={finish} className={primaryBtn}>
               Get Started <ArrowRight size={14} />
             </button>
           </motion.div>

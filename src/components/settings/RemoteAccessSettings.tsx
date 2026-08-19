@@ -69,6 +69,7 @@ export function RemoteAccessSettings() {
               <p className="text-[0.5rem] text-gray-500 dark:text-gray-600">{desc}</p>
             </div>
             <button
+              data-testid="settings.remote-permission.toggle"
               onClick={() => setPermissions({ ...permissions, [key]: !permissions[key] })}
               className={`w-8 h-4 rounded-full transition-all relative ${
                 permissions[key] ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
@@ -98,6 +99,7 @@ export function RemoteAccessSettings() {
                 <p className="text-[0.5rem] text-gray-500 dark:text-gray-600 truncate max-w-[200px]">{dev.user_agent}</p>
               </div>
               <button
+                data-testid="settings.remote-device.disconnect"
                 onClick={() => handleDisconnect(dev.id)}
                 disabled={disconnecting === dev.id}
                 className="p-1 hover:bg-red-500/15 rounded text-gray-500 dark:text-gray-600 hover:text-red-400 disabled:opacity-40"

@@ -233,6 +233,7 @@ export function Select({
         className={cn('relative', className)}
       >
         <button
+          data-testid="create.select.open"
           type="button"
           onClick={toggle}
           aria-haspopup="listbox"
@@ -346,6 +347,7 @@ export function Select({
 
                     return (
                       <button
+                        data-testid="create.select-option.choose"
                         type="button"
                         role="option"
                         aria-selected={selected}

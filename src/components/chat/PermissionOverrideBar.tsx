@@ -49,7 +49,7 @@ export function PermissionOverrideBar() {
         const isDisabled = isLocked || !canUseTools
         const isOn = !isDisabled && permissions[key] !== 'blocked'
         return (
-          <button
+          <button data-testid="chat.tool-permission-category.toggle"
             key={key}
             onClick={() => toggleTool(key)}
             disabled={isDisabled}

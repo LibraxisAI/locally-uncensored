@@ -222,27 +222,27 @@ function MaskEditorInner({ onClose }: { onClose: () => void }) {
           <span className="t-mono text-gray-600 ml-2">{source.width}×{source.height}</span>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" icon={X} onClick={onClose}>Cancel</Button>
-          <Button variant="primary" icon={Check} onClick={apply}>Apply mask</Button>
+          <Button data-testid="create.mask-editor.cancel" variant="ghost" icon={X} onClick={onClose}>Cancel</Button>
+          <Button data-testid="create.mask-editor.apply" variant="primary" icon={Check} onClick={apply}>Apply mask</Button>
         </div>
       </div>
 
       {/* toolbar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-white/[0.05] shrink-0 flex-wrap">
         <div className="inline-flex gap-0.5 p-0.5 rounded-[var(--radius-control)] bg-white/[0.04] border border-white/[0.06]">
-          <ToolBtn active={tool === 'brush'} icon={Brush} label="Brush (B)" onClick={() => { eng && (eng.tool = 'brush'); setTool('brush') }} />
-          <ToolBtn active={tool === 'eraser'} icon={Eraser} label="Eraser (E)" onClick={() => { eng && (eng.tool = 'eraser'); setTool('eraser') }} />
+          <ToolBtn data-testid="create.mask-tool.brush" active={tool === 'brush'} icon={Brush} label="Brush (B)" onClick={() => { eng && (eng.tool = 'brush'); setTool('brush') }} />
+          <ToolBtn data-testid="create.mask-tool.eraser" active={tool === 'eraser'} icon={Eraser} label="Eraser (E)" onClick={() => { eng && (eng.tool = 'eraser'); setTool('eraser') }} />
         </div>
         <div className="w-40"><Slider label="Size" min={4} max={maxBrush} step={1} value={brushSize} onChange={(v) => { if (eng) eng.brushSize = v; setBrushSize(v) }} unit="px" /></div>
         <Divider />
-        <Button variant="ghost" size="sm" icon={Undo2} iconOnly title="Undo (⌘Z)" disabled={!eng?.canUndo()} onClick={() => { eng?.undo(); renderOverlay(); rerender() }} />
-        <Button variant="ghost" size="sm" icon={Redo2} iconOnly title="Redo (⇧⌘Z)" disabled={!eng?.canRedo()} onClick={() => { eng?.redo(); renderOverlay(); rerender() }} />
-        <Button variant="ghost" size="sm" icon={FlipHorizontal2} iconOnly title="Invert (I)" onClick={() => { eng?.invert(); renderOverlay(); rerender() }} />
-        <Button variant="ghost" size="sm" icon={Trash2} iconOnly title="Clear" onClick={() => { eng?.clear(); renderOverlay(); rerender() }} />
+        <Button data-testid="create.undo-z.click" variant="ghost" size="sm" icon={Undo2} iconOnly title="Undo (⌘Z)" disabled={!eng?.canUndo()} onClick={() => { eng?.undo(); renderOverlay(); rerender() }} />
+        <Button data-testid="create.redo-z.click" variant="ghost" size="sm" icon={Redo2} iconOnly title="Redo (⇧⌘Z)" disabled={!eng?.canRedo()} onClick={() => { eng?.redo(); renderOverlay(); rerender() }} />
+        <Button data-testid="create.invert-i.click" variant="ghost" size="sm" icon={FlipHorizontal2} iconOnly title="Invert (I)" onClick={() => { eng?.invert(); renderOverlay(); rerender() }} />
+        <Button data-testid="create.clear.click" variant="ghost" size="sm" icon={Trash2} iconOnly title="Clear" onClick={() => { eng?.clear(); renderOverlay(); rerender() }} />
         <Divider />
-        <Button variant="ghost" size="sm" icon={ZoomOut} iconOnly title="Zoom out" onClick={() => setView((v) => ({ ...v, scale: Math.max(0.05, v.scale / 1.2) }))} />
-        <Button variant="ghost" size="sm" icon={ZoomIn} iconOnly title="Zoom in" onClick={() => setView((v) => ({ ...v, scale: Math.min(8, v.scale * 1.2) }))} />
-        <Button variant="ghost" size="sm" icon={Maximize} iconOnly title="Fit" onClick={fitView} />
+        <Button data-testid="create.zoom-out.click" variant="ghost" size="sm" icon={ZoomOut} iconOnly title="Zoom out" onClick={() => setView((v) => ({ ...v, scale: Math.max(0.05, v.scale / 1.2) }))} />
+        <Button data-testid="create.zoom-in.click" variant="ghost" size="sm" icon={ZoomIn} iconOnly title="Zoom in" onClick={() => setView((v) => ({ ...v, scale: Math.min(8, v.scale * 1.2) }))} />
+        <Button data-testid="create.fit.click" variant="ghost" size="sm" icon={Maximize} iconOnly title="Fit" onClick={fitView} />
         <span className="t-mono text-gray-600">{Math.round(view.scale * 100)}%</span>
         <div className="flex-1" />
         <span className="inline-flex items-center gap-1.5 t-control text-gray-500"><Hand size={13} /> hold Space to pan · scroll to zoom</span>
@@ -284,9 +284,10 @@ function MaskEditorInner({ onClose }: { onClose: () => void }) {
   )
 }
 
-function ToolBtn({ active, icon: Icon, label, onClick }: { active: boolean; icon: typeof Brush; label: string; onClick: () => void }) {
+function ToolBtn({ active, icon: Icon, label, onClick, 'data-testid': testId }: { active: boolean; icon: typeof Brush; label: string; onClick: () => void; 'data-testid'?: string }) {
   return (
     <button
+      data-testid={testId ?? 'create.mask-tool-button.click'}
       onClick={onClick}
       title={label}
       aria-label={label}

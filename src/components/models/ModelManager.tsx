@@ -144,7 +144,7 @@ export function ModelManager() {
           const active = mode === key
           const count = models.filter((m) => m.type === key).length
           return (
-            <button
+            <button data-testid="models.category-rail.select"
               key={key}
               onClick={() => setCategoryFilter(key)}
               title={label}
@@ -177,7 +177,7 @@ export function ModelManager() {
         <div className="p-4 space-y-4">
           {/* Top bar */}
           <div className="flex items-center gap-2">
-            <button
+            <button data-testid="models.back-to-chat.click"
               onClick={() => setView('chat')}
               className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
               title="Back to chat"
@@ -189,7 +189,7 @@ export function ModelManager() {
             {/* Discover / Installed segment — the MLX panel is one list with
                 per-model Install/Remove, so the split would switch nothing. */}
             <div className={`ml-2 flex items-center p-0.5 rounded-lg bg-gray-100 dark:bg-white/[0.04] border border-gray-200 dark:border-white/[0.06] ${showMlxPanel ? 'hidden' : ''}`}>
-              <button
+              <button data-testid="models.tab-get-new.select"
                 onClick={() => setTab('discover')}
                 aria-pressed={tab === 'discover'}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[0.62rem] font-semibold transition-colors ${
@@ -200,7 +200,7 @@ export function ModelManager() {
               >
                 <Sparkles size={11} /> Get new
               </button>
-              <button
+              <button data-testid="models.tab-installed.select"
                 onClick={() => setTab('installed')}
                 aria-pressed={tab === 'installed'}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[0.62rem] font-semibold transition-colors ${
@@ -231,7 +231,7 @@ export function ModelManager() {
                 className="w-full pl-7 pr-6 py-1.5 rounded-lg bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-[0.65rem] text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"
               />
               {searchQuery && (
-                <button
+                <button data-testid="models.clear-search.click"
                   onClick={() => setSearchQuery('')}
                   className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                   title="Clear search"
@@ -242,11 +242,11 @@ export function ModelManager() {
               )}
             </div>
 
-            <button onClick={fetchModels} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors" title="Refresh">
+            <button data-testid="models.refresh.click" onClick={fetchModels} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors" title="Refresh">
               <RefreshCw size={13} />
             </button>
             {ollamaEnabled && (
-              <button
+              <button data-testid="models.pull-any-ollama-model-by-name.click"
                 onClick={() => setPullOpen(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-[0.62rem] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10 transition-colors"
                 title="Pull any Ollama model by name"
@@ -286,7 +286,7 @@ export function ModelManager() {
                       {mode === 'image' ? 'Image' : 'Video'} models are served by ComfyUI, which isn't running right now, so the ones you've downloaded can't be listed yet. Open the Create tab and start ComfyUI (the power button next to the model picker), then come back.
                     </p>
                   </div>
-                  <button
+                  <button data-testid="models.comfyui-hint-go-to-create.click"
                     onClick={() => setView('create')}
                     className="flex items-center gap-1.5 mt-1 px-3 py-1.5 rounded-md bg-gray-900 dark:bg-white/10 hover:bg-gray-800 dark:hover:bg-white/15 text-white text-[0.65rem] font-medium transition-colors"
                   >
@@ -305,7 +305,7 @@ export function ModelManager() {
                       Browse curated chat, image and video models and install them with one click.
                     </p>
                   </div>
-                  <button
+                  <button data-testid="models.empty-state-discover.click"
                     onClick={() => setTab('discover')}
                     className="flex items-center gap-1.5 mt-1 px-3 py-1.5 rounded-md bg-gray-900 dark:bg-white/10 hover:bg-gray-800 dark:hover:bg-white/15 text-white text-[0.65rem] font-medium transition-colors"
                   >
@@ -317,7 +317,7 @@ export function ModelManager() {
                   <p className="text-[0.7rem] text-gray-500">
                     No {modeMeta.label.toLowerCase()} models installed
                   </p>
-                  <button
+                  <button data-testid="models.empty-category-discover.click"
                     onClick={() => setTab('discover')}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-[0.65rem] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10 transition-colors"
                   >
@@ -392,10 +392,10 @@ export function ModelManager() {
           This removes the model file from your disk and frees the space.
         </p>
         <div className="flex gap-2">
-          <GlowButton variant="secondary" onClick={() => setConfirmDelete(null)} className="flex-1">
+          <GlowButton data-testid="models.delete-dialog.cancel" variant="secondary" onClick={() => setConfirmDelete(null)} className="flex-1">
             Cancel
           </GlowButton>
-          <GlowButton variant="danger" onClick={() => confirmDelete && handleDelete(confirmDelete)} className="flex-1">
+          <GlowButton data-testid="models.delete-dialog.confirm" variant="danger" onClick={() => confirmDelete && handleDelete(confirmDelete)} className="flex-1">
             Delete
           </GlowButton>
         </div>
@@ -403,7 +403,7 @@ export function ModelManager() {
 
       <Modal open={!!deleteError} onClose={() => setDeleteError(null)} title="Delete failed">
         <p className="text-[0.7rem] text-red-500 dark:text-red-400 mb-3">{deleteError}</p>
-        <GlowButton variant="secondary" onClick={() => setDeleteError(null)} className="w-full">
+        <GlowButton data-testid="models.delete-failed.click" variant="secondary" onClick={() => setDeleteError(null)} className="w-full">
           Close
         </GlowButton>
       </Modal>

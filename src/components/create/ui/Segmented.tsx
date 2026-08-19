@@ -37,6 +37,7 @@ export function Segmented<T extends string>({ options, value, onChange, size = '
         const Icon = o.icon
         return (
           <button
+            data-testid="create.segmented-option.select"
             key={o.value}
             role="radio"
             aria-checked={selected}

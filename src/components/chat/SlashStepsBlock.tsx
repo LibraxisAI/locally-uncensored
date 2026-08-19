@@ -41,7 +41,7 @@ export function SlashStepsBlock({ command, stepCount, running, children }: Props
   return (
     <div className="rounded border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/[0.02] overflow-hidden">
       {/* Header — tool-call styling: icon + command + step count + status. */}
-      <button
+      <button data-testid="chat.slash-steps.toggle"
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1.5 w-full px-2 py-1 text-left hover:bg-gray-100/60 dark:hover:bg-white/[0.03] transition-colors"
       >

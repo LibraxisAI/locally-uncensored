@@ -17,7 +17,7 @@ export function MemoryDebugToggle() {
 
   return (
     <>
-      <button
+      <button data-testid="chat.memory-view-add-or-delete-the-context-injected-i.click"
         onClick={() => setOpen(!open)}
         title="Memory: view, add or delete the context injected into prompts"
         className={
@@ -94,14 +94,14 @@ function MemoryPopover({ onClose }: { onClose: () => void }) {
   // (David flagged the squeezed Memory panel). Portaling out of the transformed
   // subtree restores true viewport-anchored full-screen positioning.
   return createPortal(
-    <motion.div
+    <motion.div data-testid="chat.memory-overlay.close"
       initial={{ opacity: 0, y: -5 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -5 }}
       className="fixed inset-0 z-50 flex items-start justify-center pt-14"
       onClick={onClose}
     >
-      <div
+      <div data-testid="chat.memory-panel.keep-open"
         className="w-[420px] max-h-[68vh] bg-white dark:bg-[#262626] border border-gray-200 dark:border-white/10 rounded-xl shadow-2xl overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
@@ -112,14 +112,14 @@ function MemoryPopover({ onClose }: { onClose: () => void }) {
             <span className="text-[0.65rem] font-semibold text-gray-700 dark:text-gray-300">Memory ({entries.length})</span>
           </div>
           <div className="flex items-center gap-1">
-            <button
+            <button data-testid="chat.add-a-memory.click"
               onClick={() => setAdding((a) => !a)}
               title="Add a memory"
               className={'flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.55rem] font-medium transition-colors ' + (adding ? 'bg-purple-500/15 text-purple-300' : 'text-gray-500 hover:text-gray-300 hover:bg-white/10')}
             >
               <Plus size={11} /> Add
             </button>
-            <button onClick={onClose} className="p-0.5 rounded hover:bg-white/10 text-gray-500"><X size={12} /></button>
+            <button data-testid="chat.memory-panel.close" onClick={onClose} className="p-0.5 rounded hover:bg-white/10 text-gray-500"><X size={12} /></button>
           </div>
         </div>
 
@@ -140,8 +140,8 @@ function MemoryPopover({ onClose }: { onClose: () => void }) {
               className="w-full px-2 py-1 rounded bg-black/20 border border-white/10 text-[0.62rem] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500/40 resize-none"
             />
             <div className="flex justify-end gap-1.5">
-              <button onClick={() => { setAdding(false); setNewTitle(''); setNewContent('') }} className="px-2 py-1 rounded text-[0.58rem] text-gray-400 hover:text-gray-200 hover:bg-white/10">Cancel</button>
-              <button onClick={handleAdd} disabled={!newContent.trim()} className="flex items-center gap-1 px-2.5 py-1 rounded text-[0.58rem] font-medium bg-purple-500/20 border border-purple-500/30 text-purple-200 hover:bg-purple-500/30 disabled:opacity-40">
+              <button data-testid="chat.memory-add-form.cancel" onClick={() => { setAdding(false); setNewTitle(''); setNewContent('') }} className="px-2 py-1 rounded text-[0.58rem] text-gray-400 hover:text-gray-200 hover:bg-white/10">Cancel</button>
+              <button data-testid="chat.memory-add-form.save" onClick={handleAdd} disabled={!newContent.trim()} className="flex items-center gap-1 px-2.5 py-1 rounded text-[0.58rem] font-medium bg-purple-500/20 border border-purple-500/30 text-purple-200 hover:bg-purple-500/30 disabled:opacity-40">
                 <Plus size={10} /> Save memory
               </button>
             </div>
@@ -163,7 +163,7 @@ function MemoryPopover({ onClose }: { onClose: () => void }) {
                     {stale && (
                       <span className="flex items-center gap-0.5 text-[0.45rem] uppercase tracking-wider text-gray-500 shrink-0" title="Outdated, not injected"><Archive size={8} /> outdated</span>
                     )}
-                    <button
+                    <button data-testid="chat.delete-this-memory.click"
                       onClick={() => removeMemory(entry.id)}
                       title="Delete this memory"
                       className="shrink-0 p-0.5 rounded text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-all"

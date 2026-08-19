@@ -45,14 +45,14 @@ export function CodexConfirmDialog() {
         </pre>
 
         <div className="mt-1.5 flex items-center gap-1.5">
-          <button
+          <button data-testid="chat.codex-confirm.run"
             onClick={() => answer(true)}
             autoFocus
             className="px-2 py-0.5 rounded text-[0.62rem] font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25 transition-colors"
           >
             Run
           </button>
-          <button
+          <button data-testid="chat.codex-confirm.deny"
             onClick={() => answer(false)}
             className="px-2 py-0.5 rounded text-[0.62rem] text-gray-600 dark:text-gray-400 hover:bg-gray-200/60 dark:hover:bg-white/5 transition-colors"
           >
@@ -62,7 +62,7 @@ export function CodexConfirmDialog() {
           {pending.cloudReason && (
             <span className="text-[0.55rem] text-gray-500">cloud model</span>
           )}
-          <button
+          <button data-testid="chat.run-this-and-every-later-command-in-this-session.click"
             onClick={stopAsking}
             title="Run this and every later command in this session without asking"
             className="text-[0.58rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"

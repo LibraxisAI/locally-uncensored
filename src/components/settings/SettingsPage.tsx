@@ -111,6 +111,7 @@ function AvatarSetting() {
           </div>
         )}
         <button
+          data-testid="settings.avatar.upload"
           onClick={() => inputRef.current?.click()}
           className="px-2 py-1 rounded text-[0.65rem] bg-gray-200 dark:bg-white/10 text-gray-900 dark:text-white hover:bg-gray-300 dark:hover:bg-white/15 transition-colors"
         >
@@ -118,6 +119,7 @@ function AvatarSetting() {
         </button>
         {userAvatarDataUrl && (
           <button
+            data-testid="settings.avatar.remove"
             onClick={() => updateSettings({ userAvatarDataUrl: '' })}
             className="px-2 py-1 rounded text-[0.65rem] text-gray-500 hover:text-red-400 transition-colors"
           >
@@ -144,6 +146,7 @@ function Section({ title, children, defaultOpen = false }: { title: string; chil
   return (
     <div className="border-b border-gray-100 dark:border-white/[0.04]">
       <button
+        data-testid="settings.section.toggle"
         onClick={() => { setOpen(!open); setAnimating(true) }}
         className="w-full flex items-center justify-between py-2.5 group"
       >
@@ -182,6 +185,7 @@ function Disclosure({ label, children, defaultOpen = false }: { label: string; c
   return (
     <div className="mt-2 pt-2 border-t border-gray-100 dark:border-white/[0.04]">
       <button
+        data-testid="settings.disclosure.toggle"
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-1.5 group"
       >
@@ -217,6 +221,7 @@ function InlineToggle({ label, enabled, onChange, icon }: { label: string; enabl
         <span className="text-[0.7rem] text-gray-700 dark:text-gray-400">{label}</span>
       </div>
       <button
+        data-testid="settings.inline-toggle.switch"
         onClick={onChange}
         className={`relative w-7 h-3.5 rounded-full transition-colors ${enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'}`}
       >
@@ -281,6 +286,7 @@ function HfDownloadPathSetting() {
           className="flex-1 px-2 py-1 rounded bg-transparent border border-white/8 text-[0.65rem] text-gray-700 dark:text-gray-300 font-mono focus:outline-none focus:border-white/20"
         />
         <button
+          data-testid="settings.model-path.browse"
           onClick={pickFolder}
           className="px-2.5 py-1 rounded-md text-[0.6rem] font-medium bg-white dark:bg-white/10 text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-white/15 border border-gray-200 dark:border-white/15 transition-colors"
         >
@@ -288,6 +294,7 @@ function HfDownloadPathSetting() {
         </button>
         {override && (
           <button
+            data-testid="settings.model-path.reset"
             onClick={() => { setDraft(''); updateSettings({ hfDownloadPathOverride: '' }) }}
             className="px-2.5 py-1 rounded-md text-[0.6rem] text-gray-500 hover:text-red-400 transition-colors"
           >
@@ -345,6 +352,7 @@ function ImportLocalModels() {
         Already have models in Ollama or LM Studio? Link them into LU without downloading or copying anything. The file stays where it is; both apps keep working.
       </div>
       <button
+        data-testid="settings.local-models.scan"
         onClick={scan}
         disabled={scanning}
         className="px-2.5 py-1 rounded-md text-[0.6rem] font-medium bg-white dark:bg-white/10 text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-white/15 border border-gray-200 dark:border-white/15 transition-colors disabled:opacity-50"
@@ -367,6 +375,7 @@ function ImportLocalModels() {
                     <span className="text-[0.6rem] text-green-500">Imported</span>
                   ) : (
                     <button
+                      data-testid="settings.local-models.import"
                       onClick={() => doImport(c)}
                       disabled={busyPath === c.path}
                       className="px-2 py-0.5 rounded-md text-[0.6rem] font-medium bg-white dark:bg-white/10 text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-white/15 border border-gray-200 dark:border-white/15 transition-colors disabled:opacity-50"
@@ -556,6 +565,7 @@ function ComfyUISettings() {
             className="flex-1 px-2 py-1 rounded-lg border text-[0.6rem] font-mono bg-transparent border-white/10 text-gray-300 focus:outline-none focus:border-white/25"
           />
           <button
+            data-testid="settings.comfyui-host.set"
             onClick={async () => {
               const host = customHost.trim()
               if (!host) { setHostError('Host required'); return }
@@ -598,6 +608,7 @@ function ComfyUISettings() {
             className="flex-1 px-2 py-1 rounded-lg border text-[0.6rem] font-mono bg-transparent border-white/10 text-gray-300 focus:outline-none focus:border-white/25"
           />
           <button
+            data-testid="settings.comfyui-path.connect"
             onClick={handleSetPath}
             disabled={!customPath.trim() || customPath.trim() === status?.path}
             className="px-2 py-1 rounded text-[0.6rem] bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 transition-colors disabled:opacity-30"
@@ -622,6 +633,7 @@ function ComfyUISettings() {
             className="w-24 px-2 py-1 rounded-lg border text-[0.6rem] font-mono bg-transparent border-white/10 text-gray-300 focus:outline-none focus:border-white/25"
           />
           <button
+            data-testid="settings.comfyui-port.set"
             onClick={async () => {
               const port = parseInt(customPort)
               if (!port || port < 1 || port > 65535) return
@@ -646,17 +658,18 @@ function ComfyUISettings() {
       {status?.isLocal !== false && (
       <div className="flex items-center gap-1.5">
         {status?.found && !status.running && (
-          <button onClick={handleStart} className="px-2 py-1 rounded text-[0.6rem] bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors">
+          <button data-testid="settings.comfyui-engine.start" onClick={handleStart} className="px-2 py-1 rounded text-[0.6rem] bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors">
             Start
           </button>
         )}
         {status?.running && (
-          <button onClick={handleStop} className="px-2 py-1 rounded text-[0.6rem] bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">
+          <button data-testid="settings.comfyui-engine.stop" onClick={handleStop} className="px-2 py-1 rounded text-[0.6rem] bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">
             Stop
           </button>
         )}
         {status?.running && (
           <button
+            data-testid="settings.comfyui-engine.restart"
             onClick={async () => { await handleStop(); setTimeout(handleStart, 2000) }}
             className="px-2 py-1 rounded text-[0.6rem] bg-white/5 text-gray-400 hover:bg-white/10 transition-colors"
           >
@@ -667,12 +680,13 @@ function ComfyUISettings() {
             Python, dead torch) needs a rebuild, not a re-install — pip reports
             broken packages as already satisfied. Rebuilds ComfyUI/venv. */}
         {status?.found && !status?.running && installPhase === 'idle' && (
-          <button onClick={handleRepair} title="Rebuild the Python environment in an isolated venv (~2 GB). Models, outputs and custom nodes are left alone." className="px-2 py-1 rounded text-[0.6rem] bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors">
+          <button data-testid="settings.comfyui-env.repair" onClick={handleRepair} title="Rebuild the Python environment in an isolated venv (~2 GB). Models, outputs and custom nodes are left alone." className="px-2 py-1 rounded text-[0.6rem] bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors">
             Repair environment
           </button>
         )}
         {(!status?.found || status?.complete === false) && installPhase === 'idle' && (
           <button
+            data-testid="settings.comfyui-install.start"
             onClick={async () => {
               const { backendCall } = await import('../../api/backend')
               setInstallErr('')
@@ -759,6 +773,7 @@ function ComfyUISettings() {
           // the one-click git pull + dependency refresh the lane errors point
           // to. Reuses the installer's status channel and log panel.
           <button
+            data-testid="settings.comfyui-update.start"
             onClick={async () => {
               setInstallPhase('comfyui')
               setInstallErr('')
@@ -1017,6 +1032,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
     <div className="pt-3 pb-6 space-y-1.5">
       <div className="flex items-center gap-3">
         <button
+          data-testid="settings.tab-settings.reset"
           onClick={() => handleClick('section')}
           className={`flex items-center gap-1.5 text-[0.65rem] transition-colors ${
             armed === 'section' ? 'text-red-400 font-medium' : 'text-gray-500 hover:text-red-400'
@@ -1026,6 +1042,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
           {armed === 'section' ? `Click again to reset ${tabLabel}` : `Reset ${tabLabel} to defaults`}
         </button>
         <button
+          data-testid="settings.all-settings.reset"
           onClick={() => handleClick('all')}
           className={`flex items-center gap-1.5 text-[0.6rem] transition-colors ${
             armed === 'all' ? 'text-red-400 font-medium' : 'text-gray-600 dark:text-gray-600 hover:text-red-400'
@@ -1212,7 +1229,7 @@ export function SettingsPage() {
       <div className="max-w-lg mx-auto px-4 py-4">
         {/* Header */}
         <div className="flex items-center gap-2 mb-4">
-          <button onClick={() => setView('chat')} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-white/5 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors">
+          <button data-testid="settings.header-back.to-chat" onClick={() => setView('chat')} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-white/5 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors">
             <ArrowLeft size={16} />
           </button>
           <h1 className="text-[0.8rem] font-semibold text-gray-800 dark:text-gray-200">Settings</h1>
@@ -1225,6 +1242,7 @@ export function SettingsPage() {
             {SETTINGS_TABS.map(t => (
               <button
                 key={t.id}
+                data-testid="settings.tab.switch"
                 onClick={() => setTab(t.id)}
                 className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[0.65rem] font-medium transition-colors ${
                   tab === t.id
@@ -1254,6 +1272,7 @@ export function SettingsPage() {
                 </p>
               </div>
               <button
+                data-testid="settings.cloud-teasers.toggle"
                 onClick={() => updateSettings({ cloudTeasersEnabled: !settings.cloudTeasersEnabled })}
                 className={`relative w-8 h-[18px] rounded-full transition-colors shrink-0 ${
                   settings.cloudTeasersEnabled ? 'bg-violet-500/70' : 'bg-gray-300 dark:bg-white/10'
@@ -1279,6 +1298,7 @@ export function SettingsPage() {
               A key spends plan tokens only; it can never read or change the account.
             </p>
             <button
+              data-testid="settings.cloud-api-key.open-web"
               onClick={() => void openExternal(`${CLOUD_BASE}/account`)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.65rem] font-medium bg-violet-500/15 text-violet-500 dark:text-violet-300 hover:bg-violet-500/25 transition-colors"
             >
@@ -1290,6 +1310,7 @@ export function SettingsPage() {
               <span className="text-[0.7rem] text-gray-700 dark:text-gray-400">Theme</span>
               <div className="flex gap-1">
                 <button
+                  data-testid="settings.theme-light.select"
                   onClick={() => updateSettings({ theme: 'light' })}
                   className={`flex items-center gap-1 px-2 py-1 rounded text-[0.65rem] transition-colors ${
                     settings.theme === 'light' ? 'bg-gray-200 dark:bg-white/10 text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
@@ -1298,6 +1319,7 @@ export function SettingsPage() {
                   <Sun size={11} /> Light
                 </button>
                 <button
+                  data-testid="settings.theme-dark.select"
                   onClick={() => updateSettings({ theme: 'dark' })}
                   className={`flex items-center gap-1 px-2 py-1 rounded text-[0.65rem] transition-colors ${
                     settings.theme === 'dark' ? 'bg-gray-200 dark:bg-white/10 text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
@@ -1454,6 +1476,7 @@ export function SettingsPage() {
                 </div>
               </div>
               <button
+                data-testid="settings.onboarding.rerun"
                 onClick={async () => {
                   useSettingsStore.getState().updateSettings({ onboardingDone: false })
                   try { await backendCall('set_onboarding_done', { done: false }) } catch {}
@@ -1529,6 +1552,7 @@ export function SettingsPage() {
             <Section title="Agent Permissions">
               <PermissionSettings />
               <button
+                data-testid="settings.agent-tutorial.reset"
                 onClick={() => useAgentModeStore.getState().resetTutorial()}
                 className="text-[0.6rem] text-gray-500 hover:text-gray-300 transition-colors"
               >
@@ -1564,6 +1588,7 @@ export function SettingsPage() {
                     {(['auto', 'brave', 'tavily'] as const).map(p => (
                       <button
                         key={p}
+                        data-testid="settings.search-provider.select"
                         onClick={() => updateSettings({ searchProvider: p })}
                         className={`px-2.5 py-1 rounded-md text-[0.6rem] font-medium transition-all ${
                           settings.searchProvider === p
@@ -1646,6 +1671,7 @@ export function SettingsPage() {
               </span>
               {!whisperLoading && whisperStatus && !whisperStatus.available && (
                 <button
+                  data-testid="settings.whisper.install"
                   onClick={() => void handleInstallWhisper()}
                   disabled={whisperInstalling}
                   className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[0.6rem] font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
@@ -1677,6 +1703,7 @@ export function SettingsPage() {
               </span>
               {!ttsLoading && ttsStatus && !ttsStatus.available && (
                 <button
+                  data-testid="settings.piper-tts.install"
                   onClick={() => void handleInstallTts()}
                   disabled={ttsInstalling}
                   className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[0.6rem] font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
@@ -1743,6 +1770,7 @@ export function SettingsPage() {
                 {(['piper', 'external'] as const).map((m) => (
                   <button
                     key={m}
+                    data-testid="settings.tts-engine.select"
                     onClick={() => voiceSettings.updateVoiceSettings({ ttsMode: m })}
                     className={
                       'px-2 py-0.5 rounded border transition-colors ' +
@@ -1870,6 +1898,7 @@ function UpdateSection() {
             <div className="flex gap-2">
               {!isTauri() ? (
                 <button
+                  data-testid="settings.release-page.open"
                   onClick={openReleasePage}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.6rem] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
                 >
@@ -1877,6 +1906,7 @@ function UpdateSection() {
                 </button>
               ) : downloadStatus === 'idle' ? (
                 <button
+                  data-testid="settings.update.download"
                   onClick={() => { void downloadUpdate() }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.6rem] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
                 >
@@ -1888,6 +1918,7 @@ function UpdateSection() {
                 </span>
               ) : downloadStatus === 'downloaded' ? (
                 <button
+                  data-testid="settings.update.install-restart"
                   onClick={() => { void installAndRestart() }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.6rem] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
                 >
@@ -1899,6 +1930,7 @@ function UpdateSection() {
                 </span>
               ) : (
                 <button
+                  data-testid="settings.update-download.retry"
                   onClick={() => { void downloadUpdate() }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.6rem] font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
                 >
@@ -1907,6 +1939,7 @@ function UpdateSection() {
               )}
               {dismissed === displayLatestVersion && (
                 <button
+                  data-testid="settings.update-badge.restore"
                   onClick={clearDismiss}
                   className="px-3 py-1.5 rounded-md text-[0.6rem] text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] transition-colors"
                 >
@@ -1941,6 +1974,7 @@ function UpdateSection() {
 
         {/* Manual check */}
         <button
+          data-testid="settings.update.check"
           onClick={() => { void checkForUpdate(true) }}
           disabled={isChecking}
           className="text-[0.6rem] text-gray-500 hover:text-gray-300 transition-colors disabled:opacity-40"
@@ -2099,6 +2133,7 @@ function TroubleshootSection() {
       )}
 
       <button
+        data-testid="settings.health-probe.run"
         onClick={run}
         disabled={loading}
         className="w-full px-3 py-1.5 rounded-md text-[0.65rem] font-medium bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200 dark:hover:bg-white/10 text-gray-800 dark:text-gray-200 transition-colors disabled:opacity-50"

@@ -671,7 +671,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
       {/* Filter bar: Unfiltered/Mainstream + size chips + hardware chip */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex p-0.5 rounded-lg bg-gray-100 dark:bg-white/[0.04] border border-gray-200 dark:border-white/[0.06]">
-          <button
+          <button data-testid="models.popular-models-with-tool-calling-vision.click"
             onClick={() => setSubTab('mainstream')}
             aria-pressed={subTab === 'mainstream'}
             title="Popular models with tool calling + vision"
@@ -683,7 +683,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
           >
             <ShieldCheck size={11} /> Mainstream
           </button>
-          <button
+          <button data-testid="models.no-filters-no-limits.click"
             onClick={() => setSubTab('uncensored')}
             aria-pressed={subTab === 'uncensored'}
             title="No filters, no limits"
@@ -713,7 +713,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
             { key: 'middle' as SizeTier, label: 'Medium', desc: '10 to 20 GB' },
             { key: 'highend' as SizeTier, label: 'Big', desc: '>20 GB' },
           ]).map(tier => (
-            <button
+            <button data-testid="models.size-filter-chip.select"
               key={tier.key}
               onClick={() => setVramTier(tier.key)}
               className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-all border ${
@@ -736,7 +736,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
         <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
           <XCircle size={16} className="shrink-0" />
           <span className="flex-1">{installError}</span>
-          <button onClick={() => setInstallError(null)} className="text-red-400 hover:text-red-300 shrink-0">
+          <button data-testid="models.install-error-banner.dismiss" onClick={() => setInstallError(null)} className="text-red-400 hover:text-red-300 shrink-0">
             <X size={14} />
           </button>
         </div>
@@ -777,7 +777,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
             <div className="flex items-center gap-1 text-[10px]">
               <span className="text-gray-400 dark:text-gray-500 mr-0.5">mirror</span>
               {(['civitai.com', 'civitai.red'] as const).map((h) => (
-                <button
+                <button data-testid="models.civitai-mirror.select"
                   key={h}
                   onClick={() => setCivitaiHost(h)}
                   title={h === 'civitai.red'
@@ -803,7 +803,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
               placeholder="e.g. flux, sdxl realistic, anime..."
               className="flex-1 px-3 py-2 rounded-lg bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-sm text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"
             />
-            <button
+            <button data-testid="models.civitai-search.submit"
               onClick={handleCivitaiSearch}
               disabled={civitaiSearching || !civitaiQuery.trim()}
               className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/15 disabled:opacity-50 text-gray-700 dark:text-white transition-colors"
@@ -843,11 +843,11 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
                       ) : isDl ? (
                         <Loader2 size={16} className="animate-spin text-gray-400" />
                       ) : model.downloadUrl ? (
-                        <button onClick={() => handleCivitaiDownload(model)} className="p-2 rounded-lg bg-green-100 dark:bg-green-500/15 hover:bg-green-200 dark:hover:bg-green-500/25 text-green-700 dark:text-green-400 transition-all" title="Download" aria-label="Download">
+                        <button data-testid="models.download.click" onClick={() => handleCivitaiDownload(model)} className="p-2 rounded-lg bg-green-100 dark:bg-green-500/15 hover:bg-green-200 dark:hover:bg-green-500/25 text-green-700 dark:text-green-400 transition-all" title="Download" aria-label="Download">
                           <Download size={14} />
                         </button>
                       ) : null}
-                      <button onClick={() => openExternal(model.sourceUrl)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 transition-all" title="View on CivitAI" aria-label="View on CivitAI">
+                      <button data-testid="models.view-on-civitai.click" onClick={() => openExternal(model.sourceUrl)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 transition-all" title="View on CivitAI" aria-label="View on CivitAI">
                         <ExternalLink size={14} />
                       </button>
                     </div>
@@ -951,7 +951,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
               {infoModel.released && <span className="text-[10px] text-gray-400">released {infoModel.released}</span>}
             </div>
             {infoRepoUrl(infoModel) && (
-              <button
+              <button data-testid="models.model-details-repo-link.open"
                 onClick={() => openExternal(infoRepoUrl(infoModel)!)}
                 className="flex items-center gap-1.5 text-[0.65rem] text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"
               >
@@ -982,10 +982,10 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
               <p className="text-[0.7rem] text-amber-500">{confirmDownload.note}</p>
             )}
             <div className="flex gap-2 pt-1">
-              <GlowButton variant="secondary" onClick={() => setConfirmDownload(null)} className="flex-1">
+              <GlowButton data-testid="models.sharded-download-confirm.cancel" variant="secondary" onClick={() => setConfirmDownload(null)} className="flex-1">
                 Cancel
               </GlowButton>
-              <GlowButton
+              <GlowButton data-testid="models.sharded-download-confirm.start"
                 onClick={() => {
                   const c = confirmDownload
                   setConfirmDownload(null)

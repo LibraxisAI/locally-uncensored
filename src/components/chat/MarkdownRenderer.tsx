@@ -98,7 +98,7 @@ const components: Components = {
   },
   a({ href, children }) {
     return (
-      <button
+      <button data-testid="chat.markdown-link.open-external"
         onClick={(e) => { e.preventDefault(); if (href) openExternal(href) }}
         className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer inline"
       >
@@ -113,7 +113,7 @@ const components: Components = {
     }
     // Untrusted host — do not silently fetch. Offer an explicit click instead.
     return (
-      <button
+      <button data-testid="chat.markdown-image.open-external"
         onClick={(e) => { e.preventDefault(); if (s) openExternal(s) }}
         className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer inline"
         title={s}

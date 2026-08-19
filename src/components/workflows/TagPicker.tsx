@@ -33,7 +33,7 @@ export function TagPicker({
       {tags.map((tag) => {
         const active = selected.has(tag.id)
         return (
-          <button
+          <button data-testid="workflows.tag-picker.toggle-tag"
             key={tag.id}
             type="button"
             aria-pressed={active}

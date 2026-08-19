@@ -24,7 +24,7 @@ export function SpeakerButton({ text }: Props) {
   }
 
   return (
-    <button
+    <button data-testid="chat.message-speaker.toggle"
       onClick={handleClick}
       className={
         "p-1 rounded-md transition-colors " +

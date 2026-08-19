@@ -244,6 +244,7 @@ export function Sidebar() {
           <div className="flex items-center gap-0.5 px-2 pt-2 pb-1">
             {/* Chat tab */}
             <button
+              data-testid="layout.chat.click"
               onClick={() => { setChatMode('lu'); setActiveConversation(null); setView('chat'); setDispatchPicker(false) }}
               title="Chat"
               aria-label="Chat"
@@ -260,6 +261,7 @@ export function Sidebar() {
             {/* Code tab — direct switch to the coding agent (no dropdown).
                 Internal mode value 'codex' is kept for storage back-compat. */}
             <button
+              data-testid="layout.code.click"
               onClick={() => { setChatMode('codex'); setActiveConversation(null); setView('chat'); setDispatchPicker(false) }}
               title="Code"
               aria-label="Code"
@@ -275,6 +277,7 @@ export function Sidebar() {
 
             {/* Remote tab */}
             <button
+              data-testid="layout.remote.click"
               onClick={() => { setChatMode('remote'); setActiveConversation(dispatchedConversationId); setView('chat') }}
               title="Remote"
               aria-label="Remote"
@@ -300,6 +303,7 @@ export function Sidebar() {
                 </div>
                 <div className="flex items-center gap-1">
                   <button
+                    data-testid="layout.hide-qr-panel-reopen-via-the-qr-icon-on-the-chat.click"
                     onClick={hideQr}
                     title="Hide QR panel (reopen via the QR icon on the chat row)"
                     className="flex items-center justify-center w-5 h-5 rounded text-gray-400 hover:bg-white/10 transition-all"
@@ -307,6 +311,7 @@ export function Sidebar() {
                     <X size={8} />
                   </button>
                   <button
+                    data-testid="layout.remote-panel.restart-server"
                     onClick={() => {
                       const conv = conversations.find((c) => c.id === dispatchedConversationId)
                       restart(conv?.model, conv?.systemPrompt)
@@ -319,6 +324,7 @@ export function Sidebar() {
                     Restart
                   </button>
                   <button
+                    data-testid="layout.remote-panel.stop-dispatch"
                     onClick={undispatch}
                     className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.5rem] text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-all"
                   >
@@ -340,6 +346,7 @@ export function Sidebar() {
                 </div>
               ) : qrPngBase64 ? (
                 <button
+                  data-testid="layout.show-large-qr-code.click"
                   onClick={() => setQrModalOpen(true)}
                   title="Show large QR code"
                   className="w-full flex justify-center group"
@@ -354,10 +361,10 @@ export function Sidebar() {
               <div className="flex items-center justify-between">
                 <code className="text-[0.7rem] text-amber-400 font-mono tracking-[3px] font-bold">{passcode}</code>
                 <div className="flex items-center gap-1">
-                  <button onClick={() => copyToClipboard(passcode)} className="p-0.5 hover:bg-white/10 rounded">
+                  <button data-testid="layout.remote-panel.copy-passcode" onClick={() => copyToClipboard(passcode)} className="p-0.5 hover:bg-white/10 rounded">
                     <Copy size={9} className="text-gray-500" />
                   </button>
-                  <button onClick={regenerateToken} className="p-0.5 hover:bg-white/10 rounded">
+                  <button data-testid="layout.remote-panel.regenerate-passcode" onClick={regenerateToken} className="p-0.5 hover:bg-white/10 rounded">
                     <RefreshCw size={9} className="text-gray-500" />
                   </button>
                   {countdown && (
@@ -377,7 +384,7 @@ export function Sidebar() {
                     <code className={`text-[0.5rem] truncate flex-1 ${tunnelActive ? 'text-emerald-400' : 'text-blue-400'}`}>
                       {tunnelActive && tunnelUrl ? `${tunnelUrl}/mobile` : (mobileUrl || lanUrl)}
                     </code>
-                    <button onClick={() => copyToClipboard(tunnelActive && tunnelUrl ? `${tunnelUrl}/mobile` : (mobileUrl || lanUrl))} className="p-0.5 hover:bg-white/10 rounded shrink-0">
+                    <button data-testid="layout.remote-panel.copy-url" onClick={() => copyToClipboard(tunnelActive && tunnelUrl ? `${tunnelUrl}/mobile` : (mobileUrl || lanUrl))} className="p-0.5 hover:bg-white/10 rounded shrink-0">
                       <Copy size={9} className="text-gray-500" />
                     </button>
                   </>
@@ -419,6 +426,7 @@ export function Sidebar() {
           <div className="flex-1 overflow-y-auto px-1.5 pt-1 space-y-px scrollbar-thin">
             {filtered.map((conv) => (
               <div
+                data-testid="layout.chat-row.open"
                 key={conv.id}
                 className={`group flex items-center gap-1.5 px-2 py-1 rounded-md cursor-pointer transition-all ${
                   conv.id === activeConversationId
@@ -438,6 +446,7 @@ export function Sidebar() {
                   {editingId === conv.id ? (
                     <div className="flex items-center gap-1">
                       <input
+                        data-testid="layout.chat-row.rename-input-guard"
                         value={editTitle}
                         onChange={(e) => setEditTitle(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleRename(conv.id)}
@@ -445,8 +454,8 @@ export function Sidebar() {
                         autoFocus
                         onClick={(e) => e.stopPropagation()}
                       />
-                      <button onClick={(e) => { e.stopPropagation(); handleRename(conv.id) }} className="text-green-400"><Check size={11} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); setEditingId(null) }} className="text-gray-500"><X size={11} /></button>
+                      <button data-testid="layout.chat-row.confirm-rename" onClick={(e) => { e.stopPropagation(); handleRename(conv.id) }} className="text-green-400"><Check size={11} /></button>
+                      <button data-testid="layout.chat-row.cancel-rename" onClick={(e) => { e.stopPropagation(); setEditingId(null) }} className="text-gray-500"><X size={11} /></button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -466,6 +475,7 @@ export function Sidebar() {
                         marker, the actual scannable code lives in the modal. */}
                     {isRemoteMode && conv.id === dispatchedConversationId && remoteEnabled && (
                       <button
+                        data-testid="layout.show-qr-passcode.click"
                         onClick={(e) => { e.stopPropagation(); setQrModalOpen(true) }}
                         title="Show QR & passcode"
                         className="p-1 rounded hover:bg-green-500/15 text-green-400 transition-colors"
@@ -475,6 +485,7 @@ export function Sidebar() {
                     )}
                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
+                        data-testid="layout.rename-chat.click"
                         onClick={(e) => { e.stopPropagation(); setEditingId(conv.id); setEditTitle(conv.title) }}
                         title="Rename chat"
                         aria-label="Rename chat"
@@ -483,6 +494,7 @@ export function Sidebar() {
                         <Edit3 size={13} />
                       </button>
                       <button
+                        data-testid="layout.delete-chat.click"
                         onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id) }}
                         title="Delete chat"
                         aria-label="Delete chat"
@@ -516,6 +528,7 @@ export function Sidebar() {
               <div className="mb-1.5 px-2 py-1 rounded border border-red-500/30 bg-red-500/5 text-[0.55rem] text-red-300/90 flex items-start gap-1.5">
                 <span className="break-words flex-1 leading-snug">{remoteError}</span>
                 <button
+                  data-testid="layout.dismiss.click-5"
                   onClick={() => useRemoteStore.getState().clearError()}
                   title="Dismiss"
                   className="shrink-0 p-0.5 rounded text-red-400/70 hover:text-red-300 hover:bg-red-500/15 transition-all"
@@ -528,6 +541,7 @@ export function Sidebar() {
               <AnimatePresence mode="wait">
                 {!dispatchPicker ? (
                   <motion.button
+                    data-testid="layout.sidebar.open-dispatch-picker"
                     key="dispatch"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -542,7 +556,7 @@ export function Sidebar() {
                   </motion.button>
                 ) : (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => setDispatchPicker(false)} />
+                    <div data-testid="layout.dispatch-picker.close-overlay" className="fixed inset-0 z-40" onClick={() => setDispatchPicker(false)} />
                     <motion.div
                       key="picker"
                       initial={{ opacity: 0 }}
@@ -552,6 +566,7 @@ export function Sidebar() {
                       className="relative z-50 w-full flex items-center gap-0.5"
                     >
                       <button
+                        data-testid="layout.dispatch-picker.start-lan"
                         onClick={() => handleDispatch('lan')}
                         className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-md text-[0.55rem] font-medium text-gray-400 border border-zinc-300/40 dark:border-zinc-500/40 hover:bg-white/[0.05] hover:text-zinc-100 hover:border-zinc-300/60 dark:hover:border-zinc-400/60 transition-all cursor-pointer"
                       >
@@ -559,6 +574,7 @@ export function Sidebar() {
                         LAN
                       </button>
                       <button
+                        data-testid="layout.dispatch-picker.start-internet"
                         onClick={() => handleDispatch('internet')}
                         className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-md text-[0.55rem] font-medium text-gray-400 border border-zinc-300/40 dark:border-zinc-500/40 hover:bg-white/[0.05] hover:text-zinc-100 hover:border-zinc-300/60 dark:hover:border-zinc-400/60 transition-all cursor-pointer"
                       >
@@ -571,6 +587,7 @@ export function Sidebar() {
               </AnimatePresence>
             ) : (
               <button
+                data-testid="layout.sidebar.new-chat"
                 onClick={handleNewChat}
                 title={activeModel ? 'Start a new chat' : 'Pick or install a model first'}
                 className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[0.65rem] font-medium bg-gray-50 dark:bg-white/[0.03] hover:bg-gray-100 dark:hover:bg-white/[0.05] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-white/[0.06] hover:border-gray-300 dark:hover:border-white/[0.1] transition-all"
@@ -587,12 +604,14 @@ export function Sidebar() {
           is the gesture people reach for first. */}
       {rowMenu && (
         <div
+          data-testid="layout.chat-row-menu.close-overlay"
           key="row-menu"
           className="fixed inset-0 z-[110]"
           onClick={() => setRowMenu(null)}
           onContextMenu={(e) => { e.preventDefault(); setRowMenu(null) }}
         >
           <div
+            data-testid="layout.chat-row-menu.keep-open"
             role="menu"
             aria-label="Chat actions"
             className="absolute min-w-[9rem] py-1 rounded-md bg-white dark:bg-[#141414] border border-gray-200 dark:border-white/10 shadow-lg text-[0.7rem]"
@@ -600,6 +619,7 @@ export function Sidebar() {
             onClick={(e) => e.stopPropagation()}
           >
             <button
+              data-testid="layout.chat-row-menu.rename"
               role="menuitem"
               onClick={() => {
                 const conv = conversations.find((c) => c.id === rowMenu.id)
@@ -613,6 +633,7 @@ export function Sidebar() {
               <span>Rename</span>
             </button>
             <button
+              data-testid="layout.chat-row-menu.delete"
               role="menuitem"
               onClick={() => { deleteConversation(rowMenu.id); setRowMenu(null) }}
               className="w-full flex items-center gap-2 px-3 py-1.5 text-red-500 hover:bg-red-500/10"
@@ -627,6 +648,7 @@ export function Sidebar() {
       {/* QR Modal — large QR + passcode + URL, opened from the LIVE panel */}
       {qrModalOpen && (
         <motion.div
+          data-testid="layout.qr-modal.close-backdrop"
           key="qr-modal"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -636,6 +658,7 @@ export function Sidebar() {
           onClick={() => setQrModalOpen(false)}
         >
           <motion.div
+            data-testid="layout.qr-modal.keep-open"
             initial={{ scale: 0.92, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.92, opacity: 0 }}
@@ -649,6 +672,7 @@ export function Sidebar() {
                 <span className="text-[0.7rem] font-medium tracking-wide">LIVE</span>
               </div>
               <button
+                data-testid="layout.close.click"
                 onClick={() => setQrModalOpen(false)}
                 className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
                 aria-label="Close"
@@ -677,6 +701,7 @@ export function Sidebar() {
             <div className="flex items-center justify-center gap-3 w-full">
               <code className="text-2xl font-mono font-bold text-amber-400 tracking-[8px]">{passcode}</code>
               <button
+                data-testid="layout.copy-passcode.click"
                 onClick={() => copyToClipboard(passcode)}
                 className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
                 title="Copy passcode"
@@ -695,6 +720,7 @@ export function Sidebar() {
                 {tunnelActive && tunnelUrl ? `${tunnelUrl}/mobile` : (mobileUrl || lanUrl)}
               </code>
               <button
+                data-testid="layout.copy-url.click"
                 onClick={() => copyToClipboard(tunnelActive && tunnelUrl ? `${tunnelUrl}/mobile` : (mobileUrl || lanUrl))}
                 className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors shrink-0"
                 title="Copy URL"

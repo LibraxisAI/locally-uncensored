@@ -34,7 +34,7 @@ export function PullModelDialog({ open, onClose }: Props) {
           <p className="text-[0.6rem] text-gray-500 mt-1">Progress appears in the download icon in the header.</p>
         </div>
 
-        <GlowButton onClick={handlePull} disabled={!modelName.trim()} className="w-full flex items-center justify-center gap-2">
+        <GlowButton data-testid="models.pull-dialog.submit" onClick={handlePull} disabled={!modelName.trim()} className="w-full flex items-center justify-center gap-2">
           <Download size={16} />
           Pull Model
         </GlowButton>

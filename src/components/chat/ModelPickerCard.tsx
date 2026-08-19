@@ -52,7 +52,7 @@ function ModelList({ models, selected, onPick }: { models: string[]; selected: s
   return (
     <div className="space-y-0.5 max-h-40 overflow-y-auto scrollbar-thin pr-0.5">
       {models.map((m) => (
-        <button
+        <button data-testid="chat.model-list-entry.select"
           key={m}
           type="button"
           onClick={(e) => { e.stopPropagation(); onPick(m) }}
@@ -104,14 +104,14 @@ export function ModelPickerCard({ request }: { request: ModelPickRequest }) {
       </div>
       <ModelList models={request.models} selected={selected} onPick={setSelected} />
       <div className="flex items-center gap-2 pt-0.5">
-        <button
+        <button data-testid="chat.model-picker.continue"
           type="button"
           onClick={(e) => { e.stopPropagation(); choose({ model: selected, save }) }}
           className="flex items-center gap-1 px-2.5 py-1 rounded text-[0.6rem] font-medium text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/15 border border-blue-500/25 transition-colors"
         >
           <Check size={10} /> Continue
         </button>
-        <button
+        <button data-testid="chat.remember-this-model-for-future-prompts.click"
           type="button"
           onClick={(e) => { e.stopPropagation(); setSave(!save) }}
           title="Remember this model for future prompts"
@@ -168,6 +168,7 @@ export function ChangeModelInline({ kind }: { kind: ModelPickKind }) {
       {!open ? (
         <button
           type="button"
+          data-testid="chat.change-model-inline.click"
           onClick={(e) => { e.stopPropagation(); setOpen(true) }}
           className="flex items-center gap-1 text-[0.5rem] text-gray-400 dark:text-gray-600 hover:text-gray-600 dark:hover:text-gray-400 transition-colors"
           title={`Saved model: ${preferred}`}
@@ -180,7 +181,7 @@ export function ChangeModelInline({ kind }: { kind: ModelPickKind }) {
             <span className="text-[0.55rem] font-medium text-gray-600 dark:text-gray-400">
               Saved {PICK_KIND_LABEL[kind]}, applies from the next generation
             </span>
-            <button type="button" onClick={(e) => { e.stopPropagation(); setOpen(false) }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <button data-testid="chat.change-model-inline.close" type="button" onClick={(e) => { e.stopPropagation(); setOpen(false) }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
               <X size={9} />
             </button>
           </div>

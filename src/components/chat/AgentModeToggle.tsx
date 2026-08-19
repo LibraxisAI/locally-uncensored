@@ -129,7 +129,7 @@ export function AgentModeToggle() {
     <>
       {/* Tools-style button (same size/look as the Tools toggle it sits next
           to). Green when active, dimmed + disabled when the model can't agent. */}
-      <button
+      <button data-testid="chat.agent-mode.toggle"
         onClick={handleToggle}
         disabled={!isCompatible}
         title={
@@ -189,14 +189,14 @@ export function AgentModeToggle() {
 
           {/* Actions */}
           <div className="flex items-center justify-between pt-1">
-            <button
+            <button data-testid="chat.agent-new-chat-hint.cancel"
               onClick={() => { setShowNewChatModal(false); setNeverShowChecked(false) }}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[0.7rem] text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
             >
               Cancel
             </button>
 
-            <button
+            <button data-testid="chat.agent-new-chat.create"
               onClick={handleNewAgentChat}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-green-500/15 border border-green-500/30 text-green-300 hover:bg-green-500/25 transition-colors"
             >

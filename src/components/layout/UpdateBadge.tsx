@@ -63,6 +63,7 @@ export function UpdateBadge() {
     <div ref={ref} className="relative">
       {/* Badge button */}
       <button
+        data-testid="layout.update-badge.toggle-panel"
         onClick={() => setOpen(!open)}
         className={`relative flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[0.7rem] font-medium transition-colors ${
           isDownloaded
@@ -128,6 +129,7 @@ export function UpdateBadge() {
               </span>
               {!isDownloading && !isInstalling && (
                 <button
+                  data-testid="layout.dismiss.click-7"
                   onClick={(e) => { e.stopPropagation(); dismissUpdate(); setOpen(false) }}
                   className="p-0.5 rounded text-gray-600 hover:text-gray-300 transition-colors"
                   title="Dismiss"
@@ -192,6 +194,7 @@ export function UpdateBadge() {
               {canDownload && (
                 <>
                   <button
+                    data-testid="layout.update-panel.download"
                     onClick={() => downloadUpdate()}
                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[0.65rem] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
                   >
@@ -199,6 +202,7 @@ export function UpdateBadge() {
                     Download Update
                   </button>
                   <button
+                    data-testid="layout.update-panel.later-idle"
                     onClick={() => { dismissUpdate(); setOpen(false) }}
                     className="px-2 py-1.5 rounded-md text-[0.65rem] text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] transition-colors"
                   >
@@ -218,6 +222,7 @@ export function UpdateBadge() {
               {isDownloaded && (
                 <>
                   <button
+                    data-testid="layout.update-panel.install-restart"
                     onClick={() => installAndRestart()}
                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[0.65rem] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
                   >
@@ -225,6 +230,7 @@ export function UpdateBadge() {
                     Restart Now
                   </button>
                   <button
+                    data-testid="layout.update-panel.later-downloaded"
                     onClick={() => { setOpen(false) }}
                     className="px-2 py-1.5 rounded-md text-[0.65rem] text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] transition-colors"
                   >
@@ -245,6 +251,7 @@ export function UpdateBadge() {
               {isError && (
                 <>
                   <button
+                    data-testid="layout.update-panel.retry-download"
                     onClick={() => downloadUpdate()}
                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[0.65rem] font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
                   >
@@ -252,6 +259,7 @@ export function UpdateBadge() {
                     Retry
                   </button>
                   <button
+                    data-testid="layout.update-panel.dismiss-error"
                     onClick={() => { dismissUpdate(); setOpen(false) }}
                     className="px-2 py-1.5 rounded-md text-[0.65rem] text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] transition-colors"
                   >
@@ -264,6 +272,7 @@ export function UpdateBadge() {
               {!isTauri() && downloadStatus === 'idle' && (
                 <>
                   <button
+                    data-testid="layout.update-panel.open-release-page"
                     onClick={() => {
                       window.open(`https://github.com/purpledoubled/locally-uncensored/releases/latest`, '_blank')
                       setOpen(false)
@@ -274,6 +283,7 @@ export function UpdateBadge() {
                     View Release
                   </button>
                   <button
+                    data-testid="layout.update-panel.later-dev"
                     onClick={() => { dismissUpdate(); setOpen(false) }}
                     className="px-2 py-1.5 rounded-md text-[0.65rem] text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] transition-colors"
                   >

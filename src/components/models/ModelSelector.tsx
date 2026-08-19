@@ -39,7 +39,7 @@ function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
       </div>
       {cloudChat.length > 0 ? (
         cloudChat.map((m) => (
-          <button
+          <button data-testid="models.runs-on-lu-cloud-tap-to-see-plans.click"
             key={m.name}
             onClick={open}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
@@ -53,7 +53,7 @@ function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
           </button>
         ))
       ) : (
-        <button
+        <button data-testid="models.runs-on-lu-cloud-tap-to-see-plans.click-2"
           onClick={open}
           className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
           title="Runs on LU Cloud, tap to see plans"
@@ -165,7 +165,7 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
 
   return (
     <div className="relative px-2.5 py-2 border-b border-black/[0.06] dark:border-white/[0.04] bg-black/[0.03] dark:bg-white/[0.03]">
-      <button
+      <button data-testid="models.dismiss-returns-on-next-launch.click"
         onClick={(e) => { e.stopPropagation(); LM_HINT_DISMISSED_THIS_SESSION = true; setDismissed(true) }}
         aria-label="Dismiss (returns on next launch)"
         title="Dismiss (returns on next launch)"
@@ -176,7 +176,7 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
       <p className="text-[0.6rem] text-gray-600 dark:text-gray-300 leading-snug mb-1.5 pr-5">
         LM Studio is installed ({status.model_count} model{status.model_count === 1 ? '' : 's'} on disk) but its server isn't running. Start it to pick LM Studio models here.
       </p>
-      <button
+      <button data-testid="models.lmstudio-server.start"
         onClick={handleStart}
         disabled={starting}
         className="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded text-[0.62rem] bg-black/[0.06] dark:bg-white/[0.06] hover:bg-black/[0.1] dark:hover:bg-white/[0.12] text-gray-700 dark:text-gray-200 transition-colors disabled:opacity-50"
@@ -413,7 +413,7 @@ function LoadToggle({ loaded, busy, disabled, onClick }: {
   loaded: boolean; busy: boolean; disabled: boolean; onClick: () => void
 }) {
   return (
-    <button
+    <button data-testid="models.model-row-vram.toggle"
       onClick={(e) => { e.stopPropagation(); onClick() }}
       disabled={disabled}
       title={loaded
@@ -703,7 +703,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
   return (
     <div ref={ref} className="relative">
       {/* ── Trigger Button ── */}
-      <button
+      <button data-testid="models.select-chat-model.click"
         onClick={() => setOpen(!open)}
         title={activeModel ? `Model: ${activeDisplayName}, click to switch` : 'Select a chat model'}
         aria-label="Select chat model"
@@ -814,7 +814,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
                     const rowDisabled = selectingLms !== null || togglingLms !== null
 
                     return (
-                      <div
+                      <div data-testid="models.model-row.select"
                         key={model.name}
                         role="button"
                         tabIndex={rowDisabled ? -1 : 0}
@@ -957,7 +957,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
             {/* Sticky footer: Unload */}
             {hasOllamaModels && (
               <div className="border-t border-black/[0.06] dark:border-white/[0.04] px-1 py-1">
-                <button
+                <button data-testid="models.unload-all.click"
                   onClick={async (e) => {
                     e.stopPropagation()
                     if (unloading) return

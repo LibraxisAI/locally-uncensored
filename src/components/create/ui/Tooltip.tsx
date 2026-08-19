@@ -84,6 +84,7 @@ const handleFocus = (
 
   return (
         <span
+      data-testid="create.tooltip-anchor.hide"
       ref={anchor}
       className={cn('relative inline-flex', className)}
       onMouseEnter={open}

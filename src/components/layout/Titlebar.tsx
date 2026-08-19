@@ -74,6 +74,7 @@ export function Titlebar() {
       {/* Right: Window controls (Windows/Linux — custom, since decorations:false) */}
       <div className="flex items-center">
         <button
+          data-testid="layout.minimize.click"
           onClick={handleMinimize}
           className={`${btnBase} text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10`}
           aria-label="Minimize"
@@ -81,6 +82,7 @@ export function Titlebar() {
           <Minus size={14} strokeWidth={1.5} />
         </button>
         <button
+          data-testid="layout.titlebar.toggle-maximize"
           onClick={handleToggleMaximize}
           className={`${btnBase} text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10`}
           aria-label={isMaximized ? 'Restore' : 'Maximize'}
@@ -88,6 +90,7 @@ export function Titlebar() {
           {isMaximized ? <Copy size={11} strokeWidth={1.5} /> : <Square size={11} strokeWidth={1.5} />}
         </button>
         <button
+          data-testid="layout.close.click-2"
           onClick={handleClose}
           className={`${btnBase} text-gray-500 dark:text-gray-400 hover:bg-red-500 hover:text-white`}
           aria-label="Close"

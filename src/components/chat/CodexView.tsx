@@ -143,7 +143,7 @@ export function CodexView() {
           {/* New coding session — aborts any running loop and starts a fresh
               chat/thread (keeps the working directory). David 2026-06-04:
               "start neu" must actually start new. */}
-          <button
+          <button data-testid="chat.new-coding-session-clears-the-current-run-keeps-.click"
             onClick={startNewSession}
             title="New coding session (clears the current run, keeps the folder)"
             className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.55rem] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
@@ -166,13 +166,13 @@ export function CodexView() {
             <span className="text-[0.6rem] text-amber-600 dark:text-amber-400/90 flex-1 leading-tight">
               Git isn't installed. The coding agent needs it for diffs, commits and history.
             </span>
-            <button
+            <button data-testid="chat.codex-git-install.open"
               onClick={() => openExternal(gitStatus.download_url)}
               className="flex items-center gap-1 px-2 py-0.5 rounded text-[0.6rem] font-medium bg-amber-500/15 text-amber-600 dark:text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 transition-colors"
             >
               <Download size={11} /> Install Git
             </button>
-            <button
+            <button data-testid="chat.re-check-after-installing-git.click"
               onClick={recheckGit}
               disabled={gitChecking}
               title="Re-check after installing Git"

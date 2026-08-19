@@ -47,6 +47,7 @@ export function VhsInstallModal() {
 
         <div className="flex flex-col gap-2 pt-1">
           <button
+            data-testid="create.vhs-install.confirm"
             onClick={() => choose('install')}
             className="w-full px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-200 text-sm font-medium transition-colors flex items-center justify-center gap-2"
           >
@@ -54,12 +55,14 @@ export function VhsInstallModal() {
             Install VHS_VideoCombine + continue
           </button>
           <button
+            data-testid="create.vhs-install.continue-webp"
             onClick={() => choose('webp')}
             className="w-full px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-medium transition-colors"
           >
             Continue anyway with animated .webp
           </button>
           <button
+            data-testid="create.vhs-install.cancel-generation"
             onClick={() => choose('cancel')}
             className="w-full px-4 py-1.5 rounded-lg hover:bg-white/5 text-gray-500 hover:text-gray-300 text-xs transition-colors"
           >

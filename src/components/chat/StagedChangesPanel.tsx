@@ -124,7 +124,7 @@ export function StagedChangesPanel({ chatId }: Props) {
                     {change.path}
                   </span>
                   <span className="flex items-center gap-0.5 shrink-0">
-                    <button
+                    <button data-testid="chat.apply.click"
                       onClick={() => applyOne(change)}
                       disabled={isApplying}
                       title="Apply"
@@ -132,7 +132,7 @@ export function StagedChangesPanel({ chatId }: Props) {
                     >
                       <Check size={10} />
                     </button>
-                    <button
+                    <button data-testid="chat.reject.click"
                       onClick={() => rejectOne(change)}
                       disabled={isApplying}
                       title="Reject"

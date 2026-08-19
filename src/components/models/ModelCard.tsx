@@ -23,7 +23,7 @@ export function ModelCard({ model, isActive, onSelect, onDelete, onInfo, canDele
   const TypeIcon = typeInfo.icon
 
   return (
-    <div
+    <div data-testid="models.installed-card.activate"
       onClick={onSelect}
       className={`flex items-center gap-2.5 px-3 py-1.5 rounded-lg border cursor-pointer transition-all group ${
         isActive
@@ -60,7 +60,7 @@ export function ModelCard({ model, isActive, onSelect, onDelete, onInfo, canDele
             <BenchmarkButton modelName={model.name} />
           </div>
         )}
-        <button
+        <button data-testid="models.details.click"
           onClick={(e) => { e.stopPropagation(); onInfo() }}
           className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
           title="Details"
@@ -68,7 +68,7 @@ export function ModelCard({ model, isActive, onSelect, onDelete, onInfo, canDele
           <Info size={12} />
         </button>
         {canDelete && (
-          <button
+          <button data-testid="models.delete.click"
             onClick={(e) => { e.stopPropagation(); onDelete() }}
             className="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
             title="Delete"

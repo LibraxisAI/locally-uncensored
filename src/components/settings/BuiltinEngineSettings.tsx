@@ -123,6 +123,7 @@ export function BuiltinEngineSettings() {
           {(['auto', 'on', 'off'] as const).map((v) => (
             <button
               key={v}
+              data-testid="settings.flash-attention.select"
               onClick={() => patch({ flashAttn: v })}
               className={`px-2 py-1 rounded text-[0.65rem] transition-colors ${
                 tuning.flashAttn === v
@@ -219,6 +220,7 @@ export function BuiltinEngineSettings() {
               : 'No restart needed — the next engine start uses these settings.'}
           </div>
           <button
+            data-testid="settings.builtin-engine.apply-restart"
             onClick={apply}
             disabled={!running || busy || vQuantNeedsFa}
             className="shrink-0 px-2.5 py-1 rounded-md text-[0.6rem] font-medium bg-white dark:bg-white/10 text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-white/15 border border-gray-200 dark:border-white/15 transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"

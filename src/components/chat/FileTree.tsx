@@ -102,7 +102,7 @@ export function FileTree() {
     <div className="h-full flex flex-col border-l border-gray-200 dark:border-white/[0.04] bg-gray-50 dark:bg-white/[0.01]">
       {/* Directory picker — click to open native dialog */}
       <div className="p-1.5 border-b border-gray-200 dark:border-white/[0.04]">
-        <button
+        <button data-testid="chat.file-tree-folder.pick"
           onClick={handlePickClick}
           className="w-full flex items-center gap-1 px-1.5 py-1 rounded bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/[0.06] hover:border-gray-400 dark:hover:border-white/15 transition-colors text-left"
         >
@@ -127,7 +127,7 @@ export function FileTree() {
           </p>
         ) : (
           fileTree.map((node, i) => (
-            <button
+            <button data-testid="chat.file-tree-entry.open"
               key={i}
               onClick={() => node.isDirectory && loadDirectory(node.path)}
               className={`flex items-center gap-1 w-full px-1 py-[2px] text-[0.5rem] rounded transition-colors text-left ${
@@ -149,7 +149,7 @@ export function FileTree() {
 
       {/* Bottom nav */}
       <div className="flex items-center justify-center gap-1 px-1.5 py-1 border-t border-gray-200 dark:border-white/[0.04]">
-        <button
+        <button data-testid="chat.file-tree.parent"
           onClick={goBack}
           disabled={!workingDirectory}
           className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/5 text-gray-400 dark:text-gray-600 disabled:opacity-30 transition-colors"
@@ -157,7 +157,7 @@ export function FileTree() {
         >
           <ArrowLeft size={10} />
         </button>
-        <button
+        <button data-testid="chat.file-tree.refresh"
           onClick={() => workingDirectory && loadDirectory(workingDirectory)}
           disabled={!workingDirectory}
           className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/5 text-gray-400 dark:text-gray-600 disabled:opacity-30 transition-colors"

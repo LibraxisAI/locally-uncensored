@@ -74,6 +74,7 @@ export function StaleModelsBanner() {
         )}
       </div>
       <button
+        data-testid="layout.stale-models-banner.refresh-all"
         onClick={refreshAll}
         disabled={refreshingAll || pending.length === 0}
         className="flex items-center gap-1 px-2 py-1 rounded bg-amber-500/20 border border-amber-400/40 text-amber-800 dark:text-amber-200 text-[0.65rem] font-medium hover:bg-amber-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -97,6 +98,7 @@ export function StaleModelsBanner() {
         )}
       </button>
       <button
+        data-testid="layout.dismiss-until-next-launch.click"
         onClick={dismiss}
         className="p-1 rounded text-amber-700/70 dark:text-amber-300/70 hover:text-amber-900 dark:hover:text-amber-100 hover:bg-amber-500/20 transition-colors"
         aria-label="Dismiss until next launch"

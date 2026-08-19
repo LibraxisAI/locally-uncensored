@@ -44,7 +44,7 @@ function CodexEventBlockImpl({ event }: Props) {
 
   return (
     <div className="mb-0.5">
-      <button
+      <button data-testid="chat.codex-event.toggle"
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 py-0.5 text-left hover:opacity-80 transition-opacity w-full"
       >

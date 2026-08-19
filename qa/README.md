@@ -46,3 +46,12 @@ Artefakt.
 - Kein pass ohne Artefakt, kein Push und kein Release ohne Davids Go.
 - Bedingte Env-Gates (test.skip(bedingung, grund)) sind erlaubt,
   bedingungslose Skips nicht; verify.mjs prueft das.
+
+## Stand nach Phase 2 (19.08.2026 nachmittags)
+
+536 von 556 Elementen adressierbar (data-testid = Inventar-id), 26 geparkt
+mit Grund, 0 offen ohne Adresse. Fuenf Wrapper (create/ui/Button,
+DeleteButton, ToolBtn, IconBtn, PromptField, dazu WorkspaceOption im Chat)
+reichen data-testid als optionale Prop durch, Instanz-Wert schlaegt
+Fallback. Gates: tsc Baseline unveraendert (333 vorbestehende Fehler, kein
+neuer), vitest 4778 gruen, Playwright 11 gruen und 3 Env-geskippt.

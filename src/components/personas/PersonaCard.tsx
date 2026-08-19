@@ -22,7 +22,7 @@ export function PersonaCard({ name, icon, isActive, onClick }: Props) {
   const Icon = iconMap[icon] || Bot
 
   return (
-    <motion.button
+    <motion.button data-testid="personas.persona-card.activate"
       onClick={onClick}
       className={`flex flex-col items-center justify-center gap-1.5 rounded-xl border transition-all cursor-pointer w-full aspect-square ${
         isActive

@@ -68,8 +68,8 @@ export class ErrorBoundary extends Component<Props, State> {
               {this.state.error?.message || 'Unknown error'}
             </div>
             <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
-              <button style={btn} onClick={() => window.location.reload()}>Reload</button>
-              <button style={btn} onClick={resetSettingsAndReload}>Reset settings &amp; reload</button>
+              <button data-testid="ui.fatal-error.reload" style={btn} onClick={() => window.location.reload()}>Reload</button>
+              <button data-testid="ui.fatal-error.reset-settings" style={btn} onClick={resetSettingsAndReload}>Reset settings &amp; reload</button>
             </div>
             <div style={{ fontSize: 11, color: '#6b7280', maxWidth: 520 }}>
               Reset clears app settings (providers, preferences) but keeps your chats &amp; knowledge.
@@ -84,7 +84,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <p className="text-xs text-gray-500 text-center max-w-[200px] break-words">
             {this.state.error?.message || 'Unknown error'}
           </p>
-          <button
+          <button data-testid="ui.error-boundary.retry"
             onClick={this.handleReset}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
           >

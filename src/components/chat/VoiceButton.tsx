@@ -117,7 +117,7 @@ export function VoiceButton({ onTranscript, onInterim, onRecordingChange, disabl
 
   return (
     <div className="relative shrink-0">
-      <motion.button
+      <motion.button data-testid="chat.voice-record.toggle"
         onClick={handleClick}
         disabled={disabled}
         className={`p-1.5 rounded-lg transition-all shrink-0 relative ${

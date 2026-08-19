@@ -47,7 +47,7 @@ export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
           <p className="text-[0.55rem] text-gray-600">{workflow.steps.length} steps</p>
         </div>
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-          <button
+          <button data-testid="agents.run.click"
             onClick={() => onRun(workflow.id)}
             className="p-1 rounded hover:bg-green-500/20 text-gray-500 hover:text-green-400"
             title="Run"
@@ -55,7 +55,7 @@ export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
             <Play size={11} />
           </button>
           {!workflow.isBuiltIn && (
-            <button
+            <button data-testid="agents.edit.click"
               onClick={() => onEdit(workflow.id)}
               className="p-1 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300"
               title="Edit"
@@ -63,7 +63,7 @@ export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
               <Pencil size={11} />
             </button>
           )}
-          <button
+          <button data-testid="agents.duplicate.click"
             onClick={() => duplicateWorkflow(workflow.id)}
             className="p-1 rounded hover:bg-white/10 text-gray-500 hover:text-gray-300"
             title="Duplicate"
@@ -71,7 +71,7 @@ export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
             <Copy size={11} />
           </button>
           {!workflow.isBuiltIn && (
-            <button
+            <button data-testid="agents.workflow-list.delete-workflow"
               onClick={() => handleDelete(workflow.id)}
               className={`p-1 rounded text-gray-500 ${confirmDelete === workflow.id ? 'bg-red-500/20 text-red-400' : 'hover:bg-red-500/20 hover:text-red-400'}`}
               title={confirmDelete === workflow.id ? 'Confirm delete' : 'Delete'}
@@ -107,7 +107,7 @@ export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
       )}
 
       {/* Create button */}
-      <button
+      <button data-testid="agents.workflow-list.create-workflow"
         onClick={onCreate}
         className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg bg-white/[0.03] border border-white/10 text-[0.65rem] text-gray-500 hover:text-gray-300 hover:border-white/20 transition-colors"
       >

@@ -70,14 +70,14 @@ export function ChatArtifactCard({ artifact }: { artifact: ChatArtifact }) {
         <span className="text-[0.55rem] text-gray-400 dark:text-gray-500 shrink-0 whitespace-nowrap">
           {lines.length} {lines.length === 1 ? 'line' : 'lines'} · {sizeLabel}
         </span>
-        <button
+        <button data-testid="chat.artifact-content.copy"
           onClick={handleCopy}
           title={copied ? 'Copied' : 'Copy contents'}
           className="p-1 rounded text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors shrink-0"
         >
           {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
         </button>
-        <button
+        <button data-testid="chat.download-save-as.click"
           onClick={handleDownload}
           disabled={saveState === 'saving'}
           title="Download / Save as…"

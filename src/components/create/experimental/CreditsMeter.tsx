@@ -59,6 +59,7 @@ export function CreditsMeter() {
   // tab; the training count is a plan property, so that one goes to the plans.
   const upsell = (label: string, tab?: 'credits') => (
     <button
+      data-testid="create.credits-upsell.open-pricing"
       onClick={() => void openExternal(`${CLOUD_BASE}/pricing${tab ? '?tab=credits' : ''}`)}
       className="t-control px-2 h-[var(--control-h-sm)] inline-flex items-center rounded-md bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 transition-colors"
     >

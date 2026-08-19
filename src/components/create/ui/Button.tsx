@@ -21,6 +21,7 @@ interface Props {
   ariaLabel?: string
   type?: 'button' | 'submit'
   active?: boolean
+  'data-testid'?: string
 }
 
 const SIZE_H: Record<Size, string> = {
@@ -48,11 +49,12 @@ const VARIANT: Record<Variant, string> = {
 export function Button({
   children, onClick, variant = 'secondary', size = 'md', icon: Icon,
   iconOnly = false, loading = false, disabled = false, fullWidth = false,
-  title, ariaLabel, type = 'button', active = false,
+  title, ariaLabel, type = 'button', active = false, 'data-testid': testId,
 }: Props) {
   const isDisabled = disabled || loading
   return (
     <motion.button
+      data-testid={testId ?? 'create.ui-button.forward-click'}
       type={type}
       title={title}
       aria-label={ariaLabel ?? title}

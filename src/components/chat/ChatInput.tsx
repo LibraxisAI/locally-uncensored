@@ -334,7 +334,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
                     alt={img.name}
                     className="w-14 h-14 object-cover rounded-lg border border-white/10"
                   />
-                  <button
+                  <button data-testid="chat.composer-image.remove"
                     onClick={() => removeImage(i)}
                     className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                   >
@@ -377,7 +377,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
             composerActions + composerModel (David 2026-07-11, web parity). */}
         <div className="flex items-center gap-1 px-2 py-1.5 border-t border-gray-200 dark:border-white/[0.05] flex-wrap">
           {/* Clip button */}
-          <button
+          <button data-testid="chat.composer-attach.click"
             onClick={() => fileInputRef.current?.click()}
             disabled={isGenerating}
             className="p-1.5 rounded-md text-gray-500 hover:text-gray-300 hover:bg-white/5 disabled:opacity-20 transition-all shrink-0"
@@ -408,7 +408,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
           />
 
           {/* Think toggle ('always'-models render it locked on) */}
-          <button
+          <button data-testid="chat.composer-think.toggle"
             onClick={() => {
               if (canThink) updateSettings({ thinkingEnabled: !thinkingEnabled })
             }}
@@ -440,7 +440,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
           {composerModel}
 
           {isGenerating ? (
-            <motion.button
+            <motion.button data-testid="chat.stop-generation.click"
               onClick={onStop}
               className="p-1.5 rounded-md bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-all shrink-0"
               whileTap={{ scale: 0.9 }}
@@ -449,7 +449,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
               <Square size={13} />
             </motion.button>
           ) : (
-            <motion.button
+            <motion.button data-testid="chat.send-message.click"
               onClick={handleSend}
               disabled={(!input.trim() && images.length === 0) || isTranscribing}
               className="p-1.5 rounded-md bg-white/8 text-gray-300 hover:bg-white/12 disabled:opacity-20 disabled:cursor-not-allowed transition-all shrink-0"

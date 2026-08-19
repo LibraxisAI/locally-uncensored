@@ -26,7 +26,7 @@ export function BenchmarkButton({ modelName }: Props) {
         </span>
       )}
       {isThisRunning ? (
-        <button
+        <button data-testid="models.stop-benchmark.click"
           onClick={stopBenchmark}
           className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 text-[0.55rem] hover:bg-red-500/25 transition-colors"
           title="Stop benchmark"
@@ -35,7 +35,7 @@ export function BenchmarkButton({ modelName }: Props) {
           {currentStep}/{totalSteps}
         </button>
       ) : (
-        <button
+        <button data-testid="models.installed-card-benchmark.run"
           onClick={() => runBenchmark(modelName)}
           disabled={isRunning}
           className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/5 text-gray-400 text-[0.55rem] hover:bg-white/10 hover:text-gray-300 transition-colors disabled:opacity-30"

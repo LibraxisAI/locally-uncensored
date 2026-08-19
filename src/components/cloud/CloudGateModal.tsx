@@ -33,7 +33,7 @@ function PlanGrid() {
   return (
     <div className="grid grid-cols-3 gap-2">
       {PLANS.map((p) => (
-        <button
+        <button data-testid="cloud.gate.open-plan-pricing"
           key={p.anchor}
           onClick={() => void openExternal(`${CLOUD_BASE}/pricing#${p.anchor}`)}
           className="flex flex-col items-center gap-0.5 px-2 py-3 rounded-lg border border-[#7c3aed]/40 bg-[#7c3aed]/5 hover:bg-[#7c3aed]/15 transition-colors"
@@ -52,7 +52,7 @@ function PlanGrid() {
  *  unmissable as the plans, in every gate state. */
 function StayLocalButton({ onLocal }: { onLocal: () => void }) {
   return (
-    <button
+    <button data-testid="cloud.gate.stay-local"
       onClick={onLocal}
       className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-lg text-[0.85rem] font-semibold border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
     >
@@ -149,7 +149,7 @@ export function CloudGateModal() {
           <div className="space-y-5 pt-2">
             <CloudHero subtitle="Image, video, chat, code. On LU's hosted GPUs." />
             <div className="space-y-2 max-w-xs mx-auto">
-              <button onClick={() => setStep('plans')} className={primaryBtn}>
+              <button data-testid="cloud.gate.goto-plans" onClick={() => setStep('plans')} className={primaryBtn}>
                 Get LU Cloud <ArrowRight size={13} />
               </button>
               <StayLocalButton onLocal={stayLocal} />
@@ -159,7 +159,7 @@ export function CloudGateModal() {
                   the whole login path depend on that one step surviving any
                   change to where "Get LU Cloud" leads. It lives on both steps
                   now, which costs one link and removes that dependency. */}
-              <button onClick={() => setStep('login')} className={linkRow + ' w-full pt-1'}>
+              <button data-testid="cloud.gate.goto-login-from-intro" onClick={() => setStep('login')} className={linkRow + ' w-full pt-1'}>
                 Already got an account? Sign in <ArrowRight size={11} />
               </button>
             </div>
@@ -175,7 +175,7 @@ export function CloudGateModal() {
                 <span className="text-[0.6rem] text-gray-400 dark:text-gray-600">or</span>
                 <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
               </div>
-              <button onClick={() => setStep('login')} className={linkRow + ' w-full'}>
+              <button data-testid="cloud.gate.goto-login-from-plans" onClick={() => setStep('login')} className={linkRow + ' w-full'}>
                 Already got an account? Sign in <ArrowRight size={11} />
               </button>
             </div>
@@ -186,7 +186,7 @@ export function CloudGateModal() {
             <CloudHero subtitle="Sign in with the account you subscribed with." />
             <div className="max-w-xs mx-auto">
               <AccountPanel />
-              <button onClick={() => setStep('plans')} className={linkRow + ' w-full mt-3'}>
+              <button data-testid="cloud.gate.back-to-plans" onClick={() => setStep('plans')} className={linkRow + ' w-full mt-3'}>
                 <ArrowLeft size={11} /> Back to plans
               </button>
             </div>
@@ -202,7 +202,7 @@ export function CloudGateModal() {
             </p>
             <PlanGrid />
             <StayLocalButton onLocal={stayLocal} />
-            <button className={ghostBtn} onClick={() => void refresh()}>
+            <button data-testid="cloud.gate.recheck-after-subscribe" className={ghostBtn} onClick={() => void refresh()}>
               <RefreshCw size={12} /> I subscribed, check again
             </button>
           </div>
@@ -217,7 +217,7 @@ export function CloudGateModal() {
               reinstall.
             </p>
             <StayLocalButton onLocal={stayLocal} />
-            <button className={ghostBtn} onClick={() => void refresh()}>
+            <button data-testid="cloud.gate.recheck-access" className={ghostBtn} onClick={() => void refresh()}>
               <RefreshCw size={12} /> Check again
             </button>
           </div>
@@ -231,7 +231,7 @@ export function CloudGateModal() {
               Cloud mode can't switch on yet. Check your connection and re-check.
             </p>
             <StayLocalButton onLocal={stayLocal} />
-            <button className={ghostBtn} onClick={() => void refresh()}>
+            <button data-testid="cloud.gate.recheck-quota" className={ghostBtn} onClick={() => void refresh()}>
               <RefreshCw size={12} /> Check again
             </button>
           </div>
@@ -245,11 +245,11 @@ export function CloudGateModal() {
               budget, so there's nothing for Cloud mode to run on. Plans with
               cloud credits are on lu-labs.ai.
             </p>
-            <button className={primaryBtn} onClick={() => void openExternal(`${CLOUD_BASE}/account`)}>
+            <button data-testid="cloud.gate.open-account" className={primaryBtn} onClick={() => void openExternal(`${CLOUD_BASE}/account`)}>
               <ExternalLink size={12} /> Open your account
             </button>
             <StayLocalButton onLocal={stayLocal} />
-            <button className={ghostBtn} onClick={() => void refresh()}>
+            <button data-testid="cloud.gate.recheck-credits" className={ghostBtn} onClick={() => void refresh()}>
               <RefreshCw size={12} /> Check again
             </button>
           </div>

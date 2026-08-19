@@ -29,6 +29,7 @@ export function CreditsExhaustedModal() {
         </p>
         <div className="flex flex-col gap-2">
           <button
+            data-testid="layout.credits-exhausted.open-topup"
             type="button"
             onClick={() => {
               void openExternal(TOPUP_URL)
@@ -40,6 +41,7 @@ export function CreditsExhaustedModal() {
             Load up your credits
           </button>
           <button
+            data-testid="layout.credits-exhausted.dismiss"
             type="button"
             onClick={() => setOpen(false)}
             className="rounded-xl px-4 py-2 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"

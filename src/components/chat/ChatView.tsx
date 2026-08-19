@@ -201,7 +201,7 @@ export function ChatView() {
 
                 {/* Export */}
                 <div className="relative">
-                  <button
+                  <button data-testid="chat.export-chat.click"
                     onClick={() => setExportOpen(!exportOpen)}
                     className="flex items-center gap-1 px-2 py-0.5 rounded border border-gray-200 dark:border-white/[0.06] hover:border-gray-400 dark:hover:border-white/15 text-gray-500 transition-colors text-[0.55rem]"
                     title="Export chat"
@@ -210,10 +210,10 @@ export function ChatView() {
                   </button>
                   {exportOpen && (
                     <>
-                      <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
+                      <div data-testid="chat.export-menu.dismiss" className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
                       <div className="absolute right-0 top-full mt-1 z-50 w-32 rounded-lg bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-white/10 shadow-xl py-1">
                         {(['markdown', 'json'] as const).map(fmt => (
-                          <button
+                          <button data-testid="chat.export-format.select"
                             key={fmt}
                             onClick={async () => {
                               const conv = conversations.find(c => c.id === activeConversationId)
@@ -261,7 +261,7 @@ export function ChatView() {
                         : ', ready for mobile'}
                     </span>
                   </div>
-                  <button
+                  <button data-testid="chat.regenerate-passcode-keep-this-chat.click"
                     onClick={handleRemoteReactivate}
                     disabled={remoteLoading}
                     title="Regenerate passcode, keep this chat"
@@ -301,7 +301,7 @@ export function ChatView() {
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     {remoteError && (
-                      <button
+                      <button data-testid="chat.dismiss-error.click"
                         onClick={remoteClearError}
                         title="Dismiss error"
                         className="p-0.5 rounded text-red-400/70 hover:text-red-300 hover:bg-red-500/15 transition-all"
@@ -309,7 +309,7 @@ export function ChatView() {
                         <X size={9} />
                       </button>
                     )}
-                    <button
+                    <button data-testid="chat.start-a-fresh-server-and-reattach-this-chat.click"
                       onClick={handleRemoteReactivate}
                       disabled={remoteLoading}
                       title="Start a fresh server and reattach this chat"
@@ -345,7 +345,7 @@ export function ChatView() {
                     {/* Documents (RAG) — local-embeddings only, so hide in
                         Cloud mode (web parity). */}
                     {appMode !== 'cloud' && (
-                    <button
+                    <button data-testid="chat.docs-panel.toggle"
                       onClick={() => setRagPanelOpen(!ragPanelOpen)}
                       className={
                         'flex items-center gap-1 px-2 py-1.5 rounded-md transition-all shrink-0 text-[0.6rem] font-medium ' +
@@ -374,7 +374,7 @@ export function ChatView() {
                     {/* Tools — agent permission overrides (only when agent active) */}
                     {isAgentActive && (
                       <div className="relative">
-                        <button
+                        <button data-testid="chat.tool-permissions.toggle"
                           onClick={() => setToolsDropdownOpen(!toolsDropdownOpen)}
                           className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-all shrink-0 text-[0.6rem] font-medium"
                         >
@@ -384,7 +384,7 @@ export function ChatView() {
                         </button>
                         {toolsDropdownOpen && (
                           <>
-                            <div className="fixed inset-0 z-40" onClick={() => setToolsDropdownOpen(false)} />
+                            <div data-testid="chat.tool-permissions.dismiss" className="fixed inset-0 z-40" onClick={() => setToolsDropdownOpen(false)} />
                             <div className="absolute left-0 bottom-full mb-0.5 z-50 w-28 rounded-md bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-white/10 shadow-xl py-0.5 px-0.5">
                               <PermissionOverrideBar />
                             </div>

@@ -146,6 +146,7 @@ export function AgentWorkspaceDialog({
         {phase === 'pick' && (
           <div className="space-y-2" data-testid="agent-workspace-options">
             <WorkspaceOption
+              data-testid="chat.agent-workspace-sandbox.select"
               icon={<Shield size={16} className="text-emerald-500" />}
               title="Sandbox"
               body="Isolated workspace under ~/agent-workspace/. Nothing outside it can be touched."
@@ -155,6 +156,7 @@ export function AgentWorkspaceDialog({
 
             {lastFolder && (
               <WorkspaceOption
+                data-testid="chat.use-last-folder.click"
                 icon={<Check size={16} className="text-blue-500" />}
                 title="Use last folder"
                 body={lastFolder}
@@ -165,6 +167,7 @@ export function AgentWorkspaceDialog({
             )}
 
             <WorkspaceOption
+              data-testid="chat.agent-workspace-pick-folder.click"
               icon={<Folder size={16} className="text-amber-500" />}
               title={picking ? 'Opening picker…' : 'Pick a folder…'}
               body="Choose a real directory. The agent edits files in there directly, like the Coding Agent."
@@ -193,7 +196,7 @@ export function AgentWorkspaceDialog({
                 <span className="text-[0.7rem] font-mono text-gray-700 dark:text-gray-300 truncate flex-1 min-w-0">
                   {p}
                 </span>
-                <button
+                <button data-testid="chat.remove.click"
                   onClick={() => handleRemoveExtra(p)}
                   title="Remove"
                   className="p-1 rounded hover:bg-red-500/10 text-red-500"
@@ -232,7 +235,7 @@ export function AgentWorkspaceDialog({
         )}
 
         <div className="flex items-center justify-end gap-2 pt-1">
-          <button
+          <button data-testid="chat.agent-workspace-dialog.cancel"
             onClick={onClose}
             className="px-3 py-1.5 rounded-lg text-[0.7rem] text-gray-500 hover:text-gray-800 dark:hover:text-white transition-colors"
             data-conversation-id={conversationId}
@@ -261,11 +264,12 @@ interface OptionProps {
   monoBody?: boolean
   onClick: () => void
   disabled?: boolean
+  'data-testid'?: string
 }
 
-function WorkspaceOption({ icon, title, body, monoBody, onClick, disabled }: OptionProps) {
+function WorkspaceOption({ icon, title, body, monoBody, onClick, disabled, 'data-testid': testId }: OptionProps) {
   return (
-    <button
+    <button data-testid={testId ?? 'chat.agent-workspace-option.select'}
       onClick={onClick}
       disabled={disabled}
       className="w-full flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-white/[0.02] hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"

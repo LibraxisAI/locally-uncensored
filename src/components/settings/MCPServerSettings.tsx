@@ -122,6 +122,7 @@ export function MCPServerSettings() {
 
               {/* Connect/Disconnect */}
               <button
+                data-testid="settings.mcp-server.connect-toggle"
                 onClick={() => isConnected ? handleDisconnect(server.id) : handleConnect(server)}
                 disabled={isLoading}
                 className={`p-1 rounded transition-colors ${
@@ -142,6 +143,7 @@ export function MCPServerSettings() {
 
               {/* Remove */}
               <button
+                data-testid="settings.remove-server.click"
                 onClick={() => handleRemove(server.id)}
                 className="p-1 rounded text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                 title="Remove server"
@@ -193,6 +195,7 @@ export function MCPServerSettings() {
           />
           <div className="flex gap-1.5">
             <button
+              data-testid="settings.mcp-server.add"
               onClick={handleAdd}
               disabled={!formName.trim() || !formCommand.trim()}
               className="px-3 py-1 rounded text-[0.6rem] font-medium bg-green-500/15 border border-green-500/30 text-green-300 hover:bg-green-500/25 disabled:opacity-40 transition-colors"
@@ -200,6 +203,7 @@ export function MCPServerSettings() {
               Add Server
             </button>
             <button
+              data-testid="settings.mcp-form.cancel"
               onClick={() => setShowAddForm(false)}
               className="px-3 py-1 rounded text-[0.6rem] text-gray-500 hover:text-gray-300 transition-colors"
             >
@@ -209,6 +213,7 @@ export function MCPServerSettings() {
         </div>
       ) : (
         <button
+          data-testid="settings.mcp-form.open"
           onClick={() => setShowAddForm(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.65rem] text-gray-500 hover:text-gray-300 bg-white/[0.03] hover:bg-white/5 border border-white/10 hover:border-white/20 transition-all w-full justify-center"
         >

@@ -129,6 +129,7 @@ export function Stage({ displayed, onOpenMaskEditor, onEditResult, onFullscreen 
           <div className="flex flex-wrap justify-center gap-1.5 pt-1">
             {meta.examples.map((ex) => (
               <button
+                data-testid="create.prompt-example.apply"
                 key={ex}
                 onClick={() => setPrompt(ex)}
                 className="t-control text-gray-400 px-2.5 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.06] hover:border-white/15 hover:text-gray-200 transition-colors"
@@ -236,6 +237,7 @@ function InputSlot() {
     <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col">
       <div className="m-auto w-full max-w-sm flex flex-col items-center p-6">
         <div
+          data-testid="create.dropzone.open-file-picker"
           onClick={() => inputRef.current?.click()}
           onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
           onDragLeave={() => setDrag(false)}
@@ -266,6 +268,7 @@ function InputSlot() {
             <div className="flex justify-center gap-1.5 overflow-x-auto pb-1">
               {galleryImages.map((g) => (
                 <button
+                  data-testid="create.use-this-gallery-image-as-the-source.click"
                   key={g.id}
                   onClick={() => { if (!loading) void adoptFromGallery(g) }}
                   className="shrink-0 w-12 h-12 rounded-md overflow-hidden border border-white/10 hover:border-white/30 transition-colors"
@@ -305,6 +308,7 @@ function SourcePreview({ onOpenMaskEditor }: { onOpenMaskEditor: () => void }) {
             <div className="absolute top-2 left-2 t-label text-gray-300 bg-black/50 px-2 py-1 rounded-md">mask painted</div>
           )}
           <button
+            data-testid="create.remove-image.click"
             onClick={() => { setSource(null); setMask(null) }}
             className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center rounded-lg bg-black/50 text-gray-300 hover:text-white"
             title="Remove image"
@@ -314,7 +318,7 @@ function SourcePreview({ onOpenMaskEditor }: { onOpenMaskEditor: () => void }) {
         </div>
         <div className="flex items-center gap-2 mt-4">
           {meta.allowsMask && (
-            <Button variant="secondary" icon={Wand2} onClick={onOpenMaskEditor}>{mask ? 'Edit mask' : 'Paint mask'}</Button>
+            <Button data-testid="create.mask-editor.open" variant="secondary" icon={Wand2} onClick={onOpenMaskEditor}>{mask ? 'Edit mask' : 'Paint mask'}</Button>
           )}
           <ChangeImageButton onChange={(r) => setSource(r)} />
         </div>
@@ -350,7 +354,7 @@ function ChangeImageButton({ onChange }: { onChange: (r: Awaited<ReturnType<type
   }
   return (
     <>
-      <Button variant="ghost" icon={ImagePlus} onClick={() => inputRef.current?.click()}>Change image</Button>
+      <Button data-testid="create.source-preview.change-image" variant="ghost" icon={ImagePlus} onClick={() => inputRef.current?.click()}>Change image</Button>
       <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f) }} />
     </>
   )
@@ -378,6 +382,7 @@ function InstallCardBody({ run, installing, status, err, onDismiss, onCancel, ca
             <span>{status || 'Installing…'}</span>
           </div>
           <button
+            data-testid="create.install-card.cancel"
             onClick={onCancel}
             title={cancelTitle ?? 'Stops the setup. A download in flight is dropped, finished files stay.'}
             className="t-control text-gray-500 hover:text-gray-300 underline underline-offset-2 transition-colors"
@@ -386,7 +391,7 @@ function InstallCardBody({ run, installing, status, err, onDismiss, onCancel, ca
           </button>
         </div>
       ) : (
-        <Button variant="primary" icon={Download} onClick={run}>Download &amp; install</Button>
+        <Button data-testid="create.install-card.start" variant="primary" icon={Download} onClick={run}>Download &amp; install</Button>
       )}
       {err && (
         <div className="relative t-control text-gray-300 bg-white/[0.03] rounded-[var(--radius-control)] px-2.5 py-2 pr-7 max-w-sm text-left">
@@ -394,7 +399,7 @@ function InstallCardBody({ run, installing, status, err, onDismiss, onCancel, ca
             <AlertTriangle size={13} className="text-gray-400 shrink-0 mt-px" />
             <span className="min-w-0 break-words">{err}</span>
           </div>
-          <button onClick={onDismiss} className="absolute top-1.5 right-1.5 text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss" aria-label="Dismiss">
+          <button data-testid="create.dismiss.click-3" onClick={onDismiss} className="absolute top-1.5 right-1.5 text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss" aria-label="Dismiss">
             <X size={12} />
           </button>
         </div>
@@ -612,6 +617,7 @@ function TrainSetBoard() {
       />
       {trainImages.length === 0 ? (
         <button
+          data-testid="create.train-set-empty.add-photos"
           onClick={() => inputRef.current?.click()}
           className="flex-1 rounded-xl border-2 border-dashed border-white/10 hover:border-white/25 transition-colors flex flex-col items-center justify-center gap-2 text-gray-500 hover:text-gray-300"
         >
@@ -629,6 +635,7 @@ function TrainSetBoard() {
                 <div key={img.name} className="relative group aspect-square rounded-lg overflow-hidden bg-white/[0.03] border border-white/[0.06]">
                   <img src={img.url} alt="" className="w-full h-full object-cover" />
                   <button
+                    data-testid="create.remove.click-2"
                     onClick={() => removeTrainImage(img.name)}
                     className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-gray-300 opacity-0 group-hover:opacity-100 hover:text-white transition-opacity"
                     title="Remove"
@@ -639,6 +646,7 @@ function TrainSetBoard() {
                 </div>
               ))}
               <button
+                data-testid="create.add-photos.click"
                 onClick={() => inputRef.current?.click()}
                 className="aspect-square rounded-lg border-2 border-dashed border-white/10 hover:border-white/25 flex items-center justify-center text-gray-500 hover:text-gray-300 transition-colors"
                 title="Add photos"

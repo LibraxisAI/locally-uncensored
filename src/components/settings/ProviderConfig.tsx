@@ -226,6 +226,7 @@ export function ProviderSettings() {
             {/* Provider header */}
             <div className="flex items-center gap-2 px-2 py-1.5">
               <button
+                data-testid="settings.provider.power-toggle"
                 onClick={() => toggleProvider(id)}
                 className="group flex items-center"
                 title={config.enabled ? 'Disable provider' : 'Enable provider'}
@@ -233,6 +234,7 @@ export function ProviderSettings() {
                 <Power size={10} className="text-green-400 group-hover:text-red-400 transition-colors" />
               </button>
               <button
+                data-testid="settings.provider.expand"
                 onClick={() => setExpandedProvider(isExpanded ? null : id)}
                 className="flex-1 flex items-center justify-between min-w-0"
               >
@@ -291,6 +293,7 @@ export function ProviderSettings() {
                         className="w-full px-2 py-1 pr-7 rounded bg-white/5 border border-white/8 text-[0.65rem] text-gray-300 font-mono focus:outline-none focus:border-white/20"
                       />
                       <button
+                        data-testid="settings.provider-key.reveal"
                         onClick={() => setShowKey(prev => ({ ...prev, [id]: !isKeyVisible }))}
                         className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
                       >
@@ -303,6 +306,7 @@ export function ProviderSettings() {
                 {/* Test + Disable + (g) Start Server when LM-Studio is offline */}
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
+                    data-testid="settings.provider.test"
                     onClick={() => handleTest(id)}
                     disabled={isTesting}
                     className="px-2 py-0.5 rounded bg-white/5 border border-white/8 text-[0.6rem] text-gray-400 hover:text-gray-200 hover:bg-white/8 transition-colors disabled:opacity-50"
@@ -310,6 +314,7 @@ export function ProviderSettings() {
                     {isTesting ? <Loader2 size={10} className="animate-spin" /> : 'Test'}
                   </button>
                   <button
+                    data-testid="settings.provider.disable"
                     onClick={() => toggleProvider(id)}
                     className="px-2 py-0.5 rounded bg-red-500/5 border border-red-500/10 text-[0.6rem] text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
                   >
@@ -325,6 +330,7 @@ export function ProviderSettings() {
                     && status !== 'connected'
                     && (
                       <button
+                        data-testid="settings.lmstudio-server.start"
                         onClick={() => handleStartLmStudioServer(id)}
                         disabled={startingLmStudioServer}
                         className="flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/10 border border-green-500/20 text-[0.6rem] text-green-300 hover:text-green-200 hover:bg-green-500/15 transition-colors disabled:opacity-50"
@@ -373,6 +379,7 @@ export function ProviderSettings() {
       {/* Add Provider Dropdown */}
       <div className="relative">
         <button
+          data-testid="settings.provider-dropdown.open"
           onClick={() => setDropdownOpen(!dropdownOpen)}
           className="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-white/5 border border-white/8 text-[0.65rem] text-gray-500 hover:text-gray-300 hover:border-white/15 transition-colors"
         >
@@ -389,6 +396,7 @@ export function ProviderSettings() {
               return (
                 <button
                   key={preset.id}
+                  data-testid="settings.local-preset.select"
                   onClick={() => selectPreset(preset)}
                   className={`w-full text-left px-2.5 py-1.5 text-[0.65rem] transition-colors ${
                     isActive ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/5'
@@ -411,6 +419,7 @@ export function ProviderSettings() {
               return (
                 <button
                   key={preset.id}
+                  data-testid="settings.cloud-preset.select"
                   onClick={() => selectPreset(preset)}
                   className={`w-full text-left px-2.5 py-1.5 text-[0.65rem] transition-colors ${
                     isActive ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/5'
@@ -440,12 +449,14 @@ export function ProviderSettings() {
           </p>
           <div className="flex items-center justify-center gap-3 pt-2">
             <button
+              data-testid="settings.cloud-warning.cancel"
               onClick={() => { setShowCloudWarning(false); setPendingPreset(null) }}
               className="px-4 py-1.5 rounded-lg text-[0.7rem] text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
             >
               Cancel
             </button>
             <button
+              data-testid="settings.cloud-warning.continue"
               onClick={() => {
                 if (pendingPreset) applyPreset(pendingPreset)
                 setShowCloudWarning(false)

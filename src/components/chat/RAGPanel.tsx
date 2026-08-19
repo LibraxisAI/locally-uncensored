@@ -60,7 +60,7 @@ export function RAGPanel({ conversationId, onClose }: Props) {
         <div className="px-3 py-2.5 border-b border-gray-200 dark:border-white/5 flex items-center justify-between">
           <span className="text-xs font-medium text-gray-700 dark:text-gray-200">Document Chat</span>
           {onClose && (
-            <button
+            <button data-testid="chat.collapse-panel.click"
               onClick={onClose}
               className="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
               title="Collapse panel"
@@ -230,7 +230,7 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
       {/* Header: Title + on/off toggle + Clear-all + Collapse */}
       <div className="px-3 py-2.5 border-b border-gray-200 dark:border-white/5 flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-gray-700 dark:text-gray-200 flex-1">Document Chat</span>
-        <button
+        <button data-testid="chat.rag-enabled.toggle"
           onClick={toggleRAG}
           className="flex items-center text-xs"
           title={isEnabled ? 'Disable RAG (keeps files)' : 'Enable RAG'}
@@ -243,7 +243,7 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
           )}
         </button>
         {documents.length > 0 && (
-          <button
+          <button data-testid="chat.rag-documents.clear-all"
             onClick={() => {
               if (confirm(`Remove all ${documents.length} document${documents.length === 1 ? '' : 's'} from this chat? This cannot be undone.`)) {
                 clearAll()
@@ -257,7 +257,7 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
           </button>
         )}
         {onClose && (
-          <button
+          <button data-testid="chat.collapse-panel.click-2"
             onClick={onClose}
             className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
             title="Collapse panel"
@@ -320,13 +320,13 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
                 )}
               </p>
               <div className="flex gap-1.5 pt-0.5">
-                <button
+                <button data-testid="chat.rag-embedding-model.install"
                   onClick={() => installEmbeddingAndDrainQueue()}
                   className="flex-1 px-2 py-1 rounded text-[0.6rem] font-medium bg-gray-200 hover:bg-gray-300 dark:bg-white/10 dark:hover:bg-white/15 text-gray-800 dark:text-gray-100 transition-colors flex items-center justify-center gap-1"
                 >
                   <Download size={11} /> Download
                 </button>
-                <button
+                <button data-testid="chat.rag-embedding-model.cancel"
                   onClick={() => cancelEmbeddingInstall()}
                   className="px-2 py-1 rounded text-[0.6rem] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
                 >
@@ -414,7 +414,7 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
 
       {/* Drop zone */}
       <div className="px-3 pt-3 pb-1">
-        <div
+        <div data-testid="chat.rag-dropzone.pick-files"
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -509,7 +509,7 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
                   {doc.chunkCount} chunks
                 </p>
               </div>
-              <button
+              <button data-testid="chat.remove-document.click"
                 onClick={() => removeDocument(doc.id)}
                 className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-500/15 text-gray-400 hover:text-red-500 transition-all"
                 aria-label="Remove document"
@@ -530,7 +530,7 @@ function RAGPanelInner({ conversationId, onClose }: { conversationId: string; on
       {/* Retrieved Chunks section */}
       {safeChunks.length > 0 && isEnabled && (
         <div className="border-t border-gray-200 dark:border-white/5">
-          <button
+          <button data-testid="chat.toggle-retrieved-chunks.click"
             onClick={() => setChunksExpanded(!chunksExpanded)}
             className="w-full px-3 py-2 flex items-center gap-1.5 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
             aria-label="Toggle retrieved chunks"

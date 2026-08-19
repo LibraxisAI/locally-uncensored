@@ -140,6 +140,7 @@ export function Header() {
 
   const textNav = (view: string, label: string) => (
     <button
+      data-testid="layout.header-nav.open-view"
       onClick={() => {
         useCompareStore.getState().setComparing(false)
         setView(view as any)
@@ -155,6 +156,7 @@ export function Header() {
 
   const dropdownNav = (view: string, label: string) => (
     <button
+      data-testid="layout.header-more-menu.open-view"
       onClick={() => {
         useCompareStore.getState().setComparing(false)
         setView(view as any)
@@ -188,6 +190,7 @@ export function Header() {
       {/* Left: Sidebar + Logo */}
       <div className="flex items-center gap-2 min-w-0">
         <button
+          data-testid="layout.toggle-sidebar.click"
           onClick={toggleSidebar}
           className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-white/5 text-gray-500 hover:text-gray-800 dark:hover:text-white transition-colors"
           aria-label="Toggle sidebar"
@@ -195,6 +198,7 @@ export function Header() {
           <Menu size={15} />
         </button>
         <button
+          data-testid="layout.header.logo-home"
           onClick={() => {
             useChatStore.getState().setActiveConversation(null)
             useCompareStore.getState().setComparing(false)
@@ -226,6 +230,7 @@ export function Header() {
               stale, refresh?
             </span>
             <button
+              data-testid="layout.stale-model-chip.refresh"
               onClick={handleRefreshStale}
               disabled={isRefreshing}
               className="flex items-center gap-0.5 px-1 py-[1px] rounded text-amber-700 dark:text-amber-200 hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
@@ -239,6 +244,7 @@ export function Header() {
               <span>Refresh</span>
             </button>
             <button
+              data-testid="layout.dismiss.click-4"
               onClick={() => setStaleError(null)}
               className="flex items-center p-[1px] rounded text-amber-600/70 hover:text-amber-800 hover:bg-amber-500/20 transition-colors"
               title="Dismiss"
@@ -260,6 +266,7 @@ export function Header() {
         <DownloadBadge />
 
         <button
+          data-testid="layout.header.toggle-theme"
           onClick={toggleTheme}
           className="p-1 rounded-md text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
           title={settings.theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
@@ -277,6 +284,7 @@ export function Header() {
           {textNav('create', 'Create')}
 
           <button
+            data-testid="layout.header-nav.open-compare"
             onClick={() => {
               useCompareStore.getState().setComparing(true)
               setView('chat')
@@ -303,6 +311,7 @@ export function Header() {
             : "relative lg:hidden"
         }>
           <button
+            data-testid="layout.more.click"
             onClick={() => setShowMoreMenu(!showMoreMenu)}
             className="p-1 rounded-md text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
             title="More"
@@ -318,6 +327,7 @@ export function Header() {
                 {dropdownNav('create', 'Create')}
 
                 <button
+                  data-testid="layout.header-more-menu.open-compare"
                   onClick={() => {
                     useCompareStore.getState().setComparing(true)
                     setView('chat')

@@ -55,6 +55,7 @@ export function StorageQuotaToast() {
         </span>
       </div>
       <button
+        data-testid="layout.dismiss.click-6"
         onClick={() => setVisible(false)}
         className="p-1 rounded text-amber-700/70 dark:text-amber-300/70 hover:text-amber-900 dark:hover:text-amber-100 hover:bg-amber-500/20 transition-colors"
         aria-label="Dismiss"

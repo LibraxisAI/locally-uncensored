@@ -61,7 +61,7 @@ function OAuthButtons({ onError }: { onError: (msg: string | null) => void }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <button type="button" disabled={waiting !== null} onClick={() => void start('google')} className={btn}>
+        <button data-testid="auth.oauth.sign-in-google" type="button" disabled={waiting !== null} onClick={() => void start('google')} className={btn}>
           {waiting === 'google' ? (
             <Loader2 size={11} className="animate-spin" />
           ) : (
@@ -74,7 +74,7 @@ function OAuthButtons({ onError }: { onError: (msg: string | null) => void }) {
           )}
           Google
         </button>
-        <button type="button" disabled={waiting !== null} onClick={() => void start('github')} className={btn}>
+        <button data-testid="auth.oauth.sign-in-github" type="button" disabled={waiting !== null} onClick={() => void start('github')} className={btn}>
           {waiting === 'github' ? (
             <Loader2 size={11} className="animate-spin" />
           ) : (
@@ -86,7 +86,7 @@ function OAuthButtons({ onError }: { onError: (msg: string | null) => void }) {
         </button>
       </div>
       {waiting !== null && (
-        <button
+        <button data-testid="auth.oauth.cancel-browser-wait"
           type="button"
           onClick={() => abortRef.current?.abort()}
           className="text-[0.65rem] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
@@ -136,7 +136,7 @@ export function AccountPanel() {
 
   if (status === 'signed-out' || !user) {
     return (
-      <form onSubmit={submit} className="space-y-2">
+      <form data-testid="auth.account-panel.submit-credentials" onSubmit={submit} className="space-y-2">
         <p className="text-[0.7rem] text-gray-600 dark:text-gray-400">
           Sign in to render images, video and chat on LU's cloud GPUs. Local features never need an account.
         </p>
@@ -177,7 +177,7 @@ export function AccountPanel() {
             )}
             {mode === 'signin' ? 'Sign in' : 'Create account'}
           </button>
-          <button
+          <button data-testid="auth.account-panel.toggle-signin-signup"
             type="button"
             onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null) }}
             className="text-[0.65rem] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
@@ -204,7 +204,7 @@ export function AccountPanel() {
             {licenseActive ? `Plan: ${quota?.tier ?? 'active'}` : 'No active plan'}
           </div>
         </div>
-        <button
+        <button data-testid="auth.account-panel.sign-out"
           onClick={() => void logout()}
           className="flex items-center gap-1 px-2 py-1 rounded text-[0.65rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
         >
@@ -229,7 +229,7 @@ export function AccountPanel() {
         </p>
       )}
 
-      <button
+      <button data-testid="auth.account-panel.open-billing"
         onClick={() => void openExternal(`${CLOUD_BASE}/${licenseActive ? 'account' : 'pricing'}`)}
         className="flex items-center gap-1 text-[0.65rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
       >

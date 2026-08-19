@@ -94,14 +94,14 @@ export function CloudTeaserModal() {
   return (
     <AnimatePresence>
       {target && copy && (
-        <motion.div
+        <motion.div data-testid="cloud.teaser.close-backdrop"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm"
           onClick={close}
         >
-          <motion.div
+          <motion.div data-testid="cloud.teaser.panel-click-noop"
             initial={{ opacity: 0, y: 10, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.97 }}
@@ -112,7 +112,7 @@ export function CloudTeaserModal() {
             {/* Demo stage */}
             <div className="relative h-[130px] bg-[#1b1b1b] border-b border-white/[0.06] overflow-hidden">
               <TeaserDemo target={target} />
-              <button
+              <button data-testid="cloud.close.click"
                 onClick={close}
                 className="absolute top-2 right-2 p-1.5 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/10 transition-colors"
                 title="Close"
@@ -137,7 +137,7 @@ export function CloudTeaserModal() {
                   : 'Runs on LU Cloud. Your PC stays cool while datacenter GPUs do the heavy lifting.'}
               </p>
               <div className="flex items-center gap-2 pt-1">
-                <button
+                <button data-testid="cloud.teaser.open-gate"
                   onClick={() => {
                     // 2.6.3 B5: intent teasers used to detour through an
                     // example-video popup before the gate. That stage is gone
@@ -151,14 +151,14 @@ export function CloudTeaserModal() {
                   <Sparkles size={12} /> {localLane ? 'Try cloud' : 'See plans'}
                 </button>
                 {localLane && (
-                  <button
+                  <button data-testid="cloud.teaser.try-local"
                     onClick={() => { close(); setIntent(localLane) }}
                     className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-white/15 text-gray-200 text-[0.7rem] font-semibold hover:bg-white/[0.06] transition-colors"
                   >
                     <MonitorDown size={12} /> Try local
                   </button>
                 )}
-                <button
+                <button data-testid="cloud.teaser.dismiss"
                   onClick={close}
                   className="px-3 h-8 rounded-lg text-[0.7rem] text-gray-400 hover:text-gray-200 hover:bg-white/[0.06] transition-colors"
                 >

@@ -232,6 +232,7 @@ export function MemorySettings() {
             <span className="text-[0.5rem] text-gray-600">(extra inference)</span>
           </div>
           <button
+            data-testid="settings.memory-auto-extract.toggle"
             onClick={() => updateMemorySettings({ autoExtractEnabled: !settings.autoExtractEnabled })}
             className={`relative w-7 h-3.5 rounded-full transition-colors ${settings.autoExtractEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'}`}
           >
@@ -243,6 +244,7 @@ export function MemorySettings() {
           <div className="flex items-center justify-between py-0.5 pl-4">
             <span className="text-[0.6rem] text-gray-500">Also extract outside Agent Mode</span>
             <button
+              data-testid="settings.memory-extract-all-modes.toggle"
               onClick={() => updateMemorySettings({ autoExtractInAllModes: !settings.autoExtractInAllModes })}
               className={`relative w-7 h-3.5 rounded-full transition-colors ${settings.autoExtractInAllModes ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'}`}
             >
@@ -271,6 +273,7 @@ export function MemorySettings() {
             <span className="text-[0.6rem] text-gray-500">Show outdated ({staleCount})</span>
           </div>
           <button
+            data-testid="settings.toggle-outdated-memories.click"
             onClick={() => setShowOutdated((v) => !v)}
             className={`relative w-7 h-3.5 rounded-full transition-colors ${showOutdated ? 'bg-gray-500' : 'bg-gray-300 dark:bg-gray-700'}`}
             aria-label="Toggle outdated memories"
@@ -303,19 +306,21 @@ export function MemorySettings() {
           )}
           <div className="flex gap-1.5">
             <button
+              data-testid="settings.memory-new.save"
               onClick={handleAddMemory}
               disabled={!newTitle.trim() || !newContent.trim()}
               className="flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-[0.6rem] hover:bg-green-500/30 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-green-500/20"
             >
               <Check size={10} /> Save
             </button>
-            <button onClick={() => { setAddingNew(false); setNewTitle(''); setNewContent(''); setAddError(null) }} className="flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-gray-400 text-[0.6rem] hover:bg-white/10">
+            <button data-testid="settings.memory-new.cancel" onClick={() => { setAddingNew(false); setNewTitle(''); setNewContent(''); setAddError(null) }} className="flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-gray-400 text-[0.6rem] hover:bg-white/10">
               <X size={10} /> Cancel
             </button>
           </div>
         </div>
       ) : (
         <button
+          data-testid="settings.memory.add"
           onClick={() => { setAddError(null); setAddingNew(true) }}
           className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.03] border border-gray-300 dark:border-white/10 text-[0.6rem] text-gray-500 hover:text-gray-300 hover:border-white/20 transition-colors"
         >
@@ -347,10 +352,10 @@ export function MemorySettings() {
                   className="w-full px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[0.65rem] text-gray-300 focus:outline-none resize-none"
                 />
                 <div className="flex gap-1.5">
-                  <button onClick={saveEdit} className="flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-[0.6rem]">
+                  <button data-testid="settings.memory-edit.save" onClick={saveEdit} className="flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-[0.6rem]">
                     <Check size={10} /> Save
                   </button>
-                  <button onClick={() => setEditingId(null)} className="flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-gray-400 text-[0.6rem]">
+                  <button data-testid="settings.memory-edit.cancel" onClick={() => setEditingId(null)} className="flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-gray-400 text-[0.6rem]">
                     <X size={10} /> Cancel
                   </button>
                 </div>
@@ -377,6 +382,7 @@ export function MemorySettings() {
                 {/* Outdated entries are read-only — no edit affordance. */}
                 {!stale && (
                   <button
+                    data-testid="settings.edit-entry.click"
                     onClick={() => startEdit(entry)}
                     className="p-0.5 rounded hover:bg-white/10 text-gray-600 hover:text-gray-300"
                     aria-label="Edit entry"
@@ -385,6 +391,7 @@ export function MemorySettings() {
                   </button>
                 )}
                 <button
+                  data-testid="settings.delete-entry.click"
                   onClick={() => removeMemory(entry.id)}
                   className="p-0.5 rounded hover:bg-red-500/20 text-gray-600 hover:text-red-400"
                   aria-label="Delete entry"
@@ -401,6 +408,7 @@ export function MemorySettings() {
       {entries.length > 0 && (
         <GlowButton
           variant="secondary"
+          data-testid="settings.memory-embeddings.rebuild"
           onClick={handleReembed}
           className="w-full text-[0.6rem] flex items-center justify-center gap-1"
         >
@@ -411,17 +419,18 @@ export function MemorySettings() {
 
       {/* Actions */}
       <div className="flex gap-1.5">
-        <GlowButton variant="secondary" onClick={handleExportMd} className="flex-1 text-[0.6rem] flex items-center justify-center gap-1">
+        <GlowButton data-testid="settings.memory.export-md" variant="secondary" onClick={handleExportMd} className="flex-1 text-[0.6rem] flex items-center justify-center gap-1">
           <Download size={10} /> .md
         </GlowButton>
-        <GlowButton variant="secondary" onClick={handleExportJSON} className="flex-1 text-[0.6rem] flex items-center justify-center gap-1">
+        <GlowButton data-testid="settings.memory.export-json" variant="secondary" onClick={handleExportJSON} className="flex-1 text-[0.6rem] flex items-center justify-center gap-1">
           <FileJson size={10} /> .json
         </GlowButton>
-        <GlowButton variant="secondary" onClick={() => fileInputRef.current?.click()} className="flex-1 text-[0.6rem] flex items-center justify-center gap-1">
+        <GlowButton data-testid="settings.memory.import" variant="secondary" onClick={() => fileInputRef.current?.click()} className="flex-1 text-[0.6rem] flex items-center justify-center gap-1">
           <Upload size={10} /> Import
         </GlowButton>
         <GlowButton
           variant={confirmClear ? 'danger' : 'secondary'}
+          data-testid="settings.memory.clear-all"
           onClick={handleClear}
           className="text-[0.6rem] flex items-center justify-center gap-1 px-2.5"
         >

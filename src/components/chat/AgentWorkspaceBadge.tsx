@@ -48,7 +48,7 @@ export function AgentWorkspaceBadge() {
 
   return (
     <>
-      <button
+      <button data-testid="chat.agent-workspace-badge.open"
         onClick={() => setDialogOpen(true)}
         title={
           workspace.kind === 'folder'

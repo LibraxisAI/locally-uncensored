@@ -183,6 +183,7 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
           {needPrompt && (
             <div className="px-3.5 pt-3">
               <PromptField
+                data-testid="create.prompt-field.submit"
                 value={prompt}
                 onChange={setPrompt}
                 placeholder={characterUse ? 'Describe the scene for your character…' : meta.placeholder}
@@ -221,6 +222,7 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
           <div className="flex items-center gap-1.5 px-2.5 py-2 border-t border-white/[0.05]">
             {needPrompt && negSupported && (
               <button
+                data-testid="create.negative-prompt.click"
                 onClick={toggleNegative}
                 className={cn('t-control px-2 h-[var(--control-h-sm)] rounded-md transition-colors', showNegative ? 'bg-white/10 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.05]')}
                 title="Negative prompt"
@@ -254,7 +256,7 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
             {backend === 'local' && (
               <Tooltip content="Your own ComfyUI workflows, and the tags that pair them with models.">
                 <div className="relative">
-                  <Button variant="ghost" size="sm" icon={Workflow} iconOnly onClick={onOpenWorkflows} title="Workflows and tags" />
+                  <Button data-testid="create.workflows-and-tags.click" variant="ghost" size="sm" icon={Workflow} iconOnly onClick={onOpenWorkflows} title="Workflows and tags" />
                   {shouldShowManagerNotice(backend, managerNoticeSeen) && (
                     <span
                       aria-hidden
@@ -268,14 +270,14 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
               <>
                 <ModelChip />
                 <Tooltip content="All advanced settings. Sampler, seed, LoRA, VAE and more.">
-                  <Button variant="ghost" size="sm" icon={SlidersHorizontal} iconOnly onClick={onOpenAdvanced} title="Advanced settings" />
+                  <Button data-testid="create.advanced-settings.click" variant="ghost" size="sm" icon={SlidersHorizontal} iconOnly onClick={onOpenAdvanced} title="Advanced settings" />
                 </Tooltip>
               </>
             )}
             {isGenerating ? (
-              <Button variant="danger" size="md" icon={X} onClick={guardedCancel}>Cancel</Button>
+              <Button data-testid="create.generation.cancel" variant="danger" size="md" icon={X} onClick={guardedCancel}>Cancel</Button>
             ) : (
-              <Button variant="primary" size="lg" icon={Sparkles} disabled={!canGenerate} onClick={guardedGenerate}>Create</Button>
+              <Button data-testid="create.generation.start" variant="primary" size="lg" icon={Sparkles} disabled={!canGenerate} onClick={guardedGenerate}>Create</Button>
             )}
           </div>
         </div>
@@ -455,7 +457,7 @@ function PromptHistory({ onPick }: { onPick: (p: string) => void }) {
   if (history.length === 0) return null
   return (
     <div ref={ref} className="relative">
-      <Button variant="ghost" size="sm" icon={History} iconOnly title="Prompt history" onClick={() => setOpen((o) => !o)} />
+      <Button data-testid="create.prompt-history.click" variant="ghost" size="sm" icon={History} iconOnly title="Prompt history" onClick={() => setOpen((o) => !o)} />
       <AnimatePresence>
         {open && (
           <motion.div
@@ -466,7 +468,7 @@ function PromptHistory({ onPick }: { onPick: (p: string) => void }) {
             className="lu-elevated absolute bottom-full mb-1.5 left-0 z-50 w-72 rounded-lg p-1 max-h-64 overflow-y-auto scrollbar-thin"
           >
             {history.map((h, i) => (
-              <button key={i} onClick={() => { onPick(h); setOpen(false) }} className="w-full text-left t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06] truncate">{h}</button>
+              <button data-testid="create.prompt-history-entry.apply" key={i} onClick={() => { onPick(h); setOpen(false) }} className="w-full text-left t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06] truncate">{h}</button>
             ))}
           </motion.div>
         )}

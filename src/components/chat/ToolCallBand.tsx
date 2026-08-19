@@ -144,7 +144,7 @@ function BandHeader({
   onToggle: () => void
 }) {
   return (
-    <button
+    <button data-testid="chat.tool-call-band.toggle"
       onClick={onToggle}
       className="flex items-center gap-1.5 py-0.5 text-left hover:opacity-80 transition-opacity min-w-0"
     >

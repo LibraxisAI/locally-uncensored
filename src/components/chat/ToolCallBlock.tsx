@@ -278,7 +278,7 @@ function ToolCallBlockImpl({ toolCall, onApprove, onReject }: Props) {
     <div className="mb-0.5">
       {/* Header line — monochrome, only status icon has subtle color */}
       <div className="flex items-center gap-1">
-        <button
+        <button data-testid="chat.tool-call.toggle"
           onClick={() => setOpen(!open)}
           className="flex items-center gap-1.5 py-0.5 text-left hover:opacity-80 transition-opacity flex-1 min-w-0"
         >
@@ -316,7 +316,7 @@ function ToolCallBlockImpl({ toolCall, onApprove, onReject }: Props) {
               <Loader2 size={9} className="animate-spin" /> stopping…
             </span>
           ) : (
-            <button
+            <button data-testid="chat.tool-call-generation.stop"
               onClick={(e) => {
                 e.stopPropagation()
                 setCancelling(true)
@@ -386,7 +386,7 @@ function ToolCallBlockImpl({ toolCall, onApprove, onReject }: Props) {
             const p = comfyViewParams(effectivePreviewUrl)
             if (p) {
               return (
-                <button
+                <button data-testid="chat.download.click"
                   onClick={() => { void downloadComfyFile(p.filename, p.subfolder, p.type) }}
                   title="Download"
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.6rem] font-medium bg-blue-500/15 text-blue-500 hover:bg-blue-500/25 border border-blue-500/30 transition-colors"
@@ -458,13 +458,13 @@ function ToolCallBlockImpl({ toolCall, onApprove, onReject }: Props) {
                   ChatView). */}
               {isPending && onApprove && onReject && (
                 <div className="flex items-center gap-1.5 pt-1">
-                  <button
+                  <button data-testid="chat.tool-call.approve"
                     onClick={(e) => { e.stopPropagation(); onApprove() }}
                     className="flex items-center gap-1 px-2.5 py-1 rounded text-[0.6rem] font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 dark:bg-emerald-500/10 hover:bg-emerald-500/15 dark:hover:bg-emerald-500/15 border border-emerald-500/20 dark:border-emerald-500/25 transition-colors"
                   >
                     <Check size={10} /> Approve
                   </button>
-                  <button
+                  <button data-testid="chat.tool-call.reject"
                     onClick={(e) => { e.stopPropagation(); onReject() }}
                     className="flex items-center gap-1 px-2.5 py-1 rounded text-[0.6rem] font-medium text-red-700 dark:text-red-300 bg-red-500/10 dark:bg-red-500/10 hover:bg-red-500/15 dark:hover:bg-red-500/15 border border-red-500/20 dark:border-red-500/25 transition-colors"
                   >

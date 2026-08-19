@@ -146,7 +146,7 @@ function CreateExperimentalInner() {
               <AlertTriangle size={14} className="shrink-0" />
               <span className="flex-1 min-w-0 truncate">{banner}</span>
               {error && (
-                <button onClick={() => setError(null)} className="shrink-0 text-red-300/70 hover:text-red-100" title="Dismiss">
+                <button data-testid="create.dismiss.click" onClick={() => setError(null)} className="shrink-0 text-red-300/70 hover:text-red-100" title="Dismiss">
                   <X size={14} />
                 </button>
               )}
@@ -194,6 +194,7 @@ function CreateExperimentalInner() {
           </span>
           {!corsFixing && (
             <button
+              data-testid="create.cors-banner.autofix"
               onClick={() => { void fixCorsForMe() }}
               disabled={isGenerating}
               title={isGenerating ? 'Waiting for the current generation to finish' : 'LU restarts ComfyUI with the CORS flag for you'}
@@ -202,7 +203,7 @@ function CreateExperimentalInner() {
               Let me do it for you!
             </button>
           )}
-          <button onClick={() => { setComfyCorsBlocked(false); setCorsFixError(null) }} className="shrink-0 text-yellow-300/70 hover:text-yellow-100" title="Dismiss">
+          <button data-testid="create.dismiss.click-2" onClick={() => { setComfyCorsBlocked(false); setCorsFixError(null) }} className="shrink-0 text-yellow-300/70 hover:text-yellow-100" title="Dismiss">
             <X size={14} />
           </button>
         </div>
@@ -221,6 +222,7 @@ function CreateExperimentalInner() {
             Download anything you want to keep from the gallery.
           </span>
           <button
+            data-testid="create.retention-notice.dismiss-forever"
             onClick={() => setRetentionNoticeSeen(true)}
             className="shrink-0 px-2 py-0.5 rounded bg-purple-500/15 hover:bg-purple-500/25 text-purple-100 transition-colors whitespace-nowrap"
           >

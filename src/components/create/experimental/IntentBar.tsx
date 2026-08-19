@@ -47,6 +47,7 @@ export function IntentBar() {
         const Icon = meta.icon
         return (
           <button
+            data-testid="create.intent-pill.select"
             key={meta.id}
             role="radio"
             aria-checked={selected}

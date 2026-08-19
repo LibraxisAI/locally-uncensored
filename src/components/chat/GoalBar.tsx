@@ -27,7 +27,7 @@ export function GoalBar() {
         >
           {goal.text}
         </span>
-        <button
+        <button data-testid="chat.clear-the-goal-for-this-session.click"
           onClick={() => clearGoal(activeConversationId)}
           title="Clear the goal for this session"
           className="flex items-center justify-center w-4 h-4 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors shrink-0"

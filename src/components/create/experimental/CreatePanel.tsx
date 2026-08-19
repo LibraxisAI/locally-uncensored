@@ -40,11 +40,12 @@ export function CreatePanel({ open, onOpenChange, activeId, onSelect }: Props) {
           transition={{ duration: 0.15 }}
           style={{ width: 52 }}
         >
-          <button onClick={() => onOpenChange(true)} title="Expand gallery" aria-label="Expand gallery" className="flex items-center justify-center w-9 h-9 rounded-md text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-all">
+          <button data-testid="create.expand-gallery.click" onClick={() => onOpenChange(true)} title="Expand gallery" aria-label="Expand gallery" className="flex items-center justify-center w-9 h-9 rounded-md text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-all">
             <PanelRightOpen size={16} />
           </button>
           <div className="w-6 h-px bg-gray-200 dark:bg-white/10 my-1" />
           <button
+            data-testid="create.gallery.click"
             onClick={() => onOpenChange(true)}
             title="Gallery" aria-label="Gallery"
             className="relative flex items-center justify-center w-9 h-9 rounded-md text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-all"
@@ -71,6 +72,7 @@ export function CreatePanel({ open, onOpenChange, activeId, onSelect }: Props) {
           {/* Header */}
           <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-white/[0.05] shrink-0">
             <button
+              data-testid="create.collapse-gallery.click"
               onClick={() => onOpenChange(false)}
               title="Collapse gallery" aria-label="Collapse gallery"
               className="flex items-center justify-center w-6 h-6 rounded text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-all"
@@ -90,6 +92,7 @@ export function CreatePanel({ open, onOpenChange, activeId, onSelect }: Props) {
                 {gallery.map((g) => (
                   <div key={g.id} className="relative group">
                     <button
+                      data-testid="create.gallery-item.open"
                       onClick={() => onSelect(g.id)}
                       className={cn(
                         'w-full aspect-square rounded-lg overflow-hidden border-2 transition-colors relative',
@@ -108,6 +111,7 @@ export function CreatePanel({ open, onOpenChange, activeId, onSelect }: Props) {
                       )}
                     </button>
                     <button
+                      data-testid="create.delete.click"
                       onClick={() => removeFromGallery(g.id)}
                       className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-red-600/90 hover:bg-red-600 text-gray-100 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-sm"
                       title="Delete"
@@ -115,6 +119,7 @@ export function CreatePanel({ open, onOpenChange, activeId, onSelect }: Props) {
                       <Trash2 size={12} />
                     </button>
                     <button
+                      data-testid="create.download.click"
                       onClick={() => { void downloadMediaUrl(galleryItemUrl(g), g.filename || undefined) }}
                       className="absolute bottom-1 right-1 w-6 h-6 rounded-md bg-black/55 hover:bg-black/70 text-gray-100 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-sm"
                       title="Download"

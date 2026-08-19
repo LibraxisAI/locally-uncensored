@@ -61,11 +61,11 @@ export function SystemPromptEditor({
         className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-white/20 text-sm resize-none"
       />
       <div className="flex gap-2">
-        <GlowButton onClick={handleSave} disabled={!name.trim() || !prompt.trim()} className="flex-1">
+        <GlowButton data-testid="personas.prompt-editor.save" onClick={handleSave} disabled={!name.trim() || !prompt.trim()} className="flex-1">
           {isEditing ? 'Update Persona' : 'Save Persona'}
         </GlowButton>
         {onDone && (
-          <button
+          <button data-testid="personas.prompt-editor.cancel"
             onClick={onDone}
             className="px-4 py-2 rounded-lg text-sm text-gray-500 hover:text-gray-300 border border-white/10 hover:border-white/20 transition-colors"
           >

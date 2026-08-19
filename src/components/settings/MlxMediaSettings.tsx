@@ -240,20 +240,21 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
           {m.installed ? (
             confirmDelete === `${kind}:${m.id}` ? (
               <div className="flex gap-1">
-                <button className={`${btnCls} text-red-500 hover:text-red-400`} onClick={() => remove(kind, m.id)}>
+                <button data-testid="settings.mlx-model.delete-confirm" className={`${btnCls} text-red-500 hover:text-red-400`} onClick={() => remove(kind, m.id)}>
                   Delete
                 </button>
-                <button className={ghostCls} onClick={() => setConfirmDelete(null)}>
+                <button data-testid="settings.mlx-model.delete-cancel" className={ghostCls} onClick={() => setConfirmDelete(null)}>
                   Cancel
                 </button>
               </div>
             ) : (
-              <button className={ghostCls} onClick={() => setConfirmDelete(`${kind}:${m.id}`)} disabled={anyBusy}>
+              <button data-testid="settings.mlx-model.remove" className={ghostCls} onClick={() => setConfirmDelete(`${kind}:${m.id}`)} disabled={anyBusy}>
                 <Trash2 size={11} /> Remove
               </button>
             )
           ) : (
             <button
+              data-testid="settings.mlx-model.install"
               className={primaryCls}
               disabled={anyBusy || !engineReady}
               title={engineReady ? undefined : 'Install the engine first'}
@@ -313,7 +314,7 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
             aria-label="HuggingFace token"
             className="flex-1 min-w-0 px-2 py-1 rounded text-[0.65rem] font-mono bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-white/10 outline-none focus:border-purple-400"
           />
-          <button className={primaryCls} onClick={saveHfToken} disabled={hfSaving}>
+          <button data-testid="settings.huggingface-token.click" className={primaryCls} onClick={saveHfToken} disabled={hfSaving}>
             {hfSaved ? <Check size={11} /> : null}
             {hfSaved ? 'Saved' : 'Save'}
           </button>
@@ -337,7 +338,7 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
           </div>
         </div>
         {!imageEngineReady && (
-          <button className={primaryCls} disabled={anyBusy} onClick={() => start({ kind: 'image-engine' }, installMlxImageEngine, 'MLX image engine')}>
+          <button data-testid="settings.mlx-image-engine.install" className={primaryCls} disabled={anyBusy} onClick={() => start({ kind: 'image-engine' }, installMlxImageEngine, 'MLX image engine')}>
             {busy?.kind === 'image-engine' ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
             {busy?.kind === 'image-engine' ? 'Installing…' : 'Install engine'}
           </button>
@@ -371,6 +372,7 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
         </div>
         {!videoEngineReady && (
           <button
+            data-testid="settings.mlx-video-engine.install"
             className={primaryCls}
             disabled={anyBusy || (video ? !video.appleSilicon : false)}
             onClick={() => start({ kind: 'video-engine' }, installMlxVideo, 'MLX video engine')}

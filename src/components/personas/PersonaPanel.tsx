@@ -30,7 +30,7 @@ export function PersonaPanel() {
               : 'Off: raw model, no persona prompt.'}
           </span>
         </div>
-        <button
+        <button data-testid="personas.panel.toggle-personas"
           onClick={() => updateSettings({ personasEnabled: !personasEnabled })}
           className={
             'relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full transition-colors ' +
@@ -64,14 +64,14 @@ export function PersonaPanel() {
             />
             {!persona.isBuiltIn && (
               <div className="absolute -top-1 -right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
+                <button data-testid="personas.edit-persona.click"
                   onClick={() => { setEditingId(persona.id); setShowEditor(false) }}
                   title="Edit persona"
                   className="w-5 h-5 rounded-full bg-gray-600/90 text-white flex items-center justify-center hover:bg-gray-500"
                 >
                   <Pencil size={10} />
                 </button>
-                <button
+                <button data-testid="personas.delete-persona.click"
                   onClick={() => { removePersona(persona.id); if (editingId === persona.id) setEditingId(null) }}
                   title="Delete persona"
                   className="w-5 h-5 rounded-full bg-red-500/80 text-white flex items-center justify-center hover:bg-red-500"
@@ -82,7 +82,7 @@ export function PersonaPanel() {
             )}
           </div>
         ))}
-        <button
+        <button data-testid="personas.panel.new-persona"
           onClick={() => { setShowEditor(!showEditor); setEditingId(null) }}
           className="flex flex-col items-center gap-2 p-4 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-300 dark:border-white/10 hover:border-gray-400 dark:hover:border-white/15 transition-all cursor-pointer"
         >
