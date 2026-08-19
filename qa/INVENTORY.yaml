@@ -11,8 +11,8 @@ elements:
     handle: "title"
     precondition: "Der WorkflowRunner ist eingebunden und die angezeigte Ausfuehrung steht auf running oder waiting_input, nur dann wird der Stopp-Knopf gezeichnet."
     expected: ""
-    status: "open"
-    notes: "WorkflowRunner wird in keiner Datei gerendert und onCancel hat keinen Aufrufer. Wo soll die Komponente eingebunden werden und was soll Cancel mit der laufenden Ausfuehrung tun?"
+    status: "blocked"
+    notes: "WorkflowRunner wird in keiner Datei gerendert und onCancel hat keinen Aufrufer. Wo soll die Komponente eingebunden werden und was soll Cancel mit der laufenden Ausfuehrung tun? unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 76
     covered_by: []
   - id: "agents.duplicate.click"
@@ -59,8 +59,8 @@ elements:
     handle: "none"
     precondition: "Die TaskBreakdown-Liste ist sichtbar und die angeklickte Aufgabe hat mindestens einen Tool-Aufruf, sonst nimmt die Zeile keine Klicks an."
     expected: "Die Tool-Karten der Aufgabe klappen auf, der Pfeil rechts wechselt von rechts nach unten, ein erneuter Klick klappt sie zu."
-    status: "open"
-    notes: "TaskBreakdown wird in keiner Datei gerendert. Ist die Komponente noch erreichbar oder toter Code? id vorher agents.taskbreakdown-div.click"
+    status: "blocked"
+    notes: "TaskBreakdown wird in keiner Datei gerendert. Ist die Komponente noch erreichbar oder toter Code? id vorher agents.taskbreakdown-div.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 69
     covered_by: []
   - id: "agents.tool-call-card.approve"
@@ -71,8 +71,8 @@ elements:
     handle: "none"
     precondition: "Eine ToolCallCard mit Status pending wird gerendert und der Aufrufer gibt onApprove und onReject mit."
     expected: ""
-    status: "open"
-    notes: "Die einzige Stelle, die diese Karte mit Freigabe-Handlern rendert, ist AgentLog, und AgentLog wird nirgends verwendet. Ueber welchen Weg erreicht ein Nutzer diesen Approve-Knopf? id vorher agents.toolcallcard-glowbutton.click"
+    status: "blocked"
+    notes: "Die einzige Stelle, die diese Karte mit Freigabe-Handlern rendert, ist AgentLog, und AgentLog wird nirgends verwendet. Ueber welchen Weg erreicht ein Nutzer diesen Approve-Knopf? id vorher agents.toolcallcard-glowbutton.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 89
     covered_by: []
   - id: "agents.tool-call-card.reject"
@@ -83,8 +83,8 @@ elements:
     handle: "none"
     precondition: "Eine ToolCallCard mit Status pending wird gerendert und der Aufrufer gibt onApprove und onReject mit."
     expected: ""
-    status: "open"
-    notes: "Wie bei Approve: die Karte mit Freigabe-Handlern haengt nur an AgentLog, das nirgends verwendet wird. Was soll Reject beim Nutzer sichtbar bewirken? id vorher agents.toolcallcard-glowbutton.click-2"
+    status: "blocked"
+    notes: "Wie bei Approve: die Karte mit Freigabe-Handlern haengt nur an AgentLog, das nirgends verwendet wird. Was soll Reject beim Nutzer sichtbar bewirken? id vorher agents.toolcallcard-glowbutton.click-2 unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 93
     covered_by: []
   - id: "agents.workflow-builder.add-step"
@@ -215,8 +215,8 @@ elements:
     handle: "none"
     precondition: "Der WorkflowRunner ist eingebunden, die Ausfuehrung wartet auf eine Eingabe und im Feld steht Text."
     expected: ""
-    status: "open"
-    notes: "WorkflowRunner wird in keiner Datei gerendert und onProvideInput hat keinen Aufrufer. Wohin geht die Eingabe und was soll der Nutzer danach sehen? id vorher agents.icon-button.click-3"
+    status: "blocked"
+    notes: "WorkflowRunner wird in keiner Datei gerendert und onProvideInput hat keinen Aufrufer. Wohin geht die Eingabe und was soll der Nutzer danach sehen? id vorher agents.icon-button.click-3 unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 135
     covered_by: []
   - id: "auth.account-panel.open-billing"
@@ -671,8 +671,8 @@ elements:
     handle: "aria"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "das Vorschaufenster schliesst sich, dasselbe wie mit Escape"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf?"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 137
     covered_by: []
   - id: "chat.code-block.expand"
@@ -1103,8 +1103,8 @@ elements:
     handle: "none"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "der Rahmen fuellt die ganze Flaeche als Desktopansicht und der Knopf ist hervorgehoben"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-viewportbtn.click-3"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-viewportbtn.click-3 unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 116
     covered_by: []
   - id: "chat.html-preview-viewport.mobile"
@@ -1115,8 +1115,8 @@ elements:
     handle: "none"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "der Rahmen schrumpft auf Handygroesse von 375 mal 667 und der Knopf ist hervorgehoben"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-viewportbtn.click"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-viewportbtn.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 114
     covered_by: []
   - id: "chat.html-preview-viewport.select"
@@ -1127,8 +1127,8 @@ elements:
     handle: "none"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "die angeklickte Groesse wird uebernommen und der Rahmen wechselt darauf"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.viewportbtn-button.click"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.viewportbtn-button.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 180
     covered_by: []
   - id: "chat.html-preview-viewport.tablet"
@@ -1139,8 +1139,8 @@ elements:
     handle: "none"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "der Rahmen wechselt auf Tabletgroesse von 768 mal 1024 und der Knopf ist hervorgehoben"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-viewportbtn.click-2"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-viewportbtn.click-2 unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 115
     covered_by: []
   - id: "chat.html-preview.backdrop-close"
@@ -1151,8 +1151,8 @@ elements:
     handle: "none"
     precondition: "das HTML-Vorschaufenster ist offen und der Klick trifft die abgedunkelte Flaeche daneben"
     expected: "das Vorschaufenster schliesst sich"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-el.click"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? id vorher chat.htmlpreviewmodal-el.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 92
     covered_by: []
   - id: "chat.markdown-image.open-external"
@@ -1343,8 +1343,8 @@ elements:
     handle: "aria"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "die Seite oeffnet sich als data-URL im Standardbrowser"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf?"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 129
     covered_by: []
   - id: "chat.persona-for-chat.toggle"
@@ -1559,8 +1559,8 @@ elements:
     handle: "aria"
     precondition: "das HTML-Vorschaufenster ist offen"
     expected: "der Rahmen wird neu aufgebaut und der Inhalt laeuft von vorn"
-    status: "open"
-    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf?"
+    status: "blocked"
+    notes: "HtmlPreviewModal wird ausserhalb der eigenen Datei nirgends importiert, das Fenster ist im aktuellen Build also nicht erreichbar. Soll der Preview-Chip am Codeblock zurueckkommen, und ueber welchen Knopf? unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 121
     covered_by: []
   - id: "chat.remember-this-model-for-future-prompts.click"
@@ -2315,8 +2315,8 @@ elements:
     handle: "none"
     precondition: "Eine Leerzustandskarte mit gesetzter Hauptaktion muesste sichtbar sein."
     expected: ""
-    status: "open"
-    notes: "Kein Aufrufer im Repo uebergibt action an EmptyState, der Knopf ist damit derzeit nicht erreichbar. Soll er im Inventar bleiben, oder faellt die Prop als toter Code raus? id vorher create.emptystate-button.click"
+    status: "blocked"
+    notes: "Kein Aufrufer im Repo uebergibt action an EmptyState, der Knopf ist damit derzeit nicht erreichbar. Soll er im Inventar bleiben, oder faellt die Prop als toter Code raus? id vorher create.emptystate-button.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 59
     covered_by: []
   - id: "create.empty-state-secondary.click"
@@ -2327,8 +2327,8 @@ elements:
     handle: "none"
     precondition: "Eine Leerzustandskarte mit gesetzter Zweitaktion muesste sichtbar sein."
     expected: ""
-    status: "open"
-    notes: "Kein Aufrufer im Repo uebergibt secondaryAction an EmptyState, der Knopf ist damit derzeit nicht erreichbar. Soll er im Inventar bleiben, oder faellt die Prop als toter Code raus? id vorher create.emptystate-button.click-2"
+    status: "blocked"
+    notes: "Kein Aufrufer im Repo uebergibt secondaryAction an EmptyState, der Knopf ist damit derzeit nicht erreichbar. Soll er im Inventar bleiben, oder faellt die Prop als toter Code raus? id vorher create.emptystate-button.click-2 unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 60
     covered_by: []
   - id: "create.expand-gallery.click"
@@ -6659,8 +6659,8 @@ elements:
     handle: "none"
     precondition: "Die ToggleSwitch-Komponente ist eingebunden und nicht auf disabled gesetzt."
     expected: "Der Schalter kippt, der Punkt wandert nach rechts oder links und die Spur wechselt zwischen gruen und grau."
-    status: "open"
-    notes: "ToggleSwitch wird in keiner Datei verwendet. Ist die Komponente toter Code oder fehlt die Einbindung? id vorher ui.toggleswitch-button.click"
+    status: "blocked"
+    notes: "ToggleSwitch wird in keiner Datei verwendet. Ist die Komponente toter Code oder fehlt die Einbindung? id vorher ui.toggleswitch-button.click unerreichbar im aktuellen Build, anschliessen oder loeschen entscheidet David"
     line: 19
     covered_by: []
   - id: "workflows.tag-picker.toggle-tag"
