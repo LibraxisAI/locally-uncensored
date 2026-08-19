@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { tauriMockInit, DEFAULT_MODEL_NAME } from './support/tauri-mock'
 import { seedOnboardingDone } from './support/cloud-mock'
+import { openNewChat } from './support/ui'
 
 /**
  * Inventory layout.dismiss.click-4 (FINDINGS.md suspicion 1): the X on the
@@ -50,6 +51,15 @@ test('the stale-model chip stays dismissed after its X is clicked', async ({ pag
     window.sessionStorage.setItem('lu-model-health-scan-done', '1')
   }, STALE)
   await page.goto('/')
+  // The picker lives in the chat composer, so a conversation must be open.
+  await openNewChat(page)
+
+  // Become the reporter: pick the Ollama model in the header picker. A
+  // seeded activeModel loses against boot (the mock's builtin engine is
+  // running and loaded, so the app adopts it); the picker click is the
+  // real user path and survives it.
+  await page.getByTestId('models.select-chat-model.click').click()
+  await page.getByTestId('models.model-row.select').filter({ hasText: STALE }).first().click()
 
   const dismiss = page.getByTestId('layout.dismiss.click-4')
   await expect(dismiss).toBeVisible({ timeout: 20_000 })

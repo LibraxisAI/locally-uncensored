@@ -26,6 +26,10 @@ export function Header() {
   // the model with "does not support (chat|completion|generate)". Offers a
   // one-click refresh that re-pulls the model (progress tracked in DownloadBadge).
   const [staleError, setStaleError] = useState<{ model: string; message: string } | null>(null)
+  // Models whose stale chip the user dismissed this session. Without this
+  // the effect below rebuilds the chip from the health store in the same
+  // pass and the X does nothing a user can see.
+  const [dismissedStale, setDismissedStale] = useState<string[]>([])
   const { pullModel, isPullingModel, fetchModels } = useModels()
   const healthStaleModels = useModelHealthStore((s) => s.staleModels)
   const addStaleToHealth = useModelHealthStore((s) => s.setStaleModels)
@@ -117,6 +121,10 @@ export function Header() {
       return
     }
     const isStale = healthStaleModels.includes(modelToUse)
+    if (isStale && dismissedStale.includes(modelToUse)) {
+      if (staleError) setStaleError(null)
+      return
+    }
     if (isStale && !staleError) {
       setStaleError({
         model: modelToUse,
@@ -132,7 +140,7 @@ export function Header() {
         message: `Model "${modelToUse}" has a stale manifest. Run "ollama pull ${modelToUse}" to refresh.`,
       })
     }
-  }, [modelToUse, isOllamaModel, healthStaleModels, staleError])
+  }, [modelToUse, isOllamaModel, healthStaleModels, staleError, dismissedStale])
 
   const toggleTheme = () => {
     updateSettings({ theme: settings.theme === 'dark' ? 'light' : 'dark' })
@@ -245,7 +253,10 @@ export function Header() {
             </button>
             <button
               data-testid="layout.dismiss.click-4"
-              onClick={() => setStaleError(null)}
+              onClick={() => {
+                setDismissedStale((d) => (staleError && !d.includes(staleError.model) ? [...d, staleError.model] : d))
+                setStaleError(null)
+              }}
               className="flex items-center p-[1px] rounded text-amber-600/70 hover:text-amber-800 hover:bg-amber-500/20 transition-colors"
               title="Dismiss"
               aria-label="Dismiss"
