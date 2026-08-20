@@ -95,3 +95,37 @@ Danach der erste ehrliche Volllauf: 34 von 34 bestanden, 3 Env-Skips,
 Exit 0 beweist keinen Volllauf, die Bilanzzeile muss passed+skipped =
 Gesamtzahl aus `npx playwright test --list` ergeben. Diese Pruefung
 steht jetzt als Pflichtschritt im Schleifen-Prompt des Verfahrens.
+
+## Stand nach Welle 1 (20.08.2026, Commit 45e7ddd4)
+
+Kernzahl: **425 von 556 Elementen bewiesen** (76 Prozent), 56 blockiert,
+75 noch offen. Bewiesen heisst: eine Reise klickt das Element, eine
+zitierte Assertion prueft die WIRKUNG, ein Trace liegt daneben, und der
+Lauf war gruen. Blockiert heisst immer: der Mock kann die Wirkung nicht
+zeigen, mit Grund und Fundort in `qa/mock-requests/`.
+
+Gates dieses Standes, alle am selben Baum gemessen:
+
+- Playwright 235 Tests: 232 gruen, 3 umgebungsbedingt uebersprungen,
+  0 rot. Voller Lauf auf frisch gestartetem Dev-Server, die Summe
+  passed+skipped+failed deckt sich mit `--list`.
+- `tsc -p tsconfig.app.json`: 333 Fehler, unveraendert zur Baseline.
+- `vitest run`: 4778 gruen, 1 uebersprungen.
+
+Was noch offen ist, steht in `qa/FINDINGS.md` (Bug-Verdacht 7 und der
+native Speicherndialog gehoeren nach Phase 5, an den echten Build) und
+in `qa/mock-requests/` (die zwei groessten Hebel fuer Welle 2: ein
+antwortendes ComfyUI und ein zustandsbehaftetes Ollama hinter
+`proxy_localhost`).
+
+Ehrliche Restpunkte:
+
+- `chat-delete-discoverable.spec.ts` ist einmal in 235 rot gefallen und
+  in sechs isolierten Laeufen nicht wiedergekommen. Nicht gefixt, nicht
+  erklaert.
+- Zehn Stellen in vier `layout-*`-Specs setzen ihre Vorbedingung ueber
+  `import('/src/stores/X.ts')`. Das ist nur solange ein Beweis, wie
+  niemand die Datei in derselben Sitzung anfasst, siehe MOCK-NOTES.
+- `src/stores/memoryStore.ts`: Export und Import des Markdown-Formats
+  benutzen verschiedene Trennzeichen, der Rundlauf verliert den Inhalt.
+  Gefunden, noch nicht gefixt.
