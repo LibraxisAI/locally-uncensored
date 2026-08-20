@@ -409,3 +409,55 @@ Uncertainties:
 - screenshot/pick_folder etc. reach the router flat (not nested), and none of the agent tool
   payloads carry an `args` key themselves except shell_execute (already handled upstream), so the
   shared `m` unwrap is safe for every case above.
+
+## Fallen beim Vorbereiten der Ausgangslage (aus der Welle, 20.08.2026)
+
+Drei Dinge haben in dieser Welle zusammen mehrere Stunden gekostet,
+ohne dass ein Test rot wurde. Sie sind alle still.
+
+1. **Ein `lu-providers`-Seed mit `version: 0` wird kommentarlos
+   verworfen.** Der Store persistiert auf Version 1 und hat kein
+   `migrate`. Der Seed liegt dann im localStorage und wirkt nicht.
+2. **AppShell repariert die Anbieterwelt beim Booten.** Die
+   Backend-Erkennung schaltet jedes gefundene Backend wieder ein und
+   pinnt die `baseUrl`; der Mock beantwortet Ollamas `/api/tags`
+   immer, also wird Ollama immer gefunden. Wer eine kaputte
+   Ollama-Welt braucht, setzt vorher
+   `sessionStorage['lu-backend-detection-done'] = '1'`.
+3. **`proxy_localhost` beantwortet JEDE 11434-URL mit der
+   `/api/tags`-Nutzlast.** Damit meldet `/api/ps` alle Modelle als
+   geladen, ein Loeschen entfernt nichts, und Methode und Body landen
+   in keinem Eimer. Ein zustandsbehaftetes Ollama plus ein
+   `__E2E_PROXY_CALLS__`-Eimer ist der groesste einzelne Hebel fuer
+   die naechste Welle.
+
+Und eine Umgebungsregel, keine Mock-Sache: waehrend eine Testschleife
+laeuft, darf niemand nach `src/` schreiben. Vite schickt sonst einen
+Full-Reload in die laufende Seite, `uiStore.currentView` ist nicht
+persistiert, die App faellt mitten im Test auf Chat zurueck und der
+Lauf wird rot, ohne dass die App etwas falsch gemacht haette.
+
+### Die stillste Falle: `import('/src/stores/X.ts')` im page.evaluate
+
+Mehrere Specs bauen ihre Vorbedingung, indem sie im Seitenkontext das
+Store-Modul nachladen und einen Setter rufen. Das funktioniert genau so
+lange, wie niemand diese Datei waehrend der Sitzung anfasst.
+
+Bewiesen am 20.08.2026 an `modelHealthStore.ts`:
+
+- Frischer Dev-Server: nach einem Klick auf den X-Knopf liest
+  `import('/src/stores/modelHealthStore.ts')` `dismissed: true`. Es ist
+  dasselbe Modul, das die App benutzt.
+- Nach einem HMR-Update derselben Datei laedt die App die Datei unter
+  einer Zeitstempel-URL. Der Import ohne Zeitstempel liefert dann eine
+  ZWEITE, abgekoppelte Instanz: der Lesewert war `dismissed: false`,
+  waehrend das Banner sichtbar weg war, und ein `setStaleModels` ueber
+  diesen Weg kam in der App nie an.
+
+Das faellt nicht auf, weil beide Seiten plausibel aussehen. Ein Test,
+der so seine Vorbedingung setzt und danach "nichts passiert" behauptet,
+beweist im schlimmsten Fall nur, dass er an einer Attrappe gedreht hat.
+
+Konsequenz: Vorbedingungen so bauen, wie die App sie selbst erzeugt
+(Mock-Welt, localStorage-Seed, Klicks), nicht ueber das Store-Modul.
+Zehn Stellen in vier Specs nutzen den Weg noch, alle in `layout-*`.

@@ -59,13 +59,16 @@ export const useModelHealthStore = create<ModelHealthState>()(
     }),
     {
       name: 'locally-uncensored-model-health',
-      // `dismissed` persists as of 2.5.9: the banner re-ran its startup scan and
-      // came back on EVERY launch while a stale model sat on disk, so closing it
-      // meant nothing. A fresh scan that finds stale models clears the flag
-      // again (setStaleModels), so a genuinely new problem still speaks up.
-      // `scanning` stays session-only — a crash mid-scan must not persist as
-      // "still scanning".
-      partialize: (s) => ({ staleModels: s.staleModels, lastScanTime: s.lastScanTime, dismissed: s.dismissed }),
+      // `dismissed` is session-only, because that is exactly what both buttons
+      // that set it promise: "Dismiss until next launch". Persisting it (2.5.9)
+      // made the banner disappear for good over an unchanged stale model, so
+      // the label and the behaviour said different things and a broken model
+      // could sit on disk unmentioned forever. Within one session the flag
+      // still holds — the startup scan runs once and only clears it when the
+      // stale set actually changed (setStaleModels), so a dismissal is not
+      // undone a second later. `scanning` stays session-only too: a crash
+      // mid-scan must not persist as "still scanning".
+      partialize: (s) => ({ staleModels: s.staleModels, lastScanTime: s.lastScanTime }),
     }
   )
 )

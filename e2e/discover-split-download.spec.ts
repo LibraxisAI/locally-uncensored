@@ -98,7 +98,9 @@ test('0731 card resolves the real shard set, confirms 3 parts, starts all downlo
   // 76.9 GB > 60 → the "too big for most GPUs" honesty line must show.
   await expect(page.getByText(/very large for a local model/i)).toBeVisible()
 
-  await page.getByRole('button', { name: `Download 3 parts (${IQ1_GB} GB)` }).click()
+  const startKnopf = page.getByTestId('models.sharded-download-confirm.start')
+  await expect(startKnopf).toContainText(`Download 3 parts (${IQ1_GB} GB)`)
+  await startKnopf.click()
 
   // One download per part, in order, all into the SAME flat built-in dir,
   // each with the true byte size from the tree (drives the tray's total).
@@ -125,7 +127,7 @@ test('cancel in the split confirm starts nothing', async ({ page }) => {
   await expect(page.getByText('DeepSeek V4 Flash 0731', { exact: false }).first()).toBeVisible({ timeout: 15_000 })
   await page.getByTitle('Download 82.5 GB').click()
   await expect(page.getByText('Download split model')).toBeVisible({ timeout: 15_000 })
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.getByTestId('models.sharded-download-confirm.cancel').click()
   await expect(page.getByText('Download split model')).toHaveCount(0)
   expect(await dlCalls(page)).toHaveLength(0)
 })

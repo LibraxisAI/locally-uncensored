@@ -77,14 +77,30 @@ export function ModelManager() {
     fetchModels()
   }, [fetchModels])
 
+  // Only Ollama serves /api/show. Routing EVERY card through it meant a
+  // built-in GGUF, an LM Studio model or a ComfyUI file got Ollama's answer
+  // for a model Ollama does not have — and on a box where Ollama is not
+  // running the throw landed in a bare catch, so the info button was simply
+  // dead (QA sweep, FINDINGS suspicion 3). Non-Ollama models are described by
+  // the record the list already carries, and a failed probe still opens the
+  // dialog, now with the reason in it.
   const handleInfo = async (name: string) => {
+    const model = models.find((m: AIModel) => m.name === name)
+    const known = model ? { ...model } : { name }
+    const isOllamaModel =
+      !!model && model.type === 'text' && (!('provider' in model) || model.provider === 'ollama')
+    if (!isOllamaModel) {
+      setModelInfo(known)
+      setInfoOpen(true)
+      return
+    }
     try {
       const info = await showModel(name)
       setModelInfo({ name, ...info })
-      setInfoOpen(true)
-    } catch {
-      // ignore
+    } catch (e) {
+      setModelInfo({ ...known, error: e instanceof Error ? e.message : String(e) })
     }
+    setInfoOpen(true)
   }
 
   const [deleteError, setDeleteError] = useState<string | null>(null)

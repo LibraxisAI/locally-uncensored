@@ -210,7 +210,7 @@ export function AgentWorkspaceDialog({
               onClick={handleAddExtra}
               disabled={picking}
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-gray-50 dark:bg-white/[0.03] border border-gray-300 dark:border-white/10 text-[0.7rem] text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-white/[0.04] disabled:opacity-50"
-              data-testid="agent-workspace-add-extra"
+              data-testid="chat.agent-workspace-add-extra.click"
             >
               <Plus size={11} /> {picking ? 'Opening picker…' : 'Add another repo'}
             </button>
@@ -246,7 +246,7 @@ export function AgentWorkspaceDialog({
             <button
               onClick={handleSave}
               className="px-3 py-1.5 rounded-lg text-[0.7rem] font-medium bg-emerald-500 hover:bg-emerald-600 text-white transition-colors"
-              data-testid="agent-workspace-save"
+              data-testid="chat.agent-workspace-save.click"
             >
               Save
             </button>

@@ -64,3 +64,70 @@ Aufraeumentscheidung fuer David.
 - onClick-Props, die an Komponenten weitergereicht werden, zaehlen als
   eigenes Element (Doppelzaehlung am ModelSelector), reine
   stopPropagation-Wrapper ebenso. Steht in den notes.
+
+# Stand nach der Welle (Phase 3b, 20.08.2026)
+
+## Die acht Bug-Verdachte, live gegengeprueft
+
+1. **Bestaetigt und gefixt.** Stale-Chip-Dismiss, `Header.tsx`, Commit
+   1f19b7b8. Rot vor dem Fix, gruen danach, Element gebucht.
+2. **Bestaetigt und gefixt**, mit einer Spannung fuer David.
+   `src/stores/modelHealthStore.ts:69` persistierte `dismissed`, der
+   Neustart brachte das Banner nicht zurueck. Jetzt sitzungsonly, wie
+   die Beschriftung verspricht. ACHTUNG: der Kommentar von 2.5.9 hat
+   die Persistenz absichtlich eingebaut, weil das Banner "bei jedem
+   Start" wiederkam. Entweder das Verhalten oder die Beschriftung ist
+   falsch, beides zusammen geht nicht. Die Beschriftung sitzt in
+   `src/components/layout/StaleModelsBanner.tsx`, oben steht der Pfad
+   falsch unter `src/components/models/`.
+3. **Bestaetigt und gefixt.** Der Info-Klick lief fuer JEDE Karte durch
+   Ollamas `/api/show`, der Fehler verschwand in einem leeren catch.
+   Beim Built-in-GGUF zeigte das Fenster Ollamas Antwort, ohne
+   erreichbares Ollama passierte gar nichts. Jetzt beschreibt sich ein
+   Nicht-Ollama-Modell aus dem Listeneintrag, ein gescheiterter Probe
+   oeffnet den Dialog trotzdem und nennt den Grund.
+   `src/components/models/ModelManager.tsx:80`.
+4. **Bestaetigt und gefixt.** `resetTutorial()` loeschte
+   `tutorialCompleted`, das seit 2.5.9 niemand mehr setzt und niemand
+   liest. Der Knopf setzt jetzt den Neu-Chat-Hinweis zurueck, der als
+   einziger Agent-Hinweis noch lebt, und heisst danach.
+5. **Bestaetigt und gefixt.** Der Run-Knopf jedes Workflows in den
+   Settings war Dekoration (`onRun={() => {}}`). Motor, Store und
+   `useWorkflow()` waren fertig gebaut und nie angeschlossen. Jetzt
+   verdrahtet, mit Laufleiste, weil jeder eingebaute Workflow mit einem
+   `user_input`-Schritt beginnt und ein blosses `startWorkflow()` ein
+   Haenger statt eines Fix gewesen waere.
+6. **Bestaetigt und gefixt** in `Onboarding.tsx`.
+7. **Bleibt offen.** Der Markdown-Export der Benchmark-Tabelle wird im
+   Browser nachweislich angeboten und traegt die Tabelle
+   (`models.download-the-table-as-markdown.click` gebucht). Ob die
+   Tauri-WebView den Blob-Anker wirklich auf Platte schreibt und wohin,
+   kann der Mock nicht beweisen. Gehoert nach Phase 5.
+8. **Teilweise beantwortet.** Der Galerie-Weg liefert im Harness ein
+   echtes Download-Ereignis mit Dateinamen (`create.download.click`).
+   Der native Speicherndialog der Buehne bleibt ein Phase-5-Punkt.
+
+## Neu gefunden, waehrend die Reisen liefen
+
+- **Datenverlust im Memory-Rundlauf.** `src/stores/memoryStore.ts:624`
+  exportiert `- **titel**, inhalt`, der Import in Zeile 653 erwartet
+  einen Gedankenstrich als Trenner. Ueber den Markdown-Weg wird der
+  Titel deshalb zur ganzen Zeile und auf 60 Zeichen gekuerzt, der
+  Inhalt ist weg. Der JSON-Weg ist verlustfrei. Ein Zeichen in einem
+  der beiden Ausdruecke. NOCH NICHT GEFIXT.
+- **Tote Prompt-Historie, gefixt.** `addToPromptHistory`
+  (`src/stores/createStore.ts:744`) wurde nirgends gerufen, die Liste
+  blieb ewig leer, und `PromptHistory` rendert bei leerer Liste `null`.
+  Knopf und Aufklappmenue waren fuer keinen Nutzer je erreichbar,
+  obwohl der Store die Liste persistiert. Angeschlossen in
+  `Composer.tsx:70`, dem einzigen Punkt den beide Backends passieren.
+- **`src/hooks/useWorkflow.ts:124`**: `cancelWorkflow()` bricht den
+  Motor ab und schliesst die Ausfuehrung nie, ein abgebrochener Lauf
+  stand danach fuer immer auf `waiting_input`. In `SettingsPage.tsx`
+  geschlossen, die richtige Heimat ist der Hook.
+- **`src/hooks/useWorkflow.ts:54`**: `stepIndex` unbenutzt, vorbestehend.
+
+## Neue Kandidaten fuer anschliessen oder loeschen
+
+- `settings.release-page.open` steht hinter `!isTauri()` und ist im
+  Desktop-Build unerreichbar.

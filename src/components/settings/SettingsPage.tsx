@@ -56,6 +56,8 @@ import { PermissionSettings } from './PermissionSettings'
 import { MCPServerSettings } from './MCPServerSettings'
 import { WorkflowList } from '../agents/WorkflowList'
 import { WorkflowBuilder } from '../agents/WorkflowBuilder'
+import { useWorkflow } from '../../hooks/useWorkflow'
+import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
 import { useUpdateStore, isNewerVersion } from '../../stores/updateStore'
 import { backendCall, isTauri, openExternal } from '../../api/backend'
 import { isMlxImageHost } from '../../api/mlx-image'
@@ -236,6 +238,15 @@ function InlineToggle({ label, enabled, onChange, icon }: { label: string; enabl
 function WorkflowSection() {
   const [view, setWfView] = useState<'list' | 'builder'>('list')
   const [editingId, setEditingId] = useState<string | undefined>()
+  // QA sweep 2026-08-20: this passed `onRun={() => {}}`, so the Play button on
+  // every workflow row was decoration. The one control the panel exists for
+  // did nothing at all. The engine, the execution store and this hook were all
+  // built and simply never connected here (WorkflowSection is WorkflowList's
+  // only caller). Running needs somewhere to answer a `user_input` step, which
+  // every built-in workflow opens with, so the runner strip below is part of
+  // the wiring, not decoration.
+  const { startWorkflow, provideInput, cancelWorkflow, isRunning, waitingForInput, currentStepLabel } = useWorkflow()
+  const [answer, setAnswer] = useState('')
 
   if (view === 'builder') {
     return (
@@ -247,12 +258,69 @@ function WorkflowSection() {
     )
   }
 
+  const submitAnswer = () => {
+    if (!answer.trim()) return
+    provideInput(answer.trim())
+    setAnswer('')
+  }
+
+  // useWorkflow.cancelWorkflow aborts the engine but never closes the
+  // execution record, so a cancelled run stays in the history reading
+  // "waiting_input" forever. Close it here until that belongs in the hook.
+  const cancelRun = () => {
+    const store = useAgentWorkflowStore.getState()
+    const id = store.activeExecutionId
+    cancelWorkflow()
+    if (id) store.cancelExecution(id)
+  }
+
   return (
-    <WorkflowList
-      onRun={() => {}}
-      onEdit={(id) => { setEditingId(id); setWfView('builder') }}
-      onCreate={() => { setEditingId(undefined); setWfView('builder') }}
-    />
+    <div className="space-y-2">
+      {isRunning && (
+        <div data-testid="settings.workflow-run.panel" className="space-y-1.5 p-2.5 rounded-lg border border-white/10 bg-white/[0.02]">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[0.65rem] text-gray-300">
+              {waitingForInput ? 'Waiting for your input' : `Running: ${currentStepLabel || 'starting…'}`}
+            </span>
+            <button
+              data-testid="settings.workflow-run.cancel"
+              onClick={cancelRun}
+              className="px-2 py-0.5 rounded bg-white/5 text-gray-400 text-[0.6rem] hover:bg-red-500/20 hover:text-red-400 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+          {waitingForInput && (
+            <div className="space-y-1.5">
+              <p className="text-[0.6rem] text-gray-500">{waitingForInput}</p>
+              <div className="flex gap-1.5">
+                <input
+                  data-testid="settings.workflow-run.input"
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitAnswer() }}
+                  className="flex-1 px-2 py-1 rounded bg-white/5 border border-white/10 text-[0.65rem] text-gray-300 focus:outline-none focus:border-white/20"
+                  autoFocus
+                />
+                <button
+                  data-testid="settings.workflow-run.submit"
+                  onClick={submitAnswer}
+                  disabled={!answer.trim()}
+                  className="px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-[0.6rem] disabled:opacity-40"
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      <WorkflowList
+        onRun={(id) => { void startWorkflow(id) }}
+        onEdit={(id) => { setEditingId(id); setWfView('builder') }}
+        onCreate={() => { setEditingId(undefined); setWfView('builder') }}
+      />
+    </div>
   )
 }
 
@@ -1551,12 +1619,19 @@ export function SettingsPage() {
           {FEATURE_FLAGS.AGENT_MODE && (
             <Section title="Agent Permissions">
               <PermissionSettings />
+              {/* QA sweep 2026-08-20: this called resetTutorial(), which
+                  clears `tutorialCompleted`, a flag nothing sets and nothing
+                  reads since 2.5.9 dropped the first-run Agent tutorial modal
+                  (AgentModeToggle.tsx:97). The button was a no-op. The agent
+                  hint that DOES still exist is the new-chat prompt, dismissed
+                  by its own "never show again"; bringing that back is what
+                  the user is asking for here. */}
               <button
                 data-testid="settings.agent-tutorial.reset"
-                onClick={() => useAgentModeStore.getState().resetTutorial()}
+                onClick={() => useAgentModeStore.getState().setNewChatHintDismissed(false)}
                 className="text-[0.6rem] text-gray-500 hover:text-gray-300 transition-colors"
               >
-                Reset tutorial
+                Show agent hints again
               </button>
             </Section>
           )}

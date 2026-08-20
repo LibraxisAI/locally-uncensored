@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Menu, Loader2, Sun, Moon, RefreshCw, X, MoreVertical } from 'lucide-react'
 import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -35,6 +35,7 @@ export function Header() {
   const addStaleToHealth = useModelHealthStore((s) => s.setStaleModels)
   const markHealthFresh = useModelHealthStore((s) => s.markFresh)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const moreRef = useRef<HTMLDivElement>(null)
   const isCreateView = currentView === 'create'
 
   // App-level model bootstrap. This used to ride on the header ModelSelector,
@@ -182,7 +183,13 @@ export function Header() {
   useEffect(() => {
     if (!showMoreMenu) return
 
-    const handlePointerDown = () => {
+    // The dots could not close their own menu: this listener closed it on
+    // pointerdown, React re-rendered before the click landed, and the
+    // button's fresh onClick read showMoreMenu as false and opened it right
+    // back up. Anything inside the trigger's own box is the button's
+    // business, so leave it alone.
+    const handlePointerDown = (e: PointerEvent) => {
+      if (moreRef.current?.contains(e.target as Node)) return
       setShowMoreMenu(false)
     }
 
@@ -316,7 +323,7 @@ export function Header() {
         </div>
 
         {/* Collapsed navigation */}
-        <div className={
+        <div ref={moreRef} className={
           isCreateView
             ? "relative xl:hidden"
             : "relative lg:hidden"

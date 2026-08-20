@@ -71,6 +71,12 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   const startedAt = useRef(0)
   const guardedGenerate = useCallback(() => {
     startedAt.current = Date.now()
+    // The history list is written HERE, at the one point both backends share.
+    // Nothing else ever called addToPromptHistory, so promptHistory stayed
+    // empty forever and PromptHistory (which returns null on an empty list)
+    // never rendered, so the button and its dropdown were unreachable dead UI.
+    const submitted = useCreateStore.getState().prompt.trim()
+    if (submitted) useCreateStore.getState().addToPromptHistory(submitted)
     generate()
   }, [generate])
   const guardedCancel = useCallback(() => {

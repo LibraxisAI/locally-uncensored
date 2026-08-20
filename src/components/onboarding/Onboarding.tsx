@@ -84,6 +84,11 @@ export function Onboarding() {
   const [comfyInstallLogs, setComfyInstallLogs] = useState<string[]>([])
   const [comfyInstallError, setComfyInstallError] = useState('')
   const [comfyPathInput, setComfyPathInput] = useState('')
+  // The manual path row belongs to "I already have ComfyUI" and nothing else.
+  // It used to render under `comfyPathInput !== undefined`, which a useState('')
+  // can never fail, so the row sat under the Install button permanently and the
+  // button it belongs to had no visible job left.
+  const [comfyPathEntryOpen, setComfyPathEntryOpen] = useState(false)
   const [comfyReady, setComfyReady] = useState(false)
   const [comfyDownloadProgress, setComfyDownloadProgress] = useState(0)
   const [comfyDownloadTotal, setComfyDownloadTotal] = useState(0)
@@ -1375,10 +1380,8 @@ export function Onboarding() {
                 </button>
                 <button data-testid="onboarding.comfyui.use-existing-install"
                   onClick={() => {
-                    const input = document.createElement('input')
-                    input.type = 'text'
-                    // Show path input inline
                     setComfyPathInput('')
+                    setComfyPathEntryOpen(true)
                     setComfyFound({ found: false })
                   }}
                   className={secondaryBtn}
@@ -1387,8 +1390,8 @@ export function Onboarding() {
                   <FolderOpen size={14} /> I already have ComfyUI
                 </button>
 
-                {/* Manual path input */}
-                {comfyPathInput !== undefined && (
+                {/* Manual path input, opened by "I already have ComfyUI". */}
+                {comfyPathEntryOpen && (
                   <div className="flex gap-1.5">
                     <input
                       type="text"
