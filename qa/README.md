@@ -126,6 +126,6 @@ Ehrliche Restpunkte:
 - Zehn Stellen in vier `layout-*`-Specs setzen ihre Vorbedingung ueber
   `import('/src/stores/X.ts')`. Das ist nur solange ein Beweis, wie
   niemand die Datei in derselben Sitzung anfasst, siehe MOCK-NOTES.
-- `src/stores/memoryStore.ts`: Export und Import des Markdown-Formats
-  benutzen verschiedene Trennzeichen, der Rundlauf verliert den Inhalt.
-  Gefunden, noch nicht gefixt.
+- `src/stores/memoryStore.ts`: der Markdown-Rundlauf verlor den Inhalt,
+  weil Export und Import verschiedene Trennzeichen benutzten. Gefixt und
+  mit einem Rundlauf-Test festgenagelt.

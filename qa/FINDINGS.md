@@ -114,7 +114,11 @@ Aufraeumentscheidung fuer David.
   einen Gedankenstrich als Trenner. Ueber den Markdown-Weg wird der
   Titel deshalb zur ganzen Zeile und auf 60 Zeichen gekuerzt, der
   Inhalt ist weg. Der JSON-Weg ist verlustfrei. Ein Zeichen in einem
-  der beiden Ausdruecke. NOCH NICHT GEFIXT.
+  der beiden Ausdruecke. GEFIXT: der Import traegt die drei Anhaengsel
+  jetzt von hinten ab, statt sie in einem Ausdruck zu raten, und nimmt
+  Komma wie Gedankenstrich als Trenner an. Rundlauf-Test in
+  `src/stores/__tests__/memory-markdown-roundtrip.test.ts`, beide Zeilen
+  waren vor dem Fix rot.
 - **Tote Prompt-Historie, gefixt.** `addToPromptHistory`
   (`src/stores/createStore.ts:744`) wurde nirgends gerufen, die Liste
   blieb ewig leer, und `PromptHistory` rendert bei leerer Liste `null`.

@@ -650,12 +650,35 @@ export const useMemoryStore = create<MemoryState>()(
             continue
           }
 
-          const itemMatch = line.match(/^-\s+(?:\*\*(.+?)\*\*\s*—\s*)?(.+?)(?:\s+\[(.+?)\])?(?:\s+\*\((.+?)\)\*)?(?:\s+—\s+.+)?$/)
+          // Von hinten abtragen statt in einem Ausdruck raten: der Inhalt
+          // darf Kommas, Klammern und Gedankenstriche tragen, die drei
+          // Anhaengsel dagegen stehen immer am Zeilenende und in dieser
+          // Reihenfolge. Ein einzelner Ausdruck hat hier den Inhalt
+          // verschluckt, sobald Export und Import verschiedene Trenner
+          // benutzten.
+          const itemMatch = line.match(/^-\s+(.*)$/)
           if (itemMatch) {
-            const title = itemMatch[1] || itemMatch[2].substring(0, 60)
-            const content = itemMatch[2].trim()
-            const tags = itemMatch[3] ? itemMatch[3].split(',').map(t => t.trim()) : []
-            const source = itemMatch[4] || 'import'
+            let rest = itemMatch[1].trim()
+
+            let source = 'import'
+            const quelle = rest.match(/\*\((.+?)\)\*\s*(?:[,—]\s*[\d][\d./-]*)?\s*$/)
+            if (quelle) {
+              source = quelle[1].trim()
+              rest = rest.slice(0, quelle.index).trim()
+            }
+
+            let tags: string[] = []
+            const tagTeil = rest.match(/\[(.+?)\]\s*$/)
+            if (tagTeil) {
+              tags = tagTeil[1].split(',').map(t => t.trim()).filter(Boolean)
+              rest = rest.slice(0, tagTeil.index).trim()
+            }
+
+            // Der Export trennt Titel und Inhalt mit einem Komma, aeltere
+            // Dateien tun es mit einem Gedankenstrich. Beide gelten.
+            const mitTitel = rest.match(/^\*\*(.+?)\*\*\s*[,—]\s*([\s\S]+)$/)
+            const content = (mitTitel ? mitTitel[2] : rest).trim()
+            const title = mitTitel ? mitTitel[1].trim() : content.substring(0, 60)
 
             if (content) {
               newEntries.push({
