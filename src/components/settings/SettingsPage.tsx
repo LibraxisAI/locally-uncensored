@@ -964,6 +964,15 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: ReactNode }[] = [
 // no confirm and no feedback, so users reported it as "does nothing". Now:
 // arm-then-confirm (second click within 4s), per-tab scope, and an explicit
 // success line after the reset.
+//
+// Nebenbefund 2 of the R9 re-measure (2026-08-30) read the first click as a
+// dud. Checked and kept as it is: the armed button relabels to "Click again to
+// reset <tab>", turns red and goes medium weight, and the first click writes
+// nothing at all. That is the same arm-then-confirm the Cloud switch got in
+// round 6, and the same reasoning holds here: two clicks on one control is the
+// cheapest confirmation there is, no dialog and no mouse travel. The three
+// visible signals are pinned by
+// src/lib/__tests__/reset-arming-is-visible.test.ts.
 function ResetSection({ tab }: { tab: SettingsTab }) {
   const resetSettingsKeys = useSettingsStore((s) => s.resetSettingsKeys)
   const resetSettings = useSettingsStore((s) => s.resetSettings)
@@ -1068,7 +1077,14 @@ export function SettingsPage() {
   const [installedVoices, setInstalledVoices] = useState<string[]>([])
   const [voiceBusy, setVoiceBusy] = useState(false)
   const [voiceError, setVoiceError] = useState<string | null>(null)
+  // Where the navigation that opened this page wanted to land. Read ONCE, at
+  // mount, and held for this mount's whole life: `defaultOpen` below is an
+  // initial value, so a focus that vanished from the store on the next render
+  // would fold the section straight back up (Nebenbefund 3, R8 re-measure).
+  const [entryFocus] = useState(() => useUIStore.getState().settingsFocus)
+  useEffect(() => { useUIStore.getState().clearSettingsFocus() }, [])
   const [tab, setTab] = useState<SettingsTab>(() => {
+    if (entryFocus) return entryFocus.tab
     if (typeof window === 'undefined') return 'general'
     const stored = window.localStorage.getItem(SETTINGS_TAB_KEY)
     return (stored === 'general' || stored === 'backends' || stored === 'agent' || stored === 'voice-remote')
@@ -1495,7 +1511,11 @@ export function SettingsPage() {
               the MLX installer in its place; without it a fresh Mac has no way
               to set up local image/video at all (MAC-3). */}
           {!isMlxImageHost() ? (
-            <Section title="ComfyUI (Image & Video)">
+            // Arriving from the Models page's "Start ComfyUI to see your image
+            // models" hint: the Start button it names lives in here, so the
+            // section arrives open instead of costing one more click the hint
+            // never mentioned.
+            <Section title="ComfyUI (Image & Video)" defaultOpen={entryFocus?.section === 'comfyui'}>
               {settings.appMode === 'cloud' && (
                 <p className="text-[0.55rem] text-gray-500 leading-snug pb-1">
                   Local mode only. Cloud renders run on lu-labs.ai and never use ComfyUI.

@@ -24,9 +24,10 @@ import { detectLocalBackends, type DetectedBackend } from '../../lib/backend-det
 import { whenRunsIdle } from '../../lib/run-idle'
 import { backendCall, isTauri } from '../../api/backend'
 import { idbStorage } from '../../lib/idbStorage'
+import { STORE_KEYS, IDB_STORE_KEYS, collectStoreSnapshot } from '../../lib/store-backup'
 import { idbKeysToRestore, mayReloadForIdbRestore } from '../../lib/idb-restore'
 import { log } from '../../lib/logger'
-import type { AIModel } from '../../types/models'
+import { pickForMode } from '../../lib/active-model-mode'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { useCloudAuth } from '../../hooks/useCloudAuth'
 import { useCloudAuthStore, deriveCloudAvailable } from '../../stores/cloudAuthStore'
@@ -103,29 +104,37 @@ export function AppShell() {
   // moment those models land.
   const allModels = useModelStore((s) => s.models)
   useEffect(() => {
+    // Nothing to judge against yet. This guard is the whole of Befund 3 of
+    // the abnahme counter-check (2026-08-29): the picked model did not
+    // survive a restart, and the picker came back on a different model.
+    //
+    // The pick IS persisted, and it was rehydrated correctly. This effect
+    // then ran on mount, before the first model list had landed, found the
+    // active model in an empty array, decided it was out of mode and cleared
+    // it. setModels later saw no active model and auto-selected the first
+    // chat entry, which is how Qwen3 4B turned into Hermes over a restart.
+    // An empty list is not evidence that a model is gone; it is the absence
+    // of evidence, and this effect only ever runs again the moment the real
+    // list arrives.
     const { activeModel, setActiveModel } = useModelStore.getState()
-    // Chat models only — ComfyUI image/video checkpoints share the list but
-    // carry no provider field, so a bare provider check would pin a checkpoint
-    // as the active CHAT model (mirrors the pull auto-activate guard in
-    // useModels; an unprefixed checkpoint name routes to Ollama and fails).
-    const chatCapable = (m: AIModel) => m.type !== 'image' && m.type !== 'video'
-    const inMode = (name: string | null) => {
-      if (!name) return false
-      const m = allModels.find((x) => x.name === name)
-      if (!m || !chatCapable(m)) return false
-      const isCloud = m.provider === 'lu-cloud'
-      return appMode === 'cloud' ? isCloud : !isCloud
-    }
-    if (inMode(activeModel)) return
-    const fallback = allModels.find((m) =>
-      chatCapable(m) && (appMode === 'cloud' ? m.provider === 'lu-cloud' : m.provider !== 'lu-cloud'),
-    )
-    // No in-mode model to fall back to? Then the selection must CLEAR, not
-    // silently stay on the old mode's model: a lu-cloud model left active in
-    // Local mode kept billing credits after the switch said Local (Discord
-    // bug-reports 2026-08-09, helpslowlydying). The send path refuses the
-    // mismatch too, this just keeps the header honest.
-    if (activeModel !== null || fallback) setActiveModel(fallback ? fallback.name : null)
+    // The rule itself lives in lib/active-model-mode.ts, where it can be
+    // tested. It keeps chat models only (a ComfyUI checkpoint shares this
+    // list and routes to Ollama as a chat model, where every send fails), it
+    // holds the empty list harmless, and it clears rather than leaves an
+    // out-of-mode model active when the new mode has nothing to offer: a
+    // lu-cloud model left active in Local mode kept billing credits after the
+    // switch said Local (Discord 2026-08-09, helpslowlydying).
+    //
+    // The fourth argument is the model the user NAMED on the way in, by
+    // clicking its row in the local-mode LU Cloud strip. Without it every one
+    // of those rows merely opened the gate and the fallback below decided
+    // which hosted model came out, which is why clicking DeepSeek V3.2 landed
+    // on Kimi K3 (Nebenbefund 1, R10 re-measure 2026-08-30). The request is
+    // dropped the moment it is answered, so it never steers a later flip.
+    const { pendingCloudModel, setPendingCloudModel } = useUIStore.getState()
+    const pick = pickForMode(activeModel, allModels, appMode, pendingCloudModel)
+    if (pick.change) setActiveModel(pick.next)
+    if (pick.usedRequest) setPendingCloudModel(null)
   }, [appMode, allModels])
 
   // Local-hardware views (Models/Benchmark) don't exist in cloud mode — the
@@ -160,27 +169,10 @@ export function AppShell() {
   }, [settings.comfyGpuMode])
 
   // ── Store backup/restore: survive NSIS updates that wipe WebView2 data ──
-  const STORE_KEYS = [
-    'chat-conversations', 'chat-settings', 'chat-models', 'lu-providers',
-    'create-store', 'locally-uncensored-codex',
-    'locally-uncensored-permissions', 'locally-uncensored-mcp-servers',
-    'locally-uncensored-agent-mode', 'locally-uncensored-memory',
-    'locally-uncensored-agent-workflows', 'locally-uncensored-agent',
-    'locally-uncensored-voice', 'lu-benchmark-store', 'lu-update-checker-v2',
-    'rag-store', 'workflow-store', 'lu-cloud-catalog',
-    // One-shot notices — back these up so "seen it once" survives an NSIS
-    // update that wipes WebView2 localStorage. `lu_cloud_notice` (the Create
-    // retention line) claimed in its own comment that it survived an update
-    // and did not, because it was never listed here.
-    'lu_cloud_notice', 'locally-uncensored-model-health',
-    // The standing goal (/goal) is per conversation and outlives a session.
-    'locally-uncensored-agent-goal',
-  ]
+  // The key lists and the snapshot builder live in lib/store-backup so the
+  // update path can ask for a backup too. It used to hand the process to the
+  // installer with whatever the 5 s interval last wrote (Bug A1, 2.6.7).
   const STORE_KEYS_SET = new Set(STORE_KEYS)
-  // These two persist via idbStorage (IndexedDB) since v2.5.0 — the backup
-  // snapshot must read them from there; their localStorage copy is deleted by
-  // the one-time idb migration, so localStorage.getItem returns nothing.
-  const IDB_STORE_KEYS = new Set(['chat-conversations', 'locally-uncensored-memory'])
 
   // Feature FF: reserved key under which memory embeddings ride inside the RAG
   // chunk backup file. Never collides with a real documentId (those are UUIDs).
@@ -406,16 +398,7 @@ export function AppShell() {
         if (backupInflight) return
         backupInflight = true
         try {
-          const snapshot: Record<string, string> = { __ts: new Date().toISOString() }
-          for (const key of STORE_KEYS) {
-            const val = IDB_STORE_KEYS.has(key)
-              ? await Promise.resolve(idbStorage.getItem(key))
-              : localStorage.getItem(key)
-            if (val) {
-              snapshot[key] = val
-              if (IDB_STORE_KEYS.has(key)) idbCache[key] = val
-            }
-          }
+          const snapshot = await collectStoreSnapshot(idbCache)
           // Always fire — we want backup even if snapshot is mostly empty, and the
           // sentinel tells the restore-flow this is a valid backup.
           localStorage.setItem('lu-restore-complete', '1')

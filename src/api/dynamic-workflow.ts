@@ -2,6 +2,7 @@ import { classifyModel, findMatchingVAE, findMatchingCLIP, findFluxCLIPPair } fr
 import type { ModelType, GenerateParams, VideoParams } from './comfyui'
 import { log } from '../lib/logger'
 import { resolveRunSeed } from '../lib/run-seed'
+import { readComboOptions } from './comfyui-enum'
 import {
   getAllNodeInfo,
   categorizeNodes,
@@ -620,7 +621,7 @@ export async function buildDynamicWorkflow(
   const loraNames = normalizeLoraList(params.lora)
   if (loraNames.length > 0) {
     const installed: string[] =
-      (allNodes?.LoraLoader?.input?.required?.lora_name?.[0] as string[] | undefined) ?? []
+      readComboOptions(allNodes?.LoraLoader?.input?.required?.lora_name) ?? []
     const resolved = resolveLoraNames(loraNames, installed)
     const strengths = normalizeLoraStrengths(params.loraStrength, resolved.length)
     resolved.forEach((loraName, i) => {
@@ -888,11 +889,14 @@ export async function buildDynamicWorkflow(
     if (decl.start_image) inputs.start_image = [loadId, 0]
     else if (decl.image) inputs.image = [loadId, 0]
     else if (decl.init_image) inputs.init_image = [loadId, 0]
-    // Remaining REQUIRED widgets we don't model: take the schema default
-    // (combo → first option) — same live-schema pattern as the RMBG builder.
+    // Remaining REQUIRED widgets we don't model: take the schema default,
+    // for a combo the first option. Same live-schema pattern as the RMBG
+    // builder, and the combo read goes through the one shared reader so the
+    // newer COMBO/options shape cannot leave a required widget unset.
     for (const [key, spec] of Object.entries(required)) {
       if (inputs[key] !== undefined) continue
-      if (Array.isArray(spec[0])) inputs[key] = spec[0][0]
+      const combo = readComboOptions(spec)
+      if (combo && combo.length) inputs[key] = combo[0]
       else if (spec[1] && typeof spec[1] === 'object' && 'default' in spec[1]) inputs[key] = spec[1].default
     }
     const i2vId = String(n++)
@@ -1045,12 +1049,17 @@ function buildRemoveBgWorkflow(params: GenerateParams, rmbgMeta: any): Record<st
 function rmbgWidgetDefault(name: string, spec: any): { set: boolean; value?: any } {
   const t = Array.isArray(spec) ? spec[0] : spec
   const cfg = Array.isArray(spec) ? spec[1] : undefined
-  if (Array.isArray(t)) {
+  // Both dropdown schemas, through the shared reader: a node that declares its
+  // combos the newer way (["COMBO", {options: [...]}]) used to fall through to
+  // "not a widget" here, and RMBG then rejected the graph for the missing
+  // widget it had just declared.
+  const options = readComboOptions(spec)
+  if (options && options.length > 0) {
     if (/back\s*ground|(^|_)bg($|_)/i.test(name)) {
-      const alpha = t.find((o: any) => typeof o === 'string' && /alpha|transparent/i.test(o))
+      const alpha = options.find((o) => /alpha|transparent/i.test(o))
       if (alpha) return { set: true, value: alpha }
     }
-    return { set: true, value: cfg?.default ?? t[0] }
+    return { set: true, value: cfg?.default ?? options[0] }
   }
   if (t === 'BOOLEAN') return { set: true, value: cfg?.default ?? false }
   if (t === 'INT' || t === 'FLOAT') return { set: true, value: cfg?.default ?? 0 }

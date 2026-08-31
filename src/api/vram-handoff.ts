@@ -44,7 +44,7 @@
  * of call #2 and re-trigger the exact OOM we are avoiding.
  */
 
-import { backendCall, ollamaUrl, localFetch, isOllamaLocal } from './backend'
+import { backendCall, ollamaUrl, localFetch, isOllamaLocal, isWindows } from './backend'
 import { listRunningModels, loadModel, unloadModel } from './ollama'
 import { startBundledEngine } from './engine'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -69,13 +69,35 @@ import {
   buildTxt2VidWorkflow,
   snapToVideoGrid,
   MODEL_TYPE_DEFAULTS,
+  isPromptQueued,
   type VideoBackend,
 } from './comfyui'
 import type { ModelCapabilities } from './comfyui-nodes'
 import { getActiveAgentModel } from './agent-context'
 import { comfyWS, CLIENT_ID } from './comfyui-ws'
-import { PaceTracker, overBudget, renderBudgetNotice, renderTimeoutNotice, warmupExceeded, swapWarmupNotice } from '../lib/render-budget'
+import { PaceTracker, overBudget, renderBudgetNotice, renderTimeoutNotice, warmupExceeded, swapWarmupNotice, loadPhaseGraceMs, finishGraceMs, warmupBudgetMs, SWAP_WARMUP_BUDGET_MS, type CpuRenderFacts } from '../lib/render-budget'
+import { asComfyGpuMode } from '../lib/comfy-cpu-banner'
+import { comfyHoldsNoVram } from '../lib/comfy-device'
 import { log } from '../lib/logger'
+
+/**
+ * Is the ComfyUI we are about to render on running on the processor?
+ *
+ * R14 Nebenbefund 1: both hand-off paths below evicted the chat engine before
+ * every render, including renders on a ComfyUI started with `--cpu`, which
+ * holds no VRAM at all. Same reply `cpuRenderFacts` reads, asked separately so
+ * this decision never disturbs the cached facts the failure notices use, and
+ * so a missing reply (web build, ComfyUI never started by LU) answers `false`
+ * and leaves the hand-off exactly as it was.
+ */
+async function comfyRendersOnCpu(): Promise<boolean> {
+  try {
+    const s = await backendCall<{ startedCpu?: boolean | null; mode?: string | null }>('get_comfy_gpu_status')
+    return comfyHoldsNoVram({ startedCpu: s?.startedCpu === true, mode: asComfyGpuMode(s?.mode) })
+  } catch {
+    return false
+  }
+}
 
 /**
  * Resolve a casual model name the user/LLM typed (e.g. "FramePack", "wan",
@@ -791,7 +813,21 @@ async function runHandoff(kind: 'image' | 'video', args: VramHandoffArgs, seq: n
   let willUnload = false
   let willUnloadLms = false
   let willUnloadBundled = false
-  if (textModel || lmsTarget || bundledTarget) {
+  // R14 Nebenbefund 1: a ComfyUI LU started with `--cpu` never touches the
+  // card, so there is no VRAM to hand over. Evicting the chat engine for it
+  // buys nothing and costs a full cold reload after every picture. Asked once
+  // per generation, and only when there is something that WOULD be evicted.
+  const comfyOnCpu = (textModel || lmsTarget || bundledTarget) ? await comfyRendersOnCpu() : false
+  if (comfyOnCpu) {
+    log.info('vram_handoff.skipped_cpu_comfy', {
+      kind,
+      targetModel,
+      textModel,
+      lmsModel: lmsTarget?.id ?? null,
+      bundledModel: bundledTarget?.modelPath ?? null,
+    })
+  }
+  if (!comfyOnCpu && (textModel || lmsTarget || bundledTarget)) {
     try {
       const [footprint, systemVram, mode] = await Promise.all([
         Promise.resolve(estimateModelFootprintGB(targetModel)),
@@ -1318,6 +1354,36 @@ async function generateVideo(
   }
 }
 
+let _cpuRenderFacts: CpuRenderFacts | null = null
+
+/**
+ * Which device LU's ComfyUI is actually on, for the failure messages.
+ *
+ * Asked only when a render is about to fail, so a healthy render never pays for
+ * the call. `null` on any error and on the web build, where the notice simply
+ * stays as it was. The answer is cached for the watchdogs in useCreate, which
+ * fire from a timer and cannot await anything.
+ */
+export async function cpuRenderFacts(): Promise<CpuRenderFacts | null> {
+  try {
+    const s = await backendCall<{ startedCpu?: boolean | null; mode?: string | null; hasAmd?: boolean | null }>('get_comfy_gpu_status')
+    if (!s) return null
+    // `mode` rides along since round 14: the notices used to report a missing
+    // GPU path to a user who had picked Force CPU himself. Same reply, same
+    // normaliser the Create tab's banner uses, so an unknown or absent value
+    // reads as 'auto' and can never claim a press that never happened.
+    _cpuRenderFacts = { startedCpu: s.startedCpu === true, mode: asComfyGpuMode(s.mode), hasAmd: s.hasAmd === true, isWindows: isWindows() }
+    return _cpuRenderFacts
+  } catch {
+    return null
+  }
+}
+
+/** The last answer `cpuRenderFacts()` got, for callers that cannot await. */
+export function lastCpuRenderFacts(): CpuRenderFacts | null {
+  return _cpuRenderFacts
+}
+
 /**
  * Poll ComfyUI history until the prompt completes, then build the result string
  * in the exact legacy shape so ToolCallBlock renders it inline and useAgentChat
@@ -1325,7 +1391,6 @@ async function generateVideo(
  * message VERBATIM (Bug-G / honest-UX: an OOM reads as an OOM).
  */
 async function pollAndExtract(promptId: string, prompt: string, kindLabel: string, timeoutMs: number): Promise<string> {
-  const deadline = Date.now() + timeoutMs
   // G19-1 render budget: read the pace off ComfyUI's own progress events and
   // give up EARLY, with the job cancelled, once the projection says the render
   // cannot land inside the budget (R32: a 30 to 60 minute Wan job burned the
@@ -1337,19 +1402,61 @@ async function pollAndExtract(promptId: string, prompt: string, kindLabel: strin
   // (R17c: 19 minutes of "loading model into VRAM"). Track whether ANY prompt
   // progressed; if the WS is alive and nothing on the GPU has moved for the
   // whole warm-up budget, the load is wedged and the job gets abandoned.
+  //
+  // Z36 finding 4 (W3 run 2026-08-16): a forced z_image_bf16 render in the chat
+  // tool was abandoned after 352.6 s while the Create tab renders the same job.
+  // The first load of the big bf16 checkpoint on a 3060 outlasted the warm-up
+  // budget, and neither guard here could tell a slow load from a wedged one.
+  // Two things change. The warm-up guard asks ComfyUI whether the prompt is
+  // still queued before calling the load wedged, the same life signal the
+  // Create watchdog uses. And the flat deadline is recomputed every tick with
+  // the measured load phase added, so the render budget is spent on the render.
+  // The pace verdict keeps the RAW budget, so a hopeless render (R32) still
+  // dies after three sampler steps.
   const startedAt = Date.now()
   let sawAnyProgress = false
+  let firstOwnProgressAt: number | null = null
+  let finishGraceUsed = 0
+  // Z36 finding 4, second half: before calling a long load wedged, ask ComfyUI
+  // whether our prompt is still in its queue. That is the same life signal the
+  // Create watchdog uses (useCreate: isPromptQueued refreshes lastActivity), and
+  // it is the reason the Create tab finishes a render the agent path abandoned.
+  // Asked only once the plain warm-up budget is spent, and at most every 30 s,
+  // so a healthy render never pays for the extra request.
+  let promptAlive = false
+  let aliveCheckedAt = 0
   const offProgress = comfyWS.on((ev) => {
     if (ev.type === 'progress') {
       sawAnyProgress = true
       if (ev.data.prompt_id === promptId) {
-        pace.tick(ev.data.value, ev.data.max, Date.now())
+        const at = Date.now()
+        if (firstOwnProgressAt === null) firstOwnProgressAt = at
+        pace.tick(ev.data.value, ev.data.max, at)
       }
     }
   })
   void comfyWS.connect().catch(() => { /* degrade to the flat deadline */ })
   try {
-    while (Date.now() < deadline) {
+    for (;;) {
+      const deadline = startedAt + timeoutMs
+        + loadPhaseGraceMs(comfyWS.connected, startedAt, firstOwnProgressAt, Date.now(), warmupBudgetMs(promptAlive))
+        + finishGraceUsed
+      if (Date.now() >= deadline) {
+        // Adopt a render that is seconds from done instead of throwing away the
+        // load and the sampling it already paid for. Granted at most once.
+        const grace = finishGraceUsed === 0 ? finishGraceMs(pace.projectedRemainingMs()) : 0
+        if (grace > 0) {
+          finishGraceUsed = grace
+          log.info('vram_handoff.render_finish_grace', { promptId, graceMs: grace })
+          continue
+        }
+        // Deadline reached: the wait ends AND the job ends. The old return here
+        // walked away and left the render burning the GPU with no owner.
+        const elapsedMs = Date.now() - startedAt
+        log.warn('vram_handoff.render_timeout_abort', { promptId, budgetMs: timeoutMs, elapsedMs })
+        await abandonPrompt(promptId)
+        return renderTimeoutNotice(kindLabel, timeoutMs, elapsedMs, await cpuRenderFacts())
+      }
       // User hit the in-chat cancel button — ComfyUI was already sent /interrupt
       // + queue-clear by requestGenerationCancel(); stop polling so runHandoff's
       // finally can restore the text model into VRAM instead of waiting out the
@@ -1388,20 +1495,19 @@ async function pollAndExtract(promptId: string, prompt: string, kindLabel: strin
       if (overBudget(projected, timeoutMs)) {
         log.warn('vram_handoff.render_budget_abort', { promptId, projectedMs: Math.round(projected!), budgetMs: timeoutMs })
         await abandonPrompt(promptId)
-        return renderBudgetNotice(kindLabel, projected!, timeoutMs)
+        return renderBudgetNotice(kindLabel, projected!, timeoutMs, await cpuRenderFacts())
       }
       const warmupElapsed = Date.now() - startedAt
-      if (warmupExceeded(sawAnyProgress, comfyWS.connected, warmupElapsed)) {
-        log.warn('vram_handoff.swap_warmup_abort', { promptId, elapsedMs: warmupElapsed })
+      if (!sawAnyProgress && warmupElapsed > SWAP_WARMUP_BUDGET_MS && Date.now() - aliveCheckedAt > 30_000) {
+        aliveCheckedAt = Date.now()
+        promptAlive = await isPromptQueued(promptId)
+      }
+      if (warmupExceeded(sawAnyProgress, comfyWS.connected, warmupElapsed, warmupBudgetMs(promptAlive))) {
+        log.warn('vram_handoff.swap_warmup_abort', { promptId, elapsedMs: warmupElapsed, promptAlive })
         await abandonPrompt(promptId)
-        return swapWarmupNotice(kindLabel, warmupElapsed)
+        return swapWarmupNotice(kindLabel, warmupElapsed, await cpuRenderFacts())
       }
     }
-    // Deadline reached: the wait ends AND the job ends. The old return here
-    // walked away and left the render burning the GPU with no owner.
-    log.warn('vram_handoff.render_timeout_abort', { promptId, budgetMs: timeoutMs })
-    await abandonPrompt(promptId)
-    return renderTimeoutNotice(kindLabel, timeoutMs)
   } finally {
     offProgress()
   }
@@ -1423,6 +1529,19 @@ export function comfyErrorHint(nodeType: string | undefined, _excType: string | 
   if ((nodeType === 'FramePackSampler' || /framepack/i.test(nodeType ?? '')) &&
       m.includes('hyvideomodel') && m.includes('diffusion_model')) {
     return 'This is a bug in the installed ComfyUI-FramePackWrapper custom node (its model loader and sampler are out of sync), not in LU. Update the node from ComfyUI Manager (search "FramePack"), or pick a different image-to-video model (SVD works on 12 GB; Wan 2.2 5B is the recommended higher-quality option).'
+  }
+  // An AMD card the ROCm wheels have no kernels for (Runde 12). The install
+  // succeeded, torch imported, HIP enumerated the device, and the FIRST kernel
+  // is where it falls apart. The wheel choice holds back the families we can
+  // name from the card's own name, but a Ryzen APU reports itself as
+  // "AMD Radeon(TM) Graphics" and tells us nothing, so this is the net under
+  // the ones we cannot place. Without it the user gets a raw HIP traceback
+  // that reads like a broken install and sends him rebuilding the environment
+  // over and over, which cannot help.
+  if (m.includes('invalid device function') ||
+      m.includes('hiperrornobinaryforgpu') ||
+      m.includes('tensilelibrary')) {
+    return 'Your AMD card was found and used, but the ROCm build of PyTorch in this ComfyUI environment carries no compute kernels for this particular chip, so the first step of the render had nothing to run. Rebuilding the environment installs the same wheels and will not change this. Set Settings → Hardware → ComfyUI GPU to Force CPU to render on the processor instead: much slower, but it completes. Running ComfyUI with HSA_OVERRIDE_GFX_VERSION=10.3.0 is the community workaround for RDNA 2 cards; it is not supported by AMD and LU does not set it for you.'
   }
   if (m.includes('out of memory') || m.includes('outofmemory') || _excType === 'torch.OutOfMemoryError') {
     return 'Ran out of GPU memory. Try a shorter clip / lower resolution, set VRAM hand-off to "always" in Settings so the chat model is evicted first, or pick a lighter model.'
@@ -1812,6 +1931,15 @@ async function evictBody(): Promise<RenderEviction> {
     return inherited ?? { ...EMPTY_EVICTION }
   }
 
+  // R14 Nebenbefund 1: a ComfyUI LU started with `--cpu` renders without ever
+  // claiming the card, so the eager eviction above has nothing to make room
+  // for. On the box this cost a full reload of the chat model after every
+  // picture. An inherited haul still gets restored after this render.
+  if (await comfyRendersOnCpu()) {
+    log.info('render_juggle.skipped_cpu_comfy', {})
+    return inherited ?? { ...EMPTY_EVICTION }
+  }
+
   const result: RenderEviction = { ...EMPTY_EVICTION }
 
   // Capture BEFORE the kill so the restore list is honest.
@@ -1893,6 +2021,28 @@ async function restoreBody(evicted: RenderEviction, graceMs: number, myEpoch: nu
   // Give the chat backends their VRAM back. freeMemory drops ComfyUI's
   // cached checkpoint; without it the reloads below can OOM right after a
   // big render.
+  //
+  // R16 Befund 6a, what this costs, written down because it was measured and
+  // not guessed. On the Windows box (2026-08-30, 12 GB GPU, 16 GB RAM,
+  // z_image_bf16 at 11.46 GB) ComfyUI dropped the model after every render,
+  // RAM going 7.68 GB back to 672 MB, and every one of the five runs then
+  // spent 69 s to 75 s reading it back in before the first sampling step.
+  //
+  // Where that unload comes from: `/free {unload_models, free_memory}` is the
+  // only such call in LU, ComfyUI is started with no memory flags at all
+  // (process.rs, `--cpu` and `--use-flash-attention` are the only conditional
+  // ones), and smart memory is left on. So this line is the prime suspect, but
+  // it only fires when a local chat backend was actually resident to evict,
+  // and whether one was on the box that evening is not established here. The
+  // log lines that settle it are `render_juggle.evicted` and
+  // `render_juggle.restored` below; without them ComfyUI dropped the model by
+  // itself and the 30+ s belongs to a 16 GB machine, not to us.
+  //
+  // Left as it is on purpose. It is the deliberate hand-off (a resident chat
+  // model squatting the card is what forced heavy CPU offload and the OOMs on
+  // the 14B lanes), and `exclusiveVramMode: 'never'` already turns the whole
+  // juggle off. Trading a render's load time against a chat model's is David's
+  // call, not a fixer's.
   try { await freeMemory() } catch { /* best effort */ }
   if (todo.bundled) {
     try {

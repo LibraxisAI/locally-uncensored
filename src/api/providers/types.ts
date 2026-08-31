@@ -22,6 +22,31 @@ export interface ProviderConfig {
   // (the Tauri command), not `/v1/models`. Undefined = a normal user-configured
   // backend, unchanged behavior.
   managed?: boolean
+  // Set when the user switched this provider off with the Disable button in
+  // Settings, AI Backends, and cleared when Enable puts it back. The list keeps
+  // such a row visible (greyed, with Enable) instead of dropping it, so the
+  // control that turns a backend off is not also the control that hides the way
+  // back (Nebenbefund 1, R9 re-measure 2026-08-30). Undefined = a slot nobody
+  // has touched here; it stays out of the list as before.
+  disabledByUser?: boolean
+  // The backend this slot pushed out when Add Provider handed it to somebody
+  // else. Only the `openai` slot can carry one: it is the single slot every
+  // OpenAI-protocol backend shares, so adding Jan there used to make the
+  // built-in engine's card disappear without a word (Nebenbefund 3, R10
+  // re-measure 2026-08-30). The providers list draws a greyed standby card for
+  // it with an Enable button that hands the slot back. See
+  // lib/openai-slot-handover.ts. Undefined = nothing was pushed out.
+  displaced?: {
+    name: string
+    baseUrl: string
+    isLocal: boolean
+    managed?: boolean
+    // Set when this backend left the slot because the user pressed Disable on
+    // it, rather than because something else took the slot from it. The card
+    // then reads DISABLED instead of STANDBY, which is the button that was
+    // pressed (Nebenbefund 3, R12/R13 re-measure 2026-08-30).
+    disabledByUser?: boolean
+  }
 }
 
 // ── Provider Presets (auto-fill URL) ───────────────────────────

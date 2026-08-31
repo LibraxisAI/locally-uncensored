@@ -11,6 +11,8 @@
  * the GPU stops burning (the timeout used to orphan it).
  */
 
+import { FORCE_CPU_REASON, FORCE_CPU_WAY_BACK, type ComfyGpuModeName } from './comfy-cpu-banner'
+
 /** Sampler steps observed before we trust the pace. */
 export const MIN_STEPS_FOR_VERDICT = 3
 
@@ -54,6 +56,20 @@ export class PaceTracker {
     if (steps < MIN_STEPS_FOR_VERDICT) return null
     return ((s.at - s.t0) / steps) * s.max
   }
+
+  /**
+   * Projected ms of sampling still to come, or null before enough steps. On a
+   * multi-pass job this only sees the CURRENT pass, so it under-estimates. It
+   * is only ever used to grant a small, capped grace, and under-estimating
+   * there simply means no grace is granted.
+   */
+  projectedRemainingMs(): number | null {
+    const s = this.s
+    const total = this.projectedTotalMs()
+    if (!s || total === null || s.max <= 0) return null
+    const done = Math.min(1, Math.max(0, s.value / s.max))
+    return total * (1 - done)
+  }
 }
 
 export function overBudget(projectedTotalMs: number | null, budgetMs: number): boolean {
@@ -87,23 +103,177 @@ export function warmupExceeded(
   return wsConnected && !sawAnyProgress && elapsedMs > budgetMs
 }
 
+/**
+ * Warm-up budget once ComfyUI CONFIRMS our prompt is still queued or running
+ * (Z36 finding 4). The flat 5 minutes cannot tell a wedged load from the first
+ * load of a big bf16 checkpoint on a small card, and it cut off a render the
+ * Create tab completes: the Create watchdog counts a still-queued prompt as a
+ * life signal (useCreate isPromptQueued), the agent path counted nothing.
+ * Doubling the budget on that same signal buys the honest load its time while
+ * still ending the R17c case, which sat wedged for 19 minutes.
+ */
+export const SWAP_WARMUP_ALIVE_BUDGET_MS = 10 * 60_000
+
+/** The warm-up budget in force, given what ComfyUI says about our prompt. */
+export function warmupBudgetMs(promptConfirmedAlive: boolean): number {
+  return promptConfirmedAlive ? SWAP_WARMUP_ALIVE_BUDGET_MS : SWAP_WARMUP_BUDGET_MS
+}
+
+/**
+ * What LU knows about the device this render actually used.
+ *
+ * `startedCpu` is true only when LU itself started ComfyUI with `--cpu` this
+ * session, which is the one case where we can say the cause instead of guessing
+ * at it. Read from `get_comfy_gpu_status`.
+ *
+ * `mode` is the user's own ComfyUI GPU pick from the same reply, required
+ * rather than optional so no construction site can forget to ask: without it
+ * these notices told a user who had chosen Force CPU that no supported GPU path
+ * was active, which is a fault report about a machine that had none.
+ */
+export interface CpuRenderFacts {
+  startedCpu: boolean
+  mode: ComfyGpuModeName
+  hasAmd: boolean
+  isWindows: boolean
+}
+
+/**
+ * The sentence every render failure gets when the render never had a GPU.
+ *
+ * The three notices below all used to blame the user's settings or the VRAM,
+ * because none of them knew about the device: `renderBudgetNotice` told an AMD
+ * customer to use fewer steps while the real answer was that his card was never
+ * in play, and `swapWarmupNotice` told him to free VRAM on a machine that was
+ * not using any. Empty string whenever we do not know, so nothing is claimed
+ * that was not measured.
+ *
+ * Round 14 closed the last wrong reason in it. Nebenbefund 1 of the R12/R13
+ * re-measure caught the Create tab's banner claiming no usable GPU had been
+ * found on a box with a working, correctly detected RTX 3060, where the user
+ * had picked Force CPU himself. These three notices carried the same claim in
+ * their own words, so they get the same answer, out of the same two constants:
+ * the reason he can act on is the switch he set, and no fault report goes with
+ * it. The AMD paragraph is skipped there for the reason it always had, that it
+ * describes a driver problem, and this user does not have one.
+ */
+export function cpuCauseSuffix(facts: CpuRenderFacts | null | undefined): string {
+  if (!facts?.startedCpu) return ''
+  if (facts.mode === 'cpu') {
+    return ` Image generation is running on the CPU because ${FORCE_CPU_REASON}, so it is many times slower than it would be on a card. ${FORCE_CPU_WAY_BACK}`
+  }
+  const head = 'Image generation is running on the CPU because no supported GPU path is active, so it is many times slower than it would be on a card.'
+  if (facts.hasAmd && facts.isWindows) {
+    return ` ${head} Your card is AMD and LU could not install a PyTorch that drives it on Windows.`
+  }
+  if (facts.hasAmd) {
+    return ` ${head} Your card is AMD and the PyTorch in this ComfyUI environment cannot reach it. Rebuild it from Settings, ComfyUI, Repair environment.`
+  }
+  return ` ${head}`
+}
+
 /** Tool result for a warm-up abort. Says what was observed, not a guess. */
-export function swapWarmupNotice(kindLabel: string, elapsedMs: number): string {
+export function swapWarmupNotice(kindLabel: string, elapsedMs: number, cpu?: CpuRenderFacts | null): string {
   const m = Math.max(1, Math.round(elapsedMs / 60_000))
-  return `${kindLabel} generation stopped: after ${m} minute${m === 1 ? '' : 's'} the model was still loading into VRAM and sampling never started. The job was cancelled so the GPU is free again. Free some VRAM (close other GPU apps, or set VRAM hand-off to "always" in Settings so the chat model is evicted first), or pick a smaller model.`
+  const minutes = `${m} minute${m === 1 ? '' : 's'}`
+  if (cpu?.startedCpu) {
+    // Neither half of the normal message is true here: nothing was loading into
+    // VRAM, no GPU was freed by the cancel, and freeing VRAM cannot help. A big
+    // checkpoint crawling into system RAM on the processor overruns this budget
+    // on its own.
+    return `${kindLabel} generation stopped: after ${minutes} the model was still loading and sampling never started. The job was cancelled.${cpuCauseSuffix(cpu)} Pick a smaller model.`
+  }
+  return `${kindLabel} generation stopped: after ${minutes} the model was still loading into VRAM and sampling never started. The job was cancelled so the GPU is free again. Free some VRAM (close other GPU apps, or set VRAM hand-off to "always" in Settings so the chat model is evicted first), or pick a smaller model.`
+}
+
+/**
+ * Cap on how far the FIRST load of the checkpoint may push the flat deadline
+ * out (Z36 finding 4, W3 run 2026-08-16: a forced z_image_bf16 render in the
+ * chat tool was abandoned after 352.6 s because loading the big bf16 checkpoint
+ * on a 3060 outlasted the warm-up budget, while the Create tab renders the same
+ * job, because its watchdog bounds the SILENT gap instead of the wall clock).
+ * The warm-up guard below is the one that ended that render; this cap covers
+ * the same phase for the flat deadline, which a slower card or a shorter user
+ * budget would hit next. The load phase already has
+ * its own guard in warmupExceeded, so this only has to cover a load that is
+ * slow but healthy, and it keeps the whole wait bounded at budget + cap. The
+ * cap is the warm-up ceiling, so the two guards cannot disagree about how long
+ * a load may take: the warm-up guard always reaches its verdict first, with the
+ * message that names the real cause.
+ */
+export const LOAD_PHASE_GRACE_CAP_MS = SWAP_WARMUP_ALIVE_BUDGET_MS
+
+/**
+ * Ms the flat deadline may move out because the checkpoint had to be loaded
+ * before sampling could start. The load phase runs from submit to the first
+ * sampler progress event for OUR prompt; while that tick is still missing the
+ * grace grows with the clock, and once it arrives the grace freezes at the
+ * measured load time.
+ *
+ * Without a live WS we cannot tell loading from sampling, so there is no grace
+ * at all and the flat deadline applies exactly as it did before this existed.
+ *
+ * This moves the FLAT deadline only. The pace verdict keeps measuring the
+ * sampling pass against the raw budget, so a hopeless render (R32) still dies
+ * after three steps.
+ */
+export function loadPhaseGraceMs(
+  wsConnected: boolean,
+  startedAt: number,
+  firstOwnProgressAt: number | null,
+  now: number,
+  cap: number = LOAD_PHASE_GRACE_CAP_MS,
+): number {
+  if (!wsConnected) return 0
+  const loadEndedAt = firstOwnProgressAt ?? now
+  const loadMs = loadEndedAt - startedAt
+  if (!Number.isFinite(loadMs) || loadMs <= 0) return 0
+  return Math.min(loadMs, cap)
+}
+
+/** One bounded extension for a render that is seconds away from done. */
+export const FINISH_GRACE_CAP_MS = 60_000
+
+/**
+ * Ms of extra time a render past its deadline has earned by being nearly
+ * finished (Z36 finding 4, second half: at the deadline the app threw away a
+ * job that had already paid for the whole checkpoint load and almost all of the
+ * sampling). A measured pace that says the rest of the pass fits inside the cap
+ * buys the whole cap once, which also covers the VAE decode and save tail. No
+ * measurement, or too much work left, buys nothing and the job is cancelled as
+ * before.
+ */
+export function finishGraceMs(
+  projectedRemainingMs: number | null,
+  cap: number = FINISH_GRACE_CAP_MS,
+): number {
+  if (projectedRemainingMs === null) return 0
+  if (!Number.isFinite(projectedRemainingMs) || projectedRemainingMs < 0) return 0
+  return projectedRemainingMs <= cap ? cap : 0
 }
 
 const advice = 'Try fewer frames, a smaller resolution or fewer steps, or pick a lighter model. The generation timeout is adjustable in Settings.'
 
 /** Tool result for a pace-based early stop. Honest about what was measured. */
-export function renderBudgetNotice(kindLabel: string, projectedMs: number, budgetMs: number): string {
+export function renderBudgetNotice(kindLabel: string, projectedMs: number, budgetMs: number, cpu?: CpuRenderFacts | null): string {
   const p = Math.max(1, Math.round(projectedMs / 60_000))
   const b = Math.max(1, Math.round(budgetMs / 60_000))
-  return `${kindLabel} generation stopped early: at the measured pace this render needs about ${p} minutes, more than the ${b} minute budget. The job was cancelled so the GPU is free again. ${advice}`
+  // This is the exit a processor render reaches FIRST: the sampler ticks do
+  // arrive, just twenty times too slowly, so without the suffix the message
+  // blames the user's step count for the hardware switch.
+  return `${kindLabel} generation stopped early: at the measured pace this render needs about ${p} minutes, more than the ${b} minute budget. The job was cancelled so the GPU is free again.${cpuCauseSuffix(cpu)} ${advice}`
 }
 
-/** Tool result for the flat deadline. The job is abandoned, not orphaned. */
-export function renderTimeoutNotice(kindLabel: string, budgetMs: number): string {
+/**
+ * Tool result for the flat deadline. The job is abandoned, not orphaned. When
+ * the wait outlasted the budget because the checkpoint had to load first, say
+ * so instead of reporting a budget the run visibly overran.
+ */
+export function renderTimeoutNotice(kindLabel: string, budgetMs: number, elapsedMs?: number, cpu?: CpuRenderFacts | null): string {
   const b = Math.max(1, Math.round(budgetMs / 60_000))
-  return `${kindLabel} generation hit the ${b} minute budget and was cancelled so the GPU is free again. ${advice}`
+  const e = typeof elapsedMs === 'number' && Number.isFinite(elapsedMs) ? Math.max(1, Math.round(elapsedMs / 60_000)) : null
+  const spent = e !== null && e > b
+    ? ` It ran for about ${e} minutes: the ${b} minute budget plus the time the model spent loading.`
+    : ''
+  return `${kindLabel} generation hit the ${b} minute budget and was cancelled so the GPU is free again.${spent}${cpuCauseSuffix(cpu)} ${advice}`
 }

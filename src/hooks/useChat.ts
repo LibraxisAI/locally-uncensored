@@ -27,10 +27,13 @@ import { getProviderForModel, getProviderIdFromModel } from "../api/providers"
 import { modelOutOfMode } from "../lib/modeGate"
 import { syncOllamaHealthFromError } from "../lib/sync-ollama-health"
 import { isThinkingCompatible, isPlainTextPlanner } from "../lib/model-compatibility"
-import { stripNonCanonicalTags, finalStripThinkingTags } from "../lib/thinking-stripper"
+import { stripNonCanonicalTags, finalStripThinkingTags, settleThinking } from "../lib/thinking-stripper"
+import { isLocalModelByName } from "../api/agents/model-locality"
 import { isMultimodalUnsupportedError, MULTIMODAL_UNSUPPORTED_MESSAGE } from "../lib/ollama-errors"
 import type { ImageAttachment, Message } from "../types/chat"
 import { isGroupChat, groupSystemPrompt, groupHistory, stripImpersonatedSpeakers } from "../lib/group-chat"
+import { explainSendRefusal } from "../lib/template-refusal"
+import { builtinReloadNeeded, ensureBuiltinEngineAlive } from "../api/builtin-ensure"
 import { emptyAnswerExplanation } from "../lib/answer-notes"
 import { log } from "../lib/logger"
 import { CREDITS_EXHAUSTED_MESSAGE } from '../lib/credits-exhausted'
@@ -118,6 +121,33 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
   const others = allModels.filter((m) => m !== model)
 
   try {
+    // Local speakers share ONE engine process. llama-server holds a single
+    // model and answers with it whatever the request's `model` field says, so
+    // a group round used to send every speaker's turn to whichever model
+    // happened to be loaded: the user saw two names and got one model
+    // (counter-check on the Windows box, 2026-08-28). The engine loads this
+    // speaker's model before its turn now.
+    //
+    // Announced first, because a swap stops and restarts llama-server and a
+    // large GGUF takes long enough that a silent wait reads as a hang. The
+    // line is overwritten by the first token, or by the empty-answer note if
+    // no token ever comes.
+    if (providerId === 'openai') {
+      const toLoad = await builtinReloadNeeded(model)
+      if (toLoad) {
+        useChatStore.getState().updateMessageContent(
+          convId,
+          assistantMessage.id,
+          `Loading ${toLoad} into the built-in engine for this turn...`,
+        )
+        await ensureBuiltinEngineAlive(model)
+        // A stop during the load must not leave the loading line standing in
+        // the bubble as if it were the model's answer.
+        useChatStore.getState().updateMessageContent(convId, assistantMessage.id, '')
+        if (abort.signal.aborted) return
+      }
+    }
+
     const { provider, modelId } = getProviderForModel(model)
     let effectiveCtx: number | undefined = settings.contextWindowOverride || undefined
     if (providerId === 'ollama') {
@@ -174,7 +204,15 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
       }
       if (chunk.done) {
         if (chunk.finishReason) groupFinish = chunk.finishReason
-        contentAcc = stripImpersonatedSpeakers(finalStripThinkingTags(contentAcc, keepThinking), others)
+        // Same settlement as every other path (2.6.7 Denk-Audit): the state
+        // machine above only fires on a literal `<think>`, and a Qwen3
+        // template pre-opens the thought in the prompt, so a group speaker
+        // used to put its whole reasoning plus a raw closer in the bubble.
+        {
+          const settled = settleThinking(contentAcc, thinkingAcc, keepThinking)
+          contentAcc = stripImpersonatedSpeakers(settled.content, others)
+          thinkingAcc = settled.thinking
+        }
         useChatStore.getState().updateMessageContent(convId, assistantMessage.id, contentAcc)
         if (keepThinking && thinkingAcc) {
           useChatStore.getState().updateMessageThinking(convId, assistantMessage.id, thinkingAcc)
@@ -203,10 +241,14 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
   } catch (err) {
     if ((err as Error).name !== 'AbortError') {
       syncOllamaHealthFromError(err)
+      // Bug B3 round 2: a group round on a strict template used to paste the
+      // template's own Jinja trace into the bubble. Say what happened instead,
+      // and keep the raw text underneath it for support.
+      const refusal = explainSendRefusal(err)
       useChatStore.getState().updateMessageContent(
         convId,
         assistantMessage.id,
-        `Error from ${model}: ${(err as Error).message || 'Connection failed'}`,
+        refusal ?? `Error from ${model}: ${(err as Error).message || 'Connection failed'}`,
       )
     }
   }
@@ -395,6 +437,12 @@ export function useChat() {
       role: "assistant" as const,
       content: "",
       thinking: "",
+      // The answer records the model that produced it (Meldung 4, R5
+      // re-measure 2026-08-30). The conversation field alone could not: it
+      // holds one name for a chat two models may have answered in, and it is
+      // rewritten every time the picker moves. Written here, at the turn, so
+      // it is a measurement and not a guess.
+      modelId: activeModel,
       timestamp: Date.now(),
     }
     useChatStore.getState().addMessage(convId, assistantMessage)
@@ -488,7 +536,14 @@ export function useChat() {
     const activeMeta = useModelStore.getState().models.find((m) => m.name === activeModel)
     const thinkMode = activeMeta && 'thinkMode' in activeMeta ? activeMeta.thinkMode : undefined
     const canThink = thinkMode ? thinkMode === 'toggle' : isThinkingCompatible(activeModel)
-    if (settings.thinkingEnabled && providerId !== 'ollama' && canThink && thinkMode === undefined) {
+    // And not for a LOCAL OpenAI-compatible backend any more (2.6.7
+    // Denk-Audit): the built-in engine, LM Studio, llama.cpp and friends
+    // render the model's own template, which has a real thinking switch the
+    // provider now flips through chat_template_kwargs. Asking for tags on top
+    // of a template that already opened the thought is the same double
+    // instruction that trapped the cloud reasoners in a loop, one layer down.
+    if (settings.thinkingEnabled && providerId !== 'ollama' && canThink && thinkMode === undefined
+        && !isLocalModelByName(activeModel)) {
       systemPrompt = (systemPrompt || '') + '\n\nBefore answering, reason through your thinking inside <think></think> tags. Your thinking will be hidden from the user. After thinking, provide your answer outside the tags.'
     }
 
@@ -525,14 +580,31 @@ export function useChat() {
     const messages = applyChatSendBudget(
       capMessageCount([
         ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
+        // Bug B3: a stored role:'system' message is an APP notice, never a
+        // model turn. MessageList hides it, useCodex and useAgentChat both
+        // drop it from their payloads, and staged-apply.ts writes one on the
+        // promise that "it still never reaches the model". Plain chat was the
+        // one path that did not filter, so such a message rode along at
+        // whatever index it happened to sit at, and a strict Jinja template
+        // answers a mid-conversation system message with "System message must
+        // be at the beginning" instead of a reply.
         ...conv.messages
-          .filter((m) => m.content.trim() !== '')
+          .filter((m) => m.role !== 'system' && m.content.trim() !== '')
           .map((m) => ({
-            role: m.role as 'user' | 'assistant' | 'system' | 'tool',
+            role: m.role as 'user' | 'assistant' | 'tool',
             content: m.role === 'user' && cavemanReminder
               ? `${cavemanReminder}\n${m.content}`
               : m.content,
             ...(m.images?.length ? { images: m.images.map(img => ({ data: img.data, mimeType: img.mimeType })) } : {}),
+            // Bug B3 round 2: a plain chat can hold tool turns, because the
+            // chat tools (web_search and friends) run inside it by default.
+            // The store keeps tool_calls and tool_call_id for exactly this
+            // rebuild, and this rebuild dropped both, so every later send
+            // showed the model a tool RESULT with no call in front of it.
+            // Where the model's template cannot render them, the contract in
+            // api/providers/normalize-system.ts carries them as prompt text.
+            ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}),
+            ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
           })),
       ]),
       {
@@ -754,9 +826,17 @@ export function useChat() {
             finishReason = chunk.finishReason
             useChatStore.getState().updateMessageFinishReason(convId!, assistantMessage.id, chunk.finishReason)
           }
-          // Final safety pass — catches any orphan tags that leaked through
-          // mid-stream (partial chunks, provider restarts, etc.).
-          contentRef.current = finalStripThinkingTags(contentRef.current, keepThinking)
+          // Final settlement, the shared one, so plain chat catches the same
+          // orphan shapes the agent loops do. Before this the char-by-char
+          // machine above was the whole story here, and it only ever fires on
+          // a literal `<think>`: a Qwen3 template that pre-opens the thought
+          // in the prompt left the whole reasoning plus a raw closer standing
+          // in the answer with the Think button ON and the block empty.
+          {
+            const settled = settleThinking(contentRef.current, thinkingRef.current, keepThinking)
+            contentRef.current = settled.content
+            thinkingRef.current = settled.thinking
+          }
           useChatStore
             .getState()
             .updateMessageContent(convId!, assistantMessage.id, contentRef.current)
@@ -838,6 +918,9 @@ export function useChat() {
           : (err as any).code === 'rate_limit'
             ? (err as Error).message
             : `Error: ${(err as Error).message || 'Connection failed'}`
+        // Bug B3 round 2: a refusal that produced nothing at all gets its own
+        // English sentence, not the template's raw Jinja trace.
+        const sendRefusal = explainSendRefusal(err)
 
         // Image attached to a non-vision model → friendly guidance instead of
         // the raw 400 JSON (gthvidsten, GH Discussion #67).
@@ -856,6 +939,15 @@ export function useChat() {
             (contentRef.current ? contentRef.current + '\n\n' : '') + CREDITS_EXHAUSTED_MESSAGE
           )
         // Show user-friendly message for thinking errors
+        // Bug B3 round 2: same treatment as the agent path. A template that
+        // raised produced nothing at all, and its Jinja trace is not an
+        // answer to anything the user asked.
+        } else if (sendRefusal) {
+          useChatStore.getState().updateMessageContent(
+            convId!,
+            assistantMessage.id,
+            (contentRef.current ? contentRef.current + "\n\n" : "") + sendRefusal,
+          )
         } else if (errorMsg.includes('does not support thinking')) {
           useChatStore.getState().updateMessageContent(
             convId!,

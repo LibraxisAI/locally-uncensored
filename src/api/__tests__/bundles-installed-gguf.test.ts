@@ -30,6 +30,12 @@ vi.mock('../comfyui', () => ({
   getVAEModels: async () => [],
   getCLIPModels: async () => [],
   getGgufUnetModels: () => ggufUnets(),
+  // Sixth loader (2026-08-29): the AnimateDiff pack lists its motion modules
+  // itself. No motion module in these fixtures, so it answers empty.
+  getAnimateDiffModels: async () => [],
+  // Seventh loader (2026-08-29, abnahme counter-check): LoraLoader enumerates
+  // the loras folder. Nothing in these fixtures is a LoRA, so it answers empty.
+  getLoraModels: async () => [],
   filterPartialFiles: async (names: string[]) => new Set(names),
 }))
 

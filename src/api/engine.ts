@@ -12,6 +12,7 @@
  */
 
 import { backendCall } from './backend'
+import { trackEngineSwap } from './engine-swap-gate'
 import { prefixModelName } from './providers'
 import { useProviderStore } from '../stores/providerStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -39,6 +40,12 @@ export interface BundledModel {
    * (ENG-6c). null/absent when the header doesn't carry it — presets then
    * stay uncapped, exactly the pre-2.6.0 behavior. */
   ctx_train?: number | null
+  /** Can the built-in engine show this model a picture? True only when the
+   * vision projector sits next to the GGUF, which is the same file Rust turns
+   * into `--mmproj` at start (engine.rs model_can_see_images). Absent when the
+   * installed backend predates the field, and the callers then fall back to
+   * the model-name heuristic exactly as before. */
+  vision?: boolean
 }
 
 export interface EngineStatus {
@@ -85,9 +92,15 @@ export function isManagedBuiltinActive(): boolean {
 }
 
 /** Start the built-in engine with a specific GGUF. Idempotent for the same
- * model + tuning (the Rust side compares the resulting argv). */
+ * model + tuning (the Rust side compares the resulting argv).
+ *
+ * Registered with the swap gate so a send that arrives while the engine is
+ * still coming up waits for it instead of hitting the dead port (counter-check
+ * round 2, 2026-08-29). */
 export function startBundledEngine(modelPath: string, tuning?: BuiltinEngineTuning) {
-  return backendCall('start_bundled_engine', { modelPath, tuning: tuning ?? tuningFromSettings() })
+  return trackEngineSwap(
+    backendCall('start_bundled_engine', { modelPath, tuning: tuning ?? tuningFromSettings() }),
+  )
 }
 
 /** Stop the managed engine child if one is running. */
@@ -100,9 +113,15 @@ export function bundledEngineStatus() {
   return backendCall<EngineStatus>('bundled_engine_status')
 }
 
-/** Swap the loaded model (stop → start on the same port). */
+/** Swap the loaded model (stop → start on the same port).
+ *
+ * This is the call the model picker makes on every activation, and the one the
+ * counter-check raced: two switches in a row, then a send into the restart gap.
+ * Registering it here is what lets the send path wait it out. */
 export function swapBundledModel(modelPath: string, tuning?: BuiltinEngineTuning) {
-  return backendCall('swap_bundled_model', { modelPath, tuning: tuning ?? tuningFromSettings() })
+  return trackEngineSwap(
+    backendCall('swap_bundled_model', { modelPath, tuning: tuning ?? tuningFromSettings() }),
+  )
 }
 
 /** Start the built-in embeddings server (P5) with a specific embedding GGUF.
@@ -232,6 +251,11 @@ export function bundledToAIModels(models: BundledModel[]): CloudModel[] {
     type: 'text' as const,
     provider: 'openai' as const,
     providerName: 'Built-in Engine',
+    // The projector answer from disk, carried as the app-wide capability flag
+    // so the composer and the agent loop stop guessing from the model name.
+    // Deliberately left absent (not false) when the backend did not report it,
+    // so an older sidecar keeps the old heuristic instead of losing vision.
+    ...(typeof m.vision === 'boolean' ? { supportsVision: m.vision } : {}),
   }))
 }
 

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod crash_report;
 mod install_state;
 mod os_error;
 mod os_paths;
@@ -40,6 +41,27 @@ fn apply_linux_webkit_workarounds() {
     }
 }
 
+/// How long the app waits after the window went to the tray before it releases
+/// the local model backends. Long enough that a mis-click plus an immediate
+/// reopen costs nothing, short enough that the GPU is not pinned for a coffee
+/// break by a window the user believes is closed.
+const HIDE_OFFLOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Should the delayed post-hide offload still run?
+///
+/// `visible_now` is what the window reports once the grace period is over, so
+/// a reopen inside the grace period cancels the offload. `hide_generation` is
+/// the counter value the timer was started with and `current_generation` the
+/// value now: a hide → show → hide sequence leaves an older timer in flight,
+/// and that stale timer must not free the VRAM of the newer session seconds
+/// after it started. Only the newest timer for a still-hidden window offloads.
+///
+/// Pure on purpose: the window handle is not constructible in a unit test, the
+/// decision is. See `tests::hidden_offload_*`.
+fn should_offload_after_hide(visible_now: bool, hide_generation: u64, current_generation: u64) -> bool {
+    !visible_now && hide_generation == current_generation
+}
+
 /// Initialise tracing-subscriber once on app start. `LU_LOG_FORMAT=json`
 /// switches to single-line JSON output (one object per event) for users
 /// who pipe LU's stdout into Loki / Vector / a log file consumed by
@@ -59,17 +81,62 @@ fn init_tracing() {
     if json_mode {
         let _ = tracing_subscriber::registry()
             .with(filter)
-            .with(fmt::layer().json().with_current_span(false).with_span_list(false))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .fmt_fields(EnglishFields(fmt::format::JsonFields::new())),
+            )
             .try_init();
     } else {
         let _ = tracing_subscriber::registry()
             .with(filter)
-            .with(fmt::layer().compact())
+            .with(fmt::layer().compact().fmt_fields(EnglishFields(fmt::format::DefaultFields::new())))
             .try_init();
     }
 }
 
+/// A field formatter that runs the finished text through `os_error`.
+///
+/// The house rule is that our messages are English, and `os_error` keeps every
+/// call site of ours to it. A log line written INSIDE a dependency is out of
+/// that reach: hyper-util renders a failed `set_nodelay` itself, and on the
+/// German Windows box that landed in lu-app-exit.log as
+/// `tcp set_nodelay error: Ein ungueltiges Argument wurde angegeben.
+/// (os error 10022)`. We cannot patch the crate, but every event passes
+/// through here on its way out, so this is where the wording gets repaired.
+///
+/// It wraps the real formatter rather than replacing it, so the text and the
+/// JSON mode keep their exact shapes (including the JSON escaping) and only
+/// the operating system's own words are swapped for ours.
+struct EnglishFields<F>(F);
+
+impl<'writer, F> tracing_subscriber::fmt::FormatFields<'writer> for EnglishFields<F>
+where
+    F: for<'a> tracing_subscriber::fmt::FormatFields<'a>,
+{
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        mut writer: tracing_subscriber::fmt::format::Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        let mut buf = String::new();
+        self.0
+            .format_fields(tracing_subscriber::fmt::format::Writer::new(&mut buf), fields)?;
+        writer.write_str(&os_error::sanitize_os_wording(&buf))
+    }
+}
+
 fn main() {
+    // First thing of all: a panic anywhere must leave a trace. The release
+    // profile is `panic = "abort"`, so a panic on any thread ends the process
+    // immediately, and a shipped Windows build has no console to print to.
+    // Without this hook such a death is indistinguishable from the app being
+    // killed from outside, which is exactly the confusion the 2026-08-29
+    // Windows investigation had to untangle by hand.
+    crash_report::install_panic_hook();
+
     #[cfg(target_os = "linux")]
     apply_linux_webkit_workarounds();
     // Before anything can spawn a child: an AppImage exports PYTHONHOME and
@@ -170,6 +237,7 @@ fn main() {
             commands::agent::file_write,
             commands::agent::set_chat_workspace_override,
             commands::agent::get_chat_workspace_override,
+            commands::agent::list_agent_workspaces,
             // Shell
             commands::shell::shell_execute,
             // Filesystem
@@ -382,6 +450,7 @@ fn main() {
             // ─── Close → hide to tray instead of quit ───
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
+                let hide_gen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
@@ -392,6 +461,37 @@ fn main() {
                         // both before the window goes to the tray.
                         let _ = w.emit("app:hidden", ());
                         let _ = w.hide();
+
+                        // Gegenprobe 2026-08-30: the window vanished from the
+                        // taskbar but lu-llama-server kept the whole model in
+                        // VRAM, with no visible sign anything was still
+                        // running (the tray icon sits in the overflow). The
+                        // user pressed the X, believes the app is gone, and
+                        // the GPU stays full. Hiding stays the behaviour, but
+                        // it now releases the local backends the same way the
+                        // switch into Cloud mode does. Everything restarts
+                        // lazily on first use after Show, which is exactly
+                        // what a fresh launch does (nothing but Ollama and
+                        // ComfyUI auto-start there either).
+                        let generation = hide_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        let w2 = w.clone();
+                        let gen_handle = hide_gen.clone();
+                        std::thread::spawn(move || {
+                            // The grace period keeps a mis-click free: hide,
+                            // reopen, nothing was ever unloaded.
+                            std::thread::sleep(HIDE_OFFLOAD_GRACE);
+                            let visible = w2.is_visible().unwrap_or(false);
+                            let current = gen_handle.load(std::sync::atomic::Ordering::SeqCst);
+                            if !should_offload_after_hide(visible, generation, current) {
+                                return;
+                            }
+                            let app = w2.app_handle();
+                            let state = app.state::<AppState>();
+                            match commands::process::offload_local_models_blocking(&state, Some(true)) {
+                                Ok(v) => println!("[Window] hidden to tray, released local backends: {v}"),
+                                Err(e) => println!("[Window] hidden to tray, offload failed: {e}"),
+                            }
+                        });
                     }
                 });
             }
@@ -518,5 +618,160 @@ mod tests {
         );
         assert_eq!(after_first, after_second, "second call should be a no-op");
         cleanup();
+    }
+
+    // ─── Close-to-tray releases the GPU (Gegenprobe 2026-08-30) ───
+    //
+    // The window cross hides the app instead of quitting it, and until this
+    // round lu-llama-server kept the model in VRAM behind a window that was
+    // gone from the taskbar. The offload now runs after a grace period; these
+    // cover exactly when it may and may not fire.
+
+    #[test]
+    fn hidden_offload_runs_when_the_window_stayed_hidden() {
+        // Plain case: hidden at the start of the grace period, still hidden at
+        // the end, no newer hide in between. This is the case that frees VRAM.
+        assert!(super::should_offload_after_hide(false, 1, 1));
+    }
+
+    #[test]
+    fn hidden_offload_skipped_when_the_user_reopened() {
+        // Mis-click: cross pressed, window reopened from the tray inside the
+        // grace period. Unloading the model under a visible window would be a
+        // pointless reload, so the timer must back off.
+        assert!(!super::should_offload_after_hide(true, 1, 1));
+    }
+
+    #[test]
+    fn hidden_offload_skipped_when_a_newer_hide_owns_the_timer() {
+        // hide → show → hide: the first timer fires while the window is hidden
+        // again, but its grace period belongs to the OLD hide. Letting it
+        // through would free the VRAM seconds after the second hide instead of
+        // a full grace period later. The newest generation wins.
+        assert!(!super::should_offload_after_hide(false, 1, 2));
+        assert!(super::should_offload_after_hide(false, 2, 2));
+    }
+
+    #[test]
+    fn hiding_to_tray_is_actually_wired_to_the_offload() {
+        // The decision helper proves nothing on its own if nobody calls it.
+        // Before this round the CloseRequested arm ended at `w.hide()` and the
+        // engine kept the whole model in VRAM, which is exactly what the
+        // Gegenprobe measured. Pin the wiring next to the hide call so a
+        // refactor that drops it fails here instead of on someone's GPU.
+        let src = include_str!("main.rs");
+        let hide = src
+            .find("let _ = w.hide();")
+            .expect("close-to-tray hide call should exist");
+        let after = &src[hide..(hide + 2500).min(src.len())];
+        assert!(
+            after.contains("should_offload_after_hide"),
+            "hiding to the tray must consult the offload decision"
+        );
+        assert!(
+            after.contains("offload_local_models_blocking"),
+            "hiding to the tray must release the local model backends"
+        );
+    }
+
+    #[test]
+    fn hidden_offload_grace_is_a_real_wait_and_not_a_coffee_break() {
+        // A zero grace would unload on every stray hide, and a very long one
+        // would leave the GPU pinned for as long as the user is away from the
+        // machine. Bracket it so a future edit cannot quietly do either.
+        let secs = super::HIDE_OFFLOAD_GRACE.as_secs();
+        assert!((5..=120).contains(&secs), "grace period out of range: {secs}s");
+    }
+}
+
+/// The log sink itself, driven end to end.
+///
+/// `os_error`'s own tests prove the rewriting; this proves it is actually
+/// wired into the subscriber, which is the part a refactor drops for free.
+#[cfg(test)]
+mod log_english_tests {
+    use std::sync::{Arc, Mutex};
+
+    /// The connection-refused code of the machine the test runs on. Its
+    /// Display is the operating system's wording, which on a German Windows is
+    /// German and here differs from ours by its capital letter. Either way it
+    /// is text we did not write, and it must not survive.
+    #[cfg(windows)]
+    const REFUSED: i32 = 10061;
+    #[cfg(target_os = "macos")]
+    const REFUSED: i32 = 61;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const REFUSED: i32 = 111;
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn logged(f: impl FnOnce()) -> String {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(Capture(buf.clone()))
+            .with_ansi(false)
+            .fmt_fields(super::EnglishFields(
+                tracing_subscriber::fmt::format::DefaultFields::new(),
+            ))
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let out = buf.lock().unwrap().clone();
+        String::from_utf8(out).expect("the log is utf8")
+    }
+
+    #[test]
+    fn a_dependency_that_logs_an_os_error_still_reads_in_our_words() {
+        // Exactly the hyper-util line that put German text into
+        // lu-app-exit.log on the Windows box.
+        let e = std::io::Error::from_raw_os_error(REFUSED);
+        let os_worded = e.to_string();
+        let out = logged(|| tracing::warn!("tcp set_nodelay error: {}", e));
+        assert!(out.contains("tcp set_nodelay error: "), "got: {out}");
+        assert!(out.contains("connection refused"), "got: {out}");
+        assert!(out.contains(&format!("os error {REFUSED}")), "got: {out}");
+        assert!(!out.contains(&os_worded), "the system wording survived: {out}");
+    }
+
+    /// The test above builds its own subscriber, so on its own it would still
+    /// pass if `init_tracing` stopped using the wrapper. This is the other
+    /// half: BOTH log modes have to go through it, or a user on JSON logs
+    /// keeps the German line the text mode no longer has.
+    #[test]
+    fn both_log_modes_are_wired_through_the_wrapper() {
+        const SRC: &str = include_str!("main.rs");
+        let init = &SRC[SRC.find("fn init_tracing()").expect("init_tracing exists")..];
+        let init = &init[..init.find("\n}\n").expect("the function ends")];
+        assert_eq!(
+            init.matches("EnglishFields(").count(),
+            2,
+            "text mode and json mode must both sanitise:\n{init}"
+        );
+    }
+
+    // Negative control: a line the operating system had no hand in must come
+    // out byte for byte, fields and all.
+    #[test]
+    fn an_ordinary_line_is_logged_unchanged() {
+        let out = logged(|| tracing::info!(version = "2.6.7", "LU starting"));
+        assert!(out.contains("LU starting"), "got: {out}");
+        assert!(out.contains("version=\"2.6.7\""), "got: {out}");
     }
 }

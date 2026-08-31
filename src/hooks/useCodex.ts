@@ -14,10 +14,11 @@ import { applyGoalCommand } from '../lib/goal-command'
 import { useAgentGoalStore, renderGoalSection } from '../stores/agentGoalStore'
 import { useAgentLoopStore } from '../stores/agentLoopStore'
 import { CODEX_CONFIRM_TOOLS } from './codexShellGate'
-import { buildHermesToolPrompt, buildHermesToolResult, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
+import { buildHermesToolPrompt, buildHermesToolResult, buildHermesToolCall, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
 import { streamProviderTurn, type StreamedProviderTurn } from '../lib/provider-stream'
-import { createHermesDisplayFilter } from '../lib/hermes-stream'
-import { beginAgentRun, endAgentRun, chatWorkspaceSlug, setActiveAgentModel, type AgentRunContext } from '../api/agent-context'
+import { createHermesDisplayFilter, createThinkStreamSplitter, createTurnThinkingSink } from '../lib/hermes-stream'
+import { beginAgentRun, endAgentRun, setActiveAgentModel, type AgentRunContext } from '../api/agent-context'
+import { resolveChatWorkspaceSlug } from '../api/workspace-slug'
 import { codexModeKnobs, CODEX_MODE_LABELS, type CodexMode } from '../lib/codex-mode'
 import { CODEX_PLAN_SYSTEM_PROMPT } from '../lib/codex-plan-prompt'
 import { resolveWorkspace } from '../api/agents/workspace-resolve'
@@ -45,7 +46,7 @@ import { useToolAuditStore } from '../stores/toolAuditStore'
 import { makeInTurnCacheLookup } from '../api/agents/in-turn-cache'
 import { explainError as explainToolError } from '../api/agents/error-hints'
 import { budgetFromSettings } from '../api/agents/budget'
-import { finalStripThinkingTags, splitOrphanCloser, splitUnclosedThink } from '../lib/thinking-stripper'
+import { settleThinking } from '../lib/thinking-stripper'
 import { openPlanGap, planReconcileSteer, PLAN_RECONCILE_BUDGET } from '../lib/plan-reconcile'
 import { PlanStaleness, planStalenessSteer } from '../lib/plan-staleness'
 import { planResumeAnchor } from '../lib/plan-resume'
@@ -326,7 +327,13 @@ export function useCodex() {
     // Slug uses the chat title so the folder is recognisable in
     // Explorer; falls back to a stable id-derived suffix when the
     // title is empty. Cleared in the finally block.
+    //
+    // Resolved ONCE per turn and reused everywhere below. The name is pinned
+    // to the conversation on first use, so the auto-rename after the first
+    // message can no longer move the folder out from under a running agent
+    // (counter-check round 2, 2026-08-29). See api/workspace-slug.ts.
     const convForSlug = store.conversations.find((c) => c.id === convId)
+    const workspaceSlug = await resolveChatWorkspaceSlug(convId, convForSlug?.title)
 
     // Multi-Repo Agent (B15) + Codex/Agent workspace unification (B17):
     // pin the resolved workspace so the bridge resolves relative paths
@@ -429,7 +436,7 @@ export function useCodex() {
     // ERZWINGUNG, blocker S3). The finally closes it, and closing only clears
     // the process-wide mirror when this run still owns it.
     const run: AgentRunContext = beginAgentRun({
-      chatId: chatWorkspaceSlug(convId, convForSlug?.title),
+      chatId: workspaceSlug,
       conversationId: convId,
       workspace: runWorkspace,
       readOnlyShellTurn: effectiveReadOnly,
@@ -453,6 +460,9 @@ export function useCodex() {
     // (default collapsed; live-streams while running) — David 2026-06-12.
     const assistantMsg = {
       id: uuid(), role: 'assistant' as const, content: '', thinking: '', timestamp: Date.now(), agentBlocks: [],
+      // The answer records the model that produced it, same as both chat
+      // paths (Meldung 4, R5 re-measure 2026-08-30).
+      modelId: activeModel,
       ...(slash ? { slashCommand: slash.command.name } : {}),
     }
     useChatStore.getState().addMessage(convId, assistantMsg)
@@ -622,7 +632,13 @@ export function useCodex() {
 
     // For non-Ollama providers, inject thinking via system prompt — only for
     // models where the Think toggle actually applies (thinkMode gate).
-    if (settings.thinkingEnabled && providerId !== 'ollama' && codexCanThink(activeModel)) {
+    // Not for a LOCAL OpenAI-compatible backend any more (2.6.7 Denk-Audit):
+    // those render the model's own template, which has a real thinking switch
+    // the provider now flips through chat_template_kwargs. Asking for tags on
+    // top of a template that already opened the thought is a double
+    // instruction, and that is what loops a reasoner.
+    if (settings.thinkingEnabled && providerId !== 'ollama' && codexCanThink(activeModel)
+        && !isLocalModelByName(activeModel)) {
       systemPrompt += '\n\nBefore answering, reason through your thinking inside <think></think> tags. Your thinking will be hidden from the user. After thinking, provide your answer outside the tags.'
     }
 
@@ -952,6 +968,13 @@ export function useCodex() {
           thinking: thinkOptCx as unknown as boolean,
           signal: abort.signal,
         }
+        // Hoisted to the top of the step (2.6.7 Denk-Audit): the prompt
+        // transport declared its own copy AFTER the stream, so the branch that
+        // needed it while streaming could not see it at all. One gate per step,
+        // read by every transport and by the end-of-turn routing.
+        const keepThinking =
+          codexThinkMode(activeModel) === 'always' ||
+          (settings.thinkingEnabled === true && codexCanThink(activeModel))
 
         // ── Request build (2.6.6, plan A1/A2/A3) ─────────────────────────
         // Age decay, then the send budget, then compaction, in that order.
@@ -1168,10 +1191,6 @@ export function useCodex() {
             lastUserMsg: lastUserMsg.slice(0, 120),
           })
 
-          const keepThinking =
-            codexThinkMode(activeModel) === 'always' ||
-            (settings.thinkingEnabled === true && codexCanThink(activeModel))
-
           if (providerId === 'ollama') {
             // ── Streaming path for Ollama ──────────────────────────────
             // Shows live content/thinking tokens so the user isn't staring
@@ -1379,18 +1398,84 @@ export function useCodex() {
           // which spoke Ollama's /api/chat and quietly mis-routed hermes
           // turns on every other provider.
           const display = createHermesDisplayFilter()
+          // G35 parity with the Agent path (David 2026-08-07): the thought
+          // streams inside the SAME bounded ThinkingBlock window, never
+          // full-height into the answer. Without the splitter this branch fed
+          // the raw reasoning straight into the answer bubble for the whole
+          // turn, and only the end-of-turn parse pulled it back out again.
+          // The Qwen3 templates pre-open the thought in the PROMPT, so the
+          // stream begins mid-thought and only ever sends the closer, which
+          // is what startInThink covers.
+          const splitter = createThinkStreamSplitter({ startInThink: keepThinking })
           let shown = ''
-          const hermesTurn = await streamProviderTurn(
+          // Live only, through the SAME shared sink the Agent path uses, so
+          // the inline <think> spans and the native reasoning channel cannot
+          // overwrite each other. Nothing is committed into thinkingContent
+          // here: the authoritative end-of-turn parse runs on the FULL raw
+          // text and owns what counts, exactly like the tool-call extraction.
+          const thinkSink = createTurnThinkingSink()
+          const paintThink = () => {
+            if (!keepThinking) return
+            const live = thinkSink.live()
+            if (!live) return
+            useChatStore.getState().updateMessageThinking(
+              convId!, assistantMsg.id, thinkingContent ? thinkingContent + '\n\n' + live : live,
+            )
+          }
+          const feedUI = (part: { prose: string; thinking: string }) => {
+            if (part.thinking) {
+              thinkSink.inline(part.thinking)
+              paintThink()
+            }
+            if (part.prose) {
+              shown += part.prose
+              liveContent(shown)
+            }
+          }
+          // The tri-state, not a hole. Until the 2.6.7 Denk-Audit this branch
+          // passed `thinking: undefined` and threw the switch away in both
+          // directions: ON never reached the model, and OFF turned nothing
+          // off either, because undefined means "server decides" and the
+          // Qwen3 family decides yes. The prompt transport is where every
+          // strict template and every tool-less local model lands, the
+          // built-in engine included. The tool contract travels as TEXT here,
+          // so a thinking flag cannot disturb it.
+          const hermesOpts = { ...chatOptions, contextWindow: numCtx }
+          let hermesTurn: StreamedProviderTurn
+          const runHermes = (opts: typeof hermesOpts) => streamProviderTurn(
             provider,
             modelToUse,
             sendMessages.map(m => ({ role: m.role, content: m.content })),
-            { ...chatOptions, thinking: undefined as unknown as boolean, contextWindow: numCtx },
-            (_full, delta) => {
-              shown += display.feed(delta)
-              liveContent(shown)
-            },
+            opts,
+            (_full, delta) => feedUI(splitter.feed(display.feed(delta))),
+            // A prompt-transport backend can still answer on the NATIVE
+            // reasoning channel: llama-server extracts <think> into
+            // reasoning_content by itself and the provider yields it as
+            // `thinking`. This branch used to pass streamProviderTurn no
+            // thinking callback at all and then never read hermesTurn.thinking
+            // either, so that reasoning fell on the floor and the block stayed
+            // empty with the Think button switched on.
+            (full) => { thinkSink.native(full); paintThink() },
           )
-          shown += display.flush()
+          try {
+            hermesTurn = await runHermes(hermesOpts)
+          } catch (thinkErr: any) {
+            // Same downgrade the native branch carries: an old Ollama build or
+            // an endpoint that predates the knob answers 400, and the run must
+            // survive that instead of ending on it.
+            if (hermesOpts.thinking !== undefined
+              && (thinkErr?.message?.includes('does not support thinking') || httpStatusOf(thinkErr) === 400)) {
+              hermesTurn = await runHermes({ ...hermesOpts, thinking: undefined as unknown as boolean })
+            } else {
+              throw thinkErr
+            }
+          }
+          feedUI(splitter.feed(display.flush()))
+          feedUI(splitter.flush())
+          if (keepThinking && hermesTurn.thinking) {
+            thinkingContent += (thinkingContent ? '\n\n' : '') + hermesTurn.thinking
+            useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
+          }
           // Final paint DIRECT + settle the coalesced frame, so a queued
           // stale frame can never fire after the writes below (audit D1).
           settleLivePaint()
@@ -1406,45 +1491,18 @@ export function useCodex() {
           }
         }
 
-        // Inline <think>…</think> tags — route inner text into thinking
-        // block when toggle is ON, else discard. Non-canonical markers
-        // (Gemma channel tags, <thought>, <reasoning>, etc.) are always
-        // stripped — they are never user-facing content.
+        // End-of-turn settlement, through the ONE shared routine every path
+        // uses now (lib/thinking-stripper settleThinking): balanced blocks,
+        // the pre-opened Qwen3 thought that only ever sends its closer, a
+        // turn cut off mid-thought, and the non-canonical markers. Routed
+        // into the thinking panel only when the toggle is ON.
         {
-          const keepThinking =
-            codexThinkMode(activeModel) === 'always' ||
-            (settings.thinkingEnabled === true && codexCanThink(activeModel))
-          turnContent = turnContent.replace(/<think>([\s\S]*?)<\/think>/g, (_m, inner) => {
-            if (keepThinking) {
-              thinkingContent += (thinkingContent ? '\n\n' : '') + inner
-              useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
-            }
-            return ''
-          })
-          // The Qwen3 chat templates put the opening `<think>` in the PROMPT,
-          // so the reply starts mid-thought and closes a tag it never opened.
-          // Nothing above matches that, and with thinking ON the raw closer
-          // plus the whole thought stayed in the answer.
-          const orphanClose = splitOrphanCloser(turnContent)
-          if (orphanClose.thinking) {
-            turnContent = orphanClose.content
-            if (keepThinking) {
-              thinkingContent += (thinkingContent ? '\n\n' : '') + orphanClose.thinking
-              useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
-            }
+          const settled = settleThinking(turnContent, thinkingContent, keepThinking)
+          turnContent = settled.content
+          if (settled.thinking !== thinkingContent) {
+            thinkingContent = settled.thinking
+            useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
           }
-          // A turn cut off mid-thought leaves the opener without its closer,
-          // which the regex above cannot match. It belongs in the thinking
-          // panel, never in the answer.
-          const orphanThink = splitUnclosedThink(turnContent)
-          if (orphanThink.thinking) {
-            turnContent = orphanThink.content
-            if (keepThinking) {
-              thinkingContent += (thinkingContent ? '\n\n' : '') + orphanThink.thinking
-              useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
-            }
-          }
-          turnContent = finalStripThinkingTags(turnContent, keepThinking)
         }
 
         // Silent-retry on system-prompt echo — Gemma 4 sometimes
@@ -1785,7 +1843,7 @@ export function useCodex() {
         // rendered as a 100% insert — hiding exactly the deletions/overwrites
         // the user needs to see before approving a staged change.
         const readCtx: { chatId?: string; workingDirectory?: string } =
-          workDir && workDir !== '.' ? { chatId: convId, workingDirectory: workDir } : { chatId: convId }
+          workDir && workDir !== '.' ? { chatId: workspaceSlug, workingDirectory: workDir } : { chatId: workspaceSlug }
         const oldContents = new Map<string, string>()
         await Promise.all(
           batch
@@ -1831,7 +1889,7 @@ export function useCodex() {
             ? path
             : `${workDir.replace(/[\\/]+$/, '')}${workDir.includes('\\') ? '\\' : '/'}${path.replace(/^[\\/]+/, '')}`
           const stageReadCtx: { chatId?: string; workingDirectory?: string } =
-            workDir && workDir !== '.' ? { chatId: convId, workingDirectory: workDir } : { chatId: convId }
+            workDir && workDir !== '.' ? { chatId: workspaceSlug, workingDirectory: workDir } : { chatId: workspaceSlug }
           // A prior staged entry for this path already knows the DISK state —
           // reuse it so the reviewed diff stays disk → latest even when the
           // model writes the same file twice in one run.
@@ -1878,7 +1936,7 @@ export function useCodex() {
             ? path
             : `${workDir.replace(/[\\/]+$/, '')}${workDir.includes('\\') ? '\\' : '/'}${path.replace(/^[\\/]+/, '')}`
           const stageReadCtx: { chatId?: string; workingDirectory?: string } =
-            workDir && workDir !== '.' ? { chatId: convId, workingDirectory: workDir } : { chatId: convId }
+            workDir && workDir !== '.' ? { chatId: workspaceSlug, workingDirectory: workDir } : { chatId: workspaceSlug }
           // Read-your-writes: chain onto the STAGED content when this path is
           // already pending. Without this the base was re-read from DISK —
           // which never saw the staged write — so a second edit to the same
@@ -2143,7 +2201,26 @@ export function useCodex() {
           guardKeyOfResult.set(msg as unknown as object, guardKeyFor(tc))
           return msg
         }
-        if (providerId === 'openai' || providerId === 'anthropic' || providerId === 'lu-cloud') {
+        // Bug B3 round 2: same reorder as the Agent surface. This chain asked
+        // WHICH PROVIDER, and the built-in engine and LM Studio are providerId
+        // 'openai', so a coding run driving the model by prompt still wrote
+        // its results into the native `tool` role, with no `tools` payload in
+        // the request to justify it. A strict chat template has no branch for
+        // that role and refuses the whole conversation. The transport decides
+        // the shape; the provider only decides whether it needs ids.
+        if (strategy === 'hermes_xml') {
+          for (const entry of batch) {
+            const result = results.find((r) => r.id === entry.ac.id)!
+            messages.push({
+              role: 'assistant',
+              content: buildHermesToolCall(entry.ac.toolName, entry.injectedArgs),
+            })
+            messages.push(rememberResult(
+              { role: 'user', content: buildHermesToolResult(entry.ac.toolName, resultTextFor(result)) },
+              entry.tc,
+            ))
+          }
+        } else if (providerId === 'openai' || providerId === 'anthropic' || providerId === 'lu-cloud') {
           messages.push({ role: 'assistant', content: turnContent || '', tool_calls: toolCalls })
           for (const { tc } of batch) {
             const result = results.find((r) => r.id === batch.find((b) => b.tc === tc)?.ac.id)!
@@ -2162,11 +2239,14 @@ export function useCodex() {
             messages.push(rememberResult({ role: 'tool', content: resultTextFor(result) }, tc))
           }
         } else {
+          // Ollama on a non-native strategy that is not hermes_xml. Same
+          // dialect, written by the same builders as the branch above so the
+          // two can never drift apart again.
           for (const entry of batch) {
             const result = results.find((r) => r.id === entry.ac.id)!
             messages.push({
               role: 'assistant',
-              content: `<tool_call>\n{"name": "${entry.ac.toolName}", "arguments": ${JSON.stringify(entry.injectedArgs)}}\n</tool_call>`,
+              content: buildHermesToolCall(entry.ac.toolName, entry.injectedArgs),
             })
             messages.push(rememberResult(
               { role: 'user', content: buildHermesToolResult(entry.ac.toolName, resultTextFor(result)) },

@@ -1,6 +1,7 @@
 import { comfyuiUrl, localFetch, fetchLocalhostBytes, isTauri, backendCall } from "./backend"
 import { log } from "../lib/logger"
 import { LU_CLIENT_PREFIX } from "./comfyui-ws"
+import { nodeComboOptions } from "./comfyui-enum"
 import { resolveRunSeed } from '../lib/run-seed'
 
 // ─── Control-plane fetch timeouts ───
@@ -138,13 +139,49 @@ export function galleryTypeForFile(
 // 2.5.8: ace / wans2v / wananimate / wanvace are the specialized local-lane
 // architectures (music, talking character, motion control). They are neither
 // image nor video picker material — each lane has its own model list.
-export type ModelType = 'flux' | 'flux2' | 'zimage' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'unknown'
+export type ModelType = 'flux' | 'flux2' | 'zimage' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
 export type VideoBackend = 'wan' | 'animatediff' | 'none'
 
 export interface ClassifiedModel {
   name: string
   type: ModelType
-  source: 'checkpoint' | 'diffusion_model'
+  /** Which ComfyUI enum listed this file. `motion_module` is the AnimateDiff
+   *  one, and it lives outside ComfyUI\models entirely (see getMotionModels).
+   *  The rest are the addon folders: files that are not a model on their own,
+   *  take up real disk, and used to appear in no list and no counter at all
+   *  (counter-check 2026-08-29, and five more folders in the R5 re-measure
+   *  the day after). */
+  source: 'checkpoint' | 'diffusion_model' | 'motion_module' | AddonSource
+}
+
+/** The ComfyUI\models folders that hold files a user installs, none of which
+ *  is a main model. One name per folder, and INSTALLED_ADDON_LANES below is
+ *  the single place that says which loader enumerates it. */
+export type AddonSource =
+  | 'lora' | 'vae' | 'text_encoder'
+  | 'clip_vision' | 'controlnet' | 'upscale_model' | 'embedding' | 'style_model'
+
+/** Where a listed file actually sits, by the enum that listed it. The disk
+ *  probe needs the folder, and the delete command resolves the same set.
+ *
+ *  The motion-module folder is spelled out rather than imported: discover.ts
+ *  owns ANIMATEDIFF_SUBFOLDER and imports back into this module, so a static
+ *  import here would be a cycle. A unit test pins the two spellings together
+ *  so the duplicate cannot drift. */
+export function subfolderForSource(source: ClassifiedModel['source']): string {
+  switch (source) {
+    case 'checkpoint': return 'checkpoints'
+    case 'diffusion_model': return 'diffusion_models'
+    case 'motion_module': return 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
+    case 'lora': return 'loras'
+    case 'vae': return 'vae'
+    case 'text_encoder': return 'text_encoders'
+    case 'clip_vision': return 'clip_vision'
+    case 'controlnet': return 'controlnet'
+    case 'upscale_model': return 'upscale_models'
+    case 'embedding': return 'embeddings'
+    case 'style_model': return 'style_models'
+  }
 }
 
 // ─── Model Classification ───
@@ -180,6 +217,11 @@ export function classifyModel(name: string | null | undefined): ModelType {
   if (lower.includes('vace')) return 'wanvace'
   if (lower.includes('s2v')) return 'wans2v'
   if (lower.includes('animate') && lower.includes('wan') && !lower.includes('animatediff')) return 'wananimate'
+  // A motion module is neither an image nor a standalone video model: it is the
+  // second half of the AnimateDiff lane, which also needs an SD checkpoint. Its
+  // own type keeps it out of isImageModelType (which lets 'unknown' through and
+  // would otherwise offer a motion module in the image picker).
+  if (lower.includes('animatediff')) return 'animatediff'
   if (lower.includes('ace_step') || lower.includes('ace-step') || lower.includes('acestep')) return 'ace'
   // Merged 14B "rapid AIO" builds (e.g. wan2.2-i2v-rapid-aio) are Wan 14B
   // architecture: classic WanImageToVideo graph + wan_2.1_vae — NOT the
@@ -525,6 +567,28 @@ export async function getSystemVRAM(): Promise<number | null> {
   return null
 }
 
+/**
+ * The running ComfyUI's own version string, or null if it does not say.
+ *
+ * /system_stats carries `system.comfyui_version` on every current build; very
+ * old ones simply have no such field, and that is an answer too (the caller
+ * maps it to the `unknown` placeholder). Used by the Create tab's cross-origin
+ * notice to tell "the same ComfyUI as when you dismissed this" from "a
+ * different one", see lib/comfy-cors-notice.ts. Not cached: a restart under
+ * LU's management, or a user update, is exactly the change worth noticing.
+ */
+export async function getComfyVersion(): Promise<string | null> {
+  try {
+    const res = await localFetch(comfyuiUrl('/system_stats'), { timeoutMs: COMFY_STATS_TIMEOUT_MS })
+    if (!res.ok) return null
+    const data = await res.json()
+    const v = data?.system?.comfyui_version
+    return typeof v === 'string' && v.trim() ? v.trim() : null
+  } catch {
+    return null
+  }
+}
+
 // Check if a specific node exists in ComfyUI (lightweight, single node check)
 async function nodeExists(nodeName: string): Promise<boolean> {
   try {
@@ -537,26 +601,42 @@ async function nodeExists(nodeName: string): Promise<boolean> {
   }
 }
 
-export async function getCheckpoints(): Promise<string[]> {
-  const res = await localFetch(comfyuiUrl('/object_info/CheckpointLoaderSimple'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-  if (!res.ok) throw new Error(`ComfyUI /object_info/CheckpointLoaderSimple failed (HTTP ${res.status})`)
+/** One /object_info call for one node, read through the shared combo reader.
+ *
+ *  `strict` is for the two loaders whose absence means ComfyUI itself is not
+ *  answering: those still throw on an HTTP error so the caller can tell "no
+ *  models installed" apart from "no engine". Everything else soft-fails to an
+ *  empty list, because an optional pack that is not installed is not an error.
+ *
+ *  Nothing here reads the spec by hand any more. The AnimateDiff node answers
+ *  in the newer COMBO schema while the stock loaders answer in the legacy one
+ *  (proven on the box, see comfyui-enum.ts), and one hand-read spec was enough
+ *  to take the whole video discovery down. */
+async function fetchNodeOptions(
+  node: string,
+  field: string,
+  opts: { strict?: boolean } = {},
+): Promise<string[]> {
+  const res = await localFetch(comfyuiUrl(`/object_info/${node}`), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
+  if (!res.ok) {
+    if (opts.strict) throw new Error(`ComfyUI /object_info/${node} failed (HTTP ${res.status})`)
+    return []
+  }
   const data = await res.json()
-  return data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] ?? []
+  return nodeComboOptions(data, node, field)
+}
+
+export async function getCheckpoints(): Promise<string[]> {
+  return fetchNodeOptions('CheckpointLoaderSimple', 'ckpt_name', { strict: true })
 }
 
 export async function getDiffusionModels(): Promise<string[]> {
-  const res = await localFetch(comfyuiUrl('/object_info/UNETLoader'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-  if (!res.ok) throw new Error(`ComfyUI /object_info/UNETLoader failed (HTTP ${res.status})`)
-  const data = await res.json()
-  return data?.UNETLoader?.input?.required?.unet_name?.[0] ?? []
+  return fetchNodeOptions('UNETLoader', 'unet_name', { strict: true })
 }
 
 export async function getVAEModels(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/VAELoader'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data?.VAELoader?.input?.required?.vae_name?.[0] ?? []
+    return await fetchNodeOptions('VAELoader', 'vae_name')
   } catch (err) {
     log.warn('comfyui.fetch_vae_failed', { err })
     return []
@@ -565,10 +645,7 @@ export async function getVAEModels(): Promise<string[]> {
 
 export async function getCLIPModels(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/CLIPLoader'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data?.CLIPLoader?.input?.required?.clip_name?.[0] ?? []
+    return await fetchNodeOptions('CLIPLoader', 'clip_name')
   } catch (err) {
     log.warn('comfyui.fetch_clip_failed', { err })
     return []
@@ -583,22 +660,81 @@ export async function getCLIPModels(): Promise<string[]> {
  */
 export async function getLoraModels(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/LoraLoader'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data?.LoraLoader?.input?.required?.lora_name?.[0] ?? []
+    return await fetchNodeOptions('LoraLoader', 'lora_name')
   } catch (err) {
     log.warn('comfyui.fetch_lora_failed', { err })
     return []
   }
 }
 
+/** The five folders the R5 re-measure (2026-08-30) found missing entirely.
+ *
+ *  A dummy .safetensors was dropped into ten ComfyUI model folders. ComfyUI
+ *  listed all ten at once; the app showed five of them and never mentioned the
+ *  other five. Two real files were invisible with them, an 817 MB CLIP-Vision
+ *  encoder and, once the partial filter below was fixed, a 2.4 GB text
+ *  encoder. Each of these is a stock ComfyUI loader over a stock folder, and
+ *  each soft-fails to an empty list, so a distro that lacks one of the nodes
+ *  costs that folder and nothing around it. */
+export async function getCLIPVisionModels(): Promise<string[]> {
+  try {
+    return await fetchNodeOptions('CLIPVisionLoader', 'clip_name')
+  } catch (err) {
+    log.warn('comfyui.fetch_clip_vision_failed', { err })
+    return []
+  }
+}
+
+export async function getControlNetModels(): Promise<string[]> {
+  try {
+    return await fetchNodeOptions('ControlNetLoader', 'control_net_name')
+  } catch (err) {
+    log.warn('comfyui.fetch_controlnet_failed', { err })
+    return []
+  }
+}
+
+export async function getUpscaleModels(): Promise<string[]> {
+  try {
+    return await fetchNodeOptions('UpscaleModelLoader', 'model_name')
+  } catch (err) {
+    log.warn('comfyui.fetch_upscale_failed', { err })
+    return []
+  }
+}
+
+export async function getStyleModels(): Promise<string[]> {
+  try {
+    return await fetchNodeOptions('StyleModelLoader', 'style_model_name')
+  } catch (err) {
+    log.warn('comfyui.fetch_style_models_failed', { err })
+    return []
+  }
+}
+
+/** Embeddings are the one folder no loader node enumerates: ComfyUI serves
+ *  them from its own /embeddings route instead, and that route hands back
+ *  BASE NAMES with the extension stripped. So this list alone cannot be shown
+ *  as installed files, and resolveEmbeddingFiles below puts the extension
+ *  back before anything reaches the inventory. */
+export async function getEmbeddingNames(): Promise<string[]> {
+  try {
+    const res = await localFetch(comfyuiUrl('/embeddings'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
+    if (!res.ok) return []
+    const data = await res.json()
+    if (!Array.isArray(data)) return []
+    return data.filter((n): n is string => typeof n === 'string' && n.length > 0)
+  } catch (err) {
+    log.warn('comfyui.fetch_embeddings_failed', { err })
+    return []
+  }
+}
+
 export async function getSamplers(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/KSampler'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-    if (!res.ok) throw new Error('Failed')
-    const data = await res.json()
-    return data?.KSampler?.input?.required?.sampler_name?.[0] ?? []
+    const list = await fetchNodeOptions('KSampler', 'sampler_name')
+    if (list.length === 0) throw new Error('KSampler listed no samplers')
+    return list
   } catch {
     return ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde', 'uni_pc', 'ddim']
   }
@@ -606,22 +742,27 @@ export async function getSamplers(): Promise<string[]> {
 
 export async function getSchedulers(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/KSampler'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-    if (!res.ok) throw new Error('Failed')
-    const data = await res.json()
-    return data?.KSampler?.input?.required?.scheduler?.[0] ?? []
+    const list = await fetchNodeOptions('KSampler', 'scheduler')
+    if (list.length === 0) throw new Error('KSampler listed no schedulers')
+    return list
   } catch {
     return ['normal', 'karras', 'simple', 'exponential', 'sgm_uniform']
   }
 }
 
+/** Motion modules the AnimateDiff-Evolved pack enumerates. These files do NOT
+ *  live under ComfyUI\models: the pack keeps them in
+ *  custom_nodes/ComfyUI-AnimateDiff-Evolved/models, which is why the four
+ *  ComfyUI\models loaders cannot see them and why every surface that only read
+ *  those four reported an installed AnimateDiff bundle as nothing at all.
+ *
+ *  This is also the node that answers in the newer COMBO schema on a real box,
+ *  so it is the one that used to hand a bare "COMBO" string to callers. */
 export async function getAnimateDiffModels(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/ADE_LoadAnimateDiffModel'))
-    if (!res.ok) return []
-    const data = await res.json()
-    return data?.ADE_LoadAnimateDiffModel?.input?.required?.model_name?.[0] ?? []
-  } catch {
+    return await fetchNodeOptions('ADE_LoadAnimateDiffModel', 'model_name')
+  } catch (err) {
+    log.warn('comfyui.fetch_animatediff_failed', { err })
     return []
   }
 }
@@ -689,7 +830,36 @@ export async function filterPartialFiles(filenames: string[]): Promise<Set<strin
 
 // ─── Classified Model Lists ───
 
-export async function getImageModels(): Promise<ClassifiedModel[]> {
+/**
+ * The main-model folders (checkpoints\, diffusion_models\, and the GGUF unets
+ * beside them), classified and narrowed to one lane.
+ *
+ * `hidePartialDownloads` is the entire difference between the two kinds of
+ * caller, and it is the R7 re-measure (2026-08-30) written down as a switch:
+ *
+ *  - A PICKER asks "what can I render with", so a file that is confirmed too
+ *    small for the catalogue entry of the same name is worth hiding: picking it
+ *    would only hand the user a broken graph.
+ *  - The INVENTORY asks "what is lying on my disk", and for that question a
+ *    catalogue size is meaningless. It is a claim about the file WE ship, never
+ *    about the file the user has.
+ *
+ * On the box a 13 MB `diffusion_models\flux1-dev-fp8.safetensors` was invisible
+ * in the whole app while a byte-identical copy named
+ * `flux1-dev-fp8-r67.safetensors` in the SAME folder listed fine: the catalogue
+ * ships FLUX.1 [dev] FP8 under the first name at 16.1 GB, so the size probe
+ * called the file partial and getImageModels dropped it, and the inventory read
+ * getImageModels. The user had a file on the disk he could neither see, nor
+ * measure, nor delete. Same shape as the R5 re-measure that took the filter out
+ * of the addon lanes, one folder further in.
+ *
+ * The catalogue card keeps its own verdict (discover.ts filters there) and goes
+ * on saying honestly that the package is not fully downloaded.
+ */
+async function mainModelLane(
+  keep: (type: ModelType) => boolean,
+  hidePartialDownloads: boolean,
+): Promise<ClassifiedModel[]> {
   // GGUF quants are listed by ComfyUI-GGUF's own loader, NOT by UNETLoader
   // (which only enumerates .safetensors/.sft). Leaving them out meant a user
   // could install a GGUF bundle straight from our own Model Manager and then be
@@ -701,11 +871,13 @@ export async function getImageModels(): Promise<ClassifiedModel[]> {
     getGgufUnetModels(),
   ])
   const unets = [...new Set([...diffModels, ...ggufModels])]
-  const complete = await filterPartialFiles([...checkpoints, ...unets])
+  const complete = hidePartialDownloads
+    ? await filterPartialFiles([...checkpoints, ...unets])
+    : null
   const result: ClassifiedModel[] = []
 
   for (const name of checkpoints) {
-    if (!complete.has(name)) continue
+    if (complete && !complete.has(name)) continue
     const type = classifyModel(name)
     // One predicate for both loops. isImageModelType lets 'unknown' through, so
     // a checkpoint the classifier cannot name is still offered, while the video
@@ -713,18 +885,18 @@ export async function getImageModels(): Promise<ClassifiedModel[]> {
     // stay in their own pickers. The old branch renamed anything unmatched to
     // sdxl instead of skipping it, which put an ACE-Step music checkpoint at
     // the top of the image picker on a real box.
-    if (!isImageModelType(type)) continue
+    if (!keep(type)) continue
     result.push({ name, type, source: 'checkpoint' })
   }
 
   for (const name of unets) {
-    if (!complete.has(name)) continue
+    if (complete && !complete.has(name)) continue
     const type = classifyModel(name)
     // isImageModelType already lets 'unknown' through, so a UNET the classifier
     // cannot name is still offered. The lane-specific architectures (ACE audio,
     // Wan S2V/Animate/VACE) are excluded by that same predicate and stay in
     // their own pickers.
-    if (isImageModelType(type)) {
+    if (keep(type)) {
       result.push({ name, type, source: 'diffusion_model' })
     }
   }
@@ -732,37 +904,289 @@ export async function getImageModels(): Promise<ClassifiedModel[]> {
   return result
 }
 
+/** The Create image picker and model-pick: main models that are usable. */
+export async function getImageModels(): Promise<ClassifiedModel[]> {
+  return mainModelLane(isImageModelType, true)
+}
+
+/** The Create video picker and detectVideoBackend: same deal one lane over.
+ *  Our own catalogue ships Wan video models as GGUF quants, and UNETLoader does
+ *  not list those, so downloading one from the Model Manager used to leave the
+ *  video tool insisting nothing was installed. */
 export async function getVideoModels(): Promise<ClassifiedModel[]> {
-  // Same GGUF gap as getImageModels: our own catalogue ships Wan video models
-  // as GGUF quants, and UNETLoader does not list those, so downloading one from
-  // the Model Manager left the video tool insisting nothing was installed.
-  const [checkpoints, diffModels, ggufModels] = await Promise.all([
-    getCheckpoints(),
-    getDiffusionModels(),
-    getGgufUnetModels(),
+  return mainModelLane(isVideoModelType, true)
+}
+
+/** The main image folders for the INVENTORY surfaces: everything on the disk,
+ *  no catalogue-size verdict. See mainModelLane for why the switch exists. */
+export async function getInstalledMainImageModels(): Promise<ClassifiedModel[]> {
+  return mainModelLane(isImageModelType, false)
+}
+
+/** The main video folders for the INVENTORY surfaces. Video twin of
+ *  getInstalledMainImageModels. */
+export async function getInstalledMainVideoModels(): Promise<ClassifiedModel[]> {
+  return mainModelLane(isVideoModelType, false)
+}
+
+/** The AnimateDiff motion modules, as classified models. (getMotionModels,
+ *  without the prefix, is the Wan Animate/VACE lane and a different thing.)
+ *
+ *  Kept separate from getVideoModels on purpose: the Create video picker asks
+ *  that one for a MAIN model, and a motion module is never that. It is half of
+ *  a pair (SD checkpoint + motion module) that the animatediff strategy puts
+ *  together itself via findAnimateDiffModel. */
+export async function getAnimateDiffMotionModels(): Promise<ClassifiedModel[]> {
+  const names = await getAnimateDiffModels()
+  return names.map((name) => ({ name, type: 'animatediff' as ModelType, source: 'motion_module' as const }))
+}
+
+/** One lane of the inventory, read on its own. A lane that fails costs itself
+ *  and one log line, never the lanes beside it.
+ *
+ *  Counter-check on the Windows box, 2026-08-29: the AnimateDiff lane threw
+ *  ("(intermediate value).map is not a function", because that node answers in
+ *  the newer COMBO schema) and took the ENTIRE video discovery with it. The
+ *  Models page then showed a Video tab with no number, Installed 0 and "No
+ *  video models installed" while three cards correctly said Installed, and the
+ *  whole thing was a warn line nobody saw. The reader below is fixed at the
+ *  root, but a single lane must never again be able to empty the page. */
+async function inventoryLane(
+  lane: string,
+  read: () => Promise<ClassifiedModel[]>,
+): Promise<ClassifiedModel[]> {
+  try {
+    return await read()
+  } catch (err) {
+    log.warn('comfyui.inventory_lane_failed', { lane, err })
+    return []
+  }
+}
+
+/** Everything installed in the video lane, for the INVENTORY surfaces: the
+ *  Models rail counter and the Installed tab.
+ *
+ *  Counter-check on the Windows box, 2026-08-29: two AnimateDiff bundles
+ *  installed cleanly, both cards read Installed, and the rail counter and the
+ *  Installed list knew neither of them. The cards check their own files, the
+ *  counter read the four ComfyUI\models loaders, and AnimateDiff keeps its
+ *  motion modules under custom_nodes. Same bug shape as GH #113: card, counter
+ *  and list answering from different readers.
+ *
+ *  Two additions over getVideoModels, both of them things ComfyUI really can
+ *  serve as video right now:
+ *   - the motion modules themselves, wherever the pack keeps them
+ *   - the SD checkpoints the AnimateDiff lane drives, but ONLY while motion
+ *     modules exist, which is the same condition selectStrategy uses before it
+ *     routes a video request onto the animatediff pipeline. That is the second
+ *     file of both AnimateDiff bundles (Realistic Vision), which used to be
+ *     counted under Image alone, so a video bundle showed up half in the wrong
+ *     lane and half nowhere. It stays in the Image count too, because it is
+ *     genuinely an image checkpoint as well.
+ *
+ *  Not used by detectVideoBackend, the Create picker or model-pick: those ask
+ *  for a main model and getVideoModels still answers exactly what it did. */
+export async function getInstalledVideoModels(): Promise<ClassifiedModel[]> {
+  const [videoModels, motionModels] = await Promise.all([
+    inventoryLane('video', getInstalledMainVideoModels),
+    inventoryLane('animatediff', getAnimateDiffMotionModels),
   ])
-  const unets = [...new Set([...diffModels, ...ggufModels])]
-  const complete = await filterPartialFiles([...checkpoints, ...unets])
-  const result: ClassifiedModel[] = []
-
-  // Video checkpoints (e.g. SVD)
-  for (const name of checkpoints) {
-    if (!complete.has(name)) continue
-    const type = classifyModel(name)
-    if (isVideoModelType(type)) {
-      result.push({ name, type, source: 'checkpoint' })
+  const out: ClassifiedModel[] = [...videoModels, ...motionModels]
+  if (motionModels.length > 0) {
+    const imageModels = await inventoryLane('image', getInstalledMainImageModels)
+    for (const m of imageModels) {
+      if (m.source !== 'checkpoint') continue
+      if (out.some((x) => x.name === m.name)) continue
+      out.push(m)
     }
   }
+  return out
+}
 
-  for (const name of unets) {
-    if (!complete.has(name)) continue
-    const type = classifyModel(name)
-    if (isVideoModelType(type)) {
-      result.push({ name, type, source: 'diffusion_model' })
+/** Extensions a model file on the disk actually carries. Everything ComfyUI
+ *  enumerates by filename ends in one of these. */
+const MODEL_FILE_EXTENSIONS = [
+  '.safetensors', '.sft', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx', '.pkl',
+]
+
+/**
+ * Is this enum entry a file on the disk at all.
+ *
+ * R5 re-measure, 2026-08-30: the Installed list under Image carried an entry
+ * called `pixel_space`, type safetensors, no size. A search over the whole C:
+ * drive found no such file, because there is none. `pixel_space` is ComfyUI's
+ * built-in pixel-space pseudo VAE, and VAELoader offers it in the same enum as
+ * the real files, exactly like the built-in taesd family beside it. The app
+ * read that enum as a list of installed files and invented a model the user
+ * neither downloaded nor can delete.
+ *
+ * The rule is the general one rather than a name list: an inventory entry
+ * claims a file occupies the disk, and a name with no file extension is not a
+ * file. That covers pixel_space, taesd, taesdxl, taesd3, taef1 and whatever
+ * ComfyUI builds in next, without this having to be told about it.
+ */
+export function isInstalledModelFile(name: string): boolean {
+  const lower = name.toLowerCase()
+  return MODEL_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+/** One addon folder, as classified models. These files are not a model on
+ *  their own, which is why no picker offers them and why every inventory
+ *  surface used to skip them. They still occupy the disk and the user still
+ *  has to be able to see and remove them.
+ *
+ *  No partial filter here any more, and that is the second half of the R5
+ *  re-measure (2026-08-30). `text_encoders\llava_llama3_fp8_scaled.safetensors`
+ *  weighs 2.4 GB on the box and appeared nowhere, while its three folder
+ *  neighbours appeared. The catalogue ships that name at 8.5 GB, the disk
+ *  probe called 2.4 GB too small, and filterPartialFiles dropped it. But a
+ *  catalogue size is a claim about the file WE ship, never about the file the
+ *  user has, and this list answers one question only: what is lying on the
+ *  disk. ComfyUI enumerates the file, so ComfyUI can load it; hiding it left
+ *  2.4 GB the user could not see and could not delete. The bundle cards and
+ *  the Create pickers keep their partial filter, because "is this usable" is
+ *  their question and it is a different one. */
+async function addonLane(
+  read: () => Promise<string[]>,
+  source: AddonSource,
+): Promise<ClassifiedModel[]> {
+  const names = await read()
+  return names
+    .filter(isInstalledModelFile)
+    .map((name) => ({ name, type: classifyModel(name), source }))
+}
+
+/**
+ * The embeddings folder, as real filenames.
+ *
+ * ComfyUI has no loader node over embeddings: they are served by the
+ * /embeddings route, which strips the extension off every name. A stripped
+ * name is not a file, so it fails isInstalledModelFile, cannot be measured and
+ * cannot be deleted. So the extension is put back by asking the disk which of
+ * the candidates exists, in ONE batched probe for the whole folder.
+ *
+ * Best effort: a probe that fails costs the embeddings lane and nothing else,
+ * which is the same deal every other lane gets.
+ */
+async function embeddingLane(): Promise<ClassifiedModel[]> {
+  const bases = await getEmbeddingNames()
+  if (bases.length === 0) return []
+  // A name that already carries an extension needs no guessing.
+  const ready = bases.filter(isInstalledModelFile)
+  const stripped = bases.filter((n) => !isInstalledModelFile(n))
+  const found = new Set<string>(ready)
+  if (stripped.length > 0) {
+    try {
+      const files = stripped.flatMap((base) =>
+        MODEL_FILE_EXTENSIONS.map((ext) => ({
+          subfolder: 'embeddings', filename: `${base}${ext}`, expectedBytes: 0,
+        })),
+      )
+      const results: Array<{ filename: string; exists?: boolean }> =
+        await backendCall('check_model_sizes', { files })
+      const onDisk = new Set(results.filter((r) => r.exists).map((r) => r.filename))
+      for (const base of stripped) {
+        const hit = MODEL_FILE_EXTENSIONS.map((ext) => `${base}${ext}`).find((f) => onDisk.has(f))
+        if (hit) found.add(hit)
+      }
+    } catch (err) {
+      log.warn('comfyui.embedding_filename_probe_failed', { err })
     }
   }
+  return [...found].map((name) => ({ name, type: classifyModel(name), source: 'embedding' as const }))
+}
 
-  return result
+/**
+ * Which loader answers for which ComfyUI model folder. ONE table, because the
+ * folder list was spread over the readers that happened to need a folder, and
+ * a folder nobody happened to need was simply invisible: five of them at the
+ * R5 re-measure on 2026-08-30 (clip_vision, controlnet, upscale_models,
+ * embeddings, style_models), holding among other things an 817 MB CLIP-Vision
+ * encoder that no surface in the app had ever named.
+ *
+ * The main-model folders (checkpoints, diffusion_models, and the GGUF unets
+ * beside them) are not here: those are read by getImageModels, which the
+ * pickers share. Everything else a user drops into ComfyUI\models is.
+ */
+const INSTALLED_ADDON_LANES: Array<{ source: AddonSource; read: () => Promise<ClassifiedModel[]> }> = [
+  { source: 'lora', read: () => addonLane(getLoraModels, 'lora') },
+  { source: 'vae', read: () => addonLane(getVAEModels, 'vae') },
+  { source: 'text_encoder', read: () => addonLane(getCLIPModels, 'text_encoder') },
+  { source: 'clip_vision', read: () => addonLane(getCLIPVisionModels, 'clip_vision') },
+  { source: 'controlnet', read: () => addonLane(getControlNetModels, 'controlnet') },
+  { source: 'upscale_model', read: () => addonLane(getUpscaleModels, 'upscale_model') },
+  { source: 'style_model', read: () => addonLane(getStyleModels, 'style_model') },
+  { source: 'embedding', read: embeddingLane },
+]
+
+/** Every ComfyUI\models folder the inventory reads, by its subfolder name.
+ *  Exported so a test can hold it against ComfyUI's own folder truth instead
+ *  of against the list that happens to be here. */
+export const INSTALLED_ADDON_SUBFOLDERS: string[] =
+  INSTALLED_ADDON_LANES.map((lane) => subfolderForSource(lane.source))
+
+/** Everything installed in the image lane, for the INVENTORY surfaces: the
+ *  Models rail counter and the Installed tab. The image twin of
+ *  getInstalledVideoModels, and the same bug shape one folder further out.
+ *
+ *  Counter-check on the Windows box, 2026-08-29: the cards for Pixel Art XL
+ *  (163 MB in loras\) and SDXL VAE fp16-fix (319 MB in vae\) both read
+ *  Installed, and neither file was in any Installed list or any counter.
+ *  Beside them sat two more LoRAs, four text encoders and five more VAEs that
+ *  no surface in the app had ever mentioned. The counter and the list read
+ *  checkpoints\ and diffusion_models\ and nothing else, so the user could
+ *  neither see what those files cost him nor delete one from the list.
+ *
+ *  Not used by the Create picker or model-pick: those ask for a main model
+ *  and getImageModels still answers exactly what it did. A VAE is never a
+ *  main model, and this function is the only place that says otherwise. */
+export async function getInstalledImageModels(): Promise<ClassifiedModel[]> {
+  const [imageModels, ...addons] = await Promise.all([
+    inventoryLane('image', getInstalledMainImageModels),
+    ...INSTALLED_ADDON_LANES.map((lane) => inventoryLane(lane.source, lane.read)),
+  ])
+  const out: ClassifiedModel[] = []
+  const seen = new Set<string>()
+  // First lane wins. A name that two loaders both list (a checkpoint ComfyUI
+  // also offers as a VAE) is one file on the disk and belongs in the list
+  // once, or the Installed count starts inventing entries.
+  for (const m of [imageModels, ...addons].flat()) {
+    if (seen.has(m.name)) continue
+    seen.add(m.name)
+    out.push(m)
+  }
+  return out
+}
+
+/** What each listed file weighs on the disk, by filename.
+ *
+ *  The inventory used to hand every ComfyUI file a size of 0, which the card
+ *  renders as no size at all. That was tolerable while the list held nothing
+ *  but big checkpoints the user had just picked himself; it is not once the
+ *  list is supposed to answer "what is all this costing me". Best effort
+ *  throughout: a probe that fails costs the sizes, never the list. */
+export async function readModelDiskSizes(models: ClassifiedModel[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (models.length === 0) return out
+  try {
+    // expectedBytes 0 on purpose: this asks how big the file IS, and the
+    // partial-download verdict is filterPartialFiles' job, not this one's.
+    const files = models.map((m) => ({
+      subfolder: subfolderForSource(m.source),
+      filename: m.name,
+      expectedBytes: 0,
+    }))
+    const results: Array<{ filename: string; exists?: boolean; actualBytes?: number }> =
+      await backendCall('check_model_sizes', { files })
+    for (const r of results) {
+      if (r.exists && typeof r.actualBytes === 'number' && r.actualBytes > 0) {
+        out.set(r.filename, r.actualBytes)
+      }
+    }
+  } catch (err) {
+    log.warn('comfyui.disk_sizes_failed', { err })
+  }
+  return out
 }
 
 // ── 2.5.8 specialized local-lane model lists ─────────────────────────────────
@@ -775,11 +1199,9 @@ export async function getVideoModels(): Promise<ClassifiedModel[]> {
  *  UNETLoader for UnetLoaderGGUF by extension. */
 export async function getGgufUnetModels(): Promise<string[]> {
   try {
-    const res = await localFetch(comfyuiUrl('/object_info/UnetLoaderGGUF'), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data?.UnetLoaderGGUF?.input?.required?.unet_name?.[0] ?? []
-  } catch {
+    return await fetchNodeOptions('UnetLoaderGGUF', 'unet_name')
+  } catch (err) {
+    log.warn('comfyui.fetch_gguf_failed', { err })
     return []
   }
 }

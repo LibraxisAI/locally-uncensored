@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Ban, ChevronDown, Loader2, Power, PlayCircle, Wrench, X, Cloud } from 'lucide-react'
+import { Ban, ChevronDown, Loader2, Power, PlayCircle, Settings as SettingsIcon, Wrench, X, Cloud } from 'lucide-react'
 import { useModels } from '../../hooks/useModels'
 import { useModelStore } from '../../stores/modelStore'
 import { useProviderStore } from '../../stores/providerStore'
@@ -9,10 +9,15 @@ import { useUIStore } from '../../stores/uiStore'
 import { unloadAllModels, loadModel, unloadModel, listRunningModels } from '../../api/ollama'
 import { displayModelName, getProviderIdFromModel } from '../../api/providers'
 import { activateBuiltinModel, isManagedBuiltinActive } from '../../api/engine'
+import { diagnoseBuiltinEngine } from '../../api/builtin-ensure'
 import { canUseTools, resolveToolSupport, type ToolSupport } from '../../lib/tool-support'
 import { backendCall } from '../../api/backend'
 import { listLoadedLmStudioModels, loadLmStudioModel, unloadLmStudioModel } from '../../api/lmstudio'
 import { isLmStudioProvider } from '../../lib/hf-to-provider'
+import { lmStudioSlotUpdate, adoptionReplacesBuiltinEngine } from '../../lib/lmstudio-backend-adopt'
+import { nextProbeDelayMs } from '../../lib/probe-backoff'
+import { noChatBackendEnabled } from '../../lib/provider-visibility'
+import { cloudTeaserModels } from '../../lib/cloud-teaser-models'
 import type { AIModel } from '../../types/models'
 
 // ── Local-mode cloud discovery (2.5.8): an "LU Cloud" section at the list's
@@ -25,10 +30,31 @@ function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
   const appMode = useSettingsStore((s) => s.settings.appMode)
   const teasersEnabled = useSettingsStore((s) => s.settings.cloudTeasersEnabled)
   const setCloudGateOpen = useUIStore((s) => s.setCloudGateOpen)
+  const setPendingCloudModel = useUIStore((s) => s.setPendingCloudModel)
   const allModels = useModelStore((s) => s.models)
   if (appMode === 'cloud' || !teasersEnabled) return null
-  const cloudChat = allModels.filter((m) => m.provider === 'lu-cloud' && m.type === 'text').slice(0, 5)
-  const open = () => { onOpen(); setCloudGateOpen(true) }
+  // The five used to be the head of the list as `/v1/models` happened to send
+  // it, and that order is not stable, so the strip showed a different five on
+  // every look (Nebenbefund 3, R9 re-measure). Same five every time now, and
+  // the ones that did not fit are counted instead of silently dropped.
+  const { shown: cloudChat, more: cloudMore } = cloudTeaserModels(
+    allModels.filter((m) => m.provider === 'lu-cloud' && m.type === 'text'),
+    (m) => (('displayName' in m && m.displayName) || displayModelName(m.name)) as string,
+  )
+  // Every row used to call this with nothing, so the row you pressed and the
+  // model you got afterwards were unrelated: the gate flipped the mode and the
+  // mode rule then handed out the head of the catalogue, in whatever order the
+  // last `/v1/models` answer had arrived in (Nebenbefund 1, R10 re-measure
+  // 2026-08-30, DeepSeek V3.2 landed on Kimi K3). A model row now names its
+  // model, by name and never by its position in any list, and the mode rule
+  // honours that name when the flip lands. The rows that stand for the
+  // catalogue as a whole, the rest-counter and the logged-out line, still ask
+  // for nothing in particular.
+  const open = (model?: string) => {
+    setPendingCloudModel(model ?? null)
+    onOpen()
+    setCloudGateOpen(true)
+  }
   return (
     <div className="mt-1 border-t border-white/[0.05]">
       <div className="px-2.5 pt-2 pb-0.5 flex items-center gap-1">
@@ -37,11 +63,10 @@ function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
           LU Cloud
         </span>
       </div>
-      {cloudChat.length > 0 ? (
-        cloudChat.map((m) => (
+      {cloudChat.map((m) => (
           <button
             key={m.name}
-            onClick={open}
+            onClick={() => open(m.name)}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
             title="Runs on LU Cloud, tap to see plans"
           >
@@ -51,10 +76,21 @@ function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
             </span>
             <span className="ml-auto text-[8px] text-violet-500 dark:text-violet-200">Cloud</span>
           </button>
-        ))
-      ) : (
+      ))}
+      {cloudChat.length > 0 && cloudMore > 0 && (
         <button
-          onClick={open}
+          onClick={() => open()}
+          className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
+          title="See the whole hosted catalogue"
+        >
+          <span className="text-[0.62rem] text-gray-500">
+            {cloudMore} more cloud {cloudMore === 1 ? 'model' : 'models'}, see them all
+          </span>
+        </button>
+      )}
+      {cloudChat.length === 0 && (
+        <button
+          onClick={() => open()}
           className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
           title="Runs on LU Cloud, tap to see plans"
         >
@@ -120,6 +156,10 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState('')
   const [dismissed, setDismissed] = useState(LM_HINT_DISMISSED_THIS_SESSION)
+  // Starting the server also hands LM Studio the local backend slot (see
+  // lib/lmstudio-backend-adopt). When the built-in engine holds that slot the
+  // user learns it here, before the click, together with the way back.
+  const replacesBuiltinEngine = useProviderStore((s) => adoptionReplacesBuiltinEngine(s.providers.openai))
 
   useEffect(() => {
     let cancelled = false
@@ -151,6 +191,13 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
         if (fresh) {
           setStatus(fresh)
           if (fresh.running) {
+            // A running server is only half of what the sentence above
+            // promises. The picker lists ENABLED provider slots, so without
+            // this the models stay invisible and the button leads into a dead
+            // end (Nebenbefund 4, R8 re-measure). Same call the
+            // BackendSelector makes, no LM-Studio-only path.
+            const update = lmStudioSlotUpdate(useProviderStore.getState().providers.openai)
+            if (update) useProviderStore.getState().setProviderConfig('openai', update)
             onStarted()
             break
           }
@@ -184,6 +231,11 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
         {starting ? <Loader2 size={10} className="animate-spin" /> : <PlayCircle size={10} />}
         <span>{starting ? 'Starting LM Studio server…' : 'Start LM Studio Server'}</span>
       </button>
+      {replacesBuiltinEngine && (
+        <p className="text-[0.55rem] text-gray-500 dark:text-gray-400 mt-1 leading-snug">
+          This also makes LM Studio your local chat backend in place of the built-in engine. You can switch back under Settings, AI Backends, Providers.
+        </p>
+      )}
       {startError && (
         <p className="text-[0.55rem] text-red-600/80 dark:text-red-300/70 mt-1 leading-snug">{startError}</p>
       )}
@@ -457,7 +509,15 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
   // Deliberate, but the picker never SAID so, and the silence reads as "my
   // local models are gone" (it cost a whole repro round on 2026-08-07).
   const appMode = useSettingsStore((s) => s.settings.appMode)
+  // Whether the empty list is empty because nothing is switched on at all.
+  // That has a different answer from "the engine did not start", and it has a
+  // button (Nebenbefund 1, R9 re-measure 2026-08-30).
+  const noBackendEnabled = useProviderStore((s) => noChatBackendEnabled(s.providers, appMode))
+  const openSettingsAt = useUIStore((s) => s.openSettingsAt)
   const [open, setOpen] = useState(false)
+  // Read by the empty-state probe below, which runs before the render that
+  // computes textModels. A ref keeps it out of the effect's dependency list.
+  const textModelsEmptyRef = useRef(true)
   const [unloading, setUnloading] = useState(false)
   const [unloadDone, setUnloadDone] = useState(false)
   // B3 — per-model LM Studio load/unload state. `lmsLoaded` is the set
@@ -492,7 +552,16 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
     if (!open) return
     setSelectError(null) // fresh open — drop any stale auto-load error
     let cancelled = false
-    const refresh = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Consecutive failed probes. A backend that answers keeps the brisk 1.5 s
+    // beat; one that is not installed is asked about less and less often, up
+    // to a minute. Counter-check round 2 (2026-08-29) found the app knocking
+    // on localhost:11434 every 1.5 s forever on a box with no Ollama at all,
+    // over forty console lines inside a single chat round, drowning out the
+    // errors somebody was actually looking for.
+    let misses = 0
+
+    const refresh = async () => {
       // Skip the tick entirely while the window is hidden/minimized — there's
       // nothing to repaint and we re-sync the moment it's visible again. Stops a
       // backgrounded app from hitting Ollama / LM Studio every 1.5 s (#70).
@@ -511,17 +580,39 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
       } else if (!cancelled) {
         setLmsLoaded((prev) => (prev.size ? new Set() : prev))
       }
-      void listRunningModels().then((list) => { if (!cancelled) setOllamaLoaded((prev) => sameStringSet(prev, list) ? prev : new Set(list)) }).catch(() => {})
+      try {
+        const list = await listRunningModels()
+        misses = 0
+        if (!cancelled) setOllamaLoaded((prev) => sameStringSet(prev, list) ? prev : new Set(list))
+      } catch {
+        misses += 1
+      }
     }
-    refresh()
-    const id = setInterval(refresh, 1500)
+
+    // setTimeout chain rather than setInterval: the gap has to grow, and a
+    // fixed interval cannot.
+    const tick = () => {
+      void refresh().finally(() => {
+        if (cancelled) return
+        timer = setTimeout(tick, nextProbeDelayMs(misses))
+      })
+    }
+    tick()
+
     // Re-sync immediately when the user comes back to the window (the hidden
-    // ticks above were skipped, so the loaded-state could be stale).
-    const onVisible = () => { if (typeof document !== 'undefined' && !document.hidden) refresh() }
+    // ticks above were skipped, so the loaded-state could be stale). Coming
+    // back is also a good moment to give a backend that was down another quick
+    // chance, so the ladder resets here.
+    const onVisible = () => {
+      if (typeof document === 'undefined' || document.hidden || cancelled) return
+      misses = 0
+      if (timer) clearTimeout(timer)
+      tick()
+    }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       cancelled = true
-      clearInterval(id)
+      if (timer) clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [open])
@@ -608,7 +699,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
         const loaded = new Set(list)
         setLmsLoaded(loaded)
         if (!loaded.has(id)) {
-          setSelectError(`Couldn't load "${displayModelName(model.name)}" into LM Studio. Try the power button, or load it in LM Studio directly.`)
+          setSelectError(`Couldn't load "${displayModelName(model.name)}" into LM Studio. Try the On/Off button on the model's row, or load it in LM Studio directly.`)
           return // keep dropdown open; don't activate an unloaded model
         }
         setActiveModel(model.name)
@@ -655,6 +746,20 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
 
   useEffect(() => { fetchModels() }, [fetchModels])
 
+  // GH #118: an empty picker used to say "No models available" no matter what
+  // was wrong, so a built-in engine that never started read like a machine
+  // with nothing installed. Asked only while the dropdown is open and the list
+  // is empty, and never repairs, because opening a dropdown must not boot a server.
+  const [emptyReason, setEmptyReason] = useState('')
+  useEffect(() => {
+    if (!open || textModelsEmptyRef.current === false) return
+    let cancelled = false
+    diagnoseBuiltinEngine({ repair: false })
+      .then((d) => { if (!cancelled && !d.ok && d.reason) setEmptyReason(d.reason) })
+      .catch(() => { /* nothing to add, the generic line stands */ })
+    return () => { cancelled = true }
+  }, [open])
+
   // Refetch when any provider's enabled state or baseUrl changes (e.g. user
   // enables LM Studio / adds Anthropic key in Settings, or the backend
   // picker activates an OpenAI-compatible provider). Without this the
@@ -699,6 +804,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
   const hiddenForCode = allTextModels.length - textModels.length
   const groups = groupByFamily(textModels)
   const hasOllamaModels = textModels.some(m => ('provider' in m && m.provider === 'ollama') || !('provider' in m))
+  textModelsEmptyRef.current = textModels.length === 0
 
   return (
     <div ref={ref} className="relative">
@@ -780,7 +886,28 @@ export function ModelSelector({ openUpward = false, surface = 'chat' }: ModelSel
             {/* Scrollable model list */}
             <div className="py-1 max-h-[280px] overflow-y-auto scrollbar-thin">
               {textModels.length === 0 && (
-                <p className="text-[0.65rem] text-gray-600 text-center py-3">No models available</p>
+                <div className="px-2.5 py-3 text-center">
+                  <p className="text-[0.65rem] text-gray-600">No models available</p>
+                  {/* An empty picker after the user switched the last backend
+                      off in Settings used to say only that, which reads like a
+                      machine with nothing installed (Nebenbefund 1, R9
+                      re-measure). The reason and the way back belong here. */}
+                  {noBackendEnabled ? (
+                    <>
+                      <p className="mt-1 text-[0.6rem] text-amber-300/90 leading-snug text-left">
+                        No AI backend is enabled, so there is nothing to list. Open Settings, go to AI Backends, and press Enable on the backend you switched off, or Add Provider.
+                      </p>
+                      <button
+                        onClick={() => { setOpen(false); openSettingsAt({ tab: 'backends' }) }}
+                        className="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded bg-white/5 border border-white/10 text-[0.6rem] text-gray-300 hover:bg-white/10 transition-colors"
+                      >
+                        <SettingsIcon size={10} /> Open Settings
+                      </button>
+                    </>
+                  ) : emptyReason && (
+                    <p className="mt-1 text-[0.6rem] text-amber-300/90 leading-snug text-left">{emptyReason}</p>
+                  )}
+                </div>
               )}
 
               {groups.map(({ family, models: groupModels }) => (

@@ -57,12 +57,28 @@ fn kind_phrase(kind: ErrorKind) -> Option<&'static str> {
 /// seen would be inventing an English error to replace a true German one.
 fn code_phrase(code: i32) -> Option<&'static str> {
     Some(match code {
-        // Windows
+        // Windows. The first two are gated because those numbers are also unix
+        // errnos with entirely different meanings: 32 is EPIPE and 33 is EDOM,
+        // so the ungated table told a Mac that a broken pipe was a file in use.
+        // Found while wiring the whisper pipe errors through here, where EPIPE
+        // is the everyday case on Mac and Linux.
+        #[cfg(windows)]
         32 => "the file is in use by another process",
+        #[cfg(windows)]
         33 => "the file is locked by another process",
+        // No unix errno reaches these, so they need no gate. Linux stops at
+        // 133 and macOS well below that.
         145 => "the directory is not empty",
         1224 => "the file is open by another process",
+        // The whisper server's stdin, after the python process died: the box
+        // showed "stdin flush: Die Pipe wird gerade geschlossen. (os error 232)"
+        // in the red hint over the microphone (B4 Gegenprobe, 29.08.).
+        // ERROR_NO_DATA, and no unix errno collides with it.
+        232 => "the pipe is closing",
         10013 => "the port is blocked, by permissions or by a firewall",
+        // hyper-util logs a failed set_nodelay with this one, and that log
+        // line is what showed German text in lu-app-exit.log on the box.
+        10022 => "an invalid argument was supplied",
         10048 => "the port is already in use",
         10049 => "the address is not available on this machine",
         10060 => "the connection timed out",
@@ -128,6 +144,55 @@ where
     english_dyn(err)
 }
 
+/// Every operating system worded phrase in a line of text, replaced by ours.
+///
+/// `english_dyn` above can only help where we hold the error value. A log line
+/// written INSIDE a dependency is past that point: hyper-util renders a failed
+/// `set_nodelay` with `warn!("tcp set_nodelay error: {}", e)`, and on the
+/// German Windows box that reached lu-app-exit.log as
+/// `tcp set_nodelay error: Ein ungueltiges Argument wurde angegeben.
+/// (os error 10022)`. We cannot patch the crate, but the log sink is ours, so
+/// the wording is repaired on the way out.
+///
+/// No guessing is involved and no phrase is parsed. A `(os error N)` in the
+/// text names the code; asking this machine for that code's own Display gives
+/// back the exact bytes the operating system would have written, and those
+/// exact bytes are what gets replaced. A line that carries no code, or whose
+/// wording is already ours, comes back untouched and unallocated.
+pub fn sanitize_os_wording(text: &str) -> std::borrow::Cow<'_, str> {
+    const MARK: &str = "(os error ";
+    if !text.contains(MARK) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+
+    // Every distinct code the line mentions.
+    let mut codes: Vec<i32> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(MARK) {
+        let after = &rest[at + MARK.len()..];
+        let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+        if end > 0 && after[end..].starts_with(')') {
+            if let Ok(code) = after[..end].parse::<i32>() {
+                if !codes.contains(&code) {
+                    codes.push(code);
+                }
+            }
+        }
+        rest = &after[end..];
+    }
+
+    let mut out = std::borrow::Cow::Borrowed(text);
+    for code in codes {
+        let e = std::io::Error::from_raw_os_error(code);
+        let os_worded = e.to_string();
+        let ours = io_english(&e);
+        if os_worded != ours && out.contains(&os_worded) {
+            out = std::borrow::Cow::Owned(out.replace(&os_worded, &ours));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +225,12 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     const REFUSED: i32 = 111;
 
+    /// A second, different code, so a line carrying two of them is covered.
+    #[cfg(windows)]
+    const NOT_FOUND: i32 = 2;
+    #[cfg(unix)]
+    const NOT_FOUND: i32 = 2;
+
     #[test]
     fn an_os_error_is_answered_in_our_words_not_the_systems() {
         let e = Error::from_raw_os_error(REFUSED);
@@ -169,6 +240,46 @@ mod tests {
         // German; this assertion is the same either way.
         assert!(ours.starts_with("connection refused"), "got: {}", ours);
         assert!(ours.contains(&format!("os error {}", REFUSED)), "got: {}", ours);
+    }
+
+    /// The exact code from the box, which must read the same on any machine.
+    ///
+    /// `sanitize_os_wording` cannot help here and this test is why it is not
+    /// used at that call site: it repairs a line by asking THIS machine for the
+    /// code's wording, and a Mac has no German to recognise. `english()` at the
+    /// call site never asks, so the answer is fixed by us on every platform.
+    #[test]
+    fn the_pipe_code_from_the_box_reads_in_our_words_on_every_platform() {
+        let ours = io_english(&Error::from_raw_os_error(232));
+        assert_eq!(ours, "the pipe is closing (os error 232)");
+    }
+
+    /// The whole failure the user saw, rebuilt, and the shape it has now.
+    #[test]
+    fn the_red_hint_over_the_microphone_is_english() {
+        let e = Error::from_raw_os_error(232);
+        // What the three call sites used to write: the error's own Display,
+        // which on a German Windows is "Die Pipe wird gerade geschlossen.".
+        let before = format!("stdin flush: {}", e);
+        // What they write now.
+        let after = format!("stdin flush: {}", io_english(&e));
+        assert_eq!(after, "stdin flush: the pipe is closing (os error 232)");
+        // On a German box `before` is German; here it is only "Unknown error",
+        // so the assertion that says something on every platform is that the
+        // new wording no longer depends on what the system happens to say.
+        assert!(!after.contains(&e.to_string()) || e.to_string() == io_english(&e));
+    }
+
+    /// The gate, from the side that was wrong.
+    #[test]
+    #[cfg(unix)]
+    fn a_broken_pipe_on_unix_is_not_described_as_a_file_in_use() {
+        // errno 32 is EPIPE here and ERROR_SHARING_VIOLATION there. Rust
+        // categorises this one, so the kind carries it.
+        let ours = io_english(&Error::from_raw_os_error(32));
+        assert!(ours.contains("broken pipe"), "got: {}", ours);
+        assert!(!ours.contains("in use by another process"), "got: {}", ours);
+        assert!(ours.contains("os error 32"), "got: {}", ours);
     }
 
     #[test]
@@ -226,6 +337,63 @@ mod tests {
     }
 
     #[test]
+    fn a_log_line_written_inside_a_dependency_loses_the_system_wording() {
+        // The exact shape from lu-app-exit.log on the box, with this machine's
+        // own code standing in for 10022: hyper-util formats the io::Error
+        // itself, so what lands in the log is the operating system's wording.
+        let e = Error::from_raw_os_error(REFUSED);
+        let line = format!("tcp set_nodelay error: {}", e);
+        let fixed = sanitize_os_wording(&line);
+        assert!(fixed.starts_with("tcp set_nodelay error: "), "got: {}", fixed);
+        // The number is the whole point of keeping anything at all.
+        assert!(fixed.contains(&format!("os error {}", REFUSED)), "got: {}", fixed);
+        assert!(fixed.contains("connection refused"), "got: {}", fixed);
+        // And the wording the system chose is gone. On a German Windows that
+        // string is German; this assertion does not care which language it was.
+        assert!(!fixed.contains(&e.to_string()), "the system wording survived: {}", fixed);
+    }
+
+    #[test]
+    fn two_codes_in_one_line_are_both_repaired() {
+        let a = Error::from_raw_os_error(REFUSED);
+        let b = Error::from_raw_os_error(NOT_FOUND);
+        let line = format!("first: {} | second: {}", a, b);
+        let fixed = sanitize_os_wording(&line);
+        assert!(!fixed.contains(&a.to_string()), "got: {}", fixed);
+        assert!(!fixed.contains(&b.to_string()), "got: {}", fixed);
+        assert!(fixed.contains(&format!("os error {}", REFUSED)), "got: {}", fixed);
+        assert!(fixed.contains(&format!("os error {}", NOT_FOUND)), "got: {}", fixed);
+        assert!(fixed.contains(" | second: "), "the scaffolding was eaten: {}", fixed);
+    }
+
+    // Negative controls: everything that is not the operating system talking
+    // has to come back byte for byte, and without an allocation.
+    #[test]
+    fn an_ordinary_log_line_is_returned_untouched() {
+        for line in [
+            "LU starting version=2.6.7",
+            "engine loaded mlabonne_gemma-3-4b-it-abliterated-Q4_K_M",
+            "the file is in use by another process",
+            // A number that is not a code, and a marker that never closes.
+            "os error is not the same as (os error ) here",
+            "(os error abc)",
+        ] {
+            let out = sanitize_os_wording(line);
+            assert_eq!(out, line);
+            assert!(matches!(out, std::borrow::Cow::Borrowed(_)), "allocated for: {}", line);
+        }
+    }
+
+    #[test]
+    fn a_line_that_already_reads_in_our_words_is_left_exactly_as_it_is() {
+        let ours = io_english(&Error::from_raw_os_error(REFUSED));
+        let line = format!("proxy_localhost: {}", ours);
+        let out = sanitize_os_wording(&line);
+        assert_eq!(out, line);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)), "rewrote its own output");
+    }
+
+    #[test]
     fn a_chain_without_an_os_error_is_returned_untouched() {
         let inner = Error::new(ErrorKind::InvalidData, "bad json");
         let w = Wrapper { head: "parse failed".into(), source: inner };
@@ -236,7 +404,11 @@ mod tests {
     fn every_named_code_reads_as_a_sentence_and_none_is_empty() {
         // A guard on the tables: an entry added with an empty or capitalised
         // string would read wrong inside "Failed to X: <phrase>".
-        for code in [32, 33, 145, 1224, 10013, 10048, 10049, 10060, 10061] {
+        #[cfg(windows)]
+        const NAMED: &[i32] = &[32, 33, 145, 232, 1224, 10013, 10022, 10048, 10049, 10060, 10061];
+        #[cfg(not(windows))]
+        const NAMED: &[i32] = &[145, 232, 1224, 10013, 10022, 10048, 10049, 10060, 10061];
+        for &code in NAMED {
             let p = code_phrase(code).expect("table entry vanished");
             assert!(!p.is_empty());
             assert!(p.chars().next().unwrap().is_lowercase(), "code {} is capitalised", code);
@@ -274,6 +446,13 @@ mod drift_guard {
         // of these: reqwest renders its own source chain, and the leaf of that
         // chain on a refused localhost port is the operating system talking.
         ".send()", ".bytes()", ".chunk()",
+        // The pipe calls. These are how we talk to the sidecars, and the
+        // whisper server's stdin is where the German text came back a second
+        // time: writing to a dead child fails with ERROR_NO_DATA, and the
+        // three call sites rendered that straight into the red hint over the
+        // microphone (B4 Gegenprobe 29.08.). The guard did not look at write
+        // or flush, so nothing complained.
+        ".write_all(", ".flush()", ".read_to_end(", ".read_to_string(",
     ];
 
     /// How many lines a single call may be spread over.
@@ -399,5 +578,12 @@ mod drift_guard {
             r#"json!({"status": "error", "error": os_error::english(&e)})"#
         ));
         assert!(!is_suspect_field(r#"json!({"error": "All search tiers failed"})"#));
+        // The widened list: the three whisper pipe writes are the shape that
+        // slipped past the guard, so they have to fail it now.
+        assert!(is_suspect(r#"stdin.flush().map_err(|e| format!("stdin flush: {}", e))?;"#));
+        assert!(is_suspect(r#"stdin.write_all(b"\n").map_err(|e| format!("stdin newline: {}", e))?;"#));
+        assert!(!is_suspect(
+            r#"stdin.flush().map_err(|e| format!("stdin flush: {}", os_error::english(&e)))?;"#
+        ));
     }
 }

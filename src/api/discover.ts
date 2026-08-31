@@ -1,5 +1,5 @@
 import { backendCall, fetchExternal } from "./backend"
-import { getCheckpoints, getDiffusionModels, getVAEModels, getCLIPModels, getGgufUnetModels, filterPartialFiles, refreshComfyModels } from "./comfyui"
+import { getCheckpoints, getDiffusionModels, getVAEModels, getCLIPModels, getGgufUnetModels, getAnimateDiffModels, getLoraModels, filterPartialFiles, refreshComfyModels } from "./comfyui"
 import type { ProviderId } from "./providers/types"
 import { log } from "../lib/logger"
 
@@ -150,21 +150,36 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
     // quants are listed by ComfyUI-GGUF's own loader. Both Unfiltered video
     // bundles are GGUF, so without it this cannot see the one file that makes
     // them what they are, and the fuzzy fallback below can never confirm them.
-    const [rawCheckpoints, rawDiffModels, rawGgufUnets, rawVaes, rawClips] = await Promise.all([
+    // getAnimateDiffModels for the same reason getGgufUnetModels is here: the
+    // motion modules of both AnimateDiff bundles live under custom_nodes and
+    // none of the four ComfyUI\models loaders can see them. Without it the
+    // gate below skipped those files and the card trusted the disk alone,
+    // which is how two cards read Installed over a rail counter that knew
+    // neither of them.
+    // getLoraModels for the same reason, found one round later (abnahme
+    // counter-check 2026-08-29): the LoRA folder is enumerated by LoraLoader
+    // and nothing here asked it, so a LoRA bundle's card was decided on the
+    // disk alone while no counter and no list knew the file existed.
+    const [rawCheckpoints, rawDiffModels, rawGgufUnets, rawVaes, rawClips, rawMotion, rawLoras] = await Promise.all([
       getCheckpoints(), getDiffusionModels(), getGgufUnetModels(), getVAEModels(), getCLIPModels(),
+      getAnimateDiffModels(), getLoraModels(),
     ])
-    const [checkpoints, diffModels, ggufUnets, vaes, clips] = await Promise.all([
+    const [checkpoints, diffModels, ggufUnets, vaes, clips, motion, loras] = await Promise.all([
       filterPartialFiles(rawCheckpoints).then(s => Array.from(s)),
       filterPartialFiles(rawDiffModels).then(s => Array.from(s)),
       filterPartialFiles(rawGgufUnets).then(s => Array.from(s)),
       filterPartialFiles(rawVaes).then(s => Array.from(s)),
       filterPartialFiles(rawClips).then(s => Array.from(s)),
+      filterPartialFiles(rawMotion).then(s => Array.from(s)),
+      filterPartialFiles(rawLoras).then(s => Array.from(s)),
     ])
     comfyLists = {
       checkpoints,
       diffusion_models: [...diffModels, ...ggufUnets],
       vae: vaes,
       text_encoders: clips,
+      loras,
+      [ANIMATEDIFF_SUBFOLDER]: motion,
     }
   } catch {
     comfyLists = null // ComfyUI not reachable · size-check verdicts stand
@@ -175,7 +190,19 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
   // copy, moved install). "Installed" from the disk check alone then locks the
   // user out: the Create picker (fed by ComfyUI's enums) shows nothing AND
   // re-downloading is refused. When ComfyUI is reachable, a bundle only counts
-  // as installed if ComfyUI can actually see at least one of its listed files.
+  // as installed if ComfyUI can actually see the files it needs.
+  //
+  // EVERY enumerable file, not merely one of them. GH #113 came back on 2.6.6
+  // (Blahx with a screenshot, lapbo: "the model is not visible, although it is
+  // downloaded") because "at least one" is nearly free in this catalogue:
+  // seven of the thirteen video bundles ship the same umt5_xxl_fp8_e4m3fn_scaled
+  // text encoder and six the same wan_2.1_vae. One neighbour that installed
+  // cleanly leaves those two listed forever, so a bundle whose own main model
+  // ComfyUI cannot serve still passed the gate on somebody else's file. The
+  // card then said Installed while the Installed tab and every picker, which
+  // enumerate the real model, had nothing (Blahx: two cards reading Installed
+  // over a rail counter of 1). The file that makes the bundle what it is is
+  // exactly the file this gate has to be sure about.
   if (comfyLists) {
     const visible = new Set<string>()
     for (const arr of Object.values(comfyLists)) for (const n of arr) visible.add(normalizeModelBase(n))
@@ -183,9 +210,12 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
       if (!result[bundle.name]) continue
       const enumFiles = bundle.files.filter(f => f.filename && f.subfolder && ENUM_SUBFOLDERS.has(f.subfolder))
       if (enumFiles.length === 0) continue
-      if (!enumFiles.some(f => visible.has(normalizeModelBase(f.filename!)))) {
+      const unseen = enumFiles.filter(f => !visible.has(normalizeModelBase(f.filename!)))
+      if (unseen.length > 0) {
         result[bundle.name] = false
-        log.warn(`[discover] ${bundle.name}: files on disk but invisible to the running ComfyUI · not counting as installed`)
+        log.warn(`[discover] ${bundle.name}: files on disk but invisible to the running ComfyUI · not counting as installed`, {
+          files: unseen.map(f => f.filename),
+        })
       }
     }
   }
@@ -211,10 +241,25 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
   return result
 }
 
+/** Where the AnimateDiff-Evolved pack keeps its motion modules. Not under
+ *  ComfyUI\models at all, which is exactly why the counter and the Installed
+ *  list used to miss a fully installed AnimateDiff bundle while its card said
+ *  Installed (counter-check on the Windows box, 2026-08-29). */
+export const ANIMATEDIFF_SUBFOLDER = 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
+
 /** Subfolders whose contents ComfyUI enumerates via object_info — the only
- *  ones the visibility check can reason about (loras/upscale etc. stay on the
- *  pure size check). */
-export const ENUM_SUBFOLDERS = new Set(['checkpoints', 'diffusion_models', 'vae', 'text_encoders'])
+ *  ones the visibility check can reason about (upscale models and the GGUF
+ *  text downloads stay on the pure size check). The AnimateDiff one is
+ *  enumerated by the pack's own ADE_LoadAnimateDiffModel node, so it belongs
+ *  here even though it sits under custom_nodes: a motion module the running
+ *  ComfyUI cannot list is exactly as useless as an invisible checkpoint.
+ *
+ *  loras joined on 2026-08-29, with readComfyModelNames below. LoraLoader has
+ *  always enumerated that folder; nothing here ever asked it, so a LoRA was
+ *  the one installed file the app could not reason about anywhere: its card
+ *  trusted the disk alone, the counter and the list never saw it, and a
+ *  finished LoRA download was skipped by the visibility wait as unjudgeable. */
+export const ENUM_SUBFOLDERS = new Set(['checkpoints', 'diffusion_models', 'vae', 'text_encoders', 'loras', ANIMATEDIFF_SUBFOLDER])
 
 /** Base identity of a model file: basename only (ComfyUI enums can carry
  *  nested-subdir prefixes), lowercase, extension and common quant suffixes
@@ -224,6 +269,36 @@ export function normalizeModelBase(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? name
   return base.replace(/\.[^.]+$/, '').toLowerCase()
     .replace(/[-_](fp4|fp8|fp16|bf16|e4m3fn|scaled|fp8_e4m3fn_scaled)$/g, '')
+}
+
+/** Every model name the RUNNING ComfyUI enumerates, as one flat list.
+ *
+ *  ONE reader, because "can ComfyUI see this file" is asked from three places
+ *  and every place that asked its own way ended up asking a different question.
+ *  UNETLoader enumerates only .safetensors and .sft; every GGUF quant is listed
+ *  by ComfyUI-GGUF's own loader instead. checkBundlesInstalled was taught that
+ *  fifth loader in 2.6.6 (6abf570) and the Create probe in 2.6.5 (b8531b6),
+ *  while the Model Manager's install click kept asking four. Both Unfiltered
+ *  video bundles are GGUF, so on that path a perfectly listed model came back
+ *  "not listed" and the user was told LU and ComfyUI use different model
+ *  folders, which was never true. Nothing here may go back to a subset. */
+export async function readComfyModelNames(): Promise<string[]> {
+  const lists = await Promise.all([
+    getCheckpoints(), getDiffusionModels(), getVAEModels(), getCLIPModels(), getGgufUnetModels(),
+    // Seventh loader, added 2026-08-29 after the abnahme counter-check: the
+    // LoRA folder. Two installed addon bundles (Pixel Art XL, SDXL VAE) read
+    // Installed on their cards while no list and no counter knew them, and
+    // the LoRA half of that could not even be judged, because this reader
+    // never asked LoraLoader.
+    getLoraModels(),
+    // Sixth loader, added 2026-08-29 after the counter-check: the AnimateDiff
+    // pack enumerates its motion modules itself, from a folder under
+    // custom_nodes. Without it a finished AnimateDiff download could never be
+    // confirmed, so the download store spent its full budget and then told the
+    // user LU and ComfyUI use different model folders, which was not true.
+    getAnimateDiffModels(),
+  ])
+  return lists.flat()
 }
 
 /** Which of `wanted` the RUNNING ComfyUI does not list yet.
@@ -245,10 +320,7 @@ export function normalizeModelBase(name: string): string {
  *  not get is not a file we have seen. */
 export async function modelsNotVisibleInComfy(wanted: string[]): Promise<string[]> {
   try {
-    const lists = await Promise.all([
-      getCheckpoints(), getDiffusionModels(), getVAEModels(), getCLIPModels(), getGgufUnetModels(),
-    ])
-    const visible = new Set(lists.flat().map(normalizeModelBase))
+    const visible = new Set((await readComfyModelNames()).map(normalizeModelBase))
     return wanted.filter((n) => !visible.has(normalizeModelBase(n)))
   } catch {
     return wanted // engine unreachable, so it has confirmed nothing
@@ -285,14 +357,77 @@ export async function installCustomNodes(nodeKeys: string[]): Promise<void> {
   }
 }
 
-/** How long an install click may wait for ComfyUI to notice a file that is
+/** How long an install click itself waits for ComfyUI to notice a file that is
  *  already complete on disk. Three rounds of 1.5s against the 20 rounds of 3s
  *  the Create install and the download poller spend, because this one runs
  *  inside a click: the common case is an old file that answers on the very
- *  first lookup, before any waiting happens at all, and the poller keeps
- *  watching the same file with the full budget afterwards. */
+ *  first lookup, before any waiting happens at all.
+ *
+ *  This is a fast path, NOT the verdict. Anything it cannot confirm inside the
+ *  click goes to confirmVisibleOrAccuse below, on the full budget. */
 const INVISIBLE_RECHECK_ATTEMPTS = 3
 const INVISIBLE_RECHECK_DELAY_MS = 1500
+
+/** Files whose long visibility confirmation is already running, so a second
+ *  click on an overlapping bundle does not start a second one. */
+const confirmingVisibility = new Map<string, Promise<void>>()
+
+/** Resolves once every long visibility confirmation started so far has ended.
+ *  The confirmation outlives the install click by design, so a test about its
+ *  verdict needs something to wait on, and a test about the NEXT install needs
+ *  a way to be sure the previous one is not still asking the engine. */
+export async function whenVisibilityConfirmed(): Promise<void> {
+  await Promise.all([...confirmingVisibility.values()])
+}
+
+/**
+ * D2. Give a file that is on disk but not listed yet the same sixty seconds the
+ * other two paths give it, without holding the click.
+ *
+ * 05ee25ff justified the click's three rounds with "the download poller keeps
+ * watching the same file with the full budget afterwards". For a file that was
+ * DOWNLOADED in this run that is true. For a file the install skipped because
+ * it was already complete on disk it is not: nothing is started, so the Rust
+ * progress map never gains an entry, downloadStore.refresh never sees a
+ * transition to complete, and announceUntilVisible is never called. Those 4.5
+ * seconds were the only window such a file ever got, and the video bundles
+ * share exactly those files, so the case is the common one and not the rare
+ * one. Voxyl AI and Aldrich Ironhart (Discord 2026-08-13) measured scans on the
+ * big files that run far longer than that.
+ *
+ * So the click says what it knows for certain, that the file is on disk, and
+ * this keeps asking. Every round re-announces the arrival, which is what makes
+ * the Model Manager re-run its installed check, and only an engine that still
+ * does not list the file after the full budget is called a folder mismatch.
+ */
+function confirmVisibleOrAccuse(filename: string): Promise<void> {
+  const running = confirmingVisibility.get(filename)
+  if (running) return running
+  const started = runVisibilityConfirmation(filename).finally(() => confirmingVisibility.delete(filename))
+  confirmingVisibility.set(filename, started)
+  return started
+}
+
+async function runVisibilityConfirmation(filename: string): Promise<void> {
+  try {
+    const { waitForModelsVisible } = await import('../lib/bundle-install')
+    const left = await waitForModelsVisible({
+      missing: () => modelsNotVisibleInComfy([filename]),
+      refresh: async () => {
+        await refreshComfyModels().catch(() => false)
+        window.dispatchEvent(new CustomEvent('comfyui-model-downloaded', { detail: { filename } }))
+      },
+    })
+    if (left.length === 0) {
+      log.info(`[discover] ${filename} is listed by ComfyUI now`)
+      return
+    }
+    log.warn(`[discover] ${filename} exists on disk but the running ComfyUI does not list it`)
+    window.dispatchEvent(new CustomEvent('comfyui-model-invisible', { detail: { filename } }))
+  } catch (err) {
+    log.warn('[discover] visibility confirmation failed', { filename, err })
+  }
+}
 
 export async function installBundleComplete(bundle: ModelBundle): Promise<void> {
   const errors: string[] = []
@@ -320,8 +455,7 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
   let visibleBases: Set<string> | null | undefined
   const readVisibleBases = async (): Promise<Set<string> | null> => {
     try {
-      const lists = await Promise.all([getCheckpoints(), getDiffusionModels(), getVAEModels(), getCLIPModels()])
-      return new Set(lists.flat().map(normalizeModelBase))
+      return new Set((await readComfyModelNames()).map(normalizeModelBase))
     } catch {
       return null // ComfyUI unreachable · cannot judge visibility
     }
@@ -360,13 +494,12 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
     if (!file.downloadUrl || !file.filename || !file.subfolder) continue
     if (installedFiles.has(file.filename)) {
       const visible = ENUM_SUBFOLDERS.has(file.subfolder) ? await comfyCanSee(file.filename) : null
-      if (visible === false) {
-        log.warn(`[discover] ${file.filename} exists on disk but the running ComfyUI does not list it`)
-        window.dispatchEvent(new CustomEvent('comfyui-model-invisible', { detail: { filename: file.filename } }))
-      } else {
-        log.info(`[discover] Skipping ${file.filename} · already installed`)
-        window.dispatchEvent(new CustomEvent('comfyui-download-exists', { detail: { filename: file.filename } }))
-      }
+      // The file is on disk at its full size. That much is certain right now,
+      // so it is what the card is told, and an engine that has not caught up
+      // yet is not turned into an accusation the user cannot act on.
+      log.info(`[discover] Skipping ${file.filename} · already installed`)
+      window.dispatchEvent(new CustomEvent('comfyui-download-exists', { detail: { filename: file.filename } }))
+      if (visible === false) void confirmVisibleOrAccuse(file.filename)
       continue
     }
     try {

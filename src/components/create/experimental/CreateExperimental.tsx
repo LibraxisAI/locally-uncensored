@@ -3,6 +3,10 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { AlertTriangle, Cloud, X } from 'lucide-react'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
 import { useCloudNoticeStore, CLOUD_RETENTION_DAYS, shouldShowRetentionNotice } from '../../../stores/cloudNoticeStore'
+import { useComfyNoticeStore } from '../../../stores/comfyNoticeStore'
+import { loadComfyCorsSignature, shouldShowCorsNotice } from '../../../lib/comfy-cors-notice'
+import { comfyIdleNotice, shouldWatchComfyIdle, IDLE_WATCH_INTERVAL_MS } from '../../../lib/comfy-idle-watch'
+import type { ComfyGuardStatus } from '../../../lib/comfy-restart-guard'
 import { useWorkflowStore } from '../../../stores/workflowStore'
 import { CreateExpProvider, useCreateExp } from './CreateContext'
 import { IntentBar } from './IntentBar'
@@ -16,7 +20,6 @@ import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
 import { INTENT_MAP, isIntentAvailable } from './intents'
 import { isMlxImageHost } from '../../../api/mlx-image'
-import { isLinux } from '../../../api/backend'
 import { fetchGalleryItemBlob } from './galleryUrl'
 import { loadImageRef } from './loadImage'
 
@@ -37,10 +40,13 @@ function CreateExperimentalInner() {
   const comfyCorsBlocked = useCreateStore((s) => s.comfyCorsBlocked)
   const setComfyCorsBlocked = useCreateStore((s) => s.setComfyCorsBlocked)
   const isGenerating = useCreateStore((s) => s.isGenerating)
+  const corsNoticeDismissedFor = useComfyNoticeStore((s) => s.corsNoticeDismissedFor)
+  const dismissCorsNotice = useComfyNoticeStore((s) => s.dismissCorsNotice)
+  const adoptCorsSignature = useComfyNoticeStore((s) => s.adoptCorsSignature)
   const retentionNoticeSeen = useCloudNoticeStore((s) => s.retentionNoticeSeen)
   const setRetentionNoticeSeen = useCloudNoticeStore((s) => s.setRetentionNoticeSeen)
   const setManagerNoticeSeen = useWorkflowStore((s) => s.setManagerNoticeSeen)
-  const { modelLoadError, connected, comfyOnCpu } = useCreateExp()
+  const { modelLoadError, connected, comfyOnCpu, comfyCpuBanner } = useCreateExp()
 
   const [shownId, setShownId] = useState<string | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -55,6 +61,62 @@ function CreateExperimentalInner() {
   // error explains the manual route and stays visible in the banner.
   const [corsFixing, setCorsFixing] = useState(false)
   const [corsFixError, setCorsFixError] = useState<string | null>(null)
+
+  // R18 Befund 1 (2026-08-30, Windows box, ComfyUI 0.33.0): the cross-origin
+  // bar came back after EVERY render, dismissed or not. The X only flipped the
+  // session flag that the next preview image set again (useComfyMedia). The
+  // dismissal now sticks against a cause signature (which ComfyUI, which
+  // version) and is persisted, so it survives a restart and only lifts if that
+  // cause actually changes. Rules and reasoning: lib/comfy-cors-notice.ts.
+  const [corsSignature, setCorsSignature] = useState<string | null>(null)
+  useEffect(() => {
+    if (backend !== 'local') return
+    let cancelled = false
+    void (async () => {
+      const { getComfyHost, getComfyPort } = await import('../../../api/backend')
+      const { getComfyVersion } = await import('../../../api/comfyui')
+      const sig = await loadComfyCorsSignature({
+        host: getComfyHost, port: getComfyPort, version: getComfyVersion,
+      })
+      if (cancelled || !sig) return
+      setCorsSignature(sig)
+      // A dismissal made before the signature landed is upgraded to it, or the
+      // very next render would show the bar again — the finding itself.
+      adoptCorsSignature(sig)
+    })()
+    return () => { cancelled = true }
+  }, [backend, connected, adoptCorsSignature])
+
+  // R18 Befund 2 (2026-08-30, Windows box): ComfyUI was killed while the app
+  // sat idle on this tab and the Create surface said NOTHING for 180 seconds.
+  // `connected` is probed once on mount and never again, so a death nobody
+  // asked about produced no error to show. The next render heals it (R16
+  // Befund 5, comfy-restart-guard) — the user just had no way to know that.
+  //
+  // A glance every 30s while this tab is open and idle, no restart of its own:
+  // holding an engine warm for work nobody asked for costs RAM and VRAM, and
+  // the render path already fixes it on demand. Wording in lib/comfy-idle-watch.
+  const [idleNotice, setIdleNotice] = useState('')
+  const idleTimerRef = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const clear = () => { if (!cancelled) setIdleNotice('') }
+    void (async () => {
+      const { isMacOS } = await import('../../../api/backend')
+      if (cancelled) return
+      if (!shouldWatchComfyIdle(backend === 'local', isMacOS(), isGenerating)) { clear(); return }
+      const { backendCall } = await import('../../../api/backend')
+      const look = async () => {
+        const st = await backendCall<ComfyGuardStatus>('comfyui_status').catch(() => null)
+        if (!cancelled) setIdleNotice(comfyIdleNotice(st))
+      }
+      await look()
+      const timer = setInterval(() => { void look() }, IDLE_WATCH_INTERVAL_MS)
+      idleTimerRef.current = () => clearInterval(timer)
+    })()
+    return () => { cancelled = true; idleTimerRef.current?.(); idleTimerRef.current = null }
+  }, [backend, isGenerating])
+
   const fixCorsForMe = useCallback(async () => {
     setCorsFixing(true)
     setCorsFixError(null)
@@ -155,23 +217,32 @@ function CreateExperimentalInner() {
         )}
       </AnimatePresence>
 
-      {/* CPU-mode warning — persistent while LU's ComfyUI runs with --cpu.
-          Without it an AMD/non-NVIDIA user sees "Ready to generate" and then
-          a bare 20-minute timeout (shd_scorpion, RX 7900 XTX). Local renders
-          only — cloud jobs never touch the local ComfyUI. */}
-      {backend === 'local' && connected === true && comfyOnCpu && (
+      {/* CPU-mode warning, persistent while LU's ComfyUI runs with --cpu.
+          Without it a user sees "Ready to generate" and then a bare 20-minute
+          timeout (shd_scorpion, RX 7900 XTX). Local renders only, cloud jobs
+          never touch the local ComfyUI.
+
+          The sentence itself lives in lib/comfy-cpu-banner.ts, because it is
+          three sentences: the R12/R13 re-measure caught this bar telling a user
+          with a working, correctly detected RTX 3060 that no usable GPU had
+          been found, when he had chosen Force CPU himself, and then walking him
+          through the AMD route on a machine with no AMD card in it. Same three
+          facts the backend was already sending, now all three read. */}
+      {backend === 'local' && connected === true && comfyOnCpu && comfyCpuBanner && (
         <div className="flex items-center gap-2 px-4 py-2 bg-yellow-500/5 border-b border-yellow-500/10 text-yellow-300 text-xs shrink-0">
           <AlertTriangle size={12} className="shrink-0" />
-          <span>
-            ComfyUI is running on the CPU (no usable GPU detected). Generation will be extremely slow and may time out.
-            {/* The right AMD path differs per OS — three users followed the
-                generic ZLUDA pointer on Linux, where ZLUDA guides are
-                Windows-only dead ends (numbrain/lapbo/suraj3014, 2026-08-02).
-                Linux AMD wants a ROCm torch inside ComfyUI's own venv. */}
-            {isLinux()
-              ? ' AMD GPU? Install the ROCm build of PyTorch into ComfyUI’s venv (pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2), then set Settings → Hardware → ComfyUI GPU to force GPU.'
-              : ' AMD GPU? Point LU at a ROCm/ZLUDA ComfyUI and set Settings → Hardware → ComfyUI GPU to force GPU.'}
-          </span>
+          <span>{comfyCpuBanner}</span>
+        </div>
+      )}
+
+      {/* Idle outage (R18 Befund 2): ComfyUI died while nobody was rendering
+          and the tab said nothing about it for 180 seconds. One quiet line,
+          no button: the render path restarts it and this says so. Nothing is
+          started from here — see lib/comfy-idle-watch.ts for why. */}
+      {idleNotice && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-yellow-500/5 border-b border-yellow-500/10 text-yellow-300 text-xs shrink-0">
+          <AlertTriangle size={12} className="shrink-0" />
+          <span className="flex-1 min-w-0">{idleNotice}</span>
         </div>
       )}
 
@@ -181,8 +252,12 @@ function CreateExperimentalInner() {
           live progress bar + native video seeking degrade. David 2026-07-17: keep
           the message short and offer a one-click fix — LU restarts ComfyUI under
           its own management, which always passes the CORS flag. Local only,
-          dismissible; the long manual-flag hint only appears if the fix fails. */}
-      {backend === 'local' && comfyCorsBlocked && (
+          dismissible; the long manual-flag hint only appears if the fix fails.
+
+          R18 Befund 1: dismissible now MEANS dismissed. shouldShowCorsNotice
+          holds the X against the cause signature, so the bar cannot return
+          after every render the way it did on the box with ComfyUI 0.33.0. */}
+      {backend === 'local' && shouldShowCorsNotice(comfyCorsBlocked, corsSignature, corsNoticeDismissedFor) && (
         <div className="flex items-start gap-2 px-4 py-2 bg-yellow-500/5 border-b border-yellow-500/10 text-yellow-300 text-xs shrink-0">
           <AlertTriangle size={12} className="shrink-0 mt-0.5" />
           <span className="flex-1 min-w-0">
@@ -202,7 +277,7 @@ function CreateExperimentalInner() {
               Let me do it for you!
             </button>
           )}
-          <button onClick={() => { setComfyCorsBlocked(false); setCorsFixError(null) }} className="shrink-0 text-yellow-300/70 hover:text-yellow-100" title="Dismiss">
+          <button onClick={() => { setComfyCorsBlocked(false); setCorsFixError(null); dismissCorsNotice(corsSignature) }} className="shrink-0 text-yellow-300/70 hover:text-yellow-100" title="Dismiss">
             <X size={14} />
           </button>
         </div>

@@ -9,9 +9,10 @@ import {
   drainApprovals,
 } from '../lib/approval-queue'
 import { v4 as uuid } from 'uuid'
-import { streamProviderTurn } from '../lib/provider-stream'
-import { createHermesDisplayFilter, createThinkStreamSplitter } from '../lib/hermes-stream'
-import { beginAgentRun, endAgentRun, chatWorkspaceSlug, setActiveAgentModel, renderWorkspaceSection, takeChatArtifacts, type AgentRunContext } from '../api/agent-context'
+import { streamProviderTurn, type StreamedProviderTurn } from '../lib/provider-stream'
+import { createHermesDisplayFilter, createThinkStreamSplitter, createTurnThinkingSink } from '../lib/hermes-stream'
+import { beginAgentRun, endAgentRun, setActiveAgentModel, renderWorkspaceSection, takeChatArtifacts, type AgentRunContext } from '../api/agent-context'
+import { resolveChatWorkspaceSlug } from '../api/workspace-slug'
 import { isOllamaLocal } from '../api/backend'
 import { requestGenerationCancel } from '../api/vram-handoff'
 import { resolveWorkspace } from '../api/agents/workspace-resolve'
@@ -26,12 +27,12 @@ import { retrieveContext } from '../api/rag'
 import { toolRegistry } from '../api/mcp'
 import { usePermissionStore } from '../stores/permissionStore'
 import { CODEX_CONFIRM_TOOLS, codexConfirmEnabled } from './codexShellGate'
-import { isThinkingCompatible, isPlainTextPlanner } from '../lib/model-compatibility'
+import { isThinkingCompatible, isPlainTextPlanner, declaredVision } from '../lib/model-compatibility'
 import { resolveToolCallingStrategy } from '../lib/agent-strategy'
 import { isMultimodalUnsupportedError, MULTIMODAL_UNSUPPORTED_MESSAGE } from '../lib/ollama-errors'
-import { stripVisionFeedbackMessages } from '../lib/vision-heal'
+import { stripVisionFeedbackMessages, reportMultimodalRefusal } from '../lib/vision-heal'
 import { log } from '../lib/logger'
-import { buildHermesToolPrompt, buildHermesToolResult, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
+import { buildHermesToolPrompt, buildHermesToolResult, buildHermesToolCall, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
 import { parseLooseToolCalls, stripMatchedCalls, stripToolCallText, canonicalToolName } from '../lib/loose-tool-parse'
 import { mediaCallSucceeded } from '../lib/media-result'
 import { summarizeTurn } from '../lib/turn-summary'
@@ -68,7 +69,7 @@ import { executeParallel, applyResultToToolCall, type ExecutionRequest } from '.
 import { useToolAuditStore } from '../stores/toolAuditStore'
 import { makeInTurnCacheLookup } from '../api/agents/in-turn-cache'
 import { explainError as explainToolError } from '../api/agents/error-hints'
-import { finalStripThinkingTags, splitOrphanCloser, splitUnclosedThink } from '../lib/thinking-stripper'
+import { settleThinking } from '../lib/thinking-stripper'
 import { openPlanGap, planReconcileSteer, PLAN_RECONCILE_BUDGET } from '../lib/plan-reconcile'
 import { PlanStaleness, planStalenessSteer } from '../lib/plan-staleness'
 import { planResumeAnchor } from '../lib/plan-resume'
@@ -76,6 +77,7 @@ import { reasoningOnlyRound, REASONING_CONTINUE_BUDGET, REASONING_CONTINUE_STEER
 import { findUnbackedLinks, unbackedLinksSteer } from '../lib/unbacked-links'
 import { useTodoStore } from '../stores/todoStore'
 import { platformPromptLine, hostClockLine } from '../lib/host-platform'
+import { explainSendRefusal } from '../lib/template-refusal'
 import { httpStatusOf, isTerminalModelError, retryDelayMs } from '../lib/http-status'
 import { CREDITS_EXHAUSTED_MESSAGE } from '../lib/credits-exhausted'
 
@@ -320,12 +322,15 @@ export function useAgentChat() {
     // built-in tools land in `~/agent-workspace/<slug>/`. Previously
     // this was the raw conversation UUID — folders were technically
     // isolated but the user couldn't tell which chat owned which
-    // workspace by looking. The slug derives from the chat title
-    // (which auto-rename gives a meaningful one after the first user
-    // message) plus a short id suffix to keep two chats with the same
-    // title from colliding.
+    // workspace by looking.
+    //
+    // Resolved, not recomputed: the name is pinned to the conversation the
+    // first time it is needed and frozen there. Deriving it from the title on
+    // every turn meant the app's own auto-rename moved the folder mid-run and
+    // the agent lost its files between round one and round two (counter-check
+    // round 2, 2026-08-29). See api/workspace-slug.ts.
     const convForSlug = useChatStore.getState().conversations.find((c) => c.id === convId)
-    const slug = chatWorkspaceSlug(convId, convForSlug?.title)
+    const slug = await resolveChatWorkspaceSlug(convId, convForSlug?.title)
 
     // Multi-Repo Agent (B15) + workspace unification (B17): pin the
     // resolved workspace so chatCtx() in builtin-tools.ts threads it
@@ -395,6 +400,11 @@ export function useAgentChat() {
       role: 'assistant' as const,
       content: '',
       thinking: '',
+      // Same record the plain path writes (Meldung 4, R5 re-measure
+      // 2026-08-30): the answer names the model that produced it. modelToUse
+      // rather than activeModel, because that is the runner this turn goes to,
+      // including the "-agent" variant when one exists.
+      modelId: modelToUse,
       timestamp: Date.now(),
       agentBlocks: [],
     }
@@ -547,6 +557,16 @@ export function useAgentChat() {
             ? `${cavemanReminder}\n${m.content}`
             : m.content,
           ...(m.images?.length ? { images: m.images.map(img => ({ data: img.data, mimeType: img.mimeType })) } : {}),
+          // Bug B3 round 2: the store persists tool_calls and tool_call_id
+          // (types/chat.ts says so, and says why), and this rebuild threw both
+          // away. From the second user message of a chat on, the model got a
+          // tool RESULT with no call in front of it and no id to tie it to
+          // one. A mutilated history on a tolerant template, and on the id
+          // strict cloud shape a 422 on every follow-up turn. Carried through
+          // now; where the template cannot render them, the contract in
+          // api/providers/normalize-system.ts turns both into prompt text.
+          ...(m.tool_calls?.length ? { tool_calls: m.tool_calls as unknown as ChatMessage['tool_calls'] } : {}),
+          ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         })),
     ]
 
@@ -679,6 +699,23 @@ export function useAgentChat() {
     // rightly weakened. Windowed batch repeats, per-epoch identical reads and
     // repeated narration now watch this loop too.
     const loopGuard = new AgentLoopGuard()
+    // The closing line a turn gets when the model itself said nothing usable.
+    // Read from the live counters at call time, so both the normal end of the
+    // run and the swallowed multimodal refusal below produce the same text.
+    const closingSummary = () =>
+      summarizeTurn({
+        calls: blocksRef.current
+          .filter((b) => b.phase === 'tool_call' && b.toolCall)
+          .map((b) => ({
+            toolName: b.toolCall!.toolName,
+            status: b.toolCall!.status,
+            result: b.toolCall!.result,
+          })),
+        imageGenDone,
+        videoGenDone,
+        visionFeedbackGiven,
+        planGap: openPlanGap(useTodoStore.getState().getTodos(convId!)),
+      })
     // Which read produced which result message, so the request builder can
     // tell the guard that a re-read of a CAPPED result is legitimate rather
     // than a loop (plan A1, LOOP-GUARD). Keyed by the message object, which
@@ -952,7 +989,11 @@ export function useAgentChat() {
                   },
                   (t) => {
                     dropThinkingBlock()
-                    if (settings.thinkingEnabled === true) {
+                    // The one gate for the whole step. Reading the raw setting
+                    // here disagreed with the end-of-turn routing for an
+                    // 'always' reasoner: nothing streamed live, then the whole
+                    // thought appeared at once when the turn ended.
+                    if (keepThinking) {
                       thinkingRef.current = t
                       scheduleUIUpdate()
                     }
@@ -1042,7 +1083,8 @@ export function useAgentChat() {
             }
             const onLiveThinking = (t: string) => {
               dropThinkingBlock()
-              if (settings.thinkingEnabled === true) {
+              // Same gate as the end-of-turn routing, see the Ollama branch.
+              if (keepThinking) {
                 thinkingRef.current = t
                 scheduleUIUpdate()
               }
@@ -1126,23 +1168,76 @@ export function useAgentChat() {
           // end-of-turn parse on the full raw text stays authoritative.
           const splitter = createThinkStreamSplitter({ startInThink: keepThinking })
           let shown = ''
+          // Two live reasoning sources on this transport, merged by the one
+          // shared sink so neither can overwrite the other: the <think> spans
+          // the splitter pulls out of the text stream, and the native
+          // reasoning channel the backend may fill instead. Paint only; the
+          // end-of-turn parse on the full raw text stays authoritative.
+          const thinkSink = createTurnThinkingSink()
+          const paintThink = () => {
+            if (!keepThinking) return
+            thinkingRef.current = thinkSink.live()
+            scheduleUIUpdate()
+          }
           const feedUI = (chunk: { prose: string; thinking: string }) => {
             if (chunk.thinking && keepThinking) {
-              thinkingRef.current += chunk.thinking.replace(/<think>/g, '')
+              thinkSink.inline(chunk.thinking)
+              paintThink()
             }
             if (chunk.prose) shown += chunk.prose
             contentRef.current = shown
             scheduleUIUpdate()
           }
-          const hermesTurn = await streamProviderTurn(
+          // The tri-state, not a hole. Until the 2.6.7 Denk-Audit this branch
+          // passed `thinking: undefined` and threw the switch away, in both
+          // directions: ON never reached the model, and OFF never turned
+          // anything off either, because undefined means "server decides" and
+          // the Qwen3 family decides yes. The prompt transport is where every
+          // strict template and every tool-less local model lands, the
+          // built-in engine included, so that was a whole transport with a
+          // dead Think button. The tool contract travels as TEXT here, so a
+          // thinking flag cannot disturb it.
+          const hermesOpts = { ...chatOptions }
+          let hermesTurn: StreamedProviderTurn
+          const runHermes = (opts: typeof hermesOpts) => streamProviderTurn(
             provider,
             modelToUse,
-            sendMessages.map(m => ({ role: m.role, content: m.content })),
-            { ...chatOptions, thinking: undefined as unknown as boolean },
+            // Bug B3 round 2: this used to rebuild every message as bare
+            // role+content, which dropped tool_calls, tool_call_id AND image
+            // attachments on the prompt-transport path only. The provider
+            // contract decides what a template can render; it must be given
+            // the whole message to decide on.
+            sendMessages,
+            opts,
             (_full, delta) => feedUI(splitter.feed(display.feed(delta))),
+            // A prompt-transport backend can still answer on the NATIVE
+            // reasoning channel: the built-in engine extracts <think> into
+            // reasoning_content itself and the provider yields it as
+            // `thinking`. This branch passed no thinking callback and never
+            // read hermesTurn.thinking either, so that reasoning fell on the
+            // floor and the block stayed empty with the Think button on.
+            (full) => { thinkSink.native(full); paintThink() },
           )
+          try {
+            hermesTurn = await runHermes(hermesOpts)
+          } catch (thinkErr: any) {
+            // Same downgrade the native branches carry: an old Ollama build or
+            // an endpoint that predates the knob answers 400, and the run must
+            // survive that instead of ending on it.
+            if (hermesOpts.thinking !== undefined
+              && (thinkErr?.message?.includes('does not support thinking') || httpStatusOf(thinkErr) === 400)) {
+              hermesTurn = await runHermes({ ...hermesOpts, thinking: undefined as unknown as boolean })
+            } else {
+              throw thinkErr
+            }
+          }
           feedUI(splitter.feed(display.flush()))
           feedUI(splitter.flush())
+          if (hermesTurn.thinking) {
+            turnThinking = turnThinking
+              ? `${turnThinking}\n\n${hermesTurn.thinking}`
+              : hermesTurn.thinking
+          }
           const rawContent = hermesTurn.content
 
           if (hasToolCallTags(rawContent)) {
@@ -1155,52 +1250,17 @@ export function useAgentChat() {
           }
         }
 
-        // Parse <think>…</think> tags. Always strip them from the content
-        // (otherwise raw tags land in the assistant bubble). Only ROUTE
-        // them into the collapsible thinking block when the user actually
-        // toggled Thinking on — thinking-only models (QwQ, DeepSeek-R1)
-        // emit these tags unconditionally, and we must not surface them
-        // when the user asked for thinking to be OFF.
-        turnContent = turnContent.replace(/<think>([\s\S]*?)<\/think>/g, (_match, inner) => {
-          if (keepThinking) {
-            turnThinking = turnThinking
-              ? `${turnThinking}\n\n${inner}`
-              : inner
-          }
-          return ''
-        })
-        // The Qwen3 chat templates put the opening `<think>` in the PROMPT, so
-        // the reply starts mid-thought and closes a tag it never opened. With
-        // thinking ON the raw closer plus the whole thought stayed in the
-        // bubble.
-        const orphanClose = splitOrphanCloser(turnContent)
-        if (orphanClose.thinking) {
-          turnContent = orphanClose.content
-          if (keepThinking) {
-            turnThinking = turnThinking
-              ? `${turnThinking}\n\n${orphanClose.thinking}`
-              : orphanClose.thinking
-          }
+        // End-of-turn settlement, through the ONE shared routine every path
+        // uses now (lib/thinking-stripper settleThinking): balanced blocks,
+        // the pre-opened Qwen3 thought that only ever sends its closer, a
+        // turn cut off mid-thought, and the non-canonical markers. Routed
+        // into the collapsible block only when the user asked for thinking:
+        // reasoners emit the tags unconditionally and OFF has to mean off.
+        {
+          const settled = settleThinking(turnContent, turnThinking, keepThinking)
+          turnContent = settled.content
+          turnThinking = settled.thinking
         }
-        // A turn cut off mid-thought leaves the opener without its closer,
-        // which the regex above cannot match. It belongs in the thinking
-        // block, never in the assistant bubble.
-        const orphanThink = splitUnclosedThink(turnContent)
-        if (orphanThink.thinking) {
-          turnContent = orphanThink.content
-          if (keepThinking) {
-            turnThinking = turnThinking
-              ? `${turnThinking}\n\n${orphanThink.thinking}`
-              : orphanThink.thinking
-          }
-        }
-        // Strip non-canonical thinking markers (Gemma channel tags,
-        // `<thought>`, `<reasoning>`, etc.) that the canonical regex above
-        // doesn't catch. These never belong in the assistant bubble.
-        turnContent = finalStripThinkingTags(turnContent, keepThinking)
-        // Also drop any orphan native-thinking that leaked through when the
-        // toggle is OFF (e.g. provider returned `turn.thinking` anyway).
-        if (!keepThinking) turnThinking = ''
 
         // Update UI — but DON'T overwrite contentRef during intermediate
         // turns. Previously every iteration did `contentRef.current =
@@ -1463,7 +1523,7 @@ export function useAgentChat() {
           // the one top-of-bubble field. A run with NO tool activity keeps
           // the classic bubble (plain chat look, and the tool-intent hint
           // in MessageBubble reads message.thinking).
-          if (executedCallKeys.size > 0 && turnThinking.trim() && settings.thinkingEnabled === true) {
+          if (executedCallKeys.size > 0 && turnThinking.trim() && keepThinking) {
             addBlock(convId!, assistantMessage.id, {
               id: uuid(),
               phase: 'thinking',
@@ -1485,7 +1545,7 @@ export function useAgentChat() {
         // The top-level field is cleared so the same thought never shows twice;
         // the next round's live stream refills it while streaming and lands
         // here again when that round completes.
-        if (turnThinking.trim() && settings.thinkingEnabled === true) {
+        if (turnThinking.trim() && keepThinking) {
           addBlock(convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'thinking',
@@ -1814,7 +1874,28 @@ export function useAgentChat() {
           guardKeyOfResult.set(msg as unknown as object, guardKeyFor(tc))
           return msg
         }
-        if (providerId === 'openai' || providerId === 'anthropic' || providerId === 'lu-cloud') {
+        // Bug B3 round 2, the first cause the counter-check proved on the
+        // real engine: this chain asked WHICH PROVIDER, never WHICH TRANSPORT.
+        // The built-in engine and LM Studio are providerId 'openai', so a run
+        // on the prompt transport still wrote its results into the native
+        // `tool` role, a role the model's template has no branch for, and no
+        // `tools` payload anywhere in the request to justify it. The wire read
+        // [system, user, assistant, tool] and the strict template raised on
+        // the next round. The transport decides the shape; the provider only
+        // decides whether the native shape needs ids.
+        if (strategy === 'hermes_xml') {
+          for (const { tc } of batch) {
+            const result = results.find((r) => r.id === batch.find((b) => b.tc === tc)?.ac.id)!
+            agentMessages.push({
+              role: 'assistant',
+              content: buildHermesToolCall(tc.function.name, tc.function.arguments),
+            })
+            agentMessages.push(rememberResult({
+              role: 'user',
+              content: buildHermesToolResult(tc.function.name, resultTextFor(result) + mediaNote(tc.function.name, result)),
+            }, tc))
+          }
+        } else if (providerId === 'openai' || providerId === 'anthropic' || providerId === 'lu-cloud') {
           agentMessages.push({
             role: 'assistant',
             content: turnContent || '',
@@ -1844,11 +1925,14 @@ export function useAgentChat() {
             }, tc))
           }
         } else {
+          // Ollama on a non-native strategy that is not hermes_xml. Same
+          // prompt transport, same dialect, written by the same builders as
+          // the branch above so the two can never drift apart again.
           for (const { tc } of batch) {
             const result = results.find((r) => r.id === batch.find((b) => b.tc === tc)?.ac.id)!
             agentMessages.push({
               role: 'assistant',
-              content: `<tool_call>\n{"name": "${tc.function.name}", "arguments": ${JSON.stringify(tc.function.arguments)}}\n</tool_call>`,
+              content: buildHermesToolCall(tc.function.name, tc.function.arguments),
             })
             agentMessages.push(rememberResult({
               role: 'user',
@@ -1903,13 +1987,22 @@ export function useAgentChat() {
         // video results, or fetch failures — and on non-Ollama only feeds models
         // whose name matches a vision family (so a text LM Studio model isn't
         // sent an image and made to SSE-error).
+        //
+        // Runde 4 / Nebenbefund N3 (D1 counter-check, Windows build
+        // 2026-08-29): the app's own capability answer now goes in with the
+        // call. For the built-in engine that is the vision projector on disk,
+        // the same file the engine passes as --mmproj, so a text-only
+        // conversion of a vision family is never handed a picture again.
+        const declaredSight = declaredVision(
+          useModelStore.getState().models.find((m) => m.name === activeModel),
+        )
         for (const { tc, ac } of batch) {
           const result = results.find((r) => r.id === ac.id)
           // G22: once this run proved the model text-only, stop attaching.
           if (visionRefused) break
           if (result?.status === 'completed' && result.result) {
             try {
-              const vf = await buildVisionFeedback(modelToUse, tc.function.name, result.result, providerId)
+              const vf = await buildVisionFeedback(modelToUse, tc.function.name, result.result, providerId, declaredSight)
               if (vf) {
                 agentMessages.push(vf as unknown as ChatMessage)
                 visionFeedbackGiven = true
@@ -1937,23 +2030,11 @@ export function useAgentChat() {
         // Closing line when the model said nothing itself. Pure logic lives in
         // summarizeTurn so the D#81 rules (a failed picture is not a completed
         // task, and its reason gets shown) are locked by tests.
-        contentRef.current = summarizeTurn({
-          calls: blocksRef.current
-            .filter((b) => b.phase === 'tool_call' && b.toolCall)
-            .map((b) => ({
-              toolName: b.toolCall!.toolName,
-              status: b.toolCall!.status,
-              result: b.toolCall!.result,
-            })),
-          imageGenDone,
-          videoGenDone,
-          visionFeedbackGiven,
-          // G27: the reconcile steers above have a budget of two; when it is
-          // spent the run ends with the plan still open, and this line is the
-          // last thing the user reads. It may not say "completed" while the
-          // PlanBar next to it says otherwise.
-          planGap: openPlanGap(useTodoStore.getState().getTodos(convId!)),
-        })
+        // G27: the reconcile steers above have a budget of two; when it is
+        // spent the run ends with the plan still open, and this line is the
+        // last thing the user reads. It may not say "completed" while the
+        // PlanBar next to it says otherwise. closingSummary carries that rule.
+        contentRef.current = closingSummary()
       }
 
       // Final store update
@@ -1965,11 +2046,22 @@ export function useAgentChat() {
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         const errorMsg = (err as Error).message || 'Connection failed'
+        // Bug B3 round 2: a refusal that produced nothing at all (the model's
+        // chat template raised, or the backend 400'd) gets its own English
+        // sentence instead of the raw Jinja trace under an "Agent error" head.
+        const sendRefusal = explainSendRefusal(err)
 
         if (isMultimodalUnsupportedError(errorMsg)) {
+          // N3: only a picture the USER attached earns this error. When the run
+          // attached its own render and the model turned out unable to look at
+          // it, the render still succeeded and is on screen, so the turn closes
+          // with its normal summary instead of a red line under a finished
+          // image (D1 counter-check, Windows build 2026-08-29).
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            MULTIMODAL_UNSUPPORTED_MESSAGE
+            reportMultimodalRefusal(visionFeedbackGiven)
+              ? MULTIMODAL_UNSUPPORTED_MESSAGE
+              : (contentRef.current.trim() || closingSummary())
           )
         } else if ((err as { code?: string })?.code === 'tools_unsupported' || errorMsg.includes('does not support tools')) {
           // G26: record the refusal so the layered resolution (toolStrategyFor)
@@ -2038,6 +2130,16 @@ export function useAgentChat() {
             convId!, assistantMessage.id,
             (contentRef.current ? contentRef.current + '\n\n' : '') +
             `The server is limiting how many requests this account may send in a short window, and the run waited for it once already. Give it ${when}, then send your message again. Nothing was charged for the refused attempts.`
+          )
+        } else if (sendRefusal) {
+          // Bug B3 round 2, nebenbefund 3: a chat-tools turn in PLAIN chat
+          // runs through this same executor, so the template's own Jinja
+          // stack trace used to reach the user under the heading "Agent
+          // error" with Agent mode switched off. It is neither the agent's
+          // failure nor a sentence anyone can act on.
+          useChatStore.getState().updateMessageContent(
+            convId!, assistantMessage.id,
+            (contentRef.current ? contentRef.current + '\n\n' : '') + sendRefusal,
           )
         } else if (/failed to fetch|connection refused|connection reset|error sending request|proxy_localhost|network ?error|timed out|timeout|tcp connect|llama runner process|backend unreachable|HTTP 5\d\d/i.test(errorMsg)) {
           // Connection-class failure — after the transient retries above this

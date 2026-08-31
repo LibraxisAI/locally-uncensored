@@ -44,7 +44,8 @@ fn safe_subfolder(subfolder: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod download_security_tests {
-    use super::{sanitize_filename, safe_subfolder};
+    use super::{checked_model_path, safe_subfolder, sanitize_filename};
+    use std::path::PathBuf;
 
     #[test]
     fn sanitize_strips_traversal_and_separators() {
@@ -75,6 +76,46 @@ mod download_security_tests {
         let (dir, _) = super::split_model_ref("../../evil.bin");
         assert!(safe_subfolder(&dir).is_err());
     }
+
+    /// The size probe reads names that come straight from a ComfyUI answer.
+    /// A hostile ComfyUI must never be able to point it at a path outside the
+    /// models folder, because exists() plus metadata().len() would hand it an
+    /// existence and size oracle for the whole machine.
+    #[test]
+    fn check_path_never_escapes_dest_dir() {
+        let dest = PathBuf::from("/comfy/models/embeddings");
+
+        // Honest names keep working, nested ComfyUI enum names included.
+        assert_eq!(
+            checked_model_path(&dest, "pony.safetensors").unwrap(),
+            dest.join("pony.safetensors")
+        );
+        assert_eq!(
+            checked_model_path(&dest, "sdxl/pony.safetensors").unwrap(),
+            dest.join("sdxl").join("pony.safetensors")
+        );
+
+        // Hostile names are either refused outright or land inside dest_dir,
+        // never anywhere else.
+        let hostile = [
+            "/etc/passwd",
+            "/Users/victim/.ssh/id_ed25519",
+            "C:\\Windows\\win.ini",
+            "..\\..\\..\\Windows\\win.ini",
+            "../../../../etc/shadow",
+            "..",
+        ];
+        for name in hostile {
+            if let Some(p) = checked_model_path(&dest, name) {
+                assert!(
+                    p.starts_with(&dest),
+                    "escaped dest_dir: {} resolved to {}",
+                    name,
+                    p.display()
+                );
+            }
+        }
+    }
 }
 
 /// Split a ComfyUI enum name ("wan/x.safetensors" or plain "x.safetensors")
@@ -90,10 +131,13 @@ fn split_model_ref(name: &str) -> (String, String) {
 
 /// The model subdirs LU downloads into / ComfyUI enumerates from. Delete
 /// searches exactly these — never custom_nodes, never arbitrary paths.
+/// embeddings and style_models joined on 2026-08-30, with the five folders the
+/// R5 re-measure found missing from the inventory. A file the Installed list
+/// names has to be deletable from that same list, or the list is a wall.
 const MODEL_SUBDIRS: &[&str] = &[
     "checkpoints", "diffusion_models", "unet", "vae", "loras",
     "text_encoders", "clip", "clip_vision", "audio_encoders",
-    "controlnet", "upscale_models",
+    "controlnet", "upscale_models", "embeddings", "style_models",
 ];
 
 /// Delete one installed model file from the ComfyUI models tree (the Model
@@ -992,6 +1036,30 @@ pub struct CheckFileResult {
     pub complete: bool,
 }
 
+/// Resolve one `check_model_sizes` entry to a path that is guaranteed to sit
+/// inside `dest_dir`.
+///
+/// The filename can arrive straight out of a ComfyUI answer (`/embeddings`,
+/// `/object_info`), so it gets the same jail the delete path uses: a nested
+/// enum name like "sdxl/pony.safetensors" keeps its relative dir, but an
+/// absolute path, a drive letter or any `..` segment is refused. Without this,
+/// `Path::join` silently drops `dest_dir` for an absolute name and turns the
+/// size probe into an existence and size oracle for arbitrary paths on the
+/// customer's machine. Returns None when the name has to be refused; the
+/// caller then answers "not found" instead of touching the disk.
+fn checked_model_path(dest_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let (sub, base) = split_model_ref(filename);
+    if !sub.is_empty() && safe_subfolder(&sub).is_err() {
+        return None;
+    }
+    let base = sanitize_filename(&base);
+    if sub.is_empty() {
+        Some(dest_dir.join(&base))
+    } else {
+        Some(dest_dir.join(&sub).join(&base))
+    }
+}
+
 #[tauri::command]
 pub async fn check_model_sizes(
     files: Vec<CheckFileRequest>,
@@ -1023,7 +1091,18 @@ pub async fn check_model_sizes(
             }
         };
 
-        let dest_file = dest_dir.join(&file.filename);
+        let dest_file = match checked_model_path(&dest_dir, &file.filename) {
+            Some(p) => p,
+            None => {
+                results.push(CheckFileResult {
+                    filename: file.filename.clone(),
+                    exists: false,
+                    actual_bytes: 0,
+                    complete: false,
+                });
+                continue;
+            }
+        };
         if dest_file.exists() {
             let actual = dest_file.metadata().map(|m| m.len()).unwrap_or(0);
             // Use 50% threshold for install checks — sizeGB values are rough estimates

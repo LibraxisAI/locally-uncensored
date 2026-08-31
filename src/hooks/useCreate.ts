@@ -32,15 +32,22 @@ import {
 } from '../api/comfyui'
 import {
   comfyErrorHint,
+  cpuRenderFacts,
+  lastCpuRenderFacts,
   evictChatBackendsForRender,
   restoreChatBackendsAfterRender,
   type RenderEviction,
 } from '../api/vram-handoff'
+import { cpuCauseSuffix } from '../lib/render-budget'
+import { backendCall } from '../api/backend'
+import {
+  ensureComfyForRender, comfyGuardMessage, type ComfyGuardStatus,
+} from '../lib/comfy-restart-guard'
 import {
   comfyWS, CLIENT_ID,
-  LOADER_NODES, CLIP_LOADER_NODES, VAE_LOADER_NODES, SAMPLER_NODES, DECODE_NODES,
   type ComfyWSEvent,
 } from '../api/comfyui-ws'
+import { phaseForExecutingNode, phaseForProgressStep } from '../lib/render-phase-labels'
 import { buildDynamicWorkflow, buildLocalOpWorkflow, checkVideoOutputCapability } from '../api/dynamic-workflow'
 import { getAllNodeInfo, clearNodeCache } from '../api/comfyui-nodes'
 import { restartComfyForNewNodes } from '../api/comfy-restart'
@@ -788,13 +795,32 @@ export function useCreate() {
       }
     }
 
-    const isRunning = await checkComfyConnection()
-    if (!isRunning) {
-      setError('ComfyUI is not running. Wait for it to start.')
+    // R16 Befund 5: this used to be a bare probe with the line "ComfyUI is not
+    // running. Wait for it to start." Nothing was waiting to start it. LU
+    // starts ComfyUI at app launch and never again, so a ComfyUI killed
+    // mid-session stayed dead, and the box sat on that sentence for ten
+    // minutes with port 8188 shut. If LU started it, LU restarts it, and if it
+    // is not LU's to start, the line says so instead of promising an actor
+    // that does not exist.
+    //
+    // The waiting area is opened BEFORE the guard runs, because a restart can
+    // take a minute and the line explaining it has to be somewhere the user
+    // can read it.
+    setIsGenerating(true)
+    setProgress(0, 'Checking ComfyUI...')
+    const guard = await ensureComfyForRender({
+      probe: () => checkComfyConnection(),
+      status: () => backendCall<ComfyGuardStatus>('comfyui_status').catch(() => null),
+      start: async () => { await backendCall('start_comfyui') },
+      onProgress: (line) => setProgress(0, line),
+    })
+    if (guard === 'unmanaged' || guard === 'failed') {
+      setIsGenerating(false)
+      setProgress(0)
+      setError(comfyGuardMessage(guard))
       return
     }
 
-    setIsGenerating(true)
     setProgress(0, 'Preparing workflow...')
     abortRef.current = new AbortController()
 
@@ -1034,6 +1060,34 @@ export function useCreate() {
         outputHeight = hires.height
       }
 
+      // Open the progress socket BEFORE the submit, and remember where the
+      // stream stands, because ComfyUI starts executing the instant the submit
+      // lands and addresses this run's frames at our client id alone.
+      //
+      // R16 Befund 1: the connect used to sit AFTER the submit. On the first
+      // render of an app run that costs a dynamic import, two Tauri listener
+      // registrations and the Rust websocket handshake, and every frame
+      // ComfyUI sent in that window went to a socket that did not exist yet.
+      // ComfyUI buffers nothing, so the three load lines (model, text encoder,
+      // VAE) were simply gone, and the waiting area showed nothing at all
+      // until the render was 34 s old. From the second render on the socket
+      // was already up, the connect returned at once, and the lines appeared,
+      // which is why this only ever hit the first picture after a start.
+      //
+      // The mark closes the rest of the window: the listener below cannot be
+      // registered until the submit has returned the prompt id it filters on,
+      // so anything that arrives in between is replayed instead of raced for.
+      const maxTime = mode === 'video' ? 60 * 60 * 1000 : 20 * 60 * 1000
+      let useWS = false
+      let wsMark = 0
+      try {
+        await comfyWS.connect(3000)
+        useWS = true
+        wsMark = comfyWS.mark()
+      } catch {
+        console.warn('[useCreate] WebSocket unavailable, using polling fallback')
+      }
+
       setProgress(10, 'Submitting to ComfyUI...')
       let promptId: string
       try {
@@ -1054,15 +1108,11 @@ export function useCreate() {
         }
       }
 
-      // Try WebSocket-driven progress, fall back to polling
-      const maxTime = mode === 'video' ? 60 * 60 * 1000 : 20 * 60 * 1000
-      let useWS = false
-      try {
-        await comfyWS.connect(3000)
-        useWS = true
-      } catch {
-        console.warn('[useCreate] WebSocket unavailable, using polling fallback')
-      }
+      // Ask which device ComfyUI is on while the render is still healthy: both
+      // stall watchdogs below fire from a timer and cannot await anything, and
+      // a stall message that never names the processor is the reason an AMD
+      // customer blames his settings for a hardware switch.
+      void cpuRenderFacts()
 
       if (useWS) {
         // ── WebSocket-driven progress ──
@@ -1101,7 +1151,7 @@ export function useCreate() {
           const timeoutTimer = setInterval(() => {
             if (Date.now() - lastActivity > maxTime) {
               cleanup()
-              reject(new Error(`Generation stalled: no progress from ComfyUI for ${Math.round(maxTime / 60000)} minutes`))
+              reject(new Error(`Generation stalled: no progress from ComfyUI for ${Math.round(maxTime / 60000)} minutes.${cpuCauseSuffix(lastCpuRenderFacts())}`))
             }
           }, 15000)
 
@@ -1183,6 +1233,8 @@ export function useCreate() {
             removeListener()
           }
 
+          // `wsMark` was taken before the submit, so the frames ComfyUI sent
+          // while this closure was being built are handed over first.
           const removeListener = comfyWS.on((event: ComfyWSEvent) => {
             // Only handle events for our prompt
             if ('prompt_id' in event.data && event.data.prompt_id !== promptId) return
@@ -1198,29 +1250,20 @@ export function useCreate() {
                   break
                 }
                 const classType = nodeClassMap.get(nodeId) || ''
-                if (LOADER_NODES.has(classType)) {
-                  st.setProgressPhase('loading-model')
-                  setPhase(15, 'Loading model...')
-                } else if (CLIP_LOADER_NODES.has(classType)) {
-                  st.setProgressPhase('loading-clip')
-                  setPhase(25, 'Loading text encoder...')
-                } else if (VAE_LOADER_NODES.has(classType)) {
-                  st.setProgressPhase('loading-vae')
-                  setPhase(30, 'Loading VAE...')
-                } else if (SAMPLER_NODES.has(classType)) {
-                  st.setProgressPhase('sampling')
-                  setPhase(35, 'Sampling...')
-                } else if (DECODE_NODES.has(classType)) {
-                  st.setProgressPhase('decoding')
-                  setPhase(90, 'Decoding frames, the last long stretch...')
+                const step = phaseForExecutingNode(classType, mode === 'video' ? 'video' : 'image')
+                if (step) {
+                  st.setProgressPhase(step.phase)
+                  setPhase(step.pct, step.label)
                 }
                 break
               }
               case 'progress': {
                 const { value, max } = event.data
-                const stepPct = 35 + (value / max) * 55 // 35% to 90%
-                st.setProgressPhase('sampling')
-                setPhase(Math.round(stepPct), `Sampling step ${value}/${max}...`)
+                const step = phaseForProgressStep(value, max, st.progressPhase)
+                if (step) {
+                  st.setProgressPhase(step.phase)
+                  setPhase(step.pct, step.label)
+                }
                 break
               }
               case 'execution_complete': {
@@ -1271,7 +1314,7 @@ export function useCreate() {
                 break
               }
             }
-          })
+          }, wsMark)
 
           // Also check abort
           abortCheck = setInterval(() => {
@@ -1305,7 +1348,7 @@ export function useCreate() {
                 lastActivity = Date.now()
               } else {
                 if (pollRef.current) clearInterval(pollRef.current)
-                reject(new Error(`Generation stalled: no progress from ComfyUI for ${Math.round(maxTime / 60000)} minutes`))
+                reject(new Error(`Generation stalled: no progress from ComfyUI for ${Math.round(maxTime / 60000)} minutes.${cpuCauseSuffix(lastCpuRenderFacts())}`))
                 return
               }
             }
