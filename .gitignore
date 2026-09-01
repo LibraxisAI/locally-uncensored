@@ -77,3 +77,5 @@ SETUP_REPORT.md
 # Teaser raw takes + render scratch (scripts/teasers) - only the encoded
 # webm/poster assets in public/teasers ship
 /assets-src/
+# Loctree artifacts (added by loct scan)
+.loctree/
