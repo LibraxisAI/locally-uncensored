@@ -1,8 +1,6 @@
 use crate::os_error;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use axum::{
@@ -92,6 +90,27 @@ pub struct PasscodeState {
 }
 
 #[derive(Clone)]
+struct RemoteDesktop {
+    native: Option<AppHandle>,
+}
+
+impl RemoteDesktop {
+    fn new(handle: AppHandle) -> Self {
+        Self { native: Some(handle) }
+    }
+
+    fn handle(&self) -> Option<&AppHandle> {
+        self.native.as_ref()
+    }
+}
+
+// Only test builds provide a constructor without the OS-backed bridge.
+#[cfg(test)]
+impl RemoteDesktop {
+    fn unavailable() -> Self { Self { native: None } }
+}
+
+#[derive(Clone)]
 struct RemoteState {
     memory_revoked: Arc<CancellationToken>,
     jwt_secret: Arc<TokioMutex<String>>,
@@ -124,7 +143,7 @@ struct RemoteState {
     tunnel_url: Arc<TokioMutex<Option<String>>>,
     dispatched_model: Arc<TokioMutex<String>>,
     dispatched_system_prompt: Arc<TokioMutex<String>>,
-    app_handle: AppHandle,
+    app_handle: RemoteDesktop,
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -714,7 +733,10 @@ async fn handle_agent_tool(
     use tauri::Manager;
     let tool_name = body.tool.clone();
 
-    let app_state = match state.app_handle.try_state::<crate::state::AppState>() {
+    let Some(app_handle) = state.app_handle.handle() else {
+        return graceful_error("Desktop integration unavailable.");
+    };
+    let app_state = match app_handle.try_state::<crate::state::AppState>() {
         Some(s) => s,
         None => {
             eprintln!("[Remote agent] AppState not registered — cannot dispatch tool {}", tool_name);
@@ -1007,7 +1029,10 @@ async fn handle_chat_event(
             format!("Content exceeds {} bytes", CHAT_EVENT_MAX_CONTENT),
         ).into_response();
     }
-    let _ = state.app_handle.emit("remote-chat-message", &body);
+    let Some(app_handle) = state.app_handle.handle() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Desktop integration unavailable.").into_response();
+    };
+    let _ = app_handle.emit("remote-chat-message", &body);
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -2653,7 +2678,7 @@ pub async fn start_remote_server(
         permissions: permissions_arc,
         connected_devices: devices_arc,
         tunnel_url: tunnel_url_arc,
-        app_handle: app.clone(),
+        app_handle: RemoteDesktop::new(app.clone()),
         dispatched_model: dispatched_model_arc,
         dispatched_system_prompt: dispatched_system_prompt_arc,
     };
@@ -3340,6 +3365,89 @@ async fn redirect_to_mobile() -> Response {
 #[cfg(test)]
 mod memory_revocation_tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn authenticated_router_revokes_cached_prompts_for_both_chat_backends() {
+        for backend in ["ollama", "openai"] {
+            let received = Arc::new(TokioMutex::new(Vec::<(String, serde_json::Value)>::new()));
+            let captured = received.clone();
+            let upstream_router = Router::new().fallback(any(move |req: Request| {
+                let captured = captured.clone();
+                async move {
+                    let path = req.uri().path().to_string();
+                    let bytes = axum::body::to_bytes(req.into_body(), 65536).await.unwrap();
+                    let body = serde_json::from_slice(&bytes).unwrap();
+                    captured.lock().await.push((path.clone(), body));
+                    if path == "/v1/chat/completions" {
+                        Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"synthetic reply"}}]}))
+                    } else {
+                        Json(serde_json::json!({"message":{"role":"assistant","content":"synthetic reply"},"done":true}))
+                    }
+                }
+            }));
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_base = format!("http://{}", upstream.local_addr().unwrap());
+            let upstream_task = tokio::spawn(async move { axum::serve(upstream, upstream_router).await.unwrap() });
+            let server = RemoteServer::new();
+            *server.jwt_secret.lock().await = uuid::Uuid::new_v4().to_string();
+            let passcode = generate_passcode();
+            { let mut pc = server.passcode.lock().await; pc.code = passcode.clone(); pc.expires_at = chrono_now_secs() + PASSCODE_TTL_SECS; }
+            *server.dispatched_system_prompt.lock().await = "synthetic remembered context".into();
+            let state = RemoteState {
+                memory_revoked: server.memory_revoked.clone(),
+                jwt_secret: server.jwt_secret.clone(), passcode: server.passcode.clone(),
+                ollama_base: upstream_base.clone(), backend_kind: backend.into(),
+                openai_base: format!("{upstream_base}/v1"), openai_key: String::new(),
+                comfy_port: 0, comfy_host: "127.0.0.1".into(),
+                permissions: server.permissions.clone(), connected_devices: server.connected_devices.clone(),
+                tunnel_url: server.tunnel_url.clone(), dispatched_model: server.dispatched_model.clone(),
+                dispatched_system_prompt: server.dispatched_system_prompt.clone(), app_handle: RemoteDesktop::unavailable(),
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let router = build_router(state);
+            let proxy = tokio::spawn(async move {
+                axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+            });
+            let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(2)).build().unwrap();
+            assert_eq!(client.get(format!("{base}/remote-api/config")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+            let paired = client.post(format!("{base}/remote-api/auth")).json(&serde_json::json!({"passcode":passcode})).send().await.unwrap();
+            assert_eq!(paired.status(), StatusCode::OK);
+            let paired: serde_json::Value = paired.json().await.unwrap();
+            let token = paired["token"].as_str().unwrap();
+            let config: serde_json::Value = client.get(format!("{base}/remote-api/config")).bearer_auth(token).send().await.unwrap().json().await.unwrap();
+            assert_eq!(config["systemPrompt"], "synthetic remembered context");
+            let payload = serde_json::json!({"model":"fixture-model","stream":false,"messages":[
+                {"role":"system","content":config["systemPrompt"]}, {"role":"user","content":"synthetic request"}
+            ]});
+            let response = client.post(format!("{base}/api/chat")).bearer_auth(token).json(&payload).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let response: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(response["message"]["content"], "synthetic reply");
+            {
+                let calls = received.lock().await;
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].0, if backend == "openai" { "/v1/chat/completions" } else { "/api/chat" });
+                assert_eq!(calls[0].1["messages"][0]["content"], "synthetic remembered context");
+            }
+            server.revoke_memory();
+            // Simulate an uncooperative mobile retaining its original config.
+            assert_eq!(client.post(format!("{base}/api/chat")).bearer_auth(token).json(&payload).send().await.unwrap().status(), StatusCode::CONFLICT);
+            assert_eq!(client.get(format!("{base}/remote-api/config")).bearer_auth(token).send().await.unwrap().status(), StatusCode::CONFLICT);
+            assert_eq!(client.post(format!("{base}/api/chat")).json(&payload).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+            // Pairing again is allowed, but must not reopen the revoked guard.
+            let paired_again: serde_json::Value = client.post(format!("{base}/remote-api/auth"))
+                .json(&serde_json::json!({"passcode":passcode})).send().await.unwrap().json().await.unwrap();
+            let renewed = paired_again["token"].as_str().unwrap();
+            assert_eq!(client.post(format!("{base}/api/chat")).bearer_auth(renewed).json(&payload).send().await.unwrap().status(), StatusCode::CONFLICT);
+            assert_eq!(received.lock().await.len(), 1);
+            assert_eq!(client.get(format!("{base}/remote-api/status")).send().await.unwrap().status(), StatusCode::OK);
+            proxy.abort(); upstream_task.abort();
+            assert!(proxy.await.unwrap_err().is_cancelled());
+            assert!(upstream_task.await.unwrap_err().is_cancelled());
+        }
+    }
 
     async fn socket_forwarder(
         target: String,
