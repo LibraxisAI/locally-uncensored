@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes']) {
   test(`${slug} has readable, keyboard-scrollable comparison rows on mobile`, async ({ page }, testInfo) => {
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url())
@@ -23,15 +23,21 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice']) {
     if (slug === 'venice') {
       await expect(region).toContainText('API requests are metered separately')
       await expect(region).toContainText('100 monthly credits')
-      await page.screenshot({ path: testInfo.outputPath('venice-mobile.png'), fullPage: true })
+    }
+    if (slug === 'chutes') {
+      await expect(region).toContainText('USD 4.17 and USD 8.33')
+      await expect(region).toContainText('low-volume API traffic')
+    }
+    if (slug === 'venice' || slug === 'chutes') {
+      await page.screenshot({ path: testInfo.outputPath(`${slug}-mobile.png`), fullPage: true })
       const luSource = region.locator('td:last-child a').last()
       await luSource.focus()
       await expect(luSource).toBeFocused()
       await expect.poll(() => region.evaluate((el) => el.scrollLeft)).toBeGreaterThan(100)
-      await page.screenshot({ path: testInfo.outputPath('venice-mobile-lu.png'), fullPage: true })
+      await page.screenshot({ path: testInfo.outputPath(`${slug}-mobile-lu.png`), fullPage: true })
       await page.setViewportSize({ width: 1280, height: 900 })
       await region.evaluate((el) => { el.scrollLeft = 0 })
-      await page.screenshot({ path: testInfo.outputPath('venice-desktop.png'), fullPage: true })
+      await page.screenshot({ path: testInfo.outputPath(`${slug}-desktop.png`), fullPage: true })
     }
   })
 }

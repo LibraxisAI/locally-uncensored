@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes']) {
   const html = readFileSync(`docs/vs/${slug}/index.html`, 'utf8')
   const page = new DOMParser().parseFromString(html, 'text/html')
   it(`${slug} dates and sources every comparative fact on both sides`, () => {
@@ -38,4 +38,17 @@ it('Venice distinguishes recurring credits, app allowances and metered API usage
   expect(rows[2].querySelector('td')!.textContent).toContain('API requests are metered separately')
   expect(rows[2].querySelector('td:last-child')!.textContent).toContain('not API keys')
   expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|mobile only|Trustpilot|one-time \$10/i)
+})
+
+it('Chutes scopes workload restrictions to subscriptions and separates request and spend caps', () => {
+  const page = new DOMParser().parseFromString(readFileSync('docs/vs/chutes/index.html', 'utf8'), 'text/html')
+  const cells = [...page.querySelectorAll('[data-comparison-row] td:first-of-type')]
+  expect(cells[0].textContent).toContain('equivalent PAYGO usage')
+  expect(cells[1].textContent).toContain('2,000 and 5,000 API requests daily')
+  expect(cells[1].textContent).toContain('USD 4.17 and USD 8.33')
+  expect(cells[1].textContent).toContain('automatically use PAYGO billing')
+  expect(cells[2].textContent).toContain('low-volume API traffic')
+  expect(cells[2].textContent).toContain('must use PAYGO')
+  expect(cells[2].querySelector('a')!.getAttribute('href')).toBe('https://chutes.ai/terms')
+  expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|all API usage is banned/i)
 })
