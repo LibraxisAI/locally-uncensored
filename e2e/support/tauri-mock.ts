@@ -27,6 +27,7 @@ export interface TauriMockOptions {
     videoEngineInstalled?: boolean
     installedImages?: string[]
     installedVideos?: string[]
+    imageInstallError?: string
   }
   /**
    * Which OS the app should believe it is on. `isMacOS()` reads
@@ -404,7 +405,9 @@ export function tauriMockInit(opts: TauriMockOptions) {
         record('__E2E_MLX_CALLS__', { cmd, id: m?.id })
         return Promise.resolve({ ok: true, status: 'installing', id: m?.id })
       case 'mlx_image_install_status': {
-        const s = installStatus('image')
+        const s = installStatus('image', opts.mlx?.imageInstallError && slot.image !== null
+          ? { status: 'error', error: opts.mlx.imageInstallError, logs: [opts.mlx.imageInstallError] }
+          : undefined)
         if (s.status === 'complete' && pendingImageId) {
           mlx.images.add(pendingImageId)
           pendingImageId = null
