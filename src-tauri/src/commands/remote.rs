@@ -2245,6 +2245,7 @@ fn set_exclusive_addr_use(socket: &socket2::Socket) -> std::io::Result<()> {
 
 /// Stored in AppState — holds the running remote server handle
 pub struct RemoteServer {
+    lifecycle: RemoteLifecycle,
     pub memory_revoked: Arc<CancellationToken>,
     pub handle: Option<JoinHandle<()>>,
     pub port: u16,
@@ -2277,8 +2278,15 @@ impl RemoteServer {
         self.memory_revoked.cancel();
     }
 
+    fn stop_lifecycle(&self) -> RemoteLifecycle {
+        // Restrict the current session immediately, even if cleanup must queue.
+        self.revoke_memory();
+        self.lifecycle.clone()
+    }
+
     pub fn new() -> Self {
         Self {
+            lifecycle: RemoteLifecycle::new(),
             memory_revoked: Arc::new(CancellationToken::new()),
             handle: None,
             port: 11435,
@@ -2569,8 +2577,42 @@ fn find_stale_tunnels(sys: &sysinfo::System, port: u16) -> Vec<u32> {
         .collect()
 }
 
+#[derive(Clone)]
+struct RemoteLifecycle(Arc<TokioMutex<()>>);
+
+impl RemoteLifecycle {
+    fn new() -> Self { Self(Arc::new(TokioMutex::new(()))) }
+
+    async fn acquire(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        self.acquire_with_timeout(std::time::Duration::from_secs(15)).await
+    }
+
+    async fn acquire_with_timeout(&self, timeout: std::time::Duration) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        tokio::time::timeout(timeout, self.0.clone().lock_owned()).await
+            .map_err(|_| "Remote lifecycle is busy. Wait for the current operation, then try again.".to_string())
+    }
+}
+
+fn remote_lifecycle(state: &tauri::State<'_, crate::state::AppState>) -> Result<RemoteLifecycle, String> {
+    state.remote.lock().map(|remote| remote.lifecycle.clone())
+        .map_err(|_| "Remote state unavailable".to_string())
+}
+
 #[tauri::command]
 pub async fn start_remote_server(
+    app: AppHandle,
+    state: tauri::State<'_, crate::state::AppState>,
+    model: Option<String>,
+    system_prompt: Option<String>,
+    backend_kind: Option<String>,
+    backend_base: Option<String>,
+    backend_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let operation = remote_lifecycle(&state)?.acquire().await?;
+    start_remote_server_inner(app, state, model, system_prompt, backend_kind, backend_base, backend_key, &operation).await
+}
+
+async fn start_remote_server_inner(
     app: AppHandle,
     state: tauri::State<'_, crate::state::AppState>,
     model: Option<String>,
@@ -2581,6 +2623,7 @@ pub async fn start_remote_server(
     backend_kind: Option<String>,
     backend_base: Option<String>,
     backend_key: Option<String>,
+    _operation: &tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<serde_json::Value, String> {
     let backend_kind = backend_kind.unwrap_or_else(|| "ollama".to_string());
     let openai_base = backend_base.unwrap_or_default();
@@ -2809,21 +2852,29 @@ pub async fn restart_remote_server(
     backend_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use tauri::Manager;
-    // Stop first (ignore errors if not running)
-    let _ = stop_remote_server(state).await;
-    // Small delay so the TCP listener on 11435 fully unbinds
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let operation = remote_lifecycle(&state)?.acquire().await?;
+    // Keep one lease across both halves; never start after failed cleanup.
+    stop_remote_server_inner(&state.remote, &operation).await?;
     // Start fresh with a re-acquired State handle from the AppHandle
     let state2 = app.state::<crate::state::AppState>();
-    start_remote_server(app.clone(), state2, model, system_prompt, backend_kind, backend_base, backend_key).await
+    start_remote_server_inner(app.clone(), state2, model, system_prompt, backend_kind, backend_base, backend_key, &operation).await
 }
 
 #[tauri::command]
 pub async fn stop_remote_server(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<(), String> {
+    let lifecycle = state.remote.lock().map_err(|_| "Remote state unavailable".to_string())?.stop_lifecycle();
+    let operation = lifecycle.acquire().await?;
+    stop_remote_server_inner(&state.remote, &operation).await
+}
+
+async fn stop_remote_server_inner(
+    remote_state: &std::sync::Mutex<RemoteServer>,
+    _operation: &tokio::sync::OwnedMutexGuard<()>,
+) -> Result<(), String> {
     let (handle, tunnel_child, tunnel_url_arc) = {
-        let mut remote = state.remote.lock().map_err(|e| e.to_string())?;
+        let mut remote = remote_state.lock().map_err(|e| e.to_string())?;
         remote.revoke_memory();
         (remote.handle.take(), remote.tunnel_child.take(), remote.tunnel_url.clone())
     };
@@ -2840,6 +2891,12 @@ pub async fn stop_remote_server(
     // Stop server
     if let Some(handle) = handle {
         handle.abort();
+        // Await cancellation so restart cannot race a still-owned listener.
+        if let Err(error) = handle.await {
+            if !error.is_cancelled() {
+                return Err("Remote server shutdown failed.".to_string());
+            }
+        }
         println!("[Remote] Server stopped");
         info!("remote server disconnected");
     }
@@ -3367,6 +3424,62 @@ async fn redirect_to_mobile() -> Response {
 mod memory_revocation_tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn native_stop_waits_for_startup_lease_and_releases_real_listener() {
+        let remote = Arc::new(std::sync::Mutex::new(RemoteServer::new()));
+        let lifecycle = remote.lock().unwrap().lifecycle.clone();
+        let startup = lifecycle.acquire().await.unwrap();
+        let stop_state = remote.clone();
+        let stop_lifecycle = remote.lock().unwrap().stop_lifecycle();
+        assert!(remote.lock().unwrap().memory_revoked.is_cancelled());
+        let stop = tokio::spawn(async move {
+            let operation = stop_lifecycle.acquire().await.unwrap();
+            stop_remote_server_inner(&stop_state, &operation).await.unwrap();
+        });
+        tokio::task::yield_now().await;
+        assert!(!stop.is_finished(), "stop ran before startup could publish its handle");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new().route("/", get(|| async { "fixture" }));
+        let server_task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        remote.lock().unwrap().handle = Some(server_task);
+        drop(startup);
+        tokio::time::timeout(std::time::Duration::from_secs(2), stop).await.unwrap().unwrap();
+        assert!(remote.lock().unwrap().handle.is_none());
+        assert!(remote.lock().unwrap().memory_revoked.is_cancelled());
+        // Successful stop means the task was awaited, not merely told to abort.
+        assert!(tokio::net::TcpStream::connect(address).await.is_err());
+        let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_wait_is_bounded_and_timeout_does_not_poison_queue() {
+        let lifecycle = RemoteLifecycle::new();
+        let held = lifecycle.acquire().await.unwrap();
+        let result = lifecycle.acquire_with_timeout(std::time::Duration::from_millis(10)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Remote lifecycle is busy"));
+        drop(held);
+        let recovered = lifecycle.acquire().await.unwrap();
+        drop(recovered);
+    }
+
+    #[tokio::test]
+    async fn cancelled_lifecycle_waiter_does_not_block_the_next_operation() {
+        let lifecycle = RemoteLifecycle::new();
+        let held = lifecycle.acquire().await.unwrap();
+        let queued = lifecycle.clone();
+        let waiter = tokio::spawn(async move { queued.acquire().await });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        drop(held);
+        let recovered = lifecycle.acquire().await.unwrap();
+        drop(recovered);
+    }
 
     #[tokio::test]
     async fn authenticated_router_revokes_cached_prompts_for_both_chat_backends() {
