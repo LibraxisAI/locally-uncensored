@@ -164,6 +164,8 @@ export interface MemoryFile {
   createdAt: number
   updatedAt: number
   source: string      // conversationId | 'manual' | 'auto:extraction'
+  /** User-marked sensitive entries stay out of AI requests and embeddings. */
+  sensitive?: boolean
   // ── Staleness / supersession (Feature FF, v2.5.0) ─────────────
   // All OPTIONAL so pre-v2.5 persisted memories rehydrate unchanged; the
   // store's migrate() leaves them undefined and the retrieval layer treats

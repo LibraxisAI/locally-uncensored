@@ -72,7 +72,7 @@ async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'conten
     const contentHash = hashContent(text)
     const isCurrent = () => {
       const current = useMemoryStore.getState().entries.find((item) => item.id === entry.id)
-      return !!current && !isStale(current) && embedText(current) === text
+      return !!current && !current.sensitive && !isStale(current) && embedText(current) === text
     }
     const existing = await loadVectors([entry.id])
     if (!isCurrent()) return
@@ -253,7 +253,7 @@ interface MemoryState {
 
   // CRUD
   addMemory: (memory: Omit<MemoryFile, 'id' | 'createdAt' | 'updatedAt'>) => string
-  updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags'>>) => void
+  updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags' | 'sensitive'>>) => void
   removeMemory: (id: string) => void
   clearAll: () => void
 
@@ -390,6 +390,7 @@ function asMemoryFile(v: unknown): MemoryFile | null {
     createdAt: asNumber(v.createdAt) ?? now,
     updatedAt: asNumber(v.updatedAt) ?? asNumber(v.createdAt) ?? now,
     source: asString(v.source) ?? 'migration',
+    sensitive: v.sensitive === true,
     supersededBy: asString(v.supersededBy),
     supersedesId: asString(v.supersedesId),
     stale: v.stale === true,
@@ -517,6 +518,7 @@ export const useMemoryStore = create<MemoryState>()(
           ),
           lastSynced: Date.now(),
         }))
+        if (updates.sensitive === true) void deleteVector(id)
         // Re-embed when title/content changed (hashContent skips a no-op).
         if (updates.title !== undefined || updates.content !== undefined) {
           const updated = get().entries.find((e) => e.id === id)
@@ -572,7 +574,7 @@ export const useMemoryStore = create<MemoryState>()(
         if (budget.budgetTokens === 0 || budget.maxMemories === 0) return ''
 
         const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2)
-        let candidates = get().entries.filter(e => !isStale(e))
+        let candidates = get().entries.filter(e => !e.sensitive && !isStale(e))
         if (opts?.excludeToolResults) {
           candidates = candidates.filter(e => !isToolResultMemory(e))
         }
@@ -613,7 +615,7 @@ export const useMemoryStore = create<MemoryState>()(
           // stubbed sync method in tests is honoured).
           if (budget.budgetTokens === 0 || budget.maxMemories === 0) return fallback()
 
-          let candidates = get().entries.filter(e => !isStale(e))
+          let candidates = get().entries.filter(e => !e.sensitive && !isStale(e))
           if (opts?.excludeToolResults) {
             candidates = candidates.filter(e => !isToolResultMemory(e))
           }
@@ -685,7 +687,7 @@ export const useMemoryStore = create<MemoryState>()(
         const { targetId, mergedContent } = decision
         if (!targetId || !mergedContent) return
         const target = get().entries.find((e) => e.id === targetId)
-        if (!target) return
+        if (!target || target.sensitive) return
 
         const merged = mergedContent.trim()
         if (!merged) return
@@ -733,7 +735,7 @@ export const useMemoryStore = create<MemoryState>()(
       ensureMemoryEmbeddings: async (batchSize = 8) => {
         let embedded = 0
         try {
-          const entries = get().entries.filter((e) => !isStale(e))
+          const entries = get().entries.filter((e) => !e.sensitive && !isStale(e))
           if (entries.length === 0) return 0
           const ids = entries.map((e) => e.id)
           const existing = await loadVectors(ids)
@@ -768,7 +770,7 @@ export const useMemoryStore = create<MemoryState>()(
       // ── Export / Import ─────────────────────────────────────
 
       exportAsMarkdown: () => {
-        const entries = get().entries
+        const entries = get().entries.filter(e => !e.sensitive)
         if (entries.length === 0) return '# Memory\n\nNo entries yet.\n'
 
         const typeOrder: MemoryType[] = ['user', 'feedback', 'project', 'reference']
@@ -890,6 +892,7 @@ export const useMemoryStore = create<MemoryState>()(
             createdAt: asNumber(prop(e, 'createdAt')) ?? now,
             updatedAt: now,
             source: asString(prop(e, 'source')) ?? 'import',
+            sensitive: prop(e, 'sensitive') === true,
           })
         }
         if (newEntries.length > 0) {

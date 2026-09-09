@@ -49,6 +49,7 @@ export function MemorySettings() {
   // ── New memory form state ───────────────────────────────────
   const [newTitle, setNewTitle] = useState('')
   const [newContent, setNewContent] = useState('')
+  const [newSensitive, setNewSensitive] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
   // ── Edit form state ─────────────────────────────────────────
@@ -174,9 +175,11 @@ export function MemorySettings() {
       content: newContent.trim(),
       tags: [],
       source: 'manual',
+      sensitive: newSensitive,
     })
     setNewTitle('')
     setNewContent('')
+    setNewSensitive(false)
     setAddError(null)
     setAddingNew(false)
   }
@@ -270,6 +273,7 @@ export function MemorySettings() {
       </div>
 
       {/* Search */}
+      <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits marked entries; JSON export includes them and their sensitivity flags.</p>
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
         <input
@@ -318,6 +322,10 @@ export function MemorySettings() {
           {addError && (
             <p className="text-[0.55rem] text-red-400 px-0.5">{addError}</p>
           )}
+          <label className="flex gap-2 text-xs">
+            <input type="checkbox" checked={newSensitive} onChange={e => setNewSensitive(e.target.checked)} />
+            Sensitive: exclude from AI requests
+          </label>
           <div className="flex gap-1.5">
             <button
               onClick={handleAddMemory}
@@ -389,6 +397,11 @@ export function MemorySettings() {
                   )}
                 </div>
                 <p className="text-[0.6rem] text-gray-500 break-words line-clamp-2">{entry.content}</p>
+                <label className="flex gap-2 text-xs text-gray-500">
+                  <input type="checkbox" checked={entry.sensitive === true}
+                    onChange={e => updateMemory(entry.id, { sensitive: e.target.checked })} />
+                  Sensitive: exclude from AI requests
+                </label>
               </div>
               <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                 {/* Outdated entries are read-only — no edit affordance. */}
