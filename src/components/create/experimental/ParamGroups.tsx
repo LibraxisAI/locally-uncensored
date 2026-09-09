@@ -45,6 +45,7 @@ export function ParamGroups() {
   // silently dropped, so the whole Expert section is dead on the local Mac.
   // Keep it on Mac-cloud and on the ComfyUI hosts (Windows/Linux).
   const isMlxLocal = !isCloud && isMlxImageHost()
+  const showExpert = !isMlxLocal && (!isCloud || isEdit)
   // LoRA is a local-only knob; for video it's offered only on families whose
   // builder actually applies it (see VIDEO_LORA_FAMILIES). Image always qualifies.
   const loraSupported = !isCloud && (!isVideo || VIDEO_LORA_FAMILIES.has(classifyModel(s.videoModel)))
@@ -197,9 +198,8 @@ export function ParamGroups() {
         )}
       </Section>
 
-      {/* EXPERT — every control in here is dropped by the Mac MLX pipeline, so
-          the whole section is hidden on the local Mac (kept on cloud + ComfyUI). */}
-      {!isMlxLocal && (
+      {/* Only render a section with controls the selected backend can use. */}
+      {showExpert && (
       <Section title="Expert" icon={FlaskConical} defaultOpen={false}>
         {/* Sampler/Scheduler are ComfyUI-only knobs — the hosted WaveSpeed
             endpoints don't accept them, so hide them on the cloud backend
@@ -218,7 +218,7 @@ export function ParamGroups() {
         {isEdit && (
           <Slider label="Denoise (raw)" min={0.05} max={1} step={0.05} value={s.denoise} onChange={s.setDenoise} format={(v) => v.toFixed(2)} />
         )}
-        {meta.allowsMask && (
+        {meta.allowsMask && !isCloud && (
           <Slider label="Mask edge feather" min={0} max={64} step={1} value={s.growMaskBy} onChange={s.setGrowMaskBy} unit="px" />
         )}
 
