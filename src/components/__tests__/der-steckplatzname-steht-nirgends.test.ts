@@ -71,6 +71,8 @@ const OHNE_STECKPLATZ = new Set([
   'models/DiscoverModels.tsx',
 ])
 
+const portableComponentPath = (path: string) => path.replace(/\\/g, '/')
+
 describe('kein Steckplatz-Praefix in der Oberflaeche', () => {
   const dateien = alleDateien(WURZEL)
 
@@ -78,10 +80,19 @@ describe('kein Steckplatz-Praefix in der Oberflaeche', () => {
     expect(dateien.length).toBeGreaterThan(30)
   })
 
+  it('uses the same exact exceptions with Windows and POSIX separators', () => {
+    for (const path of OHNE_STECKPLATZ) {
+      expect(OHNE_STECKPLATZ.has(portableComponentPath(path))).toBe(true)
+      expect(OHNE_STECKPLATZ.has(portableComponentPath(path.replace(/\//g, '\\')))).toBe(true)
+    }
+    expect(OHNE_STECKPLATZ.has(portableComponentPath('chat\\ModelSelector.tsx'))).toBe(false)
+    expect(OHNE_STECKPLATZ.has(portableComponentPath('other\\MlxMediaSettings.tsx'))).toBe(false)
+  })
+
   it('schreibt nirgends einen nackten Modellnamen in die Oberflaeche', () => {
     const treffer: string[] = []
     for (const datei of dateien) {
-      const kurz = datei.slice(WURZEL.length + 1)
+      const kurz = portableComponentPath(datei.slice(WURZEL.length + 1))
       if (OHNE_STECKPLATZ.has(kurz)) continue
       const quelle = readFileSync(datei, 'utf8')
       for (const zeile of quelle.split('\n')) {
