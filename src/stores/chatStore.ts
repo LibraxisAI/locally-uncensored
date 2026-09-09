@@ -135,6 +135,7 @@ interface ChatState {
   updateMessageThinking: (conversationId: string, messageId: string, thinking: string) => void
   updateMessageUsage: (conversationId: string, messageId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number; estimated?: boolean }) => void
   updateMessageFinishReason: (conversationId: string, messageId: string, finishReason: string) => void
+  updateMessageMemorySources: (conversationId: string, messageId: string, sources: NonNullable<Message['memorySources']>) => void
   /** Z36 finding 3: links in the agent answer no tool returned. */
   updateMessageUnbackedLinks: (conversationId: string, messageId: string, unbackedLinks: string[]) => void
   updateMessageAgentBlocks: (conversationId: string, messageId: string, blocks: AgentBlock[]) => void
@@ -465,6 +466,17 @@ export const useChatStore = create<ChatState>()(
               }
               : c
           ),
+        })),
+
+      updateMessageMemorySources: (conversationId, messageId, sources) =>
+        set(state => ({
+          conversations: state.conversations.map(conversation => conversation.id === conversationId ? {
+            ...conversation,
+            messages: conversation.messages.map(message => message.id === messageId ? {
+              ...message, memorySources: { ids: [...new Set(sources.ids)], scope: sources.scope },
+            } : message),
+            updatedAt: Date.now(),
+          } : conversation),
         })),
 
       updateMessageAgentBlocks: (conversationId, messageId, agentBlocks) =>

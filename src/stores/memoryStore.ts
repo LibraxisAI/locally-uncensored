@@ -32,6 +32,8 @@ function embedText(m: Pick<MemoryFile, 'title' | 'content'>): string {
 
 // ── Injection options ──────────────────────────────────────────────
 export interface MemoryInjectOpts {
+  /** Internal selection observer, after filtering and the final render budget. */
+  onInjected?: (ids: readonly string[]) => void
   /** A scoped memory is eligible only for this exact nonempty project ID. */
   scope?: string
   /**
@@ -217,8 +219,13 @@ export const MEMORY_CONTEXT_TOKEN_CAP = 1000
  * injection site (useChat, useAgentChat, useCodex, the remote dispatcher)
  * inherits it and none of them can drift.
  */
-function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number): string {
-  if (ordered.length === 0) return ''
+export interface MemoryContext {
+  text: string
+  memoryIds: string[]
+}
+
+export function renderMemoryContext(ordered: MemoryFile[], budgetTokens: number): MemoryContext {
+  if (ordered.length === 0) return { text: '', memoryIds: [] }
   const cappedTokens = Math.min(budgetTokens, MEMORY_CONTEXT_TOKEN_CAP)
 
   // Group by type for structured output (preserve incoming order within type).
@@ -229,6 +236,7 @@ function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number): s
 
   const maxChars = cappedTokens * 4
   let result = ''
+  const memoryIds: string[] = []
 
   for (const type of TYPE_ORDER) {
     const items = grouped[type]
@@ -243,12 +251,19 @@ function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number): s
       const line = `- ${item.title}: ${sanitized}\n`
       if (result.length + line.length > maxChars) break
       result += line
+      memoryIds.push(item.id)
     }
     result += '\n'
   }
 
-  if (!result.trim()) return ''
-  return `<remembered_context>\n${result.trim()}\n</remembered_context>`
+  if (memoryIds.length === 0) return { text: '', memoryIds: [] }
+  return { text: `<remembered_context>\n${result.trim()}\n</remembered_context>`, memoryIds }
+}
+
+function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number, onInjected?: MemoryInjectOpts['onInjected']): string {
+  const context = renderMemoryContext(ordered, budgetTokens)
+  onInjected?.(context.memoryIds)
+  return context.text
 }
 
 // ── Store Interface ───────────────────────────────────────────
@@ -269,6 +284,7 @@ interface MemoryState {
   getMemoriesForPrompt: (query: string, contextTokens: number, opts?: MemoryInjectOpts) => string
   /** Embedding-first retrieval; falls back to getMemoriesForPrompt on any error. */
   getMemoriesForPromptAsync: (query: string, contextTokens: number, opts?: MemoryInjectOpts) => Promise<string>
+  getMemoryContextAsync: (query: string, contextTokens: number, opts?: MemoryInjectOpts) => Promise<MemoryContext>
 
   // Write-decision + embedding maintenance (Feature FF)
   applyWriteDecision: (decision: ResolutionDecision, ctx?: { newId?: string }) => void
@@ -603,7 +619,7 @@ export const useMemoryStore = create<MemoryState>()(
           .slice(0, budget.maxMemories)
           .map(({ entry }) => entry)
 
-        return renderRememberedContext(ordered, budget.budgetTokens)
+        return renderRememberedContext(ordered, budget.budgetTokens, opts?.onInjected)
       },
 
       // ── Context-Aware Prompt Injection (async, embedding-first) ──
@@ -615,6 +631,14 @@ export const useMemoryStore = create<MemoryState>()(
       // (Ollama unreachable, nomic missing, IDB absent, dim mismatch) falls
       // back to the keyword result. Offline correctness invariant: this never
       // returns empty/incorrect when the sync path would have returned text.
+      getMemoryContextAsync: async (query, contextTokens, opts) => {
+        let memoryIds: string[] = []
+        const text = await get().getMemoriesForPromptAsync(query, contextTokens, {
+          ...opts, onInjected: ids => { memoryIds = [...ids] },
+        })
+        return { text, memoryIds }
+      },
+
       getMemoriesForPromptAsync: async (query, contextTokens, opts) => {
         const requestOpts = opts ? { ...opts } : undefined
         const fallback = () => get().getMemoriesForPrompt(query, contextTokens, requestOpts)
@@ -674,7 +698,7 @@ export const useMemoryStore = create<MemoryState>()(
           // it CAN still catch is an entry whose embedding is missing or bad.
           if (ordered.length === 0) return fallback()
 
-          return renderRememberedContext(ordered, budget.budgetTokens)
+          return renderRememberedContext(ordered, budget.budgetTokens, requestOpts?.onInjected)
         } catch {
           return fallback()
         }

@@ -46,6 +46,8 @@ export interface Message {
   timestamp: number
   images?: ImageAttachment[]
   sources?: { documentName: string; chunkIndex: number; preview: string }[]
+  /** IDs selected as memory context, not a claim of model citation or reliance. */
+  memorySources?: { ids: string[]; scope?: string }
   // Agent Mode fields
   agentBlocks?: AgentBlock[]
   toolCallSummary?: string
