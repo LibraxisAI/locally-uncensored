@@ -32,6 +32,60 @@ afterEach(async () => {
 })
 
 describe('automatic Remote memory revocation', () => {
+  it.each(['startServer', 'restart'] as const)('stops after pending native %s completes without exposing its QR', async method => {
+    const native = deferred<typeof started>()
+    const command = method === 'restart' ? 'restart_remote_server' : 'start_remote_server'
+    call.mockImplementation(async name => name === command ? native.promise : started)
+    const start = useRemoteStore.getState()[method]()
+    const cancelled = expect(start).rejects.toThrow('cancelled by a stop request')
+    await vi.waitFor(() => expect(call.mock.calls.some(([name]) => name === command)).toBe(true))
+    const stop = useRemoteStore.getState().stopServer()
+    expect(call).not.toHaveBeenCalledWith('stop_remote_server')
+    await expect(useRemoteStore.getState().startServer()).rejects.toThrow('starting or stopping')
+    native.resolve(started)
+    await cancelled
+    await stop
+    expect(call).toHaveBeenCalledWith('stop_remote_server')
+    expect(call).not.toHaveBeenCalledWith('remote_qr_code')
+    expect(useRemoteStore.getState().enabled).toBe(false)
+    expect(useRemoteStore.getState().loading).toBe(false)
+    expect(useRemoteStore.getState().qrVisible).toBe(false)
+  })
+
+  it('cancels during enrichment without sending a native start', async () => {
+    const context = deferred<string>()
+    const pending = vi.fn(() => context.promise)
+    useMemoryStore.setState({ getMemoriesForPromptAsync: pending })
+    const start = useRemoteStore.getState().startServer()
+    const cancelled = expect(start).rejects.toThrow('cancelled by a stop request')
+    await vi.waitFor(() => expect(pending).toHaveBeenCalled())
+    const stop = useRemoteStore.getState().stopServer()
+    context.resolve('Synthetic context')
+    await cancelled
+    await stop
+    expect(call.mock.calls.some(([name]) => name === 'start_remote_server')).toBe(false)
+    expect(useRemoteStore.getState().enabled).toBe(false)
+  })
+
+  it('retains the running state if stop after startup fails', async () => {
+    const native = deferred<typeof started>()
+    call.mockImplementation(async name => {
+      if (name === 'start_remote_server') return native.promise
+      if (name === 'stop_remote_server') throw new Error('Synthetic stop failure')
+      return started
+    })
+    const start = useRemoteStore.getState().startServer()
+    const cancelled = expect(start).rejects.toThrow('cancelled by a stop request')
+    await vi.waitFor(() => expect(call.mock.calls.some(([name]) => name === 'start_remote_server')).toBe(true))
+    const stop = useRemoteStore.getState().stopServer()
+    native.resolve(started)
+    await cancelled
+    await stop
+    expect(useRemoteStore.getState().enabled).toBe(true)
+    expect(useRemoteStore.getState().error).toContain('Synthetic stop failure')
+    expect(useRemoteStore.getState().qrVisible).toBe(false)
+  })
+
   it('revokes a running native snapshot discovered after frontend state was lost', async () => {
     call.mockResolvedValue({ ...started, running: true })
     await useRemoteStore.getState().refreshStatus()

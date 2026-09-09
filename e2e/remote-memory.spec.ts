@@ -1,5 +1,35 @@
 import { expect, test } from '@playwright/test'
 
+test('stop waits for a pending native start and never publishes its QR', async ({ page }) => {
+  const calls: string[] = []
+  let running = false
+  let release!: () => void
+  const started = new Promise<void>(resolve => { release = resolve })
+  await page.exposeFunction('remoteNativeProof', async (command: string) => {
+    calls.push(command)
+    if (command === 'start_remote_server') { await started; running = true }
+    else if (command === 'stop_remote_server') running = false
+    else if (command !== 'remote_server_status') throw new Error('Unsupported proof command')
+    return { running, port: 11435, passcode: 'fixture', passcodeExpiresAt: 1, lanUrl: '', mobileUrl: '' }
+  })
+  await page.addInitScript(() => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
+      invoke: (command: string) => (window as unknown as { remoteNativeProof: (name: string) => Promise<unknown> }).remoteNativeProof(command),
+    } })
+  })
+  await page.goto('/e2e/remote-memory-proof.html')
+  await page.getByRole('button', { name: 'Start proof remote session' }).click()
+  await expect.poll(() => calls.includes('start_remote_server')).toBe(true)
+  await page.getByRole('button', { name: 'Stop proof remote session' }).click()
+  expect(calls).not.toContain('stop_remote_server')
+  release()
+  await expect(page.locator('#stop-result')).toHaveText('Stop completed')
+  await expect(page.locator('#remote-state')).toHaveText('{"enabled":false,"qrVisible":false}')
+  expect(calls.filter(command => command === 'stop_remote_server')).toHaveLength(1)
+  expect(calls).not.toContain('remote_qr_code')
+  expect(running).toBe(false)
+})
+
 test('reload revokes a native session that outlived the frontend', async ({ page }) => {
   // This mock lives outside the page, so a real reload discards Zustand but
   // intentionally retains the native-side session state and invocation log.

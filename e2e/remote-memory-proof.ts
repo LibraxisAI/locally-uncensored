@@ -19,3 +19,7 @@ useRemoteStore.subscribe(state => {
 document.getElementById('start')!.onclick = () => {
   void useRemoteStore.getState().startServer().catch(() => { /* Store renders the error. */ })
 }
+document.getElementById('stop')!.onclick = async () => {
+  await useRemoteStore.getState().stopServer()
+  document.getElementById('stop-result')!.textContent = 'Stop completed'
+}

@@ -9,6 +9,14 @@ export const REMOTE_MEMORY_CHANGED = 'Remote memory changed. Restart Remote Acce
 const REMOTE_MEMORY_UNCONFIRMED = 'Remote memory changed, but blocking Remote Access could not be confirmed. Disconnect remote devices and stop Remote Access before continuing.'
 let memoryRevision = 0
 let lifecycleRevision = 0
+const REMOTE_START_CANCELLED = 'Remote startup was cancelled by a stop request.'
+let pendingStartup: Promise<void> | null = null
+let stopsInProgress = 0
+function trackStartup(): () => void {
+  let finish!: () => void
+  pendingStartup = new Promise<void>(resolve => { finish = resolve })
+  return () => { pendingStartup = null; finish() }
+}
 let revocationPending: Promise<void> = Promise.resolve()
 
 async function waitForMemoryRevocation(ignoreFailure = false): Promise<void> {
@@ -263,7 +271,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   qrVisible: false,
 
   startServer: async (model?: string, systemPrompt?: string) => {
-    if (get().loading) throw new Error('Remote Access is already starting. Wait for it to finish.')
+    if (get().loading || pendingStartup || stopsInProgress > 0) throw new Error('Remote Access is already starting or stopping. Wait for it to finish.')
     if (!isTauri()) {
       // Defense in depth: Sidebar.handleDispatch already short-circuits
       // before this point, but any other caller (tests, future components,
@@ -272,11 +280,13 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       set({ loading: false, enabled: false, error: REMOTE_DEV_MODE_ERROR })
       throw new Error(REMOTE_DEV_MODE_ERROR)
     }
-    lifecycleRevision += 1
+    const startupRevision = ++lifecycleRevision
+    const finishStartup = trackStartup()
     set({ loading: true, error: null })
     let serverStarted = false
     try {
       await waitForMemoryRevocation()
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
       const revision = memoryRevision
       const args: Record<string, unknown> = {}
       // #87: tell the Rust proxy which backend serves the dispatched model so
@@ -292,6 +302,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // prompt, we still want the remembered context injected so cross-chat
       // memory reaches the Remote session.
       const enriched = await enrichSystemPromptWithMemory(systemPrompt || '')
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
       if (revision !== memoryRevision) throw new Error(REMOTE_MEMORY_CHANGED)
       if (enriched) args.systemPrompt = enriched
       const result = await backendCall<{
@@ -303,6 +314,10 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         permissions?: RemotePermissions
       }>('start_remote_server', args)
       serverStarted = true
+      if (startupRevision !== lifecycleRevision) {
+        set({ enabled: true, qrVisible: false })
+        throw new Error(REMOTE_START_CANCELLED)
+      }
       // A mutation may have revoked the old native guard before start reset
       // it. Revoke again after the response, before exposing a new QR/passcode.
       if (revision !== memoryRevision) {
@@ -334,15 +349,22 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // dispatchedConversationId on a server that never actually started —
       // user saw "Server stopped" with no explanation and Restart hit the
       // same silent failure.
-      const memoryFailure = err instanceof Error && [REMOTE_MEMORY_CHANGED, REMOTE_MEMORY_UNCONFIRMED].includes(err.message)
-      set({ loading: false, enabled: (serverStarted || memoryFailure) && get().enabled, error: String(err) })
+      const memoryFailure = err instanceof Error && [REMOTE_MEMORY_CHANGED, REMOTE_MEMORY_UNCONFIRMED, REMOTE_START_CANCELLED].includes(err.message)
+      set({ loading: stopsInProgress > 0, enabled: (serverStarted || memoryFailure) && get().enabled, error: String(err) })
       throw err
+    } finally {
+      finishStartup()
     }
   },
 
   stopServer: async () => {
     lifecycleRevision += 1
+    stopsInProgress += 1
+    set({ loading: true, qrVisible: false })
     try {
+      // Stopping before native startup returns can miss the server handle.
+      // Fence its result first, then stop after that attempt has settled.
+      if (pendingStartup) await pendingStartup
       await backendCall('stop_remote_server')
       // A confirmed explicit stop also permits recovery from failed IPC.
       await waitForMemoryRevocation(true)
@@ -363,6 +385,9 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       })
     } catch (err) {
       set({ error: String(err) })
+    } finally {
+      stopsInProgress -= 1
+      set({ loading: stopsInProgress > 0 })
     }
   },
 
@@ -546,16 +571,18 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   },
 
   restart: async (model?: string, systemPrompt?: string) => {
-    if (get().loading) throw new Error('Remote Access is already starting. Wait for it to finish.')
+    if (get().loading || pendingStartup || stopsInProgress > 0) throw new Error('Remote Access is already starting or stopping. Wait for it to finish.')
     if (!isTauri()) {
       set({ loading: false, enabled: false, error: REMOTE_DEV_MODE_ERROR })
       throw new Error(REMOTE_DEV_MODE_ERROR)
     }
-    lifecycleRevision += 1
+    const startupRevision = ++lifecycleRevision
+    const finishStartup = trackStartup()
     set({ loading: true, error: null })
     let serverStarted = false
     try {
       await waitForMemoryRevocation()
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
       const revision = memoryRevision
       const args: Record<string, unknown> = {}
       // #87: same backend derivation as startServer so a restart keeps routing
@@ -569,6 +596,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // Refresh memory context on restart so newly-extracted memories from
       // the ongoing session propagate into the next mobile connection.
       const enriched = await enrichSystemPromptWithMemory(systemPrompt || '')
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
       if (revision !== memoryRevision) throw new Error(REMOTE_MEMORY_CHANGED)
       if (enriched) args.systemPrompt = enriched
       const result = await backendCall<{
@@ -580,6 +608,10 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         permissions?: RemotePermissions
       }>('restart_remote_server', args)
       serverStarted = true
+      if (startupRevision !== lifecycleRevision) {
+        set({ enabled: true, qrVisible: false })
+        throw new Error(REMOTE_START_CANCELLED)
+      }
       if (revision !== memoryRevision) {
         set({ enabled: true })
         await revokeRemoteMemory()
@@ -608,9 +640,11 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // #29: rethrow so the click-handler (ChatView.handleRemoteReactivate
       // or Sidebar restart chip) can surface the actual reason instead of
       // looking like the button did nothing.
-      const memoryFailure = err instanceof Error && [REMOTE_MEMORY_CHANGED, REMOTE_MEMORY_UNCONFIRMED].includes(err.message)
-      set({ loading: false, enabled: (serverStarted || memoryFailure) && get().enabled, error: String(err) })
+      const memoryFailure = err instanceof Error && [REMOTE_MEMORY_CHANGED, REMOTE_MEMORY_UNCONFIRMED, REMOTE_START_CANCELLED].includes(err.message)
+      set({ loading: stopsInProgress > 0, enabled: (serverStarted || memoryFailure) && get().enabled, error: String(err) })
       throw err
+    } finally {
+      finishStartup()
     }
   },
 
