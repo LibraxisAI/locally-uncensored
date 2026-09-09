@@ -4,18 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Getting Started: Set Up Your Local AI Studio in Minutes</title>
-<meta name="description" content="Step-by-step setup for Locally Uncensored: install, chat, generate images and videos locally. No command line, zero config, fully private.">
+<meta name="description" content="Set up Locally Uncensored for local AI. Review model downloads, hardware needs, cloud data boundaries and safe installation checks.">
 <meta name="robots" content="index, follow">
 <meta name="theme-color" content="#0a0a0a">
 <link rel="canonical" href="https://locallyuncensored.com/guide/">
 <meta property="og:title" content="Getting Started: Set Up Your Local AI Studio in Minutes">
-<meta property="og:description" content="Step-by-step setup for Locally Uncensored: install, chat, generate images and videos locally. No command line, zero config, fully private.">
+<meta property="og:description" content="Set up Locally Uncensored for local AI. Review model downloads, hardware needs, cloud data boundaries and safe installation checks.">
 <meta property="og:url" content="https://locallyuncensored.com/guide/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://locallyuncensored.com/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebPage","name":"Getting Started: Set Up Your Local AI Studio in Minutes","description":"Step-by-step setup for Locally Uncensored: install, chat, generate images and videos locally. No command line, zero config, fully private.","url":"https://locallyuncensored.com/guide/","isPartOf":{"@type":"WebSite","name":"Locally Uncensored","url":"https://locallyuncensored.com/"}}
+{"@context":"https://schema.org","@type":"WebPage","name":"Getting Started: Set Up Your Local AI Studio in Minutes","description":"Set up Locally Uncensored for local AI. Review model downloads, hardware needs, cloud data boundaries and safe installation checks.","url":"https://locallyuncensored.com/guide/","isPartOf":{"@type":"WebSite","name":"Locally Uncensored","url":"https://locallyuncensored.com/"}}
 </script>
 <link rel="icon" href="../favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -52,7 +52,13 @@
 <a href="../" class="back">&#8592; Back to home</a>
 
 <h1>Getting Started</h1>
-<p class="subtitle">From download to your first AI chat, image, and video in under 10 minutes. Locally Uncensored is a plug-and-play local AI studio: one installer, no command line, no Docker &mdash; the setup wizard handles the rest. New to local AI entirely? Start with the <a href="/blog/how-to-run-ai-locally.html">5-minute beginner guide</a>.</p>
+<p class="subtitle">Set up local AI chat, then add image and video generation when your hardware and selected backend support them. Model downloads and optional runtime setup take time depending on your connection and machine.</p>
+
+<section class="callout info" aria-labelledby="data-boundaries">
+<h2 id="data-boundaries">Local by default, with optional network features</h2>
+<p>LU runs locally by default. Local inference processes prompts on your machine. Model downloads, update checks and optional online tools still use the network. Hosted requests leave your machine and are sent to the selected service, including any content you attach or share with that request. Remote access can also expose app content beyond this device. Review the selected provider and tool permissions before sharing private material.</p>
+<p>For hosted capabilities and limits, read <a href="/cloud/">the cloud overview</a>. Local chat requires a downloaded model; document search also needs an embedding model. Image and video features may need additional runtimes and model downloads. This is not a promise of offline setup or identical performance on every computer.</p>
+</section>
 
 <nav class="toc">
 <div class="toc-title">Contents</div>
@@ -100,10 +106,10 @@ You can still use the chat features with CPU inference. It will be slower but fu
 <span class="step-num">2</span>
 <span class="step-title">Run the installer</span>
 <div class="step-body">
-<p>Double-click the downloaded file. Windows may show a SmartScreen warning because the app is not code-signed. Click "More info", then "Run anyway". The installer completes in a few seconds.</p>
+<p>Before opening the downloaded file, confirm that it came from the project's official Releases page. If a checksum is published for that exact asset, compare it with your download. Stop if the source or checksum does not match. Installation time depends on your machine and any required runtime downloads.</p>
 <div class="callout warn">
 <div class="callout-title">Windows SmartScreen</div>
-This warning appears for all unsigned applications. The app is open source and the full source code is available on <a href="https://github.com/PurpleDoubleD/locally-uncensored">GitHub</a> for review.
+A warning is not proof that a file is safe or malicious. Do not bypass it just because this guide describes an open-source app. Review the warning and the exact release asset first. If you cannot establish trust, cancel installation and ask for help through the project's official repository.
 </div>
 </div>
 </div>
@@ -326,15 +332,19 @@ Video generation uses significantly more VRAM than image generation. If you see 
 
 <h3>Windows SmartScreen blocks the installer</h3>
 <ul>
-<li>Click "More info" in the SmartScreen dialog, then click "Run anyway".</li>
-<li>This appears because the app is not code-signed. The source code is fully open and auditable on GitHub.</li>
+<li>Keep the block in place while checking the download source, exact version and any published checksum.</li>
+<li>Source availability alone does not verify a downloaded executable. If the warning remains unresolved, do not run it.</li>
 </ul>
 
-<h3>Antivirus flags the app</h3>
+<section aria-labelledby="antivirus-warning">
+<h3 id="antivirus-warning">Antivirus flags the app</h3>
 <ul>
-<li>Some antivirus software flags unsigned Tauri applications as suspicious. This is a false positive.</li>
-<li>Add the installation directory to your antivirus exceptions list.</li>
+<li>Keep protection enabled and leave the file blocked or quarantined. Do not add a blanket folder exclusion.</li>
+<li>Review the detection name and affected file in your security product's history. Update its security intelligence and scan again using its normal controls.</li>
+<li>A false positive is possible, but must be investigated rather than assumed. Report the app version, release asset name and detection name through the official project repository. Do not post private files, credentials or unredacted logs.</li>
+<li>See <a href="https://support.microsoft.com/en-us/windows/security/threat-malware-protection/virus-and-threat-protection-in-the-windows-security-app">Microsoft's virus and threat protection guidance</a>. Exclusions reduce protection and are not a routine installation step.</li>
 </ul>
+</section>
 
 <!-- ─── Footer ──────────────────────────── -->
 
