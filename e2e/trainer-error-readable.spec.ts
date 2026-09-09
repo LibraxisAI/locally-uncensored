@@ -8,7 +8,9 @@ for (const ready of [false, true]) {
       assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME, platform: 'windows' as const,
     })
     await page.addInitScript(({ ready }) => {
-      const bridge = (window as any).__TAURI_INTERNALS__
+      const bridge = (window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> }
+      }).__TAURI_INTERNALS__
       const invoke = bridge.invoke
       bridge.invoke = async (cmd: string, args: unknown) => {
         if (cmd === 'character_trainer_status') return {
