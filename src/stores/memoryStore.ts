@@ -32,6 +32,8 @@ function embedText(m: Pick<MemoryFile, 'title' | 'content'>): string {
 
 // ── Injection options ──────────────────────────────────────────────
 export interface MemoryInjectOpts {
+  /** A scoped memory is eligible only for this exact nonempty project ID. */
+  scope?: string
   /**
    * Drop memories that are raw TOOL RESULTS (extracted from agent sessions as
    * "web_search result: web_search({...}) → …"). Injected into a PLAIN chat
@@ -54,6 +56,11 @@ export interface MemoryInjectOpts {
 export function isToolResultMemory(m: Pick<MemoryFile, 'title' | 'content'>): boolean {
   const probe = `${m.title || ''}\n${m.content || ''}`
   return /\b[a-z][a-z0-9_]* result:/i.test(probe)
+}
+
+export function memoryMatchesScope(memory: Pick<MemoryFile, 'scope'>, scope?: string): boolean {
+  return memory.scope === undefined ||
+    (typeof memory.scope === 'string' && memory.scope.trim().length > 0 && memory.scope === scope)
 }
 function hashContent(s: string): string {
   let h = 5381
@@ -253,7 +260,7 @@ interface MemoryState {
 
   // CRUD
   addMemory: (memory: Omit<MemoryFile, 'id' | 'createdAt' | 'updatedAt'>) => string
-  updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags' | 'sensitive'>>) => void
+  updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags' | 'sensitive' | 'scope'>>) => void
   removeMemory: (id: string) => void
   clearAll: () => void
 
@@ -376,6 +383,7 @@ function migrateV2toV3(oldState: unknown): unknown {
  */
 function asMemoryFile(v: unknown): MemoryFile | null {
   if (!isRecord(v)) return null
+  if (v.scope !== undefined && (typeof v.scope !== 'string' || !v.scope.trim())) return null
   const content = asString(v.content)
   if (!content) return null
   const now = Date.now()
@@ -391,6 +399,7 @@ function asMemoryFile(v: unknown): MemoryFile | null {
     updatedAt: asNumber(v.updatedAt) ?? asNumber(v.createdAt) ?? now,
     source: asString(v.source) ?? 'migration',
     sensitive: v.sensitive === true,
+    scope: asString(v.scope),
     supersededBy: asString(v.supersededBy),
     supersedesId: asString(v.supersedesId),
     stale: v.stale === true,
@@ -485,12 +494,13 @@ export const useMemoryStore = create<MemoryState>()(
       // ── CRUD ────────────────────────────────────────────────
 
       addMemory: (memory) => {
+        if (memory.scope !== undefined && !memory.scope.trim()) return ''
         const trimmedContent = memory.content.trim()
         if (!trimmedContent) return ''
 
         // Deduplicate: don't add if exact same content + type exists
         const existing = get().entries
-        if (existing.some(e => e.content === trimmedContent && e.type === memory.type)) return ''
+        if (existing.some(e => e.content === trimmedContent && e.type === memory.type && e.scope === memory.scope)) return ''
 
         const id = uuid()
         set((state) => ({
@@ -512,6 +522,7 @@ export const useMemoryStore = create<MemoryState>()(
       },
 
       updateMemory: (id, updates) => {
+        if (updates.scope !== undefined && !updates.scope.trim()) return
         set((state) => ({
           entries: state.entries.map((e) =>
             e.id === id ? { ...e, ...updates, updatedAt: Date.now() } : e
@@ -574,7 +585,7 @@ export const useMemoryStore = create<MemoryState>()(
         if (budget.budgetTokens === 0 || budget.maxMemories === 0) return ''
 
         const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2)
-        let candidates = get().entries.filter(e => !e.sensitive && !isStale(e))
+        let candidates = get().entries.filter(e => !e.sensitive && !isStale(e) && memoryMatchesScope(e, opts?.scope))
         if (opts?.excludeToolResults) {
           candidates = candidates.filter(e => !isToolResultMemory(e))
         }
@@ -605,7 +616,8 @@ export const useMemoryStore = create<MemoryState>()(
       // back to the keyword result. Offline correctness invariant: this never
       // returns empty/incorrect when the sync path would have returned text.
       getMemoriesForPromptAsync: async (query, contextTokens, opts) => {
-        const fallback = () => get().getMemoriesForPrompt(query, contextTokens, opts)
+        const requestOpts = opts ? { ...opts } : undefined
+        const fallback = () => get().getMemoriesForPrompt(query, contextTokens, requestOpts)
         const snapshot = get().entries
         try {
           const budget = effectiveMemoryBudget(contextTokens, get().settings.maxMemoriesOverride)
@@ -615,8 +627,8 @@ export const useMemoryStore = create<MemoryState>()(
           // stubbed sync method in tests is honoured).
           if (budget.budgetTokens === 0 || budget.maxMemories === 0) return fallback()
 
-          let candidates = get().entries.filter(e => !e.sensitive && !isStale(e))
-          if (opts?.excludeToolResults) {
+          let candidates = get().entries.filter(e => !e.sensitive && !isStale(e) && memoryMatchesScope(e, requestOpts?.scope))
+          if (requestOpts?.excludeToolResults) {
             candidates = candidates.filter(e => !isToolResultMemory(e))
           }
           if (budget.typesAllowed !== 'all') {
@@ -688,6 +700,8 @@ export const useMemoryStore = create<MemoryState>()(
         if (!targetId || !mergedContent) return
         const target = get().entries.find((e) => e.id === targetId)
         if (!target || target.sensitive) return
+        const candidate = ctx?.newId ? get().entries.find(e => e.id === ctx.newId) : undefined
+        if (target.scope !== candidate?.scope) return
 
         const merged = mergedContent.trim()
         if (!merged) return
@@ -770,7 +784,7 @@ export const useMemoryStore = create<MemoryState>()(
       // ── Export / Import ─────────────────────────────────────
 
       exportAsMarkdown: () => {
-        const entries = get().entries.filter(e => !e.sensitive)
+        const entries = get().entries.filter(e => !e.sensitive && e.scope === undefined)
         if (entries.length === 0) return '# Memory\n\nNo entries yet.\n'
 
         const typeOrder: MemoryType[] = ['user', 'feedback', 'project', 'reference']
@@ -874,6 +888,8 @@ export const useMemoryStore = create<MemoryState>()(
         const now = Date.now()
         const newEntries: MemoryFile[] = []
         for (const e of arr) {
+          const scope = prop(e, 'scope')
+          if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) continue
           // `content` may also arrive as `text` / `value` — a foreign export's
           // spelling. Only a real string counts: the old String(...) turned an
           // object into the literal "[object Object]" and imported that.
@@ -893,6 +909,7 @@ export const useMemoryStore = create<MemoryState>()(
             updatedAt: now,
             source: asString(prop(e, 'source')) ?? 'import',
             sensitive: prop(e, 'sensitive') === true,
+            scope: asString(scope),
           })
         }
         if (newEntries.length > 0) {

@@ -200,7 +200,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
   // Same-type, non-stale existing memories are the only merge candidates —
   // a "user" fact never merges into a "reference", etc.
   const sameType: MemoryFile[] = memState.entries.filter(
-    (e) => e.type === memory.type && e.stale !== true && !e.sensitive,
+    (e) => e.type === memory.type && e.stale !== true && !e.sensitive && e.scope === undefined,
   )
   if (sameType.length === 0) {
     addPlain()
@@ -272,7 +272,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
     if (!call) return
     const { provider, modelId } = call
     const currentEntries = useMemoryStore.getState().entries
-    if (topK.some(candidate => !currentEntries.some(entry => entry.id === candidate.id && !entry.sensitive && entry.content === candidate.content))) return
+    if (topK.some(candidate => !currentEntries.some(entry => entry.id === candidate.id && !entry.sensitive && entry.scope === undefined && entry.content === candidate.content))) return
     const messages = buildResolutionPrompt(
       { title: memory.title, content: memory.content },
       topK,

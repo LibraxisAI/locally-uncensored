@@ -273,7 +273,7 @@ export function MemorySettings() {
       </div>
 
       {/* Search */}
-      <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits marked entries; JSON export includes them and their sensitivity flags.</p>
+      <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits sensitive and project-scoped entries; JSON export preserves their flags and scope.</p>
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
         <input
@@ -397,6 +397,7 @@ export function MemorySettings() {
                   )}
                 </div>
                 <p className="text-[0.6rem] text-gray-500 break-words line-clamp-2">{entry.content}</p>
+                {entry.scope !== undefined && <p className="text-xs text-gray-500 break-words">Project: {entry.scope}</p>}
                 <label className="flex gap-2 text-xs text-gray-500">
                   <input type="checkbox" checked={entry.sensitive === true}
                     onChange={e => updateMemory(entry.id, { sensitive: e.target.checked })} />
