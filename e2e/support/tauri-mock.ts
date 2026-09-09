@@ -622,6 +622,10 @@ export function tauriMockInit(opts: TauriMockOptions) {
         return Promise.resolve({ files: [], count: 0 })
 
       default:
+        // Tauri v2 unlisten calls the injected event registry before IPC.
+        // Use the already unique callback ID as this fixture's listener ID.
+        if (cmd === 'plugin:event|listen') return Promise.resolve(args.handler)
+        if (cmd === 'plugin:event|unlisten') return Promise.resolve(null)
         // Record system-browser opens so specs can assert redirect targets
         // (pricing CTA, closed-beta link) without leaving the page.
         if (cmd === 'plugin:shell|open') {
@@ -663,4 +667,9 @@ export function tauriMockInit(opts: TauriMockOptions) {
   }
   // Legacy v1 alias some detection code still probes for.
   w.__TAURI__ = w.__TAURI_INTERNALS__
+  w.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener(_event: string, eventId: number) {
+      w.__TAURI_INTERNALS__.unregisterCallback(eventId)
+    },
+  }
 }
