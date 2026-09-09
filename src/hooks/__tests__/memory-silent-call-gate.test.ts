@@ -17,6 +17,7 @@
  * Run: npx vitest run src/hooks/__tests__/memory-silent-call-gate.test.ts
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { MemoryFile } from '../../types/agent-mode'
 
 // ── Mocked module graph ────────────────────────────────────────
 // Everything the extraction touches, kept dumb so the only interesting
@@ -29,6 +30,7 @@ let activeModel = 'qwen3:8b'
 let models: Array<{ name: string; type: string }> = []
 let memoryCloudOptIn = false
 let memorySettings = { autoExtractEnabled: true, autoExtractInAllModes: false }
+let memoryEntries: MemoryFile[] = []
 
 vi.mock('../../stores/modelStore', () => ({
   useModelStore: { getState: () => ({ activeModel, models }) },
@@ -38,7 +40,7 @@ vi.mock('../../stores/memoryStore', () => ({
   useMemoryStore: {
     getState: () => ({
       settings: memorySettings,
-      entries: [],
+      entries: memoryEntries,
       addMemory,
       removeMemory: vi.fn(),
       applyWriteDecision: vi.fn(),
@@ -110,12 +112,43 @@ beforeEach(() => {
   chatStream.mockReset()
   chatStream.mockImplementation(() => emptyStream())
   addMemory.mockClear()
+  memoryEntries = []
   memorySettings = { autoExtractEnabled: true, autoExtractInAllModes: false }
   models = [
     { name: 'lu-cloud::Qwen/Qwen3-Coder-480B-A35B-Instruct', type: 'text' },
     { name: 'lu-cloud::meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo', type: 'text' },
     { name: 'qwen3:8b', type: 'text' },
   ]
+})
+
+describe('project extraction isolation', () => {
+  it('writes extracted facts to the captured project even if the caller changes its options', async () => {
+    activeModel = 'qwen3:8b'
+    chatStream.mockImplementation(() => (async function* () {
+      yield { content: JSON.stringify({ shouldSave: true, memories: [{ type: 'project', title: 'A fact', description: 'Synthetic fact', content: 'Synthetic project fact', tags: [] }] }), done: true }
+    })())
+    for (let i = 0; i < RATE_LIMIT; i++) {
+      const options = { scope: 'A' }
+      const pending = extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', options)
+      options.scope = 'B'
+      await pending
+    }
+    expect(addMemory).toHaveBeenCalledTimes(1)
+    expect(addMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: 'A', source: 'conv-a' }))
+  })
+  it('does not send sensitive or other-project titles to the extraction provider', async () => {
+    activeModel = 'qwen3:8b'
+    memoryEntries = [
+      { id: 'a', title: 'Allowed Alpha', scope: 'A' },
+      { id: 'b', title: 'Forbidden Beta', scope: 'B' },
+      { id: 's', title: 'Forbidden Sensitive', scope: 'A', sensitive: true },
+    ].map(e => ({ ...e, type: 'user', description: '', content: e.title, tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }))
+    for (let i = 0; i < RATE_LIMIT; i++) await extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', { scope: 'A' })
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    const sent = JSON.stringify(chatStream.mock.calls[0][1])
+    expect(sent).toContain('Allowed Alpha')
+    expect(sent).not.toMatch(/Forbidden Beta|Forbidden Sensitive/)
+  })
 })
 
 describe('lu-cloud', () => {

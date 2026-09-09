@@ -103,6 +103,7 @@ interface ChatState {
   deleteConversation: (id: string) => void
   renameConversation: (id: string, title: string) => void
   setActiveConversation: (id: string | null) => void
+  setConversationMemoryScope: (id: string, scope?: string) => void
   /** Toggle the active persona on/off for a specific chat — mirrors the
    *  mobile chat's `personaEnabled` flag so the user can suppress the
    *  persona's systemPrompt without changing the global Settings
@@ -169,6 +170,20 @@ const chatStorage = coalescedJSONStorage<ChatState>(idbStorage)
  */
 export function flushChatPersist(): Promise<void> {
   return chatStorage.flush()
+}
+
+/** Verify the explicit project save instead of trusting a best-effort flush. */
+export async function persistConversationMemoryScope(id: string, scope?: string): Promise<boolean> {
+  try {
+    await flushChatPersist()
+    const stored = await idbStorage.getItem('chat-conversations')
+    if (!stored) return false
+    const conversations = prop(prop(JSON.parse(stored), 'state'), 'conversations')
+    if (!Array.isArray(conversations)) return false
+    return conversations.some(c => prop(c, 'id') === id && prop(c, 'memoryScope') === scope)
+  } catch {
+    return false
+  }
 }
 
 // Best effort on the way out — the browser may not give the write time to
@@ -293,6 +308,14 @@ export const useChatStore = create<ChatState>()(
         })),
 
       setActiveConversation: (id) => set({ activeConversationId: id }),
+      setConversationMemoryScope: (id, scope) => {
+        const value = scope?.trim()
+        if (value && value.length > 128) return
+        set(state => ({
+          conversations: state.conversations.map(c => c.id === id
+            ? { ...c, memoryScope: value || undefined, updatedAt: Date.now() } : c),
+        }))
+      },
 
       setConversationPersonaEnabled: (id, enabled) =>
         set((state) => ({

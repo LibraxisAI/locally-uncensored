@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Brain, Download, Upload, Trash2, Search, Plus, X, Check, Pencil, Zap, FileJson, Archive, Sparkles } from 'lucide-react'
 import { useMemoryStore, effectiveMemoryBudget } from '../../stores/memoryStore'
 import { useModelStore } from '../../stores/modelStore'
+import { useChatStore, persistConversationMemoryScope } from '../../stores/chatStore'
 import { getModelMaxTokens } from '../../lib/context-compaction'
 // Eine Schreibweise fuer jedes Kontextfenster. Hier stand zweimal
 // `Math.round(ctx / 1024)}K`, eine eigene Rechnung: bei 32000 Token sagte
@@ -27,6 +28,9 @@ const TYPE_DOT_COLORS: Record<MemoryType, string> = {
 // ── Component ─────────────────────────────────────────────────
 
 export function MemorySettings() {
+  const conversation = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId))
+  const [savedProject, setSavedProject] = useState<string | null>(null)
+  const [projectSaveError, setProjectSaveError] = useState(false)
   const { entries, removeMemory, updateMemory, clearAll, settings, updateMemorySettings, exportAsMarkdown, importFromMarkdown, exportAsJSON, importFromJSON } = useMemoryStore()
   const [search, setSearch] = useState('')
   const [confirmClear, setConfirmClear] = useState(false)
@@ -50,11 +54,13 @@ export function MemorySettings() {
   const [newTitle, setNewTitle] = useState('')
   const [newContent, setNewContent] = useState('')
   const [newSensitive, setNewSensitive] = useState(false)
+  const [useProject, setUseProject] = useState(true)
   const [addError, setAddError] = useState<string | null>(null)
 
   // ── Edit form state ─────────────────────────────────────────
   const [editTitle, setEditTitle] = useState('')
   const [editContent, setEditContent] = useState('')
+  const [editScope, setEditScope] = useState('')
 
   // ── Context budget detection ────────────────────────────────
   const contextBudgetLabel = activeModel ? budgetLabel : 'No model selected'
@@ -176,6 +182,7 @@ export function MemorySettings() {
       tags: [],
       source: 'manual',
       sensitive: newSensitive,
+      scope: useProject ? conversation?.memoryScope : undefined,
     })
     setNewTitle('')
     setNewContent('')
@@ -188,6 +195,7 @@ export function MemorySettings() {
     setEditingId(entry.id)
     setEditTitle(entry.title)
     setEditContent(entry.content)
+    setEditScope(entry.scope ?? '')
   }
 
   const saveEdit = () => {
@@ -196,6 +204,7 @@ export function MemorySettings() {
       title: editTitle.trim().substring(0, 60),
       content: editContent.trim(),
       description: editContent.trim().substring(0, 120),
+      scope: editScope.trim() || undefined,
     })
     setEditingId(null)
   }
@@ -273,6 +282,26 @@ export function MemorySettings() {
       </div>
 
       {/* Search */}
+      {conversation && (
+        <label className="block text-xs text-gray-500">
+          Memory project ID for this conversation
+          <input value={conversation.memoryScope ?? ''} maxLength={128}
+            onChange={e => useChatStore.getState().setConversationMemoryScope(conversation.id, e.target.value)}
+            placeholder="Blank uses global memories only"
+            className="block w-full rounded border border-gray-300 bg-transparent p-2" />
+          Use the same stable ID in related conversations. Changes apply to future requests, not a running response. Existing memories are not moved, and earlier conversation content is not removed.
+          <button type="button" onClick={async () => {
+            const key = JSON.stringify([conversation.id, conversation.memoryScope])
+            setSavedProject(null)
+            setProjectSaveError(false)
+            const saved = await persistConversationMemoryScope(conversation.id, conversation.memoryScope)
+            if (saved) setSavedProject(key)
+            else setProjectSaveError(true)
+          }} className="block rounded border p-1">Save project assignment</button>
+          {savedProject === JSON.stringify([conversation.id, conversation.memoryScope]) && <span role="status">Project assignment saved</span>}
+          {projectSaveError && <span role="alert">Could not verify the saved project assignment. Try again before closing the app.</span>}
+        </label>
+      )}
       <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits sensitive and project-scoped entries; JSON export preserves their flags and scope.</p>
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -326,6 +355,10 @@ export function MemorySettings() {
             <input type="checkbox" checked={newSensitive} onChange={e => setNewSensitive(e.target.checked)} />
             Sensitive: exclude from AI requests
           </label>
+          {conversation?.memoryScope && <label className="flex gap-2 text-xs">
+            <input type="checkbox" checked={useProject} onChange={e => setUseProject(e.target.checked)} />
+            Save in project {conversation.memoryScope}
+          </label>}
           <div className="flex gap-1.5">
             <button
               onClick={handleAddMemory}
@@ -372,6 +405,10 @@ export function MemorySettings() {
                   className="w-full px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[0.65rem] text-gray-300 focus:outline-none resize-none"
                 />
                 <div className="flex gap-1.5">
+                  <label className="text-xs">Project ID
+                    <input value={editScope} maxLength={128} onChange={e => setEditScope(e.target.value)}
+                      placeholder="Blank is global" className="block rounded border p-1" />
+                  </label>
                   <button onClick={saveEdit} className="flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-[0.6rem]">
                     <Check size={10} /> Save
                   </button>

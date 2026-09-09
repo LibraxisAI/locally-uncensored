@@ -126,6 +126,8 @@ export interface CompactionRecord {
 
 export interface Conversation {
   id: string
+  /** Stable user-assigned project ID for memory retrieval and extraction. */
+  memoryScope?: string
   title: string
   messages: Message[]
   model: string

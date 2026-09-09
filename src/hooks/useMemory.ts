@@ -82,8 +82,10 @@ function resolveSilentCall(
 export async function extractMemoriesFromPair(
   userMessage: string,
   assistantResponse: string,
-  conversationId: string
+  conversationId: string,
+  options?: { scope?: string },
 ): Promise<void> {
+  const scope = options?.scope
   try {
     const { activeModel } = useModelStore.getState()
     if (!activeModel) return
@@ -103,14 +105,6 @@ export async function extractMemoriesFromPair(
     const isCloud = (providerState.providers.openai.enabled && !providerState.providers.openai.isLocal) ||
       providerState.providers.anthropic.enabled
     if (isCloud && !memState.settings.autoExtractInAllModes) return
-
-    // Build summary of existing memories to prevent duplicates
-    const existingSummary = memState.entries
-      .slice(-20)
-      .map(e => `- [${e.type}] ${e.title}`)
-      .join('\n')
-
-    const messages = buildExtractionPrompt(userMessage, assistantResponse, existingSummary)
 
     // Cost gate + cheapest suitable model (plan A7). Null = this call is not
     // allowed to happen at all; on lu-cloud without the opt-in that is the
@@ -132,6 +126,12 @@ export async function extractMemoriesFromPair(
       callModel,
     )
 
+    // Re-read immediately before the request; protected or other-project
+    // titles must not leak through the extraction deduplication summary.
+    const existingSummary = useMemoryStore.getState().entries
+      .filter(e => !e.sensitive && !e.stale && e.scope === scope)
+      .slice(-20).map(e => `- [${e.type}] ${e.title}`).join('\n')
+    const messages = buildExtractionPrompt(userMessage, assistantResponse, existingSummary)
     // Collect full response via streaming
     let fullResponse = ''
     const stream = provider.chatStream(modelId, messages, {
@@ -154,7 +154,7 @@ export async function extractMemoriesFromPair(
         // we don't fire N concurrent inferences. Each is wrapped so one bad
         // memory never aborts the rest.
         try {
-          await resolveAndSaveMemory(memory, conversationId)
+          await resolveAndSaveMemory(memory, conversationId, scope)
         } catch {
           // Per-memory failure → fall back to a plain add so the fact isn't lost.
           memState.addMemory({
@@ -185,7 +185,7 @@ export async function extractMemoriesFromPair(
  * Fire-and-forget contract: any embedding/LLM failure falls back to a plain
  * addMemory so a fact is never silently dropped. Never blocks the chat turn.
  */
-async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string): Promise<void> {
+async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope?: string): Promise<void> {
   const memState = useMemoryStore.getState()
   const addPlain = (): string =>
     memState.addMemory({
@@ -195,12 +195,13 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
       content: memory.content,
       tags: memory.tags,
       source: conversationId,
+      scope,
     })
 
   // Same-type, non-stale existing memories are the only merge candidates —
   // a "user" fact never merges into a "reference", etc.
   const sameType: MemoryFile[] = memState.entries.filter(
-    (e) => e.type === memory.type && e.stale !== true && !e.sensitive && e.scope === undefined,
+    (e) => e.type === memory.type && e.stale !== true && !e.sensitive && e.scope === scope,
   )
   if (sameType.length === 0) {
     addPlain()
@@ -272,7 +273,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
     if (!call) return
     const { provider, modelId } = call
     const currentEntries = useMemoryStore.getState().entries
-    if (topK.some(candidate => !currentEntries.some(entry => entry.id === candidate.id && !entry.sensitive && entry.scope === undefined && entry.content === candidate.content))) return
+    if (topK.some(candidate => !currentEntries.some(entry => entry.id === candidate.id && !entry.sensitive && entry.scope === scope && entry.content === candidate.content))) return
     const messages = buildResolutionPrompt(
       { title: memory.title, content: memory.content },
       topK,
