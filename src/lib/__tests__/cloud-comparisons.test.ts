@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai']) {
   const html = readFileSync(`docs/vs/${slug}/index.html`, 'utf8')
   const page = new DOMParser().parseFromString(html, 'text/html')
   it(`${slug} dates and sources every comparative fact on both sides`, () => {
@@ -64,4 +64,17 @@ it('Infermatic does not conflate UI response limits with API limits or premium c
   expect(cells[2].textContent).toContain('included Core models remain available')
   expect(cells[2].querySelector('a')!.getAttribute('href')).toBe('https://ui.infermatic.ai/docs')
   expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|all API responses are capped/i)
+})
+
+it('Arli AI distinguishes tier concurrency, context ceilings and model behavior', () => {
+  const page = new DOMParser().parseFromString(readFileSync('docs/vs/arliai/index.html', 'utf8'), 'text/html')
+  const cells = [...page.querySelectorAll('[data-comparison-row] td:first-of-type')]
+  expect(cells[0].textContent).toContain('Starter lists models up to 31B')
+  expect(cells[1].textContent).toContain('Pro allows two and Max six')
+  expect(cells[1].textContent).toContain('16,384, 32,768, 131,072, 262,144 and 524,288')
+  expect(cells[1].textContent).toContain('does not establish every model')
+  expect(cells[2].textContent).toContain('load-balancing adjustments')
+  expect(cells[2].textContent).toContain('LoRA variants can behave differently')
+  expect(cells[2].querySelectorAll('a')).toHaveLength(2)
+  expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|only Max allows parallel/i)
 })

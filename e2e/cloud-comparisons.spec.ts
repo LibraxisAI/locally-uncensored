@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai']) {
   test(`${slug} has readable, keyboard-scrollable comparison rows on mobile`, async ({ page }, testInfo) => {
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url())
@@ -32,7 +32,11 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
       await expect(region).toContainText('2,048 under UI Token Responses')
       await expect(region).toContainText('separate keys and base URLs')
     }
-    if (['venice', 'chutes', 'infermatic'].includes(slug)) {
+    if (slug === 'arliai') {
+      await expect(region).toContainText('Pro allows two and Max six')
+      await expect(region).toContainText('LoRA variants can behave differently')
+    }
+    if (['venice', 'chutes', 'infermatic', 'arliai'].includes(slug)) {
       await page.screenshot({ path: testInfo.outputPath(`${slug}-mobile.png`), fullPage: true })
       const luSource = region.locator('td:last-child a').last()
       await luSource.focus()
