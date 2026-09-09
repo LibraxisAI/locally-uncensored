@@ -1,6 +1,8 @@
 use crate::os_error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use tokio_util::sync::CancellationToken;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use axum::{
@@ -91,7 +93,7 @@ pub struct PasscodeState {
 
 #[derive(Clone)]
 struct RemoteState {
-    memory_revoked: Arc<AtomicBool>,
+    memory_revoked: Arc<CancellationToken>,
     jwt_secret: Arc<TokioMutex<String>>,
     passcode: Arc<TokioMutex<PasscodeState>>,
     /// Full Ollama base URL (e.g. `http://localhost:11434` or `http://192.168.1.50:11434`).
@@ -278,7 +280,7 @@ fn client_ip(headers: &HeaderMap, socket: Option<SocketAddr>) -> String {
 struct CallerDevice(String);
 
 async fn memory_revocation_middleware(
-    AxumState(revoked): AxumState<Arc<AtomicBool>>,
+    AxumState(revoked): AxumState<Arc<CancellationToken>>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -288,7 +290,7 @@ async fn memory_revocation_middleware(
         || path == "/ws"
         || (path.starts_with("/remote-api/")
             && path != "/remote-api/auth" && path != "/remote-api/status");
-    if protected && revoked.load(Ordering::Acquire) {
+    if protected && revoked.is_cancelled() {
         return (StatusCode::CONFLICT,
             "Remote memory context was revoked. Restart Remote Access and reconnect before sending another request.")
             .into_response();
@@ -1828,56 +1830,70 @@ async fn proxy_comfyui_ws(
     }
     let comfy_port = state.comfy_port;
     let comfy_host = state.comfy_host.clone();
-    ws.on_upgrade(move |client_socket| async move {
-        use futures_util::{SinkExt, StreamExt};
+    let revoked = state.memory_revoked.clone();
+    ws.on_upgrade(move |client_socket| forward_comfyui_socket(
+        client_socket, format!("ws://{}:{}/ws", comfy_host, comfy_port), revoked,
+    ))
+}
 
-        let ws_url = format!("ws://{}:{}/ws", comfy_host, comfy_port);
-        let upstream = match tokio_tungstenite::connect_async(&ws_url).await {
-            Ok((stream, _)) => stream,
-            Err(e) => {
-                eprintln!("[Remote WS] Failed to connect to ComfyUI: {}", e);
-                return;
+async fn forward_comfyui_socket(
+    client_socket: axum::extract::ws::WebSocket,
+    ws_url: String,
+    revoked: Arc<CancellationToken>,
+) {
+    use futures_util::{SinkExt, StreamExt};
+
+    let upstream = tokio::select! {
+        biased;
+        _ = revoked.cancelled() => return,
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), tokio_tungstenite::connect_async(&ws_url)) => {
+            match result {
+                Ok(Ok((stream, _))) => stream,
+                _ => return,
             }
-        };
+        },
+    };
 
-        let (mut upstream_write, mut upstream_read) = upstream.split();
-        let (mut client_write, mut client_read) = client_socket.split();
+    let (mut upstream_write, mut upstream_read) = upstream.split();
+    let (mut client_write, mut client_read) = client_socket.split();
 
-        // Forward: client -> ComfyUI
-        let client_to_upstream = tokio::spawn(async move {
-            while let Some(Ok(msg)) = client_read.next().await {
-                let tung_msg = match msg {
-                    axum::extract::ws::Message::Text(t) => tokio_tungstenite::tungstenite::Message::Text(t.to_string().into()),
-                    axum::extract::ws::Message::Binary(b) => tokio_tungstenite::tungstenite::Message::Binary(b),
-                    axum::extract::ws::Message::Ping(p) => tokio_tungstenite::tungstenite::Message::Ping(p),
-                    axum::extract::ws::Message::Pong(p) => tokio_tungstenite::tungstenite::Message::Pong(p),
-                    axum::extract::ws::Message::Close(_) => return,
-                };
-                if upstream_write.send(tung_msg).await.is_err() { return; }
-            }
-        });
-
-        // Forward: ComfyUI -> client
-        let upstream_to_client = tokio::spawn(async move {
-            while let Some(Ok(msg)) = upstream_read.next().await {
-                let axum_msg = match msg {
-                    tokio_tungstenite::tungstenite::Message::Text(t) => axum::extract::ws::Message::Text(t.to_string().into()),
-                    tokio_tungstenite::tungstenite::Message::Binary(b) => axum::extract::ws::Message::Binary(b),
-                    tokio_tungstenite::tungstenite::Message::Ping(p) => axum::extract::ws::Message::Ping(p),
-                    tokio_tungstenite::tungstenite::Message::Pong(p) => axum::extract::ws::Message::Pong(p),
-                    tokio_tungstenite::tungstenite::Message::Close(_) => return,
-                    _ => continue,
-                };
-                if client_write.send(axum_msg).await.is_err() { return; }
-            }
-        });
-
-        // Wait for either direction to finish
-        tokio::select! {
-            _ = client_to_upstream => {},
-            _ = upstream_to_client => {},
+    // Forward: client -> ComfyUI
+    let client_to_upstream = async move {
+        while let Some(Ok(msg)) = client_read.next().await {
+            let tung_msg = match msg {
+                axum::extract::ws::Message::Text(t) => tokio_tungstenite::tungstenite::Message::Text(t.to_string().into()),
+                axum::extract::ws::Message::Binary(b) => tokio_tungstenite::tungstenite::Message::Binary(b),
+                axum::extract::ws::Message::Ping(p) => tokio_tungstenite::tungstenite::Message::Ping(p),
+                axum::extract::ws::Message::Pong(p) => tokio_tungstenite::tungstenite::Message::Pong(p),
+                axum::extract::ws::Message::Close(_) => return,
+            };
+            if upstream_write.send(tung_msg).await.is_err() { return; }
         }
-    })
+    };
+
+    // Forward: ComfyUI -> client
+    let upstream_to_client = async move {
+        while let Some(Ok(msg)) = upstream_read.next().await {
+            let axum_msg = match msg {
+                tokio_tungstenite::tungstenite::Message::Text(t) => axum::extract::ws::Message::Text(t.to_string().into()),
+                tokio_tungstenite::tungstenite::Message::Binary(b) => axum::extract::ws::Message::Binary(b),
+                tokio_tungstenite::tungstenite::Message::Ping(p) => axum::extract::ws::Message::Ping(p),
+                tokio_tungstenite::tungstenite::Message::Pong(p) => axum::extract::ws::Message::Pong(p),
+                tokio_tungstenite::tungstenite::Message::Close(_) => return,
+                _ => continue,
+            };
+            if client_write.send(axum_msg).await.is_err() { return; }
+        }
+    };
+
+    // These futures own both socket halves. Dropping the losing futures
+    // closes the other direction; no detached forwarding task survives.
+    tokio::select! {
+        biased;
+        _ = revoked.cancelled() => {},
+        _ = client_to_upstream => {},
+        _ = upstream_to_client => {},
+    }
 }
 
 // ─── Mobile landing page ───
@@ -2203,7 +2219,7 @@ fn set_exclusive_addr_use(socket: &socket2::Socket) -> std::io::Result<()> {
 
 /// Stored in AppState — holds the running remote server handle
 pub struct RemoteServer {
-    pub memory_revoked: Arc<AtomicBool>,
+    pub memory_revoked: Arc<CancellationToken>,
     pub handle: Option<JoinHandle<()>>,
     pub port: u16,
     pub jwt_secret: Arc<TokioMutex<String>>,
@@ -2228,12 +2244,16 @@ pub struct RemoteServer {
 
 impl RemoteServer {
     fn reset_memory_revocation(&mut self) {
-        self.memory_revoked = Arc::new(AtomicBool::new(false));
+        self.memory_revoked = Arc::new(CancellationToken::new());
+    }
+
+    fn revoke_memory(&self) {
+        self.memory_revoked.cancel();
     }
 
     pub fn new() -> Self {
         Self {
-            memory_revoked: Arc::new(AtomicBool::new(false)),
+            memory_revoked: Arc::new(CancellationToken::new()),
             handle: None,
             port: 11435,
             jwt_secret: Arc::new(TokioMutex::new(String::new())),
@@ -2745,7 +2765,7 @@ pub async fn start_remote_server(
 #[tauri::command]
 pub fn revoke_remote_memory(state: tauri::State<'_, crate::state::AppState>) -> Result<(), String> {
     let remote = state.remote.lock().map_err(|_| "Remote state unavailable".to_string())?;
-    remote.memory_revoked.store(true, Ordering::Release);
+    remote.revoke_memory();
     Ok(())
 }
 
@@ -2778,6 +2798,7 @@ pub async fn stop_remote_server(
 ) -> Result<(), String> {
     let (handle, tunnel_child, tunnel_url_arc) = {
         let mut remote = state.remote.lock().map_err(|e| e.to_string())?;
+        remote.revoke_memory();
         (remote.handle.take(), remote.tunnel_child.take(), remote.tunnel_url.clone())
     };
 
@@ -3320,9 +3341,95 @@ async fn redirect_to_mobile() -> Response {
 mod memory_revocation_tests {
     use super::*;
 
+    async fn socket_forwarder(
+        target: String,
+        guard: Arc<CancellationToken>,
+    ) -> (SocketAddr, JoinHandle<()>, tokio::sync::oneshot::Receiver<()>) {
+        let (done, ended) = tokio::sync::oneshot::channel();
+        let done = Arc::new(std::sync::Mutex::new(Some(done)));
+        let router = Router::new().route("/ws", get(move |ws: axum::extract::WebSocketUpgrade| {
+            let target = target.clone();
+            let guard = guard.clone();
+            let done = done.lock().unwrap().take();
+            async move {
+                ws.on_upgrade(move |socket| async move {
+                    forward_comfyui_socket(socket, target, guard).await;
+                    if let Some(done) = done { let _ = done.send(()); }
+                })
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (address, server, ended)
+    }
+
+    #[tokio::test]
+    async fn upgraded_websocket_closes_both_directions_on_revoke_or_client_disconnect() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        for revoke in [true, false] {
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_address = upstream.local_addr().unwrap();
+            let upstream_task = tokio::spawn(async move {
+                let (tcp, _) = upstream.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if message.is_close() || socket.send(message).await.is_err() { break; }
+                }
+            });
+            let server_state = RemoteServer::new();
+            let (address, proxy, ended) = socket_forwarder(
+                format!("ws://{upstream_address}/ws"), server_state.memory_revoked.clone(),
+            ).await;
+            let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws")).await.unwrap();
+            client.send(Message::Text("synthetic progress".into())).await.unwrap();
+            let echoed = tokio::time::timeout(std::time::Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+            assert_eq!(echoed, Message::Text("synthetic progress".into()));
+            if revoke { server_state.revoke_memory(); }
+            else { client.close(None).await.unwrap(); }
+            tokio::time::timeout(std::time::Duration::from_secs(2), ended).await.unwrap().unwrap();
+            // The upstream observes closure too, proving the opposite forwarding
+            // future did not survive as a detached task holding its socket half.
+            tokio::time::timeout(std::time::Duration::from_secs(2), upstream_task).await.unwrap().unwrap();
+            if revoke {
+                let closed = tokio::time::timeout(std::time::Duration::from_secs(2), client.next()).await.unwrap();
+                assert!(closed.is_none() || matches!(closed, Some(Err(_)) | Some(Ok(Message::Close(_)))));
+            }
+            proxy.abort();
+            assert!(proxy.await.unwrap_err().is_cancelled());
+        }
+    }
+
+    #[tokio::test]
+    async fn revocation_interrupts_an_unfinished_upstream_websocket_handshake() {
+        use tokio::io::AsyncReadExt;
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_address = upstream.local_addr().unwrap();
+        let (accepted, connected) = tokio::sync::oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut tcp, _) = upstream.accept().await.unwrap();
+            accepted.send(()).unwrap();
+            // Deliberately do not answer the HTTP upgrade. Observe eventual EOF.
+            let mut bytes = [0u8; 1024];
+            while tcp.read(&mut bytes).await.unwrap_or(0) != 0 {}
+        });
+        let server_state = RemoteServer::new();
+        let (address, proxy, ended) = socket_forwarder(
+            format!("ws://{upstream_address}/ws"), server_state.memory_revoked.clone(),
+        ).await;
+        let (_client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws")).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), connected).await.unwrap().unwrap();
+        server_state.revoke_memory();
+        tokio::time::timeout(std::time::Duration::from_secs(2), ended).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), upstream_task).await.unwrap().unwrap();
+        proxy.abort();
+        assert!(proxy.await.unwrap_err().is_cancelled());
+    }
+
     #[tokio::test]
     async fn revoked_context_blocks_protected_http_requests_without_reaching_handler() {
-        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked = Arc::new(CancellationToken::new());
         let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = reached.clone();
         let router = Router::new().fallback(any(move || {
@@ -3335,7 +3442,7 @@ mod memory_revocation_tests {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build().unwrap();
         let base = format!("http://{address}");
         assert_eq!(client.post(format!("{base}/api/chat")).send().await.unwrap().status(), StatusCode::OK);
-        revoked.store(true, Ordering::Release);
+        revoked.cancel();
         for path in ["/api/chat", "/api/generate", "/remote-api/config", "/remote-api/agent-tool", "/comfyui/prompt", "/ws"] {
             let response = client.post(format!("{base}{path}")).send().await.unwrap();
             assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
@@ -3350,11 +3457,11 @@ mod memory_revocation_tests {
     #[test]
     fn replacement_guard_does_not_reactivate_old_server() {
         let mut server = RemoteServer::new();
-        server.memory_revoked.store(true, Ordering::Release);
+        server.revoke_memory();
         let old = server.memory_revoked.clone();
         server.reset_memory_revocation();
-        assert!(old.load(Ordering::Acquire));
-        assert!(!server.memory_revoked.load(Ordering::Acquire));
+        assert!(old.is_cancelled());
+        assert!(!server.memory_revoked.is_cancelled());
         assert!(!Arc::ptr_eq(&old, &server.memory_revoked));
     }
 }
