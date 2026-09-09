@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Brain, Download, Upload, Trash2, Search, Plus, X, Check, Pencil, Zap, FileJson, Archive, Sparkles } from 'lucide-react'
 import { useMemoryStore, effectiveMemoryBudget } from '../../stores/memoryStore'
+import { useRemoteStore } from '../../stores/remoteStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useChatStore, persistConversationMemoryScope } from '../../stores/chatStore'
 import { getModelMaxTokens } from '../../lib/context-compaction'
@@ -28,6 +29,7 @@ const TYPE_DOT_COLORS: Record<MemoryType, string> = {
 // ── Component ─────────────────────────────────────────────────
 
 export function MemorySettings() {
+  const remoteMemoryNotice = useRemoteStore(s => s.memoryNotice)
   const conversation = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId))
   const [savedProject, setSavedProject] = useState<string | null>(null)
   const [projectSaveError, setProjectSaveError] = useState(false)
@@ -304,6 +306,7 @@ export function MemorySettings() {
       )}
       <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits sensitive and project-scoped entries; JSON export preserves their flags and scope.</p>
       <p className="text-xs text-gray-500" role="note">Remote sessions can retain previously shared memory in their prompts. This control cannot revoke those copies. End the remote session before handling sensitive data.</p>
+      {remoteMemoryNotice && <p role="status" className="text-sm text-red-600 dark:text-red-300">{remoteMemoryNotice}</p>}
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
         <input
