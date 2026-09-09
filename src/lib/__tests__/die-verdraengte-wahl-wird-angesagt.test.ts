@@ -138,7 +138,7 @@ describe('DER BEFUND: Enable auf der Standby-Karte sagt jetzt etwas', () => {
   it('warum die Modusregel das nicht auffangen kann', () => {
     // Nach dem Raeumen ist der alte Name weg. Die Regel in AppShell hat
     // nichts mehr zu nennen und schweigt zu Recht.
-    const pick = pickForMode(null, [{ name: LMS_ROW, provider: 'openai' }], 'local')
+    const pick = pickForMode(null, [{ name: 'test-model-8B', provider: 'openai' }], 'local')
     expect(pick.change).toBe(true)
     expect(replacedBehindTheUsersBack(null, pick, false)).toBe(false)
   })

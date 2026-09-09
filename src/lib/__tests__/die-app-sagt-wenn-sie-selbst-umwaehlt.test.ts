@@ -20,7 +20,8 @@ import { resolve } from 'node:path'
 import { pickForMode, replacedBehindTheUsersBack } from '../active-model-mode'
 
 const LM = { name: 'qwen2.5-0.5b', provider: 'openai' }
-const KAPUTT = { name: 'G1-Kaputt-Q4_K_M', provider: 'openai' }
+// Preserve the replacement-notification scenario with an eligible fixture.
+const KAPUTT = { name: 'test-broken-8B-Q4_K_M', provider: 'openai' }
 const PHI = { name: 'Phi-4-mini-instruct-Q4_K_M', provider: 'openai' }
 
 describe('replacedBehindTheUsersBack', () => {

@@ -231,7 +231,7 @@ export function ChatView() {
     : !activeModel
       // Der Waehler steht IM Composer und oeffnet nach oben. Der alte Satz
       // hier hiess „Select a model above." und zeigte in die falsche Richtung.
-      ? { subline: 'Pick a model in the box below, then type.', cta: null }
+      ? { subline: 'Choose a model below. Automatic picks require a known size of at least 7B.', cta: null }
       // Der Modellname steht auf einer EIGENEN Zeile und wird gekuerzt: er ist
       // haeufig 50+ Zeichen lang (`hf.co/DevQuasar/huihui-ai_Qwen3-4B-abliterated-GGUF`),
       // und im Fliesstext liess er die Zeile dreimal umbrechen.

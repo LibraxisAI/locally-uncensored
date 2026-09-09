@@ -1,8 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { getMainstreamTextModels, getUncensoredTextModels } from '../../api/discover'
-import { chatRecommendationGroups, isBelowChatMinimum } from '../chat-model-minimum'
+import { canAutoSelectChat, chatRecommendationGroups, installedChatSizeB, isBelowChatMinimum } from '../chat-model-minimum'
+import { pickForMode } from '../active-model-mode'
 
 describe('chat catalog minimum', () => {
+  it('uses explicit installed metadata and safe total-size name boundaries', () => {
+    expect(installedChatSizeB({ name: 'alias', details: { parameter_size: '7600M' } })).toBe(7.6)
+    expect(installedChatSizeB({ name: 'alias-8B', details: { parameter_size: '3.8B' } })).toBe(3.8)
+    expect(installedChatSizeB({ name: 'qwen3-30B-A3B' })).toBe(30)
+    expect(installedChatSizeB({ name: 'unknown-A3B' })).toBeNull()
+    expect(installedChatSizeB({ name: 'file-3GB-Q4_K_M' })).toBeNull()
+    expect(canAutoSelectChat({ name: 'opaque-api-model' })).toBe(false)
+    expect(canAutoSelectChat({ name: 'model-8B', type: 'image' })).toBe(false)
+    expect(canAutoSelectChat({ name: 'model-7B', type: 'text' })).toBe(true)
+  })
+
+  it('applies the same minimum to mode fallback while honoring named choices', () => {
+    const small = { name: 'test-3B', type: 'text', provider: 'openai' }
+    const large = { name: 'test-7B', type: 'text', provider: 'openai' }
+    const opaque = { name: 'opaque', type: 'text', provider: 'openai' }
+    expect(pickForMode(null, [small, opaque, large], 'local').next).toBe(large.name)
+    expect(pickForMode(null, [small, opaque], 'local').next).toBeNull()
+    expect(pickForMode(small.name, [small, large], 'local').change).toBe(false)
+    expect(pickForMode(null, [small, large], 'local', small.name)).toMatchObject({ next: small.name, usedRequest: true })
+  })
   it('uses parameter counts, not quantization, file size or MoE active counts', () => {
     for (const tag of ['0.5B', '3B', '3.8B', '4B', '6.9B']) expect(isBelowChatMinimum({ tags: [tag] })).toBe(true)
     for (const tag of ['7B', '8B', '70B', '3 GB', 'Q4_K_M', 'A3B', '30B-A3B', 'unknown']) expect(isBelowChatMinimum({ tags: [tag] })).toBe(false)

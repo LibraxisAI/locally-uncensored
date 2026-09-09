@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { safeJSONStorage } from '../lib/storage-quota'
+import { canAutoSelectChat } from '../lib/chat-model-minimum'
 import type { AIModel, PullProgress, ModelCategory } from '../types/models'
 import { unloadModel } from '../api/ollama'
 import { unloadLmStudioModel } from '../api/lmstudio'
@@ -151,9 +152,8 @@ export const useModelStore = create<ModelState>()(
           // model name persists in the picker after the underlying provider
           // (e.g. Ollama) was uninstalled or the model was deleted — the
           // dropdown then shows a dead name and clicking it opens an empty
-          // list. Falls back to the first available model, mirroring the
-          // first-launch behavior so a user is never stuck with no
-          // selection while a model exists.
+          // list. Automatic replacement uses the first eligible chat model;
+          // if none has a known size of at least 7B, require an explicit pick.
           // An empty list validates nothing. fetchModels writes its result
           // here even when every provider failed, and dropping the pick on
           // that answer is how a transient failure turned into a silently
@@ -170,11 +170,10 @@ export const useModelStore = create<ModelState>()(
           const stillValid =
             !!state.activeModel &&
             (models.length === 0 || models.some((m) => m.name === state.activeModel))
-          // Chat models only for the auto-select — ComfyUI image/video
-          // checkpoints share this list and must never become the active CHAT
-          // model (an unprefixed checkpoint name routes to Ollama and every
-          // send fails with model-not-found).
-          const firstChat = models.find((m) => m.type !== 'image' && m.type !== 'video')
+          // Automatic choices need a known size of at least 7B. Image/video,
+          // small models and opaque aliases require no implicit chat pick.
+          // The valid persisted choice above remains the user's decision.
+          const firstChat = models.find(canAutoSelectChat)
           return {
             models,
             inventoryLoaded: true,
