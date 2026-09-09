@@ -5,7 +5,7 @@ import { routeCloud, seedOnboardingDone, cloudSwitch } from './support/cloud-moc
 for (const ready of [false, true]) {
   test(`trainer failure remains readable with environment ready=${ready}`, async ({ page }) => {
     await page.addInitScript(tauriMockInit, {
-      assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME, platform: 'windows',
+      assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME, platform: 'windows' as const,
     })
     await page.addInitScript(({ ready }) => {
       const bridge = (window as any).__TAURI_INTERNALS__
