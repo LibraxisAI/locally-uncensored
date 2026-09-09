@@ -14,6 +14,7 @@ import type {
   ChatStreamChunk, ToolCall, ToolDefinition,
 } from './types'
 import { ProviderError } from './types'
+import { RepetitionStop } from '../../lib/repetition-stop'
 import { parseSSEStream } from '../sse'
 import { idleAbortGuard, isStreamIdleTimeout } from '../stream-idle'
 import { sendWithTransientRetry } from './retry'
@@ -723,6 +724,8 @@ export class OpenAIProvider implements ProviderClient {
     // Stop still propagates inward, and a stream that goes silent can cancel
     // its own request instead of leaving reader.read() pending forever.
     const guard = idleAbortGuard(options?.signal)
+    const repetitionStop = this.config.managed === true ? new RepetitionStop() : undefined
+    const reasoningRepetitionStop = this.config.managed === true ? new RepetitionStop() : undefined
     let res: Response
     try {
       res = await this.sendChat(model, body, guard.signal, fetcher)
@@ -808,6 +811,10 @@ export class OpenAIProvider implements ProviderClient {
         // without this the entire reasoning phase of a cloud reasoner is
         // silently dropped and the chat sits in dead air (uselu fc55c91).
         const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning ?? ''
+        if (repetitionStop?.push(content) || reasoningRepetitionStop?.push(reasoning)) {
+          guard.abort()
+          throw new Error('Generation stopped because the local model repeated question marks continuously. Try setting GPU Layers to 0 in LU Engine settings, or verify and download the model again.')
+        }
         if (reasoning) {
           yield { content: '', thinking: reasoning, done: false }
         }
