@@ -1,5 +1,6 @@
 use crate::os_error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use axum::{
@@ -90,6 +91,7 @@ pub struct PasscodeState {
 
 #[derive(Clone)]
 struct RemoteState {
+    memory_revoked: Arc<AtomicBool>,
     jwt_secret: Arc<TokioMutex<String>>,
     passcode: Arc<TokioMutex<PasscodeState>>,
     /// Full Ollama base URL (e.g. `http://localhost:11434` or `http://192.168.1.50:11434`).
@@ -274,6 +276,25 @@ fn client_ip(headers: &HeaderMap, socket: Option<SocketAddr>) -> String {
 /// instead of the id in the body.
 #[derive(Clone)]
 struct CallerDevice(String);
+
+async fn memory_revocation_middleware(
+    AxumState(revoked): AxumState<Arc<AtomicBool>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+    let protected = path.starts_with("/api/")
+        || path.starts_with("/comfyui/")
+        || path == "/ws"
+        || (path.starts_with("/remote-api/")
+            && path != "/remote-api/auth" && path != "/remote-api/status");
+    if protected && revoked.load(Ordering::Acquire) {
+        return (StatusCode::CONFLICT,
+            "Remote memory context was revoked. Restart Remote Access and reconnect before sending another request.")
+            .into_response();
+    }
+    next.run(req).await
+}
 
 async fn auth_middleware(
     AxumState(state): AxumState<RemoteState>,
@@ -2182,6 +2203,7 @@ fn set_exclusive_addr_use(socket: &socket2::Socket) -> std::io::Result<()> {
 
 /// Stored in AppState — holds the running remote server handle
 pub struct RemoteServer {
+    pub memory_revoked: Arc<AtomicBool>,
     pub handle: Option<JoinHandle<()>>,
     pub port: u16,
     pub jwt_secret: Arc<TokioMutex<String>>,
@@ -2205,8 +2227,13 @@ pub struct RemoteServer {
 }
 
 impl RemoteServer {
+    fn reset_memory_revocation(&mut self) {
+        self.memory_revoked = Arc::new(AtomicBool::new(false));
+    }
+
     pub fn new() -> Self {
         Self {
+            memory_revoked: Arc::new(AtomicBool::new(false)),
             handle: None,
             port: 11435,
             jwt_secret: Arc::new(TokioMutex::new(String::new())),
@@ -2513,11 +2540,13 @@ pub async fn start_remote_server(
     let openai_base = backend_base.unwrap_or_default();
     let openai_key = backend_key.unwrap_or_default();
     // Clone Arcs from std::sync::Mutex, then drop it before any .await
-    let (jwt_secret_arc, passcode_arc, permissions_arc, devices_arc, tunnel_url_arc, dispatched_model_arc, dispatched_system_prompt_arc, port, comfy_port, comfy_host, ollama_base) = {
-        let remote = state.remote.lock().map_err(|e| e.to_string())?;
+    let (jwt_secret_arc, passcode_arc, permissions_arc, devices_arc, tunnel_url_arc, dispatched_model_arc, dispatched_system_prompt_arc, memory_revoked, port, comfy_port, comfy_host, ollama_base) = {
+        let mut remote = state.remote.lock().map_err(|e| e.to_string())?;
         if remote.handle.is_some() {
             return Err("Remote server already running".into());
         }
+        // Never reopen the guard held by an older server or in-flight request.
+        remote.reset_memory_revocation();
         // No `.unwrap()` here — release builds use `panic = abort`, so any
         // unwrap on a poisoned mutex would terminate the entire app. Treat
         // a missing comfy_port as a non-fatal "no comfy yet" (port 0).
@@ -2537,6 +2566,7 @@ pub async fn start_remote_server(
             remote.tunnel_url.clone(),
             remote.dispatched_model.clone(),
             remote.dispatched_system_prompt.clone(),
+            remote.memory_revoked.clone(),
             remote.port,
             comfy_port,
             comfy_host,
@@ -2591,6 +2621,7 @@ pub async fn start_remote_server(
     let permissions_readback = permissions_arc.clone();
 
     let server_state = RemoteState {
+        memory_revoked,
         jwt_secret: jwt_secret_arc,
         passcode: passcode_arc,
         ollama_base,
@@ -2707,6 +2738,15 @@ pub async fn start_remote_server(
         // reports them too.
         "permissions": permissions,
     }))
+}
+
+/// Monotonic invalidation for the current server. No remote HTTP endpoint can
+/// clear this guard; only a fresh desktop-controlled server gets a new guard.
+#[tauri::command]
+pub fn revoke_remote_memory(state: tauri::State<'_, crate::state::AppState>) -> Result<(), String> {
+    let remote = state.remote.lock().map_err(|_| "Remote state unavailable".to_string())?;
+    remote.memory_revoked.store(true, Ordering::Release);
+    Ok(())
 }
 
 /// Restart the remote server in-place: stop + start while preserving the
@@ -3262,7 +3302,8 @@ fn build_router(state: RemoteState) -> Router {
         .route("/", get(redirect_to_mobile))
         .fallback(redirect_to_mobile);
 
-    app.layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+    app.layer(middleware::from_fn_with_state(state.memory_revoked.clone(), memory_revocation_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(cors)
         .with_state(state)
 }
@@ -3273,6 +3314,49 @@ async fn redirect_to_mobile() -> Response {
         .header(header::LOCATION, "/mobile")
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::FOUND.into_response())
+}
+
+#[cfg(test)]
+mod memory_revocation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn revoked_context_blocks_protected_http_requests_without_reaching_handler() {
+        let revoked = Arc::new(AtomicBool::new(false));
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = reached.clone();
+        let router = Router::new().fallback(any(move || {
+            let count = count.clone();
+            async move { count.fetch_add(1, Ordering::SeqCst); "downstream" }
+        })).layer(middleware::from_fn_with_state(revoked.clone(), memory_revocation_middleware));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build().unwrap();
+        let base = format!("http://{address}");
+        assert_eq!(client.post(format!("{base}/api/chat")).send().await.unwrap().status(), StatusCode::OK);
+        revoked.store(true, Ordering::Release);
+        for path in ["/api/chat", "/api/generate", "/remote-api/config", "/remote-api/agent-tool", "/comfyui/prompt", "/ws"] {
+            let response = client.post(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
+            assert!(response.text().await.unwrap().contains("Restart Remote Access"));
+        }
+        assert_eq!(reached.load(Ordering::SeqCst), 1);
+        assert_eq!(client.get(format!("{base}/remote-api/status")).send().await.unwrap().status(), StatusCode::OK);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn replacement_guard_does_not_reactivate_old_server() {
+        let mut server = RemoteServer::new();
+        server.memory_revoked.store(true, Ordering::Release);
+        let old = server.memory_revoked.clone();
+        server.reset_memory_revocation();
+        assert!(old.load(Ordering::Acquire));
+        assert!(!server.memory_revoked.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(&old, &server.memory_revoked));
+    }
 }
 
 #[cfg(test)]
