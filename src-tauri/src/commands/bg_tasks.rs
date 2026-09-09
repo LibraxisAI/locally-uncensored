@@ -745,6 +745,31 @@ mod tests {
         let pos2 = ids.iter().position(|s| *s == id2).unwrap();
         assert!(pos2 < pos1, "newer task should appear first");
     }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelling_during_shell_startup_drains_the_pipes() {
+        let _isolation = super::sweep_isolation().await;
+        // Exercise the startup window repeatedly, not just a settled tree.
+        // A missed ping child holds stdout open for30seconds with the old
+        // per-process snapshot kill, even after the shell itself is gone.
+        for _ in 0..3 {
+            let started = shell_task_start_impl(&json!({ "command": sleep_cmd_30s() })).await.unwrap();
+            let id = started["id"].as_str().unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            shell_task_kill_impl(&json!({ "id": id })).await.unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let status = shell_task_status_impl(&json!({ "id": id })).await.unwrap();
+                if status["running"] == false {
+                    assert_eq!(status["cancelled"], true);
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "cancelled tree kept its output pipes open");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
