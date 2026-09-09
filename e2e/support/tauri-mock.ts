@@ -89,7 +89,7 @@ export interface TauriMockOptions {
 }
 
 export const DEFAULT_ASSISTANT_REPLY = 'PONG_BUILTIN_OK the built-in engine answered.'
-export const DEFAULT_MODEL_NAME = 'qwen2.5-0.5b-instruct-q4_k_m'
+export const DEFAULT_MODEL_NAME = 'qwen2.5-7b-instruct-q4_k_m'
 
 /**
  * The function body below is serialized and runs in the PAGE context — it must
@@ -295,6 +295,7 @@ export function tauriMockInit(opts: TauriMockOptions) {
           destDir: args?.destDir,
           filename: fn,
           expectedBytes: args?.expectedBytes,
+          expectedSha256: args?.expectedSha256,
         })
         return Promise.resolve({ status: 'started', id: `dl-${fn}` })
       }

@@ -36,7 +36,7 @@ async function completeBuiltinOnboarding(page: Page) {
   await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible()
   await page.getByRole('button', { name: /Skip for now/i }).click()
   await expect(page.getByRole('heading', { name: /Pick a starter model/i })).toBeVisible()
-  await page.getByRole('button', { name: /Qwen 2\.5 0\.5B/i }).click()
+  await page.getByRole('button', { name: /Qwen 2\.5 7B/i }).click()
   await page.getByRole('button', { name: /Install \d+ model/i }).click()
   await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible({ timeout: 30_000 })
   await page.getByRole('button', { name: /Skip for now/i }).click()

@@ -39,7 +39,7 @@ test('document chat embeds via the bundled server, never Ollama', async ({ page 
 
   // models — install the starter GGUF, auto-advances to embeddings
   await expect(page.getByRole('heading', { name: /Pick a starter model/i })).toBeVisible()
-  await page.getByRole('button', { name: /Qwen 2\.5 0\.5B/i }).click()
+  await page.getByRole('button', { name: /Qwen 2\.5 7B/i }).click()
   await page.getByRole('button', { name: /Install \d+ model/i }).click()
 
   // embeddings — install on the built-in path (84 MB GGUF, not the 274 MB

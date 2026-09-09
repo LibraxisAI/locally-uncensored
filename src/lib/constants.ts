@@ -325,6 +325,8 @@ export interface OnboardingModel {
   downloadUrl: string    // HuggingFace GGUF download URL
   filename: string       // GGUF filename
   sizeGB: number         // Download size in GB
+  expectedBytes?: number
+  sha256?: string
 }
 
 const HF_OB = (repo: string, file: string) => `https://huggingface.co/${repo}/resolve/main/${file}`
@@ -340,11 +342,7 @@ export const ONBOARDING_EMBED_MODEL = {
 }
 
 export const ONBOARDING_MODELS: OnboardingModel[] = [
-  // P4 / LU-Aufgaben: ONBOARDING shows exactly ONE model, the tiny ~400 MB
-  // Qwen 2.5 0.5B starter. The previous list of 22 entries (5 to 42 GB) was
-  // pure noise on first launch. Discoverability for everything else lives
-  // in the Model Manager → Get new tab (curated list + HuggingFace
-  // search). Onboarding is "give the user a working chat in 30 seconds";
-  // anything heavier comes after they've made it past the wizard.
-  { name: 'qwen2.5-0.5b', label: 'Qwen 2.5 0.5B (Starter)', description: 'Tiny instant-chat model, 400 MB, runs on anything. Great to verify your setup; pick bigger models from the Get new tab once you\'re in.', size: '0.4 GB', vram: '1 GB', vramGB: 1, recommended: true, agent: false, downloadUrl: HF_OB('bartowski/Qwen2.5-0.5B-Instruct-GGUF', 'Qwen2.5-0.5B-Instruct-Q4_K_M.gguf'), filename: 'Qwen2.5-0.5B-Instruct-Q4_K_M.gguf', sizeGB: 0.4 },
+  // One chat starter meeting the 7B minimum. Download integrity comes from
+  // the published LFS metadata, not the rounded display size.
+  { name: 'qwen2.5-7b', label: 'Qwen 2.5 7B (Starter)', description: '7B chat model, Q4_K_M. Allow additional memory for context and the operating system. Download time and response speed depend on your hardware.', size: '4.4 GiB', vram: 'about 6 GB for GPU offload, context-dependent', vramGB: 6, recommended: true, agent: false, downloadUrl: HF_OB('bartowski/Qwen2.5-7B-Instruct-GGUF', 'Qwen2.5-7B-Instruct-Q4_K_M.gguf'), filename: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf', sizeGB: 4683074240 / 1_073_741_824, expectedBytes: 4683074240, sha256: '65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423' },
 ]

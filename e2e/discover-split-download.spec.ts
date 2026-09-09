@@ -65,7 +65,7 @@ async function bootThroughBuiltinOnboarding(page: Page) {
   await page.getByRole('button', { name: /Continue/i }).click()
   await page.getByRole('button', { name: /Skip for now/i }).click()
   await expect(page.getByRole('heading', { name: /Pick a starter model/i })).toBeVisible()
-  await page.getByRole('button', { name: /Qwen 2\.5 0\.5B/i }).click()
+  await page.getByRole('button', { name: /Qwen 2\.5 7B/i }).click()
   await page.getByRole('button', { name: /Install \d+ model/i }).click()
   await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible({ timeout: 30_000 })
   await page.getByRole('button', { name: /Skip for now/i }).click()
@@ -75,7 +75,7 @@ async function bootThroughBuiltinOnboarding(page: Page) {
   // only set once the async model list lands. Prove the managed engine is
   // live before touching Discover, or a slow machine tests the wrong branch.
   await openNewChat(page)
-  await expect(page.getByText(/qwen2\.5-0\.5b/i).first()).toBeVisible()
+  await expect(page.getByText(/qwen2\.5-7b/i).first()).toBeVisible()
 }
 
 test('0731 card resolves the real shard set, confirms 3 parts, starts all downloads into one dir', async ({ page }) => {
