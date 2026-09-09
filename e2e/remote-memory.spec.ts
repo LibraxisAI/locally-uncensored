@@ -1,5 +1,34 @@
 import { expect, test } from '@playwright/test'
 
+test('reload revokes a native session that outlived the frontend', async ({ page }) => {
+  // This mock lives outside the page, so a real reload discards Zustand but
+  // intentionally retains the native-side session state and invocation log.
+  let running = false
+  const calls: string[] = []
+  await page.exposeFunction('remoteNativeProof', async (command: string) => {
+    calls.push(command)
+    const status = { running, port: 11435, passcode: 'fixture', passcodeExpiresAt: 1, lanUrl: '', mobileUrl: '' }
+    if (command === 'start_remote_server') { running = true; return status }
+    if (command === 'remote_server_status') return status
+    if (command === 'revoke_remote_memory') return null
+    if (command === 'remote_qr_code') return { qr_png_base64: '', url: '', passcode: '' }
+    throw new Error('Unsupported proof command')
+  })
+  await page.addInitScript(() => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
+      invoke: (command: string) => (window as unknown as { remoteNativeProof: (name: string) => Promise<unknown> }).remoteNativeProof(command),
+    } })
+  })
+  await page.goto('/e2e/remote-memory-proof.html')
+  await page.getByRole('button', { name: 'Start proof remote session' }).click()
+  await expect(page.locator('#remote-state')).toContainText('"qrVisible":true')
+  await page.reload()
+  // The production app-mount hook must recover without opening settings.
+  await expect(page.getByRole('status')).toContainText('Restart Remote Access and reconnect')
+  expect(calls.filter(command => command === 'revoke_remote_memory')).toHaveLength(1)
+  await expect(page.locator('#remote-state')).toHaveText('{"enabled":true,"qrVisible":false}')
+})
+
 for (const fail of [false, true]) {
   test(`actual sensitive control ${fail ? 'reports unconfirmed native failure' : 'requests Remote revocation'}`, async ({ page }, testInfo) => {
     await page.addInitScript(({ fail }) => {

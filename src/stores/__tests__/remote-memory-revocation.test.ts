@@ -32,6 +32,45 @@ afterEach(async () => {
 })
 
 describe('automatic Remote memory revocation', () => {
+  it('revokes a running native snapshot discovered after frontend state was lost', async () => {
+    call.mockResolvedValue({ ...started, running: true })
+    await useRemoteStore.getState().refreshStatus()
+    expect(call).toHaveBeenCalledWith('revoke_remote_memory')
+    expect(useRemoteStore.getState().memoryNotice).toBe(REMOTE_MEMORY_CHANGED)
+    call.mockClear()
+    await useRemoteStore.getState().refreshStatus()
+    expect(call).not.toHaveBeenCalledWith('revoke_remote_memory')
+  })
+
+  it('does not treat a normally started session as an unknown snapshot', async () => {
+    await useRemoteStore.getState().startServer()
+    call.mockClear().mockResolvedValue({ ...started, running: true })
+    await useRemoteStore.getState().refreshStatus()
+    expect(call).not.toHaveBeenCalledWith('revoke_remote_memory')
+  })
+
+  it('ignores a late running status response after explicit stop', async () => {
+    const status = deferred<typeof started & { running: boolean }>()
+    call.mockImplementation(async name => name === 'remote_server_status' ? status.promise : started)
+    const refresh = useRemoteStore.getState().refreshStatus()
+    await useRemoteStore.getState().stopServer()
+    status.resolve({ ...started, running: true })
+    await refresh
+    expect(useRemoteStore.getState().enabled).toBe(false)
+    expect(call).not.toHaveBeenCalledWith('revoke_remote_memory')
+  })
+
+  it('ignores a status response from before a fresh start', async () => {
+    const status = deferred<typeof started & { running: boolean }>()
+    call.mockImplementation(async name => name === 'remote_server_status' ? status.promise : started)
+    const refresh = useRemoteStore.getState().refreshStatus()
+    await useRemoteStore.getState().startServer()
+    status.resolve({ ...started, running: false })
+    await refresh
+    expect(useRemoteStore.getState().enabled).toBe(true)
+    expect(call).not.toHaveBeenCalledWith('revoke_remote_memory')
+  })
+
   it.each(['delete', 'edit', 'sensitive', 'scope', 'clear'] as const)('revokes a running prompt on %s', async kind => {
     await useRemoteStore.getState().startServer()
     expect(call.mock.calls.find(([name]) => name === 'start_remote_server')?.[1]?.systemPrompt).toContain(entry.content)

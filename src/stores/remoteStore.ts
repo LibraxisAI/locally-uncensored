@@ -8,6 +8,7 @@ import type { MemoryFile } from '../types/agent-mode'
 export const REMOTE_MEMORY_CHANGED = 'Remote memory changed. Restart Remote Access and reconnect before continuing. Previously delivered data cannot be recalled.'
 const REMOTE_MEMORY_UNCONFIRMED = 'Remote memory changed, but blocking Remote Access could not be confirmed. Disconnect remote devices and stop Remote Access before continuing.'
 let memoryRevision = 0
+let lifecycleRevision = 0
 let revocationPending: Promise<void> = Promise.resolve()
 
 async function waitForMemoryRevocation(ignoreFailure = false): Promise<void> {
@@ -271,6 +272,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       set({ loading: false, enabled: false, error: REMOTE_DEV_MODE_ERROR })
       throw new Error(REMOTE_DEV_MODE_ERROR)
     }
+    lifecycleRevision += 1
     set({ loading: true, error: null })
     let serverStarted = false
     try {
@@ -339,6 +341,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   },
 
   stopServer: async () => {
+    lifecycleRevision += 1
     try {
       await backendCall('stop_remote_server')
       // A confirmed explicit stop also permits recovery from failed IPC.
@@ -364,6 +367,8 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   },
 
   refreshStatus: async () => {
+    if (get().loading) return
+    const revision = lifecycleRevision
     try {
       const status = await backendCall<{
         running: boolean
@@ -376,6 +381,10 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         tunnelUrl: string
         permissions?: RemotePermissions
       }>('remote_server_status')
+      // A response requested before a start/stop must not resurrect stale UI
+      // state or revoke the freshly started replacement session.
+      if (revision !== lifecycleRevision || get().loading) return
+      const unknownRunningSnapshot = status.running && !get().enabled
       const next: Partial<RemoteState> = {
         enabled: status.running,
         port: status.port,
@@ -393,6 +402,9 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       const perms = normalizeRemotePermissions(status.permissions)
       if (perms) next.permissions = perms
       set(next as RemoteState)
+      // After a WebView reload, local revision history is gone while Rust may
+      // still serve an old prompt. Require a fresh dispatch, not silent resume.
+      if (unknownRunningSnapshot) await revokeRemoteMemory()
     } catch {
       // Non-critical
     }
@@ -539,6 +551,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       set({ loading: false, enabled: false, error: REMOTE_DEV_MODE_ERROR })
       throw new Error(REMOTE_DEV_MODE_ERROR)
     }
+    lifecycleRevision += 1
     set({ loading: true, error: null })
     let serverStarted = false
     try {
