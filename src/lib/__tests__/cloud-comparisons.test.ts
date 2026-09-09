@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
   const html = readFileSync(`docs/vs/${slug}/index.html`, 'utf8')
   const page = new DOMParser().parseFromString(html, 'text/html')
   it(`${slug} dates and sources every comparative fact on both sides`, () => {
@@ -27,6 +27,17 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
     }
   })
 }
+
+it('SillyHost separates promotional hosting prices, provider credit and instance resources', () => {
+  const page = new DOMParser().parseFromString(readFileSync('docs/vs/sillyhost/index.html', 'utf8'), 'text/html')
+  const cells = [...page.querySelectorAll('[data-comparison-row] td:first-of-type')]
+  expect(cells[0].textContent).toContain('limited-time welcome-back offer')
+  expect(cells[0].textContent).toContain('Confirm eligibility and renewal pricing')
+  expect(cells[1].textContent).toContain('USD 5/month of OpenRouter credit')
+  expect(cells[1].textContent).toContain('not an unlimited inference allowance')
+  expect(cells[2].textContent).toContain('not model VRAM, context size')
+  expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|guaranteed privacy/i)
+})
 
 it('Backyard AI scopes unlimited messages to the app and qualifies context ceilings', () => {
   const page = new DOMParser().parseFromString(readFileSync('docs/vs/backyard-ai/index.html', 'utf8'), 'text/html')

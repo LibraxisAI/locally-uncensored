@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
   test(`${slug} has readable, keyboard-scrollable comparison rows on mobile`, async ({ page }, testInfo) => {
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url())
@@ -44,7 +44,11 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
       await expect(region).toContainText('300 messages per week for Free')
       await expect(region).toContainText('not evidence of an unlimited developer API')
     }
-    if (['venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai'].includes(slug)) {
+    if (slug === 'sillyhost') {
+      await expect(region).toContainText('limited-time welcome-back offer')
+      await expect(region).toContainText('not an unlimited inference allowance')
+    }
+    if (['venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost'].includes(slug)) {
       await page.screenshot({ path: testInfo.outputPath(`${slug}-mobile.png`), fullPage: true })
       const luSource = region.locator('td:last-child a').last()
       await luSource.focus()
