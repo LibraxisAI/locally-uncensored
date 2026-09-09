@@ -234,7 +234,7 @@ interface RemoteState {
   qrVisible: boolean
 
   startServer: (model?: string, systemPrompt?: string) => Promise<void>
-  stopServer: () => Promise<void>
+  stopServer: () => Promise<boolean>
   refreshStatus: () => Promise<void>
   refreshDevices: () => Promise<void>
   regenerateToken: () => Promise<void>
@@ -371,6 +371,8 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       revocationPending = Promise.resolve()
       set({
         enabled: false,
+        error: null,
+        memoryNotice: null,
         passcode: '',
         passcodeExpiresAt: 0,
         lanUrl: '',
@@ -383,8 +385,10 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         dispatchedConversationId: null,
         qrVisible: false,
       })
+      return true
     } catch (err) {
       set({ error: String(err) })
+      return false
     } finally {
       stopsInProgress -= 1
       set({ loading: stopsInProgress > 0 })
@@ -397,6 +401,7 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
     try {
       const status = await backendCall<{
         running: boolean
+        lifecycleBusy?: boolean
         port: number
         passcode: string
         passcodeExpiresAt: number
@@ -409,6 +414,18 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // A response requested before a start/stop must not resurrect stale UI
       // state or revoke the freshly started replacement session.
       if (revision !== lifecycleRevision || get().loading) return
+      if (status.lifecycleBusy === true) {
+        // No local startup is active, so this operation belongs to an older
+        // frontend or another caller. Stop it before accepting its snapshot.
+        set({ enabled: true, qrVisible: false, passcode: '', qrPngBase64: '',
+          memoryNotice: 'Recovering an unfinished Remote operation. Stopping it before reconnecting...' })
+        const stopped = await get().stopServer()
+        const notice = stopped
+          ? 'An unfinished Remote operation was stopped during recovery. Start Remote Access again to continue.'
+          : 'An unfinished Remote operation could not be stopped. Stop Remote Access on the desktop before reconnecting.'
+        set({ memoryNotice: notice, error: stopped ? null : notice })
+        return
+      }
       const unknownRunningSnapshot = status.running && !get().enabled
       const next: Partial<RemoteState> = {
         enabled: status.running,

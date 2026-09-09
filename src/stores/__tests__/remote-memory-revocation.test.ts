@@ -32,6 +32,26 @@ afterEach(async () => {
 })
 
 describe('automatic Remote memory revocation', () => {
+  it('stops an unknown busy native operation before accepting recovered state', async () => {
+    call.mockResolvedValue({ ...started, running: false, lifecycleBusy: true })
+    await useRemoteStore.getState().refreshStatus()
+    expect(call).toHaveBeenCalledWith('stop_remote_server')
+    expect(useRemoteStore.getState().enabled).toBe(false)
+    expect(useRemoteStore.getState().memoryNotice).toContain('was stopped during recovery')
+  })
+
+  it('retains an uncertain running state when busy recovery cannot stop native work', async () => {
+    call.mockImplementation(async name => {
+      if (name === 'stop_remote_server') throw new Error('Synthetic busy failure')
+      return { ...started, running: false, lifecycleBusy: true }
+    })
+    await useRemoteStore.getState().refreshStatus()
+    expect(useRemoteStore.getState().enabled).toBe(true)
+    expect(useRemoteStore.getState().memoryNotice).toContain('could not be stopped')
+    expect(useRemoteStore.getState().memoryNotice).not.toContain('Synthetic busy failure')
+    expect(useRemoteStore.getState().qrVisible).toBe(false)
+  })
+
   it.each(['startServer', 'restart'] as const)('stops after pending native %s completes without exposing its QR', async method => {
     const native = deferred<typeof started>()
     const command = method === 'restart' ? 'restart_remote_server' : 'start_remote_server'

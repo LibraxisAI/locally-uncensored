@@ -1,5 +1,27 @@
 import { expect, test } from '@playwright/test'
 
+test('app recovery stops a native operation whose startup outlived the frontend', async ({ page }) => {
+  let release!: () => void
+  let stopCalls = 0
+  const nativeFinished = new Promise<void>(resolve => { release = resolve })
+  await page.exposeFunction('remoteNativeProof', async (command: string) => {
+    if (command === 'remote_server_status') return { running: false, lifecycleBusy: true }
+    if (command === 'stop_remote_server') { stopCalls += 1; await nativeFinished; return null }
+    throw new Error('Unsupported proof command')
+  })
+  await page.addInitScript(() => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
+      invoke: (command: string) => (window as unknown as { remoteNativeProof: (name: string) => Promise<unknown> }).remoteNativeProof(command),
+    } })
+  })
+  await page.goto('/e2e/remote-memory-proof.html')
+  await expect(page.getByRole('status')).toContainText('Recovering an unfinished Remote operation')
+  await expect.poll(() => stopCalls).toBe(1)
+  release()
+  await expect(page.getByRole('status')).toContainText('was stopped during recovery')
+  await expect(page.locator('#remote-state')).toHaveText('{"enabled":false,"qrVisible":false}')
+})
+
 test('stop waits for a pending native start and never publishes its QR', async ({ page }) => {
   const calls: string[] = []
   let running = false

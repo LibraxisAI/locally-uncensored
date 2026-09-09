@@ -2583,6 +2583,8 @@ struct RemoteLifecycle(Arc<TokioMutex<()>>);
 impl RemoteLifecycle {
     fn new() -> Self { Self(Arc::new(TokioMutex::new(()))) }
 
+    fn is_busy(&self) -> bool { self.0.try_lock().is_err() }
+
     async fn acquire(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
         self.acquire_with_timeout(std::time::Duration::from_secs(15)).await
     }
@@ -2907,10 +2909,11 @@ async fn stop_remote_server_inner(
 pub async fn remote_server_status(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (running, port, passcode_arc, tunnel_url_arc, tunnel_pid, permissions_arc) = {
+    let (running, lifecycle_busy, port, passcode_arc, tunnel_url_arc, tunnel_pid, permissions_arc) = {
         let remote = state.remote.lock().map_err(|e| e.to_string())?;
         (
             remote.handle.is_some(),
+            remote.lifecycle.is_busy(),
             remote.port,
             remote.passcode.clone(),
             remote.tunnel_url.clone(),
@@ -2944,6 +2947,7 @@ pub async fn remote_server_status(
 
     Ok(serde_json::json!({
         "running": running,
+        "lifecycleBusy": lifecycle_busy,
         "port": port,
         "passcode": if running { passcode } else { String::new() },
         "passcodeExpiresAt": if running { expires_at } else { 0 },
@@ -3457,11 +3461,14 @@ mod memory_revocation_tests {
     #[tokio::test]
     async fn lifecycle_wait_is_bounded_and_timeout_does_not_poison_queue() {
         let lifecycle = RemoteLifecycle::new();
+        assert!(!lifecycle.is_busy());
         let held = lifecycle.acquire().await.unwrap();
+        assert!(lifecycle.is_busy());
         let result = lifecycle.acquire_with_timeout(std::time::Duration::from_millis(10)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Remote lifecycle is busy"));
         drop(held);
+        assert!(!lifecycle.is_busy());
         let recovered = lifecycle.acquire().await.unwrap();
         drop(recovered);
     }
