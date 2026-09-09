@@ -303,6 +303,7 @@ export function MemorySettings() {
         </label>
       )}
       <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits sensitive and project-scoped entries; JSON export preserves their flags and scope.</p>
+      <p className="text-xs text-gray-500" role="note">Remote sessions can retain previously shared memory in their prompts. This control cannot revoke those copies. End the remote session before handling sensitive data.</p>
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
         <input

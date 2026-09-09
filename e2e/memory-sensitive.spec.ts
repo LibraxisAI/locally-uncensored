@@ -2,6 +2,8 @@ import { expect, test } from '@playwright/test'
 
 test('real memory settings protect a new entry across reload and allow explicit unmarking', async ({ page }, testInfo) => {
   await page.goto('/e2e/memory-sensitive-proof.html')
+  await expect(page.getByRole('note')).toContainText('Remote sessions can retain previously shared memory')
+  await expect(page.getByRole('note')).toContainText('End the remote session')
   await page.getByRole('button', { name: 'Add Memory', exact: true }).click()
   await page.getByPlaceholder('What should I remember?').fill('Private preference')
   await page.getByPlaceholder('Details… (required)').fill('Synthetic private preference')
