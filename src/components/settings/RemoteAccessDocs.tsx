@@ -45,6 +45,12 @@ export function RemoteAccessDocs() {
         paired device. Generation still happens locally.
       </p>
 
+      <p className="text-[0.6rem] text-gray-500 leading-relaxed">
+        Persona settings are not bidirectionally synced. A dispatched chat carries its desktop
+        instructions to the phone. Persona changes on the phone stay in that browser and do not
+        update the desktop persona.
+      </p>
+
       <div className="space-y-2.5">
         <Step n={1} icon={<Plug size={12} className="text-gray-500" />} title="Open the Remote tab">
           In the sidebar, switch to the <span className="text-gray-400 font-medium">Remote</span> tab

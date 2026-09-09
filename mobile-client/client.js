@@ -1261,7 +1261,7 @@ import {
                '</label>' +
                '<span class="material-symbols-outlined plug-chev">'+svgIcon('expand_more')+'</span>' +
              '</div>' +
-             (pluginsOpen.persona ? '<div class="plugins-persona-list">'+personas+'</div>' : '') +
+             (pluginsOpen.persona ? '<div class="plugins-persona-list"><p class="persona-sync-note">Persona changes on this device stay here. They do not sync back to the desktop.</p>'+personas+'</div>' : '') +
            '</div>';
   }
   function bindPluginsPicker(overlay){
