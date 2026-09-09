@@ -14,6 +14,7 @@ pub fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+#[cfg(not(test))]
 pub fn data_dir() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::data_dir)
@@ -21,6 +22,7 @@ pub fn data_dir() -> PathBuf {
         .join(APP_DIR)
 }
 
+#[cfg(not(test))]
 pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -31,6 +33,7 @@ pub fn cache_dir() -> PathBuf {
 /// mit [`data_dir`] zusammen, unter Linux ist es `~/.config/<APP_DIR>` — dort
 /// liegen die erzeugten Bilder (`commands::mlx`) und Videos
 /// (`commands::video`).
+#[cfg(not(test))]
 pub fn config_root() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -40,6 +43,7 @@ pub fn config_root() -> PathBuf {
 /// Ordner der `config.json` (ComfyUI-Pfad/-Port, Ollama-Basis, Trainer-Root).
 /// Historisch ein anderer Name als [`data_dir`] — deshalb eine eigene
 /// Konstante statt eines zweiten Literals.
+#[cfg(not(test))]
 pub fn app_config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -52,6 +56,7 @@ pub fn app_config_json() -> PathBuf {
 }
 
 /// Ablage für Hilfsbinaries, die die App selbst herunterlädt (`cloudflared`).
+#[cfg(not(test))]
 pub fn tools_bin_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -62,6 +67,7 @@ pub fn tools_bin_dir() -> PathBuf {
 /// Modellordner der eingebauten Engine. Bewusst `dirs::data_dir()` (unter
 /// Windows also `%APPDATA%`, nicht `%LOCALAPPDATA%`) — das ist der Pfad, den
 /// `detect_model_path("builtin")` seit jeher zurückgibt.
+#[cfg(not(test))]
 pub fn builtin_models_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -71,8 +77,78 @@ pub fn builtin_models_dir() -> PathBuf {
 
 /// Sandkasten-Wurzel der Agenten. Pro Chat entsteht darin ein Unterordner;
 /// `commands::filesystem::contain_within` lässt nichts darüber hinaus.
+#[cfg(not(test))]
 pub fn agent_workspace_root() -> PathBuf {
     home().join(AGENT_WORKSPACE_DIR)
+}
+
+#[cfg(test)]
+pub use test_storage::{
+    agent_workspace_root, app_config_dir, builtin_models_dir, cache_dir,
+    config_root, data_dir, tools_bin_dir,
+};
+
+// No environment switch or test storage implementation exists in a release build.
+#[cfg(test)]
+pub(crate) mod test_storage {
+    use super::*;
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    pub fn root() -> &'static Path {
+        static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            let parent = test_scratch_root();
+            std::fs::create_dir_all(&parent).expect("create native test scratch parent");
+            tempfile::Builder::new().prefix("lu-native-test-storage-")
+                .tempdir_in(parent).expect("create isolated native test storage")
+        }).path()
+    }
+
+    // Shared across worker threads, with a unique directory for each test process.
+    // Static roots survive process exit; the test runner must remove its owned scratch parent.
+    fn roaming_base() -> PathBuf {
+        root().join(if cfg!(windows) { "roaming" } else { "local" })
+    }
+    fn config_base() -> PathBuf {
+        if cfg!(target_os = "linux") { root().join("config") } else { roaming_base() }
+    }
+    pub fn data_dir() -> PathBuf { root().join("local").join(APP_DIR) }
+    pub fn cache_dir() -> PathBuf {
+        root().join(if cfg!(windows) { "local" } else { "cache" }).join(APP_DIR)
+    }
+    pub fn config_root() -> PathBuf { config_base().join(APP_DIR) }
+    pub fn app_config_dir() -> PathBuf { config_base().join(APP_CONFIG_DIR) }
+    pub fn tools_bin_dir() -> PathBuf { root().join("local").join(APP_CONFIG_DIR).join("bin") }
+    pub fn display_data_dir() -> PathBuf { roaming_base().join(APP_DISPLAY_DIR) }
+    pub fn builtin_models_dir() -> PathBuf { display_data_dir().join("models") }
+    pub fn agent_workspace_root() -> PathBuf { root().join("home").join(AGENT_WORKSPACE_DIR) }
+
+    #[test]
+    fn app_owned_test_paths_never_use_user_storage() {
+        for path in [data_dir(), cache_dir(), config_root(), app_config_dir(), tools_bin_dir(),
+            builtin_models_dir(), agent_workspace_root(), super::app_config_json(), super::log_dir()] {
+            assert!(path.starts_with(root()), "app-owned test path escaped scratch storage");
+        }
+        assert!(root().starts_with(test_scratch_root()));
+        assert_eq!(data_dir(), std::thread::spawn(data_dir).join().unwrap());
+        if cfg!(target_os = "macos") { assert_eq!(data_dir(), config_root()); }
+        if cfg!(windows) { assert_eq!(data_dir(), cache_dir()); }
+    }
+
+    #[test]
+    fn secondary_app_writers_use_the_same_isolated_storage() {
+        let persistent = crate::commands::system::persistent_dir().unwrap();
+        let model_paths = crate::commands::custom_models::extra_model_paths_file().unwrap();
+        assert!(persistent.starts_with(root()));
+        if !cfg!(windows) { assert_eq!(persistent, data_dir().join("stores")); }
+        assert!(model_paths.starts_with(root()));
+        assert!(model_paths.ends_with("lu_extra_model_paths.yaml"));
+        let fixture = r#"{"native-isolation-fixture":"owned"}"#.to_string();
+        crate::commands::system::backup_stores(fixture.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(persistent.join("store_backup.json")).unwrap(), fixture);
+        assert_eq!(crate::commands::system::restore_stores().unwrap(), Some(fixture));
+    }
 }
 
 /// Where the rolling application log is written (`init_tracing` in main.rs,

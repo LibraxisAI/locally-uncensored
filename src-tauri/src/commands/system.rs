@@ -295,12 +295,20 @@ pub fn exit_app(app: tauri::AppHandle) {
 /// Datei — `store_backup.json` — hat der Experiment-Build am 2026-08-31 im
 /// Verzeichnis der echten App überschrieben.
 pub(crate) fn persistent_dir() -> Result<std::path::PathBuf, String> {
-    #[cfg(target_os = "windows")]
+    #[cfg(test)]
+    {
+        if cfg!(windows) {
+            Ok(crate::os_paths::test_storage::display_data_dir())
+        } else {
+            Ok(crate::os_paths::data_dir().join("stores"))
+        }
+    }
+    #[cfg(all(not(test), target_os = "windows"))]
     {
         let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
         Ok(std::path::PathBuf::from(appdata).join(crate::app_identity::APP_DISPLAY_DIR))
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(test), not(target_os = "windows")))]
     {
         Ok(crate::os_paths::data_dir().join("stores"))
     }
