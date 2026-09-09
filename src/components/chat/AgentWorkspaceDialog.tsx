@@ -139,8 +139,12 @@ export function AgentWorkspaceDialog({
           </h3>
           <p className="text-[0.7rem] text-gray-500">
             {phase === 'pick'
-              ? 'Pick a folder to edit your real files, or use a sandbox to keep this chat isolated. You can change this later.'
+              ? 'Pick a folder to edit your real files, or use a separate workspace for this chat. You can change this later.'
               : 'Primary anchors relative paths. Extras give the agent absolute access, perfect for "sync the API in repo-A with the client in repo-B".'}
+          </p>
+          <p className="text-[0.7rem] text-gray-500" data-testid="workspace-security-boundary">
+            Workspace protection is a folder path jail, not a container or virtual machine.
+            Commands run on this computer. Review tool requests before allowing them.
           </p>
         </div>
 
@@ -155,7 +159,7 @@ export function AgentWorkspaceDialog({
             <WorkspaceOption
               icon={<Shield size={16} className="text-emerald-500" />}
               title="Sandbox"
-              body="Isolated workspace under ~/agent-workspace/. Nothing outside it can be touched."
+              body="Separate folder under ~/agent-workspace/, protected by the file tool path jail."
               onClick={handleSandbox}
               disabled={picking}
             />

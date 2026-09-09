@@ -53,7 +53,7 @@ export function AgentWorkspaceBadge() {
         title={
           workspace.kind === 'folder'
             ? `Agent working in ${workspace.path}. Click to change.`
-            : 'Agent working in isolated sandbox. Click to switch to a real folder.'
+            : 'Agent working in a separate folder with a file tool path jail, not a container. Click to change.'
         }
         className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors text-[0.55rem] bg-transparent hover:bg-white/5 ${tone}`}
       >
