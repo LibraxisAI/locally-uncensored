@@ -311,6 +311,7 @@ async fn memory_revocation_middleware(
             && path != "/remote-api/auth" && path != "/remote-api/status");
     if protected && revoked.is_cancelled() {
         return (StatusCode::CONFLICT,
+            [("x-lu-remote-memory-revoked", "1")],
             "Remote memory context was revoked. Restart Remote Access and reconnect before sending another request.")
             .into_response();
     }
@@ -3369,6 +3370,16 @@ mod memory_revocation_tests {
 
     #[tokio::test]
     async fn authenticated_router_revokes_cached_prompts_for_both_chat_backends() {
+        run_authenticated_router_proof(false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the installed Node and Playwright Chromium runtimes"]
+    async fn native_mobile_browser_revocation() {
+        run_authenticated_router_proof(true).await;
+    }
+
+    async fn run_authenticated_router_proof(browser: bool) {
         for backend in ["ollama", "openai"] {
             let received = Arc::new(TokioMutex::new(Vec::<(String, serde_json::Value)>::new()));
             let captured = received.clone();
@@ -3376,13 +3387,19 @@ mod memory_revocation_tests {
                 let captured = captured.clone();
                 async move {
                     let path = req.uri().path().to_string();
+                    if path == "/api/tags" {
+                        return Json(serde_json::json!({"models":[{"name":"fixture-model"}]})).into_response();
+                    }
+                    if path == "/v1/models" {
+                        return Json(serde_json::json!({"data":[{"id":"fixture-model"}]})).into_response();
+                    }
                     let bytes = axum::body::to_bytes(req.into_body(), 65536).await.unwrap();
                     let body = serde_json::from_slice(&bytes).unwrap();
                     captured.lock().await.push((path.clone(), body));
                     if path == "/v1/chat/completions" {
-                        Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"synthetic reply"}}]}))
+                        Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"synthetic reply"}}]})).into_response()
                     } else {
-                        Json(serde_json::json!({"message":{"role":"assistant","content":"synthetic reply"},"done":true}))
+                        ([(header::CONTENT_TYPE, "application/x-ndjson")], "{\"message\":{\"role\":\"assistant\",\"content\":\"synthetic reply\"},\"done\":true}\n").into_response()
                     }
                 }
             }));
@@ -3410,6 +3427,37 @@ mod memory_revocation_tests {
             let proxy = tokio::spawn(async move {
                 axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
             });
+            if browser {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                let result = tokio::time::timeout(std::time::Duration::from_secs(45), async {
+                    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../e2e/native-mobile-proof.mjs");
+                    let mut child = tokio::process::Command::new("node").arg(script)
+                        .env("LU_REMOTE_PROOF_URL", &base).env("LU_REMOTE_PROOF_PASSCODE", &passcode)
+                        .env("LU_REMOTE_PROOF_BACKEND", backend)
+                        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
+                    let mut output = BufReader::new(child.stdout.take().unwrap());
+                    let mut line = String::new();
+                    output.read_line(&mut line).await.unwrap();
+                    if line.trim() != "READY_TO_REVOKE" {
+                        let _ = child.wait().await;
+                        return false;
+                    }
+                    server.revoke_memory();
+                    child.stdin.take().unwrap().write_all(b"REVOKED\n").await.unwrap();
+                    line.clear();
+                    output.read_line(&mut line).await.unwrap();
+                    child.wait().await.unwrap().success() && line.trim() == "PASS"
+                }).await;
+                proxy.abort(); upstream_task.abort();
+                assert!(proxy.await.unwrap_err().is_cancelled());
+                assert!(upstream_task.await.unwrap_err().is_cancelled());
+                assert!(matches!(result, Ok(true)), "Native mobile browser proof failed for {backend}");
+                let calls = received.lock().await;
+                assert_eq!(calls.len(), 1, "revoked browser request reached upstream");
+                assert_eq!(calls[0].1["messages"][0]["content"], "synthetic remembered context");
+                continue;
+            }
             let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(2)).build().unwrap();
             assert_eq!(client.get(format!("{base}/remote-api/config")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
             let paired = client.post(format!("{base}/remote-api/auth")).json(&serde_json::json!({"passcode":passcode})).send().await.unwrap();

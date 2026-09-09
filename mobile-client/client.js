@@ -535,10 +535,14 @@ import {
       .then(absorbRefresh)
       .then(function(r){
         if(r.status===401){clearAuthAndReload();throw new Error('401');}
-        if(!r.ok) throw new Error('HTTP '+r.status);
+        if(!r.ok){
+          var error = new Error('HTTP '+r.status);
+          error.remoteMemoryRevoked = r.status===409 && r.headers.get('x-lu-remote-memory-revoked')==='1';
+          throw error;
+        }
         return r.json();
       })
-      .catch(function(){return null;});
+      .catch(function(error){if(error && error.remoteMemoryRevoked) throw error; return null;});
   }
 
   loadPersisted();
@@ -625,6 +629,15 @@ import {
     }
 
     renderShell();
+  }).catch(function(error){
+    if(!error || !error.remoteMemoryRevoked){
+      el('app').textContent = 'Remote connection unavailable. Reload to try again.';
+      return;
+    }
+    el('app').innerHTML = '<div class="auth-screen" role="alert"><h1>Remote memory changed</h1>' +
+      '<p>Restart Remote Access on your desktop, then reconnect. Previously delivered data cannot be recalled.</p>' +
+      '<button class="auth-btn" id="retry-remote" type="button">Try again after restart</button></div>';
+    el('retry-remote').onclick = function(){location.reload();};
   });
 
   function renderShell(){
@@ -1617,6 +1630,11 @@ import {
         return;
       }
       if(!r.ok){
+        if(r.status===409 && r.headers.get('x-lu-remote-memory-revoked')==='1'){
+          msgs[msgs.length-1].content='Remote memory changed. Restart Remote Access on your desktop, then reconnect. Previously delivered data cannot be recalled.';
+          finishStream();
+          return;
+        }
         // Retry without the think field at all if the server rejects it
         // (old Ollama or model that refuses the flag).
         if(r.status===400 && ('think' in body)){
