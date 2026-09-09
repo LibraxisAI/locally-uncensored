@@ -70,7 +70,12 @@ async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'conten
   try {
     const text = embedText(entry)
     const contentHash = hashContent(text)
+    const isCurrent = () => {
+      const current = useMemoryStore.getState().entries.find((item) => item.id === entry.id)
+      return !!current && !isStale(current) && embedText(current) === text
+    }
     const existing = await loadVectors([entry.id])
+    if (!isCurrent()) return
     const prior = existing.get(entry.id)
     if (prior && prior.contentHash === contentHash && prior.model === MEMORY_EMBED_MODEL) return
     const [vector] = await _embedFn([text])
@@ -81,7 +86,7 @@ async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'conten
       vector,
       contentHash,
     }
-    await saveVector(entry.id, record)
+    await saveVector(entry.id, record, isCurrent)
   } catch {
     // Embedding is best-effort — retrieval falls back to keyword scoring.
   }
@@ -599,6 +604,7 @@ export const useMemoryStore = create<MemoryState>()(
       // returns empty/incorrect when the sync path would have returned text.
       getMemoriesForPromptAsync: async (query, contextTokens, opts) => {
         const fallback = () => get().getMemoriesForPrompt(query, contextTokens, opts)
+        const snapshot = get().entries
         try {
           const budget = effectiveMemoryBudget(contextTokens, get().settings.maxMemoriesOverride)
           // No-op cases (no budget, no candidates, empty query) must return
@@ -629,6 +635,9 @@ export const useMemoryStore = create<MemoryState>()(
           // Hydrate candidate vectors into a hot Map. dim-mismatched vectors
           // are dropped here (scorer also guards) → treated as keyword-only.
           const vecMap = await loadVectors(candidates.map(c => c.id))
+          // Do not inject a deleted, edited or superseded snapshot after
+          // asynchronous work. Recompute from the current store instead.
+          if (get().entries !== snapshot) return fallback()
           const blendCandidates: BlendCandidate[] = candidates.map((memory) => {
             const rec = vecMap.get(memory.id)
             const vector = rec && rec.dim === queryVec.length ? rec.vector : null
