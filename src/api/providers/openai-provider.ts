@@ -1,4 +1,4 @@
-import { parseFlashPolicy, recordFlashResponse } from '../../lib/flash-ui'
+import { captureFlashGeneration, parseFlashPolicy, recordFlashResponse } from '../../lib/flash-ui'
 
 /**
  * OpenAI-Compatible Provider
@@ -534,6 +534,7 @@ export class OpenAIProvider implements ProviderClient {
     signal: AbortSignal | undefined,
     fetcher: ChatFetcher,
   ): Promise<Response> {
+    const billingGeneration = captureFlashGeneration()
     // Sanierungspfad: a throttle or a gateway hiccup is not the request's
     // fault, and the user used to read the raw status line for it. The retry
     // sits HERE, around the request, so it can never replay a stream that has
@@ -596,7 +597,7 @@ export class OpenAIProvider implements ProviderClient {
       else if (survived !== asked) this.rememberEffort(memoryKey, lane, 'minimal')
     }
 
-    recordFlashResponse(this.catalogKey(model), res)
+    recordFlashResponse(this.catalogKey(model), res, billingGeneration)
     return res
   }
 

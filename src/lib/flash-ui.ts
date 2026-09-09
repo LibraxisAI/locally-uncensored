@@ -22,8 +22,15 @@ interface BillingNotice {
   ok: boolean
 }
 export const useFlashBillingStore = create<{ entries: Record<string, BillingNotice> }>(() => ({ entries: {} }))
+let billingGeneration = 0
+export const captureFlashGeneration = (): number => billingGeneration
+export function clearFlashNotices(): void {
+  billingGeneration += 1
+  useFlashBillingStore.setState({ entries: {} })
+}
 
-export function recordFlashResponse(billingKey: string, response: Response): void {
+export function recordFlashResponse(billingKey: string, response: Response, generation = billingGeneration): void {
+  if (generation !== billingGeneration) return
   const billing = response.headers.get('x-lu-chat-billing')
   const raw = response.headers.get('x-lu-flash-remaining')
   const remaining = raw === null ? NaN : Number(raw)
@@ -37,4 +44,3 @@ export function recordFlashResponse(billingKey: string, response: Response): voi
     return { entries }
   })
 }
-

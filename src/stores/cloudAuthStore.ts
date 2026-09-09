@@ -4,6 +4,7 @@
 // a persisted copy could only ever be stale.
 
 import { create } from 'zustand'
+import { clearFlashNotices } from '../lib/flash-ui'
 import type { CloudQuota } from '../lib/render/cloud-jobs'
 
 export interface CloudUser {
@@ -45,6 +46,10 @@ export const useCloudAuthStore = create<CloudAuthState>()((set) => ({
   setSignedIn: (user, account) => set({ status: 'signed-in', user, ...account }),
   setQuota: (quota) => set({ quota }),
 }))
+
+useCloudAuthStore.subscribe((state, previous) => {
+  if (state.user?.id !== previous.user?.id) clearFlashNotices()
+})
 
 /** The whole cloud axis in one predicate: signed in, actively licensed,
  *  through the launch gate, and on a tier whose monthly credit budget is > 0

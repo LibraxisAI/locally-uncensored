@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { FlashChatNotice } from '../FlashChatNotice'
 import { useModelStore } from '../../../stores/modelStore'
-import { parseFlashPolicy, recordFlashResponse, useFlashBillingStore } from '../../../lib/flash-ui'
+import { captureFlashGeneration, clearFlashNotices, parseFlashPolicy, recordFlashResponse, useFlashBillingStore } from '../../../lib/flash-ui'
 
 const wire = { daily_tokens: 50000, default_max_output: 8192, request_seconds: 240, sessions_only: true, concurrent_requests: 1 }
 const policy = parseFlashPolicy(wire, 'flash', 'test-endpoint|model')!
@@ -17,6 +17,22 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('visible flash policy and billing', () => {
+  it('clears notices across focus changes and fences late responses', () => {
+    render(createElement(FlashChatNotice))
+    const generation = captureFlashGeneration()
+    const response = new Response('', { headers: { 'x-lu-chat-billing': 'credits', 'x-lu-flash-remaining': '0' } })
+    act(() => recordFlashResponse(policy.billingKey, response, generation))
+    expect(screen.queryByRole('alert')).not.toBeNull()
+    act(() => window.dispatchEvent(new Event('blur')))
+    expect(screen.queryByRole('alert')).toBeNull()
+    act(() => recordFlashResponse(policy.billingKey, response, generation))
+    expect(screen.queryByRole('alert')).toBeNull()
+    act(() => window.dispatchEvent(new Event('focus')))
+    act(() => recordFlashResponse(policy.billingKey, response, captureFlashGeneration()))
+    expect(screen.queryByRole('alert')).not.toBeNull()
+    act(clearFlashNotices)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
   it('publishes the server-provided limits before a request', () => {
     render(createElement(FlashChatNotice))
     fireEvent.click(screen.getByText(/50,000 input and output tokens/))

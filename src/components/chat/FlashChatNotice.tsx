@@ -1,7 +1,18 @@
+import { useEffect } from 'react'
 import { useModelStore } from '../../stores/modelStore'
-import { useFlashBillingStore } from '../../lib/flash-ui'
+import { clearFlashNotices, useFlashBillingStore } from '../../lib/flash-ui'
 
 export function FlashChatNotice() {
+  useEffect(() => {
+    // Another tab can change the account while this surface is unfocused.
+    window.addEventListener('blur', clearFlashNotices)
+    window.addEventListener('focus', clearFlashNotices)
+    return () => {
+      window.removeEventListener('blur', clearFlashNotices)
+      window.removeEventListener('focus', clearFlashNotices)
+      clearFlashNotices()
+    }
+  }, [])
   const active = useModelStore((s) => s.models.find((m) => m.name === s.activeModel))
   const policy = active && 'flash' in active ? active.flash : undefined
   const notice = useFlashBillingStore((s) => policy ? s.entries[policy.billingKey] : undefined)
@@ -32,4 +43,3 @@ export function FlashChatNotice() {
     </div>
   )
 }
-
