@@ -1,4 +1,5 @@
 import { useCallback, useState, useEffect, useRef } from 'react'
+import { chatRecommendationGroups, isBelowChatMinimum, SMALL_CHAT_MODEL_WARNING } from '../../lib/chat-model-minimum'
 import { bundleIsComplete, bundleIsDownloading, bundleHasErrors } from '../../lib/bundle-state'
 import { motion } from 'framer-motion'
 import { Search, XCircle, Loader2, Sparkles, Unlock, ShieldCheck, ExternalLink, Download, CheckCircle, Info } from 'lucide-react'
@@ -847,7 +848,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
   // catalog data and no picks while searching or filtering.
   const showPicks = isText && !search && vramTier === 'all' && textGroups.length > 4
   const scoredGroups = showPicks
-    ? [...textGroups]
+    ? chatRecommendationGroups(textGroups)
         .map(g => {
           const rep = pickDefaultVariant(g, systemVRAM, isModelFullyInstalled, getModelDownloadState)
           let score = 0
@@ -1167,7 +1168,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
         <>
           {/* Start here — derived picks for the active tab */}
           {topPicks.length >= 2 && (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" role="region" aria-label="Start here">
               <div className="flex items-center gap-1.5 px-1">
                 <Sparkles size={11} className="text-gray-400 dark:text-gray-500" />
                 <h3 className="t-micro font-semibold uppercase tracking-[0.12em] text-gray-700 dark:text-gray-300">Start here</h3>
@@ -1239,6 +1240,7 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
         {infoModel && (
           <div className="space-y-3">
             <p className="text-[0.72rem] text-gray-700 dark:text-gray-200 leading-relaxed">{infoModel.description}</p>
+            {isBelowChatMinimum(infoModel) && <p className="text-xs leading-relaxed text-gray-700 dark:text-gray-200">{SMALL_CHAT_MODEL_WARNING}</p>}
             <div className="flex items-center gap-1.5 flex-wrap">
               {infoModel.tags.map(t => (
                 <span key={t} className="t-micro px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400">{t}</span>
