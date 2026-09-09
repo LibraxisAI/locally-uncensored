@@ -24,6 +24,7 @@ export interface OllamaModel {
 
 // Cloud text model (OpenAI-compat or Anthropic) — lighter than OllamaModel
 export interface CloudModel {
+  flash?: import('../lib/flash-ui').FlashPolicy
   name: string
   model: string
   size: number

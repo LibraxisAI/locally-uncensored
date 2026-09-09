@@ -1,3 +1,5 @@
+import { parseFlashPolicy, recordFlashResponse } from '../../lib/flash-ui'
+
 /**
  * OpenAI-Compatible Provider
  *
@@ -108,6 +110,8 @@ type ChatFetcher = (
 ) => Promise<Response>
 
 interface OpenAIModelEntry {
+  flash?: unknown
+  usage_class?: unknown
   id: string
   object: string
   created?: number
@@ -154,6 +158,8 @@ function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
     created: asNumber(m.created),
     owned_by: asString(m.owned_by),
     name: asString(m.name),
+    flash: m.flash,
+    usage_class: m.usage_class,
     context_length: asNumber(m.context_length),
     input_modalities: Array.isArray(m.input_modalities)
       ? m.input_modalities.filter((x): x is string => typeof x === 'string')
@@ -590,6 +596,7 @@ export class OpenAIProvider implements ProviderClient {
       else if (survived !== asked) this.rememberEffort(memoryKey, lane, 'minimal')
     }
 
+    recordFlashResponse(this.catalogKey(model), res)
     return res
   }
 
@@ -1005,6 +1012,7 @@ export class OpenAIProvider implements ProviderClient {
             : (serverTools ?? m.supports_tools ?? true),
           supportsVision: m.input_modalities?.includes('image') || undefined,
           thinkMode: m.think,
+          flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
           effortLevels: m.reasoning_effort_levels,
           effortDefault: m.reasoning_effort_default,
         }
@@ -1031,6 +1039,7 @@ export class OpenAIProvider implements ProviderClient {
         supportsTools: m.supports_tools ?? true,
         supportsVision: m.input_modalities?.includes('image') || undefined,
         thinkMode: m.think,
+        flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
         // Straight through, no invention: a server that does not declare the
         // ladder leaves both undefined, and undefined is what switches the
         // whole effort feature off for this model.

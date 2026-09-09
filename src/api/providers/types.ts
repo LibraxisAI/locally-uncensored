@@ -104,6 +104,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 // ── Model ──────────────────────────────────────────────────────
 
 export interface ProviderModel {
+  flash?: import('../../lib/flash-ui').FlashPolicy
   id: string            // Model ID as provider knows it (e.g. "gpt-4o", "claude-sonnet-4-20250514")
   name: string          // Display name
   provider: ProviderId

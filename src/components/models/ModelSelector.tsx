@@ -1407,6 +1407,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                             {nameEnde && <span className="shrink-0">{nameEnde}</span>}
                           </span>
 
+                          {'flash' in model && model.flash && <span className="t-micro text-emerald-600 dark:text-emerald-400" title="Session-only free allowance. See the chat composer for daily limits.">Flash</span>}
                           {/* Subtle meta */}
                           {model.type !== 'text' && (
                             <span className={`text-[0.5rem] uppercase font-medium tracking-wide ${TYPE_COLOR[model.type] || 'text-gray-500'} opacity-60`}>
