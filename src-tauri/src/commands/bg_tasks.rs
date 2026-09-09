@@ -670,6 +670,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_runs_a_command_and_status_eventually_reports_finished() {
+        let _isolation = super::sweep_isolation().await;
         let r = shell_task_start_impl(&json!({ "command": echo_cmd("hi") }))
             .await
             .unwrap();
@@ -701,6 +702,7 @@ mod tests {
 
     #[tokio::test]
     async fn kill_cancels_a_running_task() {
+        let _isolation = super::sweep_isolation().await;
         let r = shell_task_start_impl(&json!({ "command": sleep_cmd_30s() }))
             .await
             .unwrap();
@@ -721,6 +723,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_active_tasks_newest_first() {
+        let _isolation = super::sweep_isolation().await;
         let r1 = shell_task_start_impl(&json!({ "command": echo_cmd("a") }))
             .await
             .unwrap();
