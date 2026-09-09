@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic']) {
   const html = readFileSync(`docs/vs/${slug}/index.html`, 'utf8')
   const page = new DOMParser().parseFromString(html, 'text/html')
   it(`${slug} dates and sources every comparative fact on both sides`, () => {
@@ -51,4 +51,17 @@ it('Chutes scopes workload restrictions to subscriptions and separates request a
   expect(cells[2].textContent).toContain('must use PAYGO')
   expect(cells[2].querySelector('a')!.getAttribute('href')).toBe('https://chutes.ai/terms')
   expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|all API usage is banned/i)
+})
+
+it('Infermatic does not conflate UI response limits with API limits or premium credits', () => {
+  const page = new DOMParser().parseFromString(readFileSync('docs/vs/infermatic/index.html', 'utf8'), 'text/html')
+  const cells = [...page.querySelectorAll('[data-comparison-row] td:first-of-type')]
+  expect(cells[0].textContent).toContain('12, 15 and 18 requests per minute')
+  expect(cells[1].textContent).toContain('2,048 under UI Token Responses')
+  expect(cells[1].textContent).toContain('does not establish a universal')
+  expect(cells[2].textContent).toContain('separate keys and base URLs')
+  expect(cells[2].textContent).toContain('without rollover')
+  expect(cells[2].textContent).toContain('included Core models remain available')
+  expect(cells[2].querySelector('a')!.getAttribute('href')).toBe('https://ui.infermatic.ai/docs')
+  expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|all API responses are capped/i)
 })

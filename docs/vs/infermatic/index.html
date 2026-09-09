@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LU Cloud and Infermatic: UI limits and API access compared</title>
+<meta name="description" content="A dated, source-linked comparison of LU Cloud and Infermatic. Separate UI response limits, Core API access and premium-model credits.">
+<link rel="canonical" href="https://locallyuncensored.com/vs/infermatic/">
+<link rel="icon" href="/favicon.png">
+<link rel="stylesheet" href="/assets/lu.css">
+<style>.comparison-scroll{overflow-x:auto;max-width:100%}.comparison-scroll table{min-width:680px}.comparison-scroll th,.comparison-scroll td{vertical-align:top}.comparison-source{display:block;margin-top:12px;font-size:.85rem}</style>
+</head>
+<body>
+<main class="container lu-doc">
+<nav aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/alternatives/">Comparisons</a> / Infermatic</nav>
+<article>
+<h1>LU Cloud and Infermatic</h1>
+<p>Compare the interface and API route you intend to use. This is not a performance benchmark or a price-per-token ranking. Different credit units are not interchangeable.</p>
+<p>Checked <time datetime="2026-09-09">September 9, 2026</time>. Plans can change. Follow the sources and recheck before purchasing.</p>
+<p id="comparison-help">On a narrow screen, scroll the table horizontally to see both services. Keyboard users can focus the table and use the arrow keys, or tab to its source links.</p>
+<div class="comparison-scroll" role="region" aria-label="Plan and usage comparison" aria-describedby="comparison-help" tabindex="0">
+<table>
+<caption>Published plan and usage facts</caption>
+<thead><tr><th scope="col">Question</th><th scope="col">Infermatic</th><th scope="col">LU Cloud</th></tr></thead>
+<tbody>
+<tr data-comparison-row><th scope="row">Plan structure</th><td>Essential costs USD 9 monthly, Standard USD 16 and Plus USD 20, with flat-rate access to the models listed for each tier. Listed API concurrency is one, one and two requests respectively; rate limits are 12, 15 and 18 requests per minute.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://infermatic.ai/pricing/">Infermatic pricing and API limits</a></span></td><td>Credit packs start at EUR 5 for 165,000 credits without a subscription. Paid request limits are published separately. A credit balance is not a concurrency guarantee; review the limits for the route you use.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://lu-labs.ai/pricing?src=luc">LU packs and published limits</a></span></td></tr>
+<tr data-comparison-row><th scope="row">UI response versus daily allowance</th><td>The paid tiers list 2,048 under UI Token Responses and 86,400 UI requests per day. These are UI figures. The table does not establish a universal 2,048-token API output cap or the model's full context window.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://infermatic.ai/pricing/">Infermatic UI limits</a></span></td><td>Flash app sessions have a 50,000 combined input/output token allowance per account per day, with one request at a time. Reservations that cannot fit follow the visible credit path. This daily budget is not a per-response output limit; model capabilities are listed separately.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://lu-labs.ai/pricing?src=luc">LU allowance and model capabilities</a></span></td></tr>
+<tr data-comparison-row><th scope="row">Core and premium routes</th><td>The documentation distinguishes the Core API from a premium Credits API add-on to Plus, using separate keys and base URLs. Premium credits refresh monthly without rollover; when exhausted, premium access pauses while included Core models remain available.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://ui.infermatic.ai/docs">Infermatic Credits documentation</a></span></td><td>LU API keys use credits, including for Flash models. The free Flash allowance is for authenticated app sessions, not API keys. Check the route, model and billing mode before starting an automated workflow.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://lu-labs.ai/pricing?src=luc">LU API and session billing</a></span></td></tr>
+</tbody>
+</table>
+</div>
+<h2>Check which limit applies to your request</h2>
+<p>A UI response limit, an API concurrency limit and a monthly credit allowance measure different things. Confirm the selected model and API route rather than applying one advertised limit to every interface. Neither service is benchmarked here for task quality or speed.</p>
+<p>Read <a href="/cloud/">LU's cloud capabilities and restrictions</a> before buying. Hosted requests leave your machine, and image and video generation have content restrictions. Local inference depends on your hardware and backend.</p>
+<p><a class="cta-btn" href="https://lu-labs.ai/pricing?tab=credits&amp;src=luc">Review LU packs and calculator</a></p>
+</article>
+</main>
+</body>
+</html>

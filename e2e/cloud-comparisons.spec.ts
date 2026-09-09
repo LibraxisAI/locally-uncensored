@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic']) {
   test(`${slug} has readable, keyboard-scrollable comparison rows on mobile`, async ({ page }, testInfo) => {
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url())
@@ -28,7 +28,11 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes']) {
       await expect(region).toContainText('USD 4.17 and USD 8.33')
       await expect(region).toContainText('low-volume API traffic')
     }
-    if (slug === 'venice' || slug === 'chutes') {
+    if (slug === 'infermatic') {
+      await expect(region).toContainText('2,048 under UI Token Responses')
+      await expect(region).toContainText('separate keys and base URLs')
+    }
+    if (['venice', 'chutes', 'infermatic'].includes(slug)) {
       await page.screenshot({ path: testInfo.outputPath(`${slug}-mobile.png`), fullPage: true })
       const luSource = region.locator('td:last-child a').last()
       await luSource.focus()
