@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code']) {
   test(`${slug} has readable, keyboard-scrollable comparison rows on mobile`, async ({ page }, testInfo) => {
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url())
@@ -36,7 +36,11 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
       await expect(region).toContainText('Pro allows two and Max six')
       await expect(region).toContainText('LoRA variants can behave differently')
     }
-    if (['venice', 'chutes', 'infermatic', 'arliai'].includes(slug)) {
+    if (slug === 'cerebras-code') {
+      await expect(region).toContainText('historical launch prices, not a verified current offer')
+      await expect(region).toContainText('minute limits and the available budget still apply')
+    }
+    if (['venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code'].includes(slug)) {
       await page.screenshot({ path: testInfo.outputPath(`${slug}-mobile.png`), fullPage: true })
       const luSource = region.locator('td:last-child a').last()
       await luSource.focus()

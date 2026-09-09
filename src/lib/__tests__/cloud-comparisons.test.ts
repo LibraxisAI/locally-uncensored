@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
-for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai']) {
+for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code']) {
   const html = readFileSync(`docs/vs/${slug}/index.html`, 'utf8')
   const page = new DOMParser().parseFromString(html, 'text/html')
   it(`${slug} dates and sources every comparative fact on both sides`, () => {
@@ -27,6 +27,18 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
     }
   })
 }
+
+it('Cerebras separates historical Code offers from current API tiers and limits', () => {
+  const page = new DOMParser().parseFromString(readFileSync('docs/vs/cerebras-code/index.html', 'utf8'), 'text/html')
+  const cells = [...page.querySelectorAll('[data-comparison-row] td:first-of-type')]
+  expect(cells[0].textContent).toContain('historical launch prices, not a verified current offer')
+  expect(cells[0].textContent).toContain('Code availability is not established')
+  expect(cells[1].textContent).toContain('verified payment method')
+  expect(cells[1].textContent).toContain('expire after 30 days')
+  expect(cells[2].textContent).toContain('minute limits and the available budget still apply')
+  expect(cells[2].querySelector('a')!.getAttribute('href')).toBe('https://inference-docs.cerebras.ai/support/rate-limits')
+  expect(page.body.textContent).not.toMatch(/cheapest|cheaper than|best value|all plans are sold out|unlimited API/i)
+})
 
 it('Venice distinguishes recurring credits, app allowances and metered API usage', () => {
   const html = readFileSync('docs/vs/venice/index.html', 'utf8')
