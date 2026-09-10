@@ -10,7 +10,7 @@
 // the first flip). Payment stays on lu-labs.ai — the app never touches Stripe.
 
 import { useEffect, useState } from 'react'
-import { ExternalLink, HardDrive, RefreshCw, ArrowLeft, ArrowRight } from 'lucide-react'
+import { ExternalLink, HardDrive, RefreshCw, ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -20,6 +20,7 @@ import { AccountPanel } from '../auth/AccountPanel'
 import { CLOUD_BASE } from '../../api/cloud/config'
 import { openExternal } from '../../api/backend'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
+import { cloudPitchLines } from '../../lib/cloud-pitch'
 
 const PLANS = [
   { anchor: 'hosted', name: 'Hosted', price: '€19' },
@@ -167,6 +168,17 @@ export function CloudGateModal() {
         step === 'intro' ? (
           <div className="space-y-5 pt-2">
             <CloudHero subtitle="Image, video, chat, code. On LU's hosted GPUs." />
+            {/* Der Schalter hatte bis 3.0.0 kein Argument. Hier steht es, in
+                fester Reihenfolge und mit echten Zahlen aus dem Katalog
+                (lib/cloud-pitch.ts, gebunden an das Web-Repo). */}
+            <ul className="space-y-1.5 max-w-xs mx-auto" data-testid="cloud-pitch">
+              {cloudPitchLines().map((line) => (
+                <li key={line} className="flex items-start gap-2 text-[0.72rem] leading-snug text-gray-600 dark:text-gray-400">
+                  <Check size={12} className="mt-[2px] shrink-0 text-lu-cloud" />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
             <div className="space-y-2 max-w-xs mx-auto">
               <button onClick={() => setStep('plans')} className={primaryBtn}>
                 Get LU Cloud <ArrowRight size={13} />

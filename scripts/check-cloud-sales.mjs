@@ -118,6 +118,40 @@ assert.equal(claimed.textContent, String(unfilteredFull))
 const claimedTotal = pricing.querySelector('[data-catalog-count]')
 assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, 'catalog size drift')
 assert.equal(claimedTotal.textContent, String(catalogSize))
+// ── Der Wolkenschalter im Desktop ────────────────────────────────────
+//
+// Die Oberflaeche zeigt diese Zahlen, BEVOR jemand angemeldet ist, also bevor
+// es einen Katalog zu lesen gibt. Sie stehen deshalb fest in
+// src/lib/cloud-pitch.ts, und hier haengen sie an ihrer Quelle. Ein Schalter,
+// der eine Zahl verspricht, die der Katalog nicht mehr hergibt, ist eine
+// Falschaussage im Kaufmoment.
+const pitchSource = ts.createSourceFile(
+  'cloud-pitch.ts',
+  readFileSync(new URL('../src/lib/cloud-pitch.ts', import.meta.url), 'utf8'),
+  ts.ScriptTarget.Latest,
+  true,
+)
+const pitch = objects(pitchSource).find((row) => typeof row.chatModels === 'number')
+assert.ok(pitch, 'CLOUD_PITCH not found in cloud-pitch.ts')
+const mediaSource = source('apps/web/lib/render/cloud-models.ts')
+const mediaRows = objects(mediaSource).filter((row) => typeof row.id === 'string' && typeof row.kind === 'string')
+// `ops`-Eintraege sind Sondermodelle (Lipsync, Extend, Training), keine
+// Auswahleintraege. Die Zaehlung der Seite meint die Auswahl.
+const opsIds = new Set(
+  mediaSource.getFullText().split('\n')
+    .filter((line) => /ops: \[/.test(line))
+    .map((line) => /id: '([^']+)'/.exec(line)?.[1])
+    .filter(Boolean),
+)
+const countKind = (kind) => mediaRows.filter((row) => row.kind === kind && !opsIds.has(row.id)).length
+assert.equal(pitch.chatModels, catalogSize, 'pitch: chat model count drift')
+assert.equal(pitch.unfilteredChatModels, unfilteredFull, 'pitch: unfiltered count drift')
+assert.equal(pitch.flashModels, catalog.filter((row) => row.usageClass === 'flash').length, 'pitch: flash count drift')
+assert.equal(pitch.flashDailyTokens, daily, 'pitch: daily ceiling drift')
+assert.equal(pitch.imageModels, countKind('image'), 'pitch: image model count drift')
+assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count drift')
+console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
+
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
 for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
   const comparison = new JSDOM(readFileSync(new URL(`../docs/vs/${slug}/index.html`, import.meta.url), 'utf8')).window.document
