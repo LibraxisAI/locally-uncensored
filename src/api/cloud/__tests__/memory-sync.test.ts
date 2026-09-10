@@ -102,7 +102,7 @@ it('sends the verified session through real HTTP and parses a payload-free delet
     expect(received).toEqual({ memoryId: 'one', expectedRevision: 0, payload: null, deleted: true })
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
-it('closes a real unfinished HTTP response on account revocation', async () => {
+it.each(['account', 'cancelled'] as const)('closes a real unfinished HTTP response on %s', async kind => {
   let started!: () => void
   let closed!: () => void
   const seen = new Promise<void>(resolve => { started = resolve })
@@ -117,11 +117,37 @@ it('closes a real unfinished HTTP response on account revocation', async () => {
   endpoint.base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   vi.stubGlobal('fetch', networkFetch)
   try {
-    const pending = withMemorySyncSession('a', client => client.pull())
-    const failure = expect(pending).rejects.toMatchObject({ kind: 'account' })
+    const controller = new AbortController()
+    const pending = withMemorySyncSession('a', client => client.pull(), controller.signal)
+    const failure = expect(pending).rejects.toMatchObject({ kind })
     await seen
-    useCloudAuthStore.getState().setSignedOut()
+    if (kind === 'account') useCloudAuthStore.getState().setSignedOut()
+    else controller.abort('PRIVATE_CALLER_REASON')
     await failure
     await disconnected
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+
+it('refuses pre-cancelled work without SDK or network calls', async () => {
+  const controller = new AbortController()
+  controller.abort('PRIVATE_CALLER_REASON')
+  await expect(withMemorySyncSession('a', client => client.pull(), controller.signal)).rejects.toMatchObject({
+    kind: 'cancelled', message: 'Memory synchronization cancelled. Some changes may already be saved.',
+  })
+  expect(auth.getSession).not.toHaveBeenCalled()
+  expect(fetcher).not.toHaveBeenCalled()
+})
+
+it('cancels stalled identity verification and removes the caller listener', async () => {
+  auth.getUser.mockImplementation(() => new Promise(() => {}))
+  const controller = new AbortController()
+  const remove = vi.spyOn(controller.signal, 'removeEventListener')
+  const pending = withMemorySyncSession('a', client => client.pull(), controller.signal)
+  const failure = expect(pending).rejects.toMatchObject({ kind: 'cancelled' })
+  await vi.waitFor(() => expect(auth.getUser).toHaveBeenCalled())
+  controller.abort()
+  await failure
+  expect(fetcher).not.toHaveBeenCalled()
+  expect(auth.unsubscribe).toHaveBeenCalledOnce()
+  expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
 })

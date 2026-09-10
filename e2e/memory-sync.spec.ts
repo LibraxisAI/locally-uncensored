@@ -17,6 +17,55 @@ async function accountFixture(page: Page) {
   await page.getByRole('button', { name: 'Use account memories', exact: true }).click()
 }
 
+test('foreground cancellation stops a held pull and leaving the collection cancels the next run', async ({ page }) => {
+  let finish: (() => Promise<void>) | undefined
+  let hold = true
+  let reads = 0
+  await page.route('**/*', route => new URL(route.request().url()).port === '5273' ? route.continue() : route.abort())
+  await page.route('**/api/memory/sync**', async route => {
+    expect(route.request().method()).toBe('GET')
+    reads++
+    const respond = () => route.fulfill({ json: { ownerId: 'owner-a', records: [], next: null } })
+    if (hold) {
+      await new Promise<void>(resolve => { finish = async () => { await respond().catch(() => {}); resolve() } })
+    } else await respond()
+  })
+  await page.goto('/e2e/memory-sensitive-proof.html')
+  await page.evaluate(() => {
+    const original = window.fetch.bind(window)
+    Reflect.set(window, 'memoryProofAborts', 0)
+    window.fetch = (input, init) => {
+      if (String(input).includes('/api/memory/sync')) init?.signal?.addEventListener('abort', () => {
+        Reflect.set(window, 'memoryProofAborts', Number(Reflect.get(window, 'memoryProofAborts')) + 1)
+      }, { once: true })
+      return original(input, init)
+    }
+  })
+  await accountFixture(page)
+  await page.getByLabel('Allow cloud storage for this account collection', { exact: true }).check()
+  const sync = page.getByRole('button', { name: 'Sync account memories', exact: true })
+  await sync.click()
+  await expect.poll(() => reads).toBe(1)
+  await page.getByRole('button', { name: 'Cancel synchronization', exact: true }).click()
+  await expect(page.getByRole('status')).toHaveText('Memory synchronization cancelled. Some changes may already be saved.')
+  await expect(sync).toBeEnabled()
+  expect(await page.evaluate(() => Reflect.get(window, 'memoryProofAborts'))).toBe(1)
+  await finish!()
+  finish = undefined
+  await sync.click()
+  await expect.poll(() => reads).toBe(2)
+  await page.getByRole('button', { name: 'Use local memories', exact: true }).click()
+  await page.getByRole('button', { name: 'Use account memories', exact: true }).click()
+  expect(await page.evaluate(() => Reflect.get(window, 'memoryProofAborts'))).toBe(2)
+  await finish!()
+  hold = false
+  await page.getByLabel('Allow cloud storage for this account collection', { exact: true }).check()
+  await sync.click()
+  await expect(page.getByRole('status')).toHaveText('Synced 0 uploads and 0 downloads. 0 conflicting memories left unchanged.')
+  expect(reads).toBe(3)
+  await expect(page.getByRole('button', { name: 'Cancel synchronization', exact: true })).toHaveCount(0)
+})
+
 test('explicit UI sync uploads, downloads, preserves conflicts and persists shared deletion', async ({ page }, testInfo) => {
   let records: SyncedMemoryRecord[] = []
   let writes = 0
@@ -126,9 +175,11 @@ test('explicit UI sync uploads, downloads, preserves conflicts and persists shar
   expect(baseline).toEqual([{ revision: 8, hash: null }])
 })
 
-test('a lost first-upload response cannot revive a locally deleted memory after reload', async ({ page }) => {
+for (const responseMode of ['lost', 'cancelled'] as const) {
+test(`a ${responseMode} first-upload response cannot revive a locally deleted memory after reload`, async ({ page }) => {
   let records: SyncedMemoryRecord[] = []
   let lostResponse = false
+  let finish: (() => Promise<void>) | undefined
   await page.route('**/*', route => new URL(route.request().url()).port === '5273' ? route.continue() : route.abort())
   await page.route('**/api/memory/sync**', async route => {
     if (route.request().method() === 'GET') return route.fulfill({ json: { ownerId: 'owner-a', records, next: null } })
@@ -139,7 +190,16 @@ test('a lost first-upload response cannot revive a locally deleted memory after 
     const record = { memory_id: body.memoryId, revision: body.expectedRevision + 1, payload: body.payload,
       deleted: body.deleted === true, updated_at: '2026-09-09T00:00:00Z' }
     records = [record]
-    if (!lostResponse) { lostResponse = true; return route.abort('failed') }
+    if (!lostResponse) {
+      lostResponse = true
+      if (responseMode === 'lost') return route.abort('failed')
+      return new Promise<void>(resolve => {
+        finish = async () => {
+          await route.fulfill({ json: { ownerId: 'owner-a', record } }).catch(() => {})
+          resolve()
+        }
+      })
+    }
     return route.fulfill({ json: { ownerId: 'owner-a', record } })
   })
   await page.goto('/e2e/memory-sensitive-proof.html')
@@ -150,6 +210,12 @@ test('a lost first-upload response cannot revive a locally deleted memory after 
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await page.getByLabel('Allow cloud storage for this account collection', { exact: true }).check()
   await page.getByRole('button', { name: 'Sync account memories', exact: true }).click()
+  if (responseMode === 'cancelled') {
+    await expect.poll(() => Boolean(finish)).toBe(true)
+    await page.getByRole('button', { name: 'Cancel synchronization', exact: true }).click()
+    await expect(page.getByRole('status')).toHaveText('Memory synchronization cancelled. Some changes may already be saved.')
+    await finish!()
+  }
   await expect(page.getByRole('status')).toContainText('Some changes may already be saved')
   expect(records[0].deleted).toBe(false)
   await page.getByRole('button', { name: 'Delete entry', exact: true }).click()
@@ -171,3 +237,4 @@ test('a lost first-upload response cannot revive a locally deleted memory after 
   expect(records[0]).toMatchObject({ revision: 2, payload: null, deleted: true })
   await expect(page.getByRole('button', { name: 'Delete entry', exact: true })).toHaveCount(0)
 })
+}

@@ -12,7 +12,7 @@ export interface SyncedMemoryRecord {
   updated_at: string
 }
 export class MemorySyncError extends Error {
-  readonly kind: 'account' | 'conflict' | 'network' | 'invalid'
+  readonly kind: 'account' | 'conflict' | 'network' | 'invalid' | 'cancelled'
   constructor(kind: MemorySyncError['kind'], message: string) { super(message); this.kind = kind }
 }
 const invalid = () => new MemorySyncError('invalid', 'Invalid memory synchronization response')
@@ -31,8 +31,10 @@ export interface MemorySyncSession {
 }
 
 /** No background activity or opt-in: callers explicitly own one bounded run. */
-export async function withMemorySyncSession<T>(ownerId: string, work: (session: MemorySyncSession) => Promise<T>): Promise<T> {
+export async function withMemorySyncSession<T>(ownerId: string, work: (session: MemorySyncSession) => Promise<T>, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController()
+  const cancel = () => controller.abort(new MemorySyncError('cancelled', 'Memory synchronization cancelled. Some changes may already be saved.'))
+  if (signal?.aborted) cancel()
   const accountError = () => new MemorySyncError('account', 'Memory synchronization stopped because the account changed')
   const assertCurrent = () => {
     const current = useCloudAuthStore.getState()
@@ -40,6 +42,7 @@ export async function withMemorySyncSession<T>(ownerId: string, work: (session: 
     if (current.status !== 'signed-in' || current.user?.id !== ownerId) throw accountError()
   }
   assertCurrent()
+  signal?.addEventListener('abort', cancel, { once: true })
   const stopStore = useCloudAuthStore.subscribe(state => {
     if (state.status !== 'signed-in' || state.user?.id !== ownerId) controller.abort(accountError())
   })
@@ -137,5 +140,6 @@ export async function withMemorySyncSession<T>(ownerId: string, work: (session: 
     clearTimeout(timer)
     stopStore()
     stopAuth?.()
+    signal?.removeEventListener('abort', cancel)
   }
 }

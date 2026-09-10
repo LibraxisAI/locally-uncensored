@@ -38,6 +38,36 @@ it('persists an intent before uploading and acknowledges accepted content afterw
   expect(useMemoryStore.getState().memorySyncBaselines.A.one.revision).toBe(1)
   expect(fixture.flush).toHaveBeenCalledTimes(4)
 })
+
+it('does not start a pull after cancellation during pending local confirmation', async () => {
+  let finish!: () => void
+  fixture.flush.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+  const controller = new AbortController()
+  const pending = synchronizeMemoryCollection('A', false, undefined, controller.signal)
+  controller.abort()
+  finish()
+  await expect(pending).rejects.toMatchObject({ kind: 'cancelled' })
+  expect(fixture.pull).not.toHaveBeenCalled()
+  expect(fixture.write).not.toHaveBeenCalled()
+  expect((await synchronizeMemoryCollection('A')).uploaded).toBe(0)
+})
+
+it('retains accepted-write intent on cancel and recovers deletion on the next run', async () => {
+  useMemoryStore.setState({ entries: [memory] })
+  const controller = new AbortController()
+  const normalWrite = fixture.write.getMockImplementation()!
+  fixture.write.mockImplementationOnce(async (...args: unknown[]) => {
+    const saved = await normalWrite(...args)
+    controller.abort()
+    return saved
+  })
+  await expect(synchronizeMemoryCollection('A', false, undefined, controller.signal)).rejects.toMatchObject({ kind: 'cancelled' })
+  expect(useMemoryStore.getState().memorySyncPending.A.one.revision).toBe(0)
+  useMemoryStore.getState().removeMemory('one')
+  await synchronizeMemoryCollection('A')
+  expect(remote[0]).toMatchObject({ revision: 2, deleted: true, payload: null })
+  expect(useMemoryStore.getState().memorySyncPending.A).toEqual({})
+})
 it('preserves valid prototype-named IDs as own metadata keys', async () => {
   useMemoryStore.setState({ entries: [{ ...memory, id: '__proto__' }] })
   await synchronizeMemoryCollection('A')

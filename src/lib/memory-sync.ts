@@ -37,7 +37,7 @@ function ownerMetadata(all: unknown, owner: string, minimumRevision: number): Re
  * Write intents contain hashes, not private payload copies. They are durable
  * before upload, so a crash or local deletion cannot turn an uncertain first
  * upload into an untracked remote record that gets downloaded again. */
-export async function synchronizeMemoryCollection(owner: string, allowSensitive = false, resolution?: MemorySyncResolution) {
+export async function synchronizeMemoryCollection(owner: string, allowSensitive = false, resolution?: MemorySyncResolution, signal?: AbortSignal) {
   if (running) throw new Error('Memory synchronization is already running')
   const initial = useMemoryStore.getState()
   let expectedEntries = initial.entries
@@ -47,6 +47,7 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
   const choice = resolution ? { ...resolution } : undefined
   if (choice && (choice.owner !== owner || choice.collectionRevision !== revision || !['local', 'cloud'].includes(choice.choice))) throw conflictChanged()
   const check = () => {
+    if (signal?.aborted) throw new MemorySyncError('cancelled', 'Memory synchronization cancelled. Some changes may already be saved.')
     const state = useMemoryStore.getState()
     const auth = useCloudAuthStore.getState()
     if (auth.status !== 'signed-in' || auth.user?.id !== owner || state.activeMemoryOwner !== owner ||
@@ -155,6 +156,6 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
       }))
       guard()
       return { downloaded: plan.pull.length, uploaded, removed: plan.remove.length, conflicts }
-    })
+    }, signal)
   } finally { running = false }
 }

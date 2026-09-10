@@ -39,6 +39,12 @@ function MemorySettingsPanel() {
   const [syncConsent, setSyncConsent] = useState(false)
   const [sensitiveSyncConsent, setSensitiveSyncConsent] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
+  const syncController = useRef<AbortController | null>(null)
+  useEffect(() => () => {
+    const controller = syncController.current
+    syncController.current = null
+    controller?.abort()
+  }, [])
   const [syncMessage, setSyncMessage] = useState('')
   const [syncConflicts, setSyncConflicts] = useState<Awaited<ReturnType<typeof synchronizeMemoryCollection>>['conflicts']>([])
   const owner = useCloudAuthStore(state => state.status === 'signed-in' ? state.user?.id : undefined)
@@ -72,20 +78,30 @@ function MemorySettingsPanel() {
     if (state.entries !== previous.entries) setSyncConflicts([])
   }), [])
   const runSync = async (resolution?: MemorySyncResolution) => {
-    if (activeOwner === null || !syncConsent || syncBusy) return
+    if (activeOwner === null || !syncConsent || syncController.current) return
+    const controller = new AbortController()
+    syncController.current = controller
     setSyncBusy(true)
     setSyncConflicts([])
     setSyncMessage('Synchronizing memories...')
     try {
-      const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution)
+      const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution, controller.signal)
+      if (syncController.current !== controller) return
       setSyncConflicts(result.conflicts)
       setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
     } catch (error) {
+      if (syncController.current !== controller) return
       const messages = ['Sensitive memories need explicit permission for cloud storage before this collection can synchronize',
-        'This conflict changed. Sync again before choosing a version.']
+        'This conflict changed. Sync again before choosing a version.',
+        'Memory synchronization cancelled. Some changes may already be saved.']
       setSyncMessage(error instanceof Error && messages.includes(error.message) ? error.message
         : 'Could not complete memory synchronization. Check this account and try again. Some changes may already be saved.')
-    } finally { setSyncBusy(false) }
+    } finally {
+      if (syncController.current === controller) {
+        syncController.current = null
+        setSyncBusy(false)
+      }
+    }
   }
 
   // ── New memory form state ───────────────────────────────────
@@ -263,6 +279,7 @@ function MemorySettingsPanel() {
           <label className="block"><input type="checkbox" checked={syncConsent} disabled={syncBusy} onChange={event => setSyncConsent(event.target.checked)} /> Allow cloud storage for this account collection</label>
           <label className="block"><input type="checkbox" checked={sensitiveSyncConsent} disabled={syncBusy} onChange={event => setSensitiveSyncConsent(event.target.checked)} /> Also allow cloud storage of sensitive memories</label>
           <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync()}>Sync account memories</button>
+          {syncBusy && <button className="ml-3 underline" onClick={() => syncController.current?.abort()}>Cancel synchronization</button>}
           {syncMessage && <p role="status">{syncMessage}</p>}
           {syncConflicts.map((conflict, index) => {
             const local = entries.find(entry => entry.id === conflict.id)
