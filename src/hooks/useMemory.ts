@@ -24,6 +24,12 @@ import { generateEmbeddings, cosineSimilarity } from '../api/rag'
 import { loadVectors } from '../lib/memoryEmbedDB'
 import { silentCallAllowed, pickSilentCallModel } from '../lib/silent-model-calls'
 import type { MemoryFile } from '../types/agent-mode'
+import { useCloudAuthStore } from '../stores/cloudAuthStore'
+
+interface MemoryWriteGuard {
+  current: () => boolean
+  wrote: () => void
+}
 
 // Rate limit: only extract every Nth turn to reduce cost
 let _extractCounter = 0
@@ -87,6 +93,7 @@ export async function extractMemoriesFromPair(
 ): Promise<void> {
   const scope = options?.scope
   const sourceKind = options?.sourceKind ?? 'chat'
+  let unsubscribe: (() => void) | undefined
   try {
     const { activeModel } = useModelStore.getState()
     if (!activeModel) return
@@ -113,6 +120,19 @@ export async function extractMemoriesFromPair(
     const call = resolveSilentCall(activeModel)
     if (!call) return
     const { provider, modelId, callModel } = call
+    let expectedEntries = memState.entries
+    let revoked = false
+    unsubscribe = useCloudAuthStore.subscribe((state, previous) => {
+      if (state.status !== previous.status || state.user?.id !== previous.user?.id) revoked = true
+    })
+    const guard: MemoryWriteGuard = {
+      current: () => {
+        const current = useMemoryStore.getState()
+        if (current.entries !== expectedEntries || !current.settings.autoExtractEnabled) revoked = true
+        return !revoked
+      },
+      wrote: () => { expectedEntries = useMemoryStore.getState().entries },
+    }
 
     // Same num_ctx as the chat that just ran on this model. Ollama reloads the
     // model whenever num_ctx changes between requests, so an options-less
@@ -126,6 +146,7 @@ export async function extractMemoriesFromPair(
       useSettingsStore.getState().settings.contextWindowOverride,
       callModel,
     )
+    if (!guard.current()) return
 
     // Re-read immediately before the request; protected or other-project
     // titles must not leak through the extraction deduplication summary.
@@ -142,6 +163,7 @@ export async function extractMemoriesFromPair(
     })
 
     for await (const chunk of stream) {
+      if (!guard.current()) return
       if (chunk.content) fullResponse += chunk.content
       if (chunk.done) break
     }
@@ -151,12 +173,14 @@ export async function extractMemoriesFromPair(
     const result = parseExtractionResponse(fullResponse)
     if (result.shouldSave) {
       for (const memory of result.memories) {
+        if (!guard.current()) return
         // Serial per-memory so the second (resolution) LLM call is bounded and
         // we don't fire N concurrent inferences. Each is wrapped so one bad
         // memory never aborts the rest.
         try {
-          await resolveAndSaveMemory(memory, conversationId, scope, sourceKind)
+          await resolveAndSaveMemory(memory, conversationId, scope, sourceKind, guard)
         } catch {
+          if (!guard.current()) return
           // Per-memory failure → fall back to a plain add so the fact isn't lost.
           memState.addMemory({
             type: memory.type,
@@ -168,11 +192,14 @@ export async function extractMemoriesFromPair(
             scope,
             sourceKind,
           })
+          guard.wrote()
         }
       }
     }
   } catch {
     // Extraction failures are non-critical — silently swallowed
+  } finally {
+    unsubscribe?.()
   }
 }
 
@@ -188,10 +215,11 @@ export async function extractMemoriesFromPair(
  * Fire-and-forget contract: any embedding/LLM failure falls back to a plain
  * addMemory so a fact is never silently dropped. Never blocks the chat turn.
  */
-async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope?: string, sourceKind?: MemoryFile['sourceKind']): Promise<void> {
+async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope: string | undefined, sourceKind: MemoryFile['sourceKind'], guard: MemoryWriteGuard): Promise<void> {
   const memState = useMemoryStore.getState()
-  const addPlain = (): string =>
-    memState.addMemory({
+  const addPlain = (): string => {
+    if (!guard.current()) return ''
+    const id = memState.addMemory({
       type: memory.type,
       title: memory.title,
       description: memory.description,
@@ -201,6 +229,9 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
       sourceKind,
       scope,
     })
+    guard.wrote()
+    return id
+  }
 
   // Same-type, non-stale existing memories are the only merge candidates —
   // a "user" fact never merges into a "reference", etc.
@@ -220,6 +251,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
   } catch {
     // Ollama unreachable → can't compute similarity → just add (offline-safe).
   }
+  if (!guard.current()) return
   if (!newVec) {
     addPlain()
     return
@@ -227,6 +259,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
 
   // Hydrate vectors for same-type candidates and find the most similar one.
   const vecMap = await loadVectors(sameType.map((e) => e.id))
+  if (!guard.current()) return
   let bestSim = -1
   let bestEntry: MemoryFile | null = null
   const scored: Array<{ entry: MemoryFile; sim: number }> = []
@@ -276,6 +309,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
     const call = resolveSilentCall(activeModel)
     if (!call) return
     const { provider, modelId } = call
+    if (!guard.current()) return
     const currentEntries = useMemoryStore.getState().entries
     if (topK.some(candidate => !currentEntries.some(entry => entry.id === candidate.id && !entry.sensitive && entry.scope === scope && entry.content === candidate.content))) return
     const messages = buildResolutionPrompt(
@@ -285,6 +319,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
     let full = ''
     const stream = provider.chatStream(modelId, messages, { temperature: 0.1, maxTokens: 300 })
     for await (const chunk of stream) {
+      if (!guard.current()) return
       if (chunk.content) full += chunk.content
       if (chunk.done) break
     }
@@ -294,6 +329,8 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
     return
   }
 
+  if (!guard.current()) return
+
   if (decision.action === 'ADD') {
     // Already added as `newId` — nothing more to do.
     return
@@ -301,10 +338,12 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
   if (decision.action === 'NOOP') {
     // Duplicate after all → undo the speculative add.
     if (newId) useMemoryStore.getState().removeMemory(newId)
+    guard.wrote()
     return
   }
   // UPDATE: merge into the target, mark the speculative candidate superseded.
   useMemoryStore.getState().applyWriteDecision(decision, { newId: newId || undefined })
+  guard.wrote()
 }
 
 /**

@@ -18,6 +18,9 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { MemoryFile } from '../../types/agent-mode'
+import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { generateEmbeddings, cosineSimilarity } from '../../api/rag'
+import { loadVectors } from '../../lib/memoryEmbedDB'
 
 // ── Mocked module graph ────────────────────────────────────────
 // Everything the extraction touches, kept dumb so the only interesting
@@ -25,6 +28,7 @@ import type { MemoryFile } from '../../types/agent-mode'
 
 const chatStream = vi.fn()
 const addMemory = vi.fn(() => 'mem-1')
+const applyWriteDecision = vi.fn()
 
 let activeModel = 'qwen3:8b'
 let models: Array<{ name: string; type: string }> = []
@@ -43,7 +47,7 @@ vi.mock('../../stores/memoryStore', () => ({
       entries: memoryEntries,
       addMemory,
       removeMemory: vi.fn(),
-      applyWriteDecision: vi.fn(),
+      applyWriteDecision,
     }),
   },
 }))
@@ -112,6 +116,11 @@ beforeEach(() => {
   chatStream.mockReset()
   chatStream.mockImplementation(() => emptyStream())
   addMemory.mockClear()
+  applyWriteDecision.mockClear()
+  vi.mocked(generateEmbeddings).mockResolvedValue([[]])
+  vi.mocked(cosineSimilarity).mockReturnValue(0)
+  vi.mocked(loadVectors).mockResolvedValue(new Map())
+  useCloudAuthStore.getState().setSignedOut()
   memoryEntries = []
   memorySettings = { autoExtractEnabled: true, autoExtractInAllModes: false }
   models = [
@@ -119,6 +128,49 @@ beforeEach(() => {
     { name: 'lu-cloud::meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo', type: 'text' },
     { name: 'qwen3:8b', type: 'text' },
   ]
+})
+
+describe('late extraction writes', () => {
+  const extracted = JSON.stringify({ shouldSave: true, memories: [{ type: 'user', title: 'Fact', description: 'Fact', content: 'New fact', tags: [] }] })
+  it('does not restore data after local memories change during extraction', async () => {
+    activeModel = 'qwen3:8b'
+    chatStream.mockImplementation(() => (async function* () {
+      memoryEntries = []
+      yield { content: extracted, done: true }
+    })())
+    await threeTurns()
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    expect(addMemory).not.toHaveBeenCalled()
+  })
+  it('permanently revokes a pending write across sign-out and sign-in to the same account', async () => {
+    activeModel = 'qwen3:8b'
+    const account = { licenseActive: false, tier: null, access: true, quota: null }
+    useCloudAuthStore.getState().setSignedIn({ id: 'owner-a' }, account)
+    chatStream.mockImplementation(() => (async function* () {
+      useCloudAuthStore.getState().setSignedOut()
+      useCloudAuthStore.getState().setSignedIn({ id: 'owner-a' }, account)
+      yield { content: extracted, done: true }
+    })())
+    await threeTurns()
+    expect(addMemory).not.toHaveBeenCalled()
+  })
+  it('does not apply a late merge over a target edited while the resolver streamed', async () => {
+    activeModel = 'qwen3:8b'
+    memoryEntries = [{ id: 'target', type: 'user', title: 'Original', content: 'Original', description: '', tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }]
+    vi.mocked(generateEmbeddings).mockResolvedValue([[1]])
+    vi.mocked(cosineSimilarity).mockReturnValue(0.75)
+    vi.mocked(loadVectors).mockResolvedValue(new Map([['target', { dim: 1, vector: [1], model: 'fixture', contentHash: 'fixture' }]]))
+    chatStream.mockImplementationOnce(() => (async function* () { yield { content: extracted, done: true } })())
+    chatStream.mockImplementationOnce(() => (async function* () {
+      memoryEntries = memoryEntries.map(entry => ({ ...entry, content: 'User correction' }))
+      yield { content: JSON.stringify({ action: 'UPDATE', targetId: 'target', mergedContent: 'Late overwrite' }), done: true }
+    })())
+    await threeTurns()
+    expect(chatStream).toHaveBeenCalledTimes(2)
+    expect(addMemory).toHaveBeenCalledTimes(1)
+    expect(applyWriteDecision).not.toHaveBeenCalled()
+    expect(memoryEntries[0].content).toBe('User correction')
+  })
 })
 
 describe('project extraction isolation', () => {
