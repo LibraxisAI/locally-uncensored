@@ -923,6 +923,8 @@ export const useMemoryStore = create<MemoryState>()(
           : []
         const now = Date.now()
         const newEntries: MemoryFile[] = []
+        const importedIds = new Map<string, string | null>()
+        const history: Array<{ supersededBy?: string; supersedesId?: string }> = []
         for (const e of arr) {
           const scope = prop(e, 'scope')
           if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) continue
@@ -934,10 +936,15 @@ export const useMemoryStore = create<MemoryState>()(
           const type = MEMORY_TYPES.find((t) => t === prop(e, 'type')) ?? 'user'
           const sourceKind = prop(e, 'sourceKind')
           const confirmedAt = prop(e, 'confirmedAt')
+          const id = uuid()
+          const originalId = asString(prop(e, 'id'))
+          if (originalId) importedIds.set(originalId, importedIds.has(originalId) ? null : id)
+          const supersededBy = asString(prop(e, 'supersededBy'))
+          history.push({ supersededBy, supersedesId: asString(prop(e, 'supersedesId')) })
           newEntries.push({
             // Always mint a fresh id so a re-imported export can never collide
             // with an existing entry's id (which broke edit/remove-by-id).
-            id: uuid(),
+            id,
             type,
             title: (asString(prop(e, 'title')) ?? content).slice(0, 60).replace(/\n/g, ' '),
             description: (asString(prop(e, 'description')) ?? content).slice(0, 120),
@@ -950,8 +957,18 @@ export const useMemoryStore = create<MemoryState>()(
             confirmedAt: typeof confirmedAt === 'number' && Number.isFinite(confirmedAt) && confirmedAt > 0 && confirmedAt <= now ? confirmedAt : undefined,
             sensitive: prop(e, 'sensitive') === true,
             scope: asString(scope),
+            // A missing replacement must not reactivate an outdated fact.
+            stale: prop(e, 'stale') === true || supersededBy !== undefined,
+            validFrom: asNumber(prop(e, 'validFrom')),
           })
         }
+        // References may only bind to unique IDs in this imported batch,
+        // never to existing local entries or an ambiguous duplicate ID.
+        newEntries.forEach((entry, index) => {
+          const links = history[index]
+          entry.supersededBy = links.supersededBy ? importedIds.get(links.supersededBy) ?? undefined : undefined
+          entry.supersedesId = links.supersedesId ? importedIds.get(links.supersedesId) ?? undefined : undefined
+        })
         if (newEntries.length > 0) {
           set((state) => ({
             entries: [...state.entries, ...newEntries],
