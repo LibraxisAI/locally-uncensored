@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
 import type { MemoryCategory, MemoryFile, MemoryType, MemorySettings, MemoryBudgetTier } from '../types/agent-mode'
 import { MEMORY_MIGRATION_MAP, MEMORY_BUDGET_TIERS } from '../types/agent-mode'
-import { idbStorage } from '../lib/idbStorage'
+import { memoryPersistence } from '../lib/memory-persistence'
 import { generateEmbeddings } from '../api/rag'
 import { saveVector, loadVectors, deleteVector, clearAll as clearAllVectors, type MemoryVectorRecord } from '../lib/memoryEmbedDB'
 import { scoreMemoriesBlended, isStale, type BlendCandidate } from '../lib/memory-retrieval'
@@ -1072,7 +1072,7 @@ export const useMemoryStore = create<MemoryState>()(
       // shouldn't be capped at ~5 MB; idb is disk-backed and migrates existing
       // localStorage data on first read. createJSONStorage wrap still required
       // (zustand v5 PersistStorage; raw StateStorage → "[object Object]", FIX-3).
-      storage: createJSONStorage(() => idbStorage),
+      storage: createJSONStorage(() => memoryPersistence),
       migrate: migrateMemoryState,
       merge: (persisted, current) => {
         const saved = isRecord(persisted) ? persisted : {}
