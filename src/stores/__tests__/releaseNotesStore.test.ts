@@ -65,7 +65,21 @@ describe('the notes table', () => {
       readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
     ).version as string
     expect(releaseNoteFor(shipping), `no release note for ${shipping}`).toBeDefined()
-    expect(RELEASE_NOTES[0].version, 'the shipping version belongs at the top').toBe(shipping)
+    // Ueber der laufenden Version darf ein ENTWURF stehen, und nur ein
+    // Entwurf: alles davor muss eine hoehere Version sein. Damit bleibt die
+    // urspruengliche Absicherung (kein stilles Release) und die naechste
+    // Notiz kann trotzdem fertig im Baum liegen, bevor jemand die Nummer
+    // hochzieht.
+    const order = RELEASE_NOTES.map((n) => n.version)
+    const at = order.indexOf(shipping)
+    expect(at, 'the shipping version is missing from the table').toBeGreaterThanOrEqual(0)
+    const cmp = (v: string) => v.split('.').map(Number)
+    for (const draft of order.slice(0, at)) {
+      const [a, b, c] = cmp(draft)
+      const [x, y, z] = cmp(shipping)
+      expect(a * 1e6 + b * 1e3 + c, `${draft} sits above ${shipping} but is not newer`)
+        .toBeGreaterThan(x * 1e6 + y * 1e3 + z)
+    }
   })
 
   it('the shipping entry covers what actually shipped, not the state it was written in', () => {
