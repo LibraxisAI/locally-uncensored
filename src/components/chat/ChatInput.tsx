@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { SamplingControls } from './SamplingControls'
 import { Send, Square, Paperclip, X, Brain, Gauge, Terminal } from 'lucide-react'
 import { matchAgentCommands, type AgentCommand, type CommandScope } from '../../lib/agent-commands'
 import { VoiceButton } from './VoiceButton'
@@ -638,6 +639,9 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
           )}
 
           <div className="flex-1 min-w-0" />
+
+          {/* Sampling controls sit next to the picker: same row, collapsed. */}
+          <div className="shrink-0"><SamplingControls /></div>
 
           {/* Model picker, opens upward from the composer */}
           <div className="shrink-0">{composerModel}</div>
