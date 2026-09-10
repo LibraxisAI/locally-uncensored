@@ -12,6 +12,7 @@ import { formatContextWindow } from '../../lib/formatters'
 import { GlowButton } from '../ui/GlowButton'
 import type { MemoryType, MemoryFile } from '../../types/agent-mode'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { synchronizeMemoryCollection } from '../../lib/memory-sync'
 
 // ── Subtle type indicator (internal, not user-facing) ─────────
 
@@ -35,6 +36,10 @@ export function MemorySettings() {
 }
 
 function MemorySettingsPanel() {
+  const [syncConsent, setSyncConsent] = useState(false)
+  const [sensitiveSyncConsent, setSensitiveSyncConsent] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [syncMessage, setSyncMessage] = useState('')
   const owner = useCloudAuthStore(state => state.status === 'signed-in' ? state.user?.id : undefined)
   const activeOwner = useMemoryStore(state => state.activeMemoryOwner)
   const [collectionError, setCollectionError] = useState(false)
@@ -226,10 +231,29 @@ function MemorySettingsPanel() {
     <div className="space-y-3">
       <section aria-label="Memory collection" className="space-y-2 rounded-lg border border-gray-200 p-3 text-xs text-gray-700 dark:border-white/10 dark:text-gray-300">
         <p>Memory collection: {activeOwner === null ? 'Local' : 'Signed-in account'}</p>
-        <p>Local memories stay separate. Account collections are stored on this device. Cloud synchronization is not enabled yet.</p>
+        <p>Local memories stay separate. Account collections are saved on this device. Cloud sync runs only when explicitly requested below.</p>
         <button className="mr-3 underline" disabled={activeOwner === null} onClick={() => setCollectionError(!useMemoryStore.getState().selectMemoryCollection(null))}>Use local memories</button>
         {owner && <button className="underline" disabled={activeOwner === owner} onClick={() => setCollectionError(!useMemoryStore.getState().selectMemoryCollection(owner))}>Use account memories</button>}
         {collectionError && <p role="alert">Could not open this memory collection. Existing data has not been replaced.</p>}
+        {activeOwner !== null && <div className="space-y-2 border-t border-gray-200 pt-2 dark:border-white/10">
+          <p>Sync uploads this account collection to LU Cloud and downloads changes. Deletions are shared across devices. Conflicting edits are not overwritten automatically.</p>
+          <p>Marking a memory sensitive does not erase existing cloud copies. Delete the memory and sync to request its removal from cloud sync.</p>
+          <label className="block"><input type="checkbox" checked={syncConsent} disabled={syncBusy} onChange={event => setSyncConsent(event.target.checked)} /> Allow cloud storage for this account collection</label>
+          <label className="block"><input type="checkbox" checked={sensitiveSyncConsent} disabled={syncBusy} onChange={event => setSensitiveSyncConsent(event.target.checked)} /> Also allow cloud storage of sensitive memories</label>
+          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={async () => {
+            setSyncBusy(true)
+            setSyncMessage('Synchronizing memories...')
+            try {
+              const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent)
+              setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
+            } catch (error) {
+              const sensitiveMessage = 'Sensitive memories need explicit permission for cloud storage before this collection can synchronize'
+              setSyncMessage(error instanceof Error && error.message === sensitiveMessage ? sensitiveMessage
+                : 'Could not complete memory synchronization. Check this account and try again. Some changes may already be saved.')
+            } finally { setSyncBusy(false) }
+          }}>Sync account memories</button>
+          {syncMessage && <p role="status">{syncMessage}</p>}
+        </div>}
       </section>
       {/* Header */}
       <div className="flex items-center justify-between">

@@ -11,6 +11,7 @@ import type { ResolutionDecision } from '../lib/memory-extraction'
 import { isRecord, prop, asString, asNumber, asStringArray } from '../types/json-guards'
 import { log } from '../lib/logger'
 import { useCloudAuthStore } from './cloudAuthStore'
+import type { MemorySyncBaseline } from '../lib/memory-sync-plan'
 
 // ── Embedding model + dim (mirrors rag.ts default) ────────────────
 const MEMORY_EMBED_MODEL = 'nomic-embed-text'
@@ -277,6 +278,8 @@ interface MemoryState {
   entries: MemoryFile[]
   localEntries: MemoryFile[]
   accountCollections: Record<string, MemoryFile[]>
+  memorySyncBaselines: Record<string, Record<string, MemorySyncBaseline>>
+  memorySyncPending: Record<string, Record<string, MemorySyncBaseline>>
   activeMemoryOwner: string | null
   memoryCollectionRevision: number
   selectMemoryCollection: (owner: string | null) => boolean
@@ -533,6 +536,8 @@ export const useMemoryStore = create<MemoryState>()(
       entries: [],
       localEntries: [],
       accountCollections: {},
+      memorySyncBaselines: {},
+      memorySyncPending: {},
       activeMemoryOwner: null,
       memoryCollectionRevision: 0,
       selectMemoryCollection: (owner) => {
@@ -1093,6 +1098,8 @@ export const useMemoryStore = create<MemoryState>()(
         entries: state.activeMemoryOwner === null ? state.entries : state.localEntries,
         accountCollections: state.activeMemoryOwner === null ? state.accountCollections
           : { ...state.accountCollections, [state.activeMemoryOwner]: state.entries },
+        memorySyncBaselines: state.memorySyncBaselines,
+        memorySyncPending: state.memorySyncPending,
         settings: state.settings,
         lastSynced: state.lastSynced,
       }),
