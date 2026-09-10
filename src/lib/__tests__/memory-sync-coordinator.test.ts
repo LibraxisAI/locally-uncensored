@@ -5,7 +5,8 @@ import type { SyncedMemoryRecord } from '../../api/cloud/memory-sync'
 import type { MemoryFile } from '../../types/agent-mode'
 
 const fixture = vi.hoisted(() => ({ pull: vi.fn(), write: vi.fn(), flush: vi.fn() }))
-vi.mock('../../api/cloud/memory-sync', () => ({ withMemorySyncSession: async (_owner: string, work: (session: unknown) => Promise<unknown>) =>
+vi.mock('../../api/cloud/memory-sync', async importOriginal => ({ ...await importOriginal<typeof import('../../api/cloud/memory-sync')>(),
+  withMemorySyncSession: async (_owner: string, work: (session: unknown) => Promise<unknown>) =>
   work({ assertCurrent: () => {}, pull: fixture.pull, write: fixture.write }) }))
 vi.mock('../memory-persistence', async importOriginal => ({
   ...await importOriginal<typeof import('../memory-persistence')>(), flushMemoryPersist: (guard: () => boolean) => fixture.flush(guard),
@@ -92,4 +93,47 @@ it('rejects applying a downloaded record after a collection change', async () =>
   await expect(synchronizeMemoryCollection('A')).rejects.toThrow('collection changed')
   expect(useMemoryStore.getState().entries).toEqual([])
   expect(fixture.write).not.toHaveBeenCalled()
+})
+
+async function reviewConflict() {
+  useMemoryStore.setState({ entries: [memory] })
+  await synchronizeMemoryCollection('A')
+  useMemoryStore.getState().updateMemory('one', { content: 'Local revised' })
+  remote = [{ ...remote[0], revision: 2, payload: { ...memory, content: 'Cloud revised', updatedAt: 2 } }]
+  const result = await synchronizeMemoryCollection('A')
+  expect(result.conflicts).toHaveLength(1)
+  expect(JSON.stringify(useMemoryStore.getState())).not.toContain('Cloud revised')
+  return result.conflicts[0].review!.token
+}
+
+it('applies the reviewed cloud version locally without overwriting the server', async () => {
+  const token = await reviewConflict()
+  const result = await synchronizeMemoryCollection('A', false, { ...token, choice: 'cloud' })
+  expect(result.conflicts).toEqual([])
+  expect(useMemoryStore.getState().entries[0].content).toBe('Cloud revised')
+  expect(fixture.write).toHaveBeenCalledTimes(1)
+  expect(useMemoryStore.getState().memorySyncBaselines.A.one.revision).toBe(2)
+})
+it('keeps the reviewed local version with a revision-checked server mutation', async () => {
+  const token = await reviewConflict()
+  await synchronizeMemoryCollection('A', false, { ...token, choice: 'local' })
+  expect(remote[0]).toMatchObject({ revision: 3, payload: { content: 'Local revised' } })
+  expect(useMemoryStore.getState().memorySyncPending.A).toEqual({})
+})
+it('refuses a reviewed choice after the remote or local version changed', async () => {
+  const token = await reviewConflict()
+  remote = [{ ...remote[0], revision: 3, payload: { ...memory, content: 'New cloud edit' } }]
+  await expect(synchronizeMemoryCollection('A', false, { ...token, choice: 'local' })).rejects.toThrow('This conflict changed')
+  const fresh = (await synchronizeMemoryCollection('A')).conflicts[0].review!.token
+  useMemoryStore.getState().updateMemory('one', { content: 'New local edit' })
+  await expect(synchronizeMemoryCollection('A', false, { ...fresh, choice: 'cloud' })).rejects.toThrow('This conflict changed')
+  expect(fixture.write).toHaveBeenCalledTimes(1)
+  expect(useMemoryStore.getState().entries[0].content).toBe('New local edit')
+})
+it('invalidates the review after leaving and reopening the same collection', async () => {
+  const token = await reviewConflict()
+  useMemoryStore.getState().selectMemoryCollection(null)
+  useMemoryStore.getState().selectMemoryCollection('A')
+  await expect(synchronizeMemoryCollection('A', false, { ...token, choice: 'cloud' })).rejects.toThrow('This conflict changed')
+  expect(fixture.write).toHaveBeenCalledTimes(1)
 })

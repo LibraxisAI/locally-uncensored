@@ -12,7 +12,7 @@ import { formatContextWindow } from '../../lib/formatters'
 import { GlowButton } from '../ui/GlowButton'
 import type { MemoryType, MemoryFile } from '../../types/agent-mode'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
-import { synchronizeMemoryCollection } from '../../lib/memory-sync'
+import { synchronizeMemoryCollection, type MemorySyncResolution } from '../../lib/memory-sync'
 
 // ── Subtle type indicator (internal, not user-facing) ─────────
 
@@ -40,6 +40,7 @@ function MemorySettingsPanel() {
   const [sensitiveSyncConsent, setSensitiveSyncConsent] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
+  const [syncConflicts, setSyncConflicts] = useState<Awaited<ReturnType<typeof synchronizeMemoryCollection>>['conflicts']>([])
   const owner = useCloudAuthStore(state => state.status === 'signed-in' ? state.user?.id : undefined)
   const activeOwner = useMemoryStore(state => state.activeMemoryOwner)
   const [collectionError, setCollectionError] = useState(false)
@@ -65,6 +66,27 @@ function MemorySettingsPanel() {
   // imported — or why none were. The import used to fail silently.
   const [importMsg, setImportMsg] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => useMemoryStore.subscribe((state, previous) => {
+    // Do not retain cloud previews after local editing or forgetting. A new
+    // sync can fetch a fresh review; the durable metadata contains hashes only.
+    if (state.entries !== previous.entries) setSyncConflicts([])
+  }), [])
+  const runSync = async (resolution?: MemorySyncResolution) => {
+    if (activeOwner === null || !syncConsent || syncBusy) return
+    setSyncBusy(true)
+    setSyncConflicts([])
+    setSyncMessage('Synchronizing memories...')
+    try {
+      const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution)
+      setSyncConflicts(result.conflicts)
+      setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
+    } catch (error) {
+      const messages = ['Sensitive memories need explicit permission for cloud storage before this collection can synchronize',
+        'This conflict changed. Sync again before choosing a version.']
+      setSyncMessage(error instanceof Error && messages.includes(error.message) ? error.message
+        : 'Could not complete memory synchronization. Check this account and try again. Some changes may already be saved.')
+    } finally { setSyncBusy(false) }
+  }
 
   // ── New memory form state ───────────────────────────────────
   const [newTitle, setNewTitle] = useState('')
@@ -240,19 +262,24 @@ function MemorySettingsPanel() {
           <p>Marking a memory sensitive does not erase existing cloud copies. Delete the memory and sync to request its removal from cloud sync.</p>
           <label className="block"><input type="checkbox" checked={syncConsent} disabled={syncBusy} onChange={event => setSyncConsent(event.target.checked)} /> Allow cloud storage for this account collection</label>
           <label className="block"><input type="checkbox" checked={sensitiveSyncConsent} disabled={syncBusy} onChange={event => setSensitiveSyncConsent(event.target.checked)} /> Also allow cloud storage of sensitive memories</label>
-          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={async () => {
-            setSyncBusy(true)
-            setSyncMessage('Synchronizing memories...')
-            try {
-              const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent)
-              setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
-            } catch (error) {
-              const sensitiveMessage = 'Sensitive memories need explicit permission for cloud storage before this collection can synchronize'
-              setSyncMessage(error instanceof Error && error.message === sensitiveMessage ? sensitiveMessage
-                : 'Could not complete memory synchronization. Check this account and try again. Some changes may already be saved.')
-            } finally { setSyncBusy(false) }
-          }}>Sync account memories</button>
+          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync()}>Sync account memories</button>
           {syncMessage && <p role="status">{syncMessage}</p>}
+          {syncConflicts.map((conflict, index) => {
+            const local = entries.find(entry => entry.id === conflict.id)
+            const review = conflict.review
+            return <div key={conflict.id} role="group" aria-label={`Memory conflict ${index + 1}`} className="space-y-2 border-t border-gray-200 pt-2 dark:border-white/10">
+              <p>Conflicting memory: {local?.title ?? conflict.id}</p>
+              {review ? <>
+                <details><summary className="cursor-pointer">Compare full memory records</summary>
+                  <p>Local version</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(local, null, 2)}</pre>
+                  <p>Cloud version, revision {review.token.remoteRevision}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(review.cloud, null, 2)}</pre>
+                </details>
+                <p>Choosing a version replaces the other version, including scope and privacy settings. Newer changes require another review.</p>
+                <button className="mr-3 underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync({ ...review.token, choice: 'local' })}>Keep local version</button>
+                <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync({ ...review.token, choice: 'cloud' })}>Use cloud version</button>
+              </> : <p>The cloud record is missing or has an inconsistent deletion history. No version was overwritten. Sync again after checking the account.</p>}
+            </div>
+          })}
         </div>}
       </section>
       {/* Header */}

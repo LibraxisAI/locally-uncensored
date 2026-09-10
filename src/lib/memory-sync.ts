@@ -1,12 +1,22 @@
 import { useMemoryStore } from '../stores/memoryStore'
 import { useCloudAuthStore } from '../stores/cloudAuthStore'
-import { withMemorySyncSession } from '../api/cloud/memory-sync'
+import { withMemorySyncSession, MemorySyncError } from '../api/cloud/memory-sync'
 import { flushMemoryPersist } from './memory-persistence'
 import { planMemorySync, syncMemoryHash, decodeSyncMemory, type MemorySyncBaseline } from './memory-sync-plan'
 import { isRecord } from '../types/json-guards'
 
 let running = false
-const changed = () => new Error('Memory synchronization stopped because the collection changed')
+const changed = () => new MemorySyncError('account', 'Memory synchronization stopped because the collection changed')
+const conflictChanged = () => new MemorySyncError('conflict', 'This conflict changed. Sync again before choosing a version.')
+export interface MemorySyncResolution {
+  owner: string
+  collectionRevision: number
+  id: string
+  remoteRevision: number
+  remoteHash: string
+  localHash: string
+  choice: 'local' | 'cloud'
+}
 
 function ownerMetadata(all: unknown, owner: string, minimumRevision: number): Record<string, MemorySyncBaseline> {
   const invalid = () => new Error('Invalid stored memory synchronization data')
@@ -27,13 +37,15 @@ function ownerMetadata(all: unknown, owner: string, minimumRevision: number): Re
  * Write intents contain hashes, not private payload copies. They are durable
  * before upload, so a crash or local deletion cannot turn an uncertain first
  * upload into an untracked remote record that gets downloaded again. */
-export async function synchronizeMemoryCollection(owner: string, allowSensitive = false) {
+export async function synchronizeMemoryCollection(owner: string, allowSensitive = false, resolution?: MemorySyncResolution) {
   if (running) throw new Error('Memory synchronization is already running')
   const initial = useMemoryStore.getState()
   let expectedEntries = initial.entries
   let expectedBaselines = initial.memorySyncBaselines
   let expectedPending = initial.memorySyncPending
   const revision = initial.memoryCollectionRevision
+  const choice = resolution ? { ...resolution } : undefined
+  if (choice && (choice.owner !== owner || choice.collectionRevision !== revision || !['local', 'cloud'].includes(choice.choice))) throw conflictChanged()
   const check = () => {
     const state = useMemoryStore.getState()
     const auth = useCloudAuthStore.getState()
@@ -85,9 +97,23 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
       for (const id of forcedDeletes.keys()) delete planningBase[id]
       const plan = await planMemorySync(expectedEntries.filter(entry => !forcedDeletes.has(entry.id)), planningBase, remote.filter(row => !forcedDeletes.has(row.memory_id)))
       guard()
+      if (choice) {
+        const conflict = plan.conflicts.find(item => item.id === choice.id && item.reason === 'both-edited')
+        const local = expectedEntries.find(entry => entry.id === choice.id)
+        const row = remoteById.get(choice.id)
+        if (!conflict || !local || !row || row.deleted || row.revision !== choice.remoteRevision) throw conflictChanged()
+        const cloud = decodeSyncMemory(row.payload)
+        const cloudHash = await syncMemoryHash(cloud)
+        const localHash = await syncMemoryHash(local)
+        guard()
+        if (cloudHash !== choice.remoteHash || localHash !== choice.localHash) throw conflictChanged()
+        if (choice.choice === 'local') plan.push.push({ id: local.id, expectedRevision: row.revision, payload: decodeSyncMemory(local) })
+        else plan.pull.push({ memory: cloud, baseline: { revision: row.revision, hash: cloudHash } })
+        plan.conflicts = plan.conflicts.filter(item => item.id !== choice.id)
+      }
       for (const [id, expectedRevision] of forcedDeletes) plan.push.push({ id, expectedRevision, payload: null })
       if (!allowSensitive && plan.push.some(write => write.payload?.sensitive)) {
-        throw new Error('Sensitive memories need explicit permission for cloud storage before this collection can synchronize')
+        throw new MemorySyncError('invalid', 'Sensitive memories need explicit permission for cloud storage before this collection can synchronize')
       }
       const incoming = new Map(plan.pull.map(item => [item.memory.id, item.memory]))
       const removed = new Set([...plan.remove.map(item => item.id), ...forcedDeletes.keys()])
@@ -113,7 +139,22 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
         await commit(expectedEntries, { ...baselines }, { ...pending })
         uploaded++
       }
-      return { downloaded: plan.pull.length, uploaded, removed: plan.remove.length, conflicts: plan.conflicts }
+      const conflicts = await Promise.all(plan.conflicts.map(async item => {
+        const local = expectedEntries.find(entry => entry.id === item.id)
+        const row = remoteById.get(item.id)
+        if (item.reason !== 'both-edited' || !local || !row || row.deleted) return { ...item, review: null }
+        const cloud = decodeSyncMemory(row.payload)
+        const localHash = await syncMemoryHash(local)
+        const remoteHash = await syncMemoryHash(cloud)
+        return { ...item, review: {
+          token: { owner, collectionRevision: revision, id: item.id, remoteRevision: row.revision, remoteHash, localHash },
+          // Ephemeral UI preview only. Never persist cloud content in baseline
+          // or pending-intent metadata; collection switches discard the panel.
+          cloud,
+        } }
+      }))
+      guard()
+      return { downloaded: plan.pull.length, uploaded, removed: plan.remove.length, conflicts }
     })
   } finally { running = false }
 }
