@@ -11,6 +11,7 @@ import { getModelMaxTokens } from '../../lib/context-compaction'
 import { formatContextWindow } from '../../lib/formatters'
 import { GlowButton } from '../ui/GlowButton'
 import type { MemoryType, MemoryFile } from '../../types/agent-mode'
+import { useCloudAuthStore } from '../../stores/cloudAuthStore'
 
 // ── Subtle type indicator (internal, not user-facing) ─────────
 
@@ -29,6 +30,14 @@ const TYPE_DOT_COLORS: Record<MemoryType, string> = {
 // ── Component ─────────────────────────────────────────────────
 
 export function MemorySettings() {
+  const revision = useMemoryStore(state => state.memoryCollectionRevision)
+  return <MemorySettingsPanel key={revision} />
+}
+
+function MemorySettingsPanel() {
+  const owner = useCloudAuthStore(state => state.status === 'signed-in' ? state.user?.id : undefined)
+  const activeOwner = useMemoryStore(state => state.activeMemoryOwner)
+  const [collectionError, setCollectionError] = useState(false)
   const remoteMemoryNotice = useRemoteStore(s => s.memoryNotice)
   const conversation = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId))
   const [savedProject, setSavedProject] = useState<string | null>(null)
@@ -130,7 +139,9 @@ export function MemorySettings() {
     e.target.value = '' // allow re-picking the same file
     if (!file) return
     const reader = new FileReader()
+    const collectionRevision = useMemoryStore.getState().memoryCollectionRevision
     reader.onload = (ev) => {
+      if (useMemoryStore.getState().memoryCollectionRevision !== collectionRevision) return
       const content = ev.target?.result as string
       if (!content) { setImportMsg('Could not read that file.'); return }
       const trimmed = content.trimStart()
@@ -213,6 +224,13 @@ export function MemorySettings() {
 
   return (
     <div className="space-y-3">
+      <section aria-label="Memory collection" className="space-y-2 rounded-lg border border-gray-200 p-3 text-xs text-gray-700 dark:border-white/10 dark:text-gray-300">
+        <p>Memory collection: {activeOwner === null ? 'Local' : 'Signed-in account'}</p>
+        <p>Local memories stay separate. Account collections are stored on this device. Cloud synchronization is not enabled yet.</p>
+        <button className="mr-3 underline" disabled={activeOwner === null} onClick={() => setCollectionError(!useMemoryStore.getState().selectMemoryCollection(null))}>Use local memories</button>
+        {owner && <button className="underline" disabled={activeOwner === owner} onClick={() => setCollectionError(!useMemoryStore.getState().selectMemoryCollection(owner))}>Use account memories</button>}
+        {collectionError && <p role="alert">Could not open this memory collection. Existing data has not been replaced.</p>}
+      </section>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">

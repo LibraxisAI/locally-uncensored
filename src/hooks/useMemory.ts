@@ -121,6 +121,7 @@ export async function extractMemoriesFromPair(
     if (!call) return
     const { provider, modelId, callModel } = call
     let expectedEntries = memState.entries
+    const collectionRevision = memState.memoryCollectionRevision
     let revoked = false
     unsubscribe = useCloudAuthStore.subscribe((state, previous) => {
       if (state.status !== previous.status || state.user?.id !== previous.user?.id) revoked = true
@@ -128,7 +129,7 @@ export async function extractMemoriesFromPair(
     const guard: MemoryWriteGuard = {
       current: () => {
         const current = useMemoryStore.getState()
-        if (current.entries !== expectedEntries || !current.settings.autoExtractEnabled) revoked = true
+        if (current.entries !== expectedEntries || current.memoryCollectionRevision !== collectionRevision || !current.settings.autoExtractEnabled) revoked = true
         return !revoked
       },
       wrote: () => { expectedEntries = useMemoryStore.getState().entries },

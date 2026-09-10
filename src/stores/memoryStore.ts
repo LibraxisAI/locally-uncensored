@@ -10,6 +10,7 @@ import { scoreMemoriesBlended, isStale, type BlendCandidate } from '../lib/memor
 import type { ResolutionDecision } from '../lib/memory-extraction'
 import { isRecord, prop, asString, asNumber, asStringArray } from '../types/json-guards'
 import { log } from '../lib/logger'
+import { useCloudAuthStore } from './cloudAuthStore'
 
 // ── Embedding model + dim (mirrors rag.ts default) ────────────────
 const MEMORY_EMBED_MODEL = 'nomic-embed-text'
@@ -76,12 +77,14 @@ function hashContent(s: string): string {
  * Skips when the existing stored vector already matches the content hash.
  */
 async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'content'>): Promise<void> {
+  const collectionRevision = useMemoryStore.getState().memoryCollectionRevision
   try {
     const text = embedText(entry)
     const contentHash = hashContent(text)
     const isCurrent = () => {
       const current = useMemoryStore.getState().entries.find((item) => item.id === entry.id)
-      return !!current && !current.sensitive && !isStale(current) && embedText(current) === text
+      return useMemoryStore.getState().memoryCollectionRevision === collectionRevision &&
+        !!current && !current.sensitive && !isStale(current) && embedText(current) === text
     }
     const existing = await loadVectors([entry.id])
     if (!isCurrent()) return
@@ -270,6 +273,11 @@ function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number, on
 
 interface MemoryState {
   entries: MemoryFile[]
+  localEntries: MemoryFile[]
+  accountCollections: Record<string, MemoryFile[]>
+  activeMemoryOwner: string | null
+  memoryCollectionRevision: number
+  selectMemoryCollection: (owner: string | null) => boolean
   settings: MemorySettings
   lastSynced: number
 
@@ -428,6 +436,25 @@ function asMemoryFile(v: unknown): MemoryFile | null {
 
 const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference']
 
+/** Local account collections retain valid local records, including records
+ * larger than the cloud protocol permits. Upload validation is separate. */
+function readAccountMemory(raw: unknown): MemoryFile {
+  const invalid = () => new Error('Could not open this memory collection')
+  if (!isRecord(raw) || !['id', 'title', 'description', 'content', 'source'].every(key => typeof raw[key] === 'string') ||
+    !raw.id || !(raw.content as string).trim() || !MEMORY_TYPES.some(type => type === raw.type) ||
+    !Array.isArray(raw.tags) || !raw.tags.every(tag => typeof tag === 'string') ||
+    !['createdAt', 'updatedAt'].every(key => typeof raw[key] === 'number' && Number.isFinite(raw[key]))) throw invalid()
+  for (const key of ['sensitive', 'stale']) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw invalid()
+  for (const key of ['scope', 'supersededBy', 'supersedesId']) {
+    if (raw[key] !== undefined && (typeof raw[key] !== 'string' || !raw[key].trim())) throw invalid()
+  }
+  for (const key of ['confirmedAt', 'validFrom']) {
+    if (raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isFinite(raw[key]))) throw invalid()
+  }
+  if (raw.sourceKind !== undefined && !['chat', 'voice', 'screen'].some(kind => kind === raw.sourceKind)) throw invalid()
+  return { ...raw, tags: [...raw.tags] } as unknown as MemoryFile
+}
+
 /**
  * The persist `migrate` hook. Exported so a test can drive it directly — the
  * persist internals are not reachable from vitest (same reason
@@ -502,6 +529,32 @@ export const useMemoryStore = create<MemoryState>()(
   persist(
     (set, get) => ({
       entries: [],
+      localEntries: [],
+      accountCollections: {},
+      activeMemoryOwner: null,
+      memoryCollectionRevision: 0,
+      selectMemoryCollection: (owner) => {
+        if (!useMemoryStore.persist.hasHydrated()) return false
+        const state = get()
+        const auth = useCloudAuthStore.getState()
+        if (owner !== null && (auth.status !== 'signed-in' || auth.user?.id !== owner)) return false
+        if (owner === state.activeMemoryOwner) return true
+        const collections = { ...state.accountCollections }
+        if (state.activeMemoryOwner !== null) collections[state.activeMemoryOwner] = state.entries
+        const local = state.activeMemoryOwner === null ? state.entries : state.localEntries
+        let entries = local
+        if (owner !== null) {
+          const stored: unknown = Object.hasOwn(collections, owner) ? collections[owner] : []
+          // Preserve unreadable collections unchanged rather than hydrating
+          // them as empty and later overwriting their data.
+          if (!Array.isArray(stored)) return false
+          try { entries = stored.map(readAccountMemory) } catch { return false }
+          if (new Set(entries.map(entry => entry.id)).size !== entries.length) return false
+        }
+        set({ entries, localEntries: local, accountCollections: collections,
+          activeMemoryOwner: owner, memoryCollectionRevision: state.memoryCollectionRevision + 1 })
+        return true
+      },
       settings: {
         autoExtractEnabled: true,
         autoExtractInAllModes: true,
@@ -643,16 +696,19 @@ export const useMemoryStore = create<MemoryState>()(
       // back to the keyword result. Offline correctness invariant: this never
       // returns empty/incorrect when the sync path would have returned text.
       getMemoryContextAsync: async (query, contextTokens, opts) => {
+        const collectionRevision = get().memoryCollectionRevision
         let memoryIds: string[] = []
         const text = await get().getMemoriesForPromptAsync(query, contextTokens, {
           ...opts, onInjected: ids => { memoryIds = [...ids] },
         })
-        return { text, memoryIds }
+        return get().memoryCollectionRevision === collectionRevision ? { text, memoryIds } : { text: '', memoryIds: [] }
       },
 
       getMemoriesForPromptAsync: async (query, contextTokens, opts) => {
         const requestOpts = opts ? { ...opts } : undefined
-        const fallback = () => get().getMemoriesForPrompt(query, contextTokens, requestOpts)
+        const collectionRevision = get().memoryCollectionRevision
+        const fallback = () => get().memoryCollectionRevision === collectionRevision
+          ? get().getMemoriesForPrompt(query, contextTokens, requestOpts) : ''
         const snapshot = get().entries
         try {
           const budget = effectiveMemoryBudget(contextTokens, get().settings.maxMemoriesOverride)
@@ -1014,11 +1070,34 @@ export const useMemoryStore = create<MemoryState>()(
       // (zustand v5 PersistStorage; raw StateStorage → "[object Object]", FIX-3).
       storage: createJSONStorage(() => idbStorage),
       migrate: migrateMemoryState,
+      merge: (persisted, current) => {
+        const saved = isRecord(persisted) ? persisted : {}
+        const local = current.activeMemoryOwner === null ? current.entries : current.localEntries
+        const collections = current.activeMemoryOwner === null ? current.accountCollections
+          : { ...current.accountCollections, [current.activeMemoryOwner]: current.entries }
+        return { ...current, ...saved,
+          // Never expose an account collection during session restoration.
+          // Selection is explicit and checked against the signed-in owner.
+          entries: Array.isArray(saved.entries) ? saved.entries : local,
+          localEntries: Array.isArray(saved.entries) ? saved.entries : local,
+          accountCollections: isRecord(saved.accountCollections) ? saved.accountCollections : collections,
+          activeMemoryOwner: null,
+          memoryCollectionRevision: current.memoryCollectionRevision + 1,
+        } as MemoryState
+      },
       partialize: (state) => ({
-        entries: state.entries,
+        entries: state.activeMemoryOwner === null ? state.entries : state.localEntries,
+        accountCollections: state.activeMemoryOwner === null ? state.accountCollections
+          : { ...state.accountCollections, [state.activeMemoryOwner]: state.entries },
         settings: state.settings,
         lastSynced: state.lastSynced,
       }),
     }
   )
 )
+
+useCloudAuthStore.subscribe((state, previous) => {
+  if (state.status !== previous.status || state.user?.id !== previous.user?.id) {
+    useMemoryStore.getState().selectMemoryCollection(null)
+  }
+})
