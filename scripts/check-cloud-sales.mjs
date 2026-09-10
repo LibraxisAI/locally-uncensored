@@ -20,8 +20,11 @@ function objects(file) {
       for (const prop of node.properties) {
         if (!ts.isPropertyAssignment(prop)) continue
         const value = prop.initializer
-        if (ts.isStringLiteral(value)) row[prop.name.getText(file)] = value.text
-        if (ts.isNumericLiteral(value)) row[prop.name.getText(file)] = Number(value.text.replaceAll('_', ''))
+        // Ein Schluessel wie 'hosted-max' kommt als Quelltext MIT Anfuehrungs-
+        // zeichen zurueck. Ohne das Abstreifen findet keine Suche ihn wieder.
+        const key = prop.name.getText(file).replace(/^['"`]|['"`]$/g, '')
+        if (ts.isStringLiteral(value)) row[key] = value.text
+        if (ts.isNumericLiteral(value)) row[key] = Number(value.text.replaceAll('_', ''))
       }
       out.push(row)
     }
@@ -59,6 +62,63 @@ assert.equal(Number(pack.dataset.eurCents), catalogPack.eurCents)
 assert.equal(Number(pack.dataset.credits), catalogPack.credits)
 assert.equal(pack.textContent, `EUR ${catalogPack.eurCents / 100} for ${catalogPack.credits.toLocaleString('en-US')} credits`)
 console.log('Cloud sales guard passed: model IDs/labels, Flash membership/limit and pack price/credits match the web source.')
+
+// ── /pricing/ auf locallyuncensored.com ──────────────────────────────
+//
+// Die Seite nennt Zahlen, die alle im Web-Repo stehen. Sie darf nicht selbst
+// entscheiden, was ein Plan kostet, und sie darf nicht stehen bleiben, wenn
+// dort etwas anderes beschlossen wird. Jede Zahl der Seite wird hier gegen
+// ihre Quelle gehalten: Plaene, Guthaben, Pakete, das Tagesbudget und die
+// Anzahl der Modelle, die ohne Ablehnung antworten.
+const pricing = new JSDOM(readFileSync(new URL('../docs/pricing/index.html', import.meta.url), 'utf8')).window.document
+const tiers = objects(source('apps/web/lib/pricing.ts'))
+const tierCredits = objects(source('apps/web/lib/billing/credits.ts'))
+  .find((row) => typeof row.hosted === 'number' && typeof row['hosted-max'] === 'number')
+assert.ok(tierCredits, 'TIER_CREDITS not found in credits.ts')
+
+for (const cell of pricing.querySelectorAll('[data-plan-id]')) {
+  const tier = tiers.find((row) => row.id === cell.dataset.planId)
+  assert.ok(tier, `Plan missing from pricing.ts: ${cell.dataset.planId}`)
+  assert.equal(Number(cell.dataset.monthlyEur), tier.monthlyEUR, `${tier.id}: monthly price drift`)
+  assert.equal(cell.textContent, `EUR ${tier.monthlyEUR}`)
+  const row = cell.closest('[data-plan-row]')
+  const annual = row.querySelector('[data-annual-eur]')
+  assert.equal(Number(annual.dataset.annualEur), tier.annualEUR, `${tier.id}: annual price drift`)
+  assert.equal(annual.textContent, `EUR ${tier.annualEUR}`)
+  const credits = row.querySelector('[data-plan-credits]')
+  assert.equal(Number(credits.dataset.planCredits), tierCredits[cell.dataset.planId], `${tier.id}: credit drift`)
+  assert.equal(credits.textContent, tierCredits[cell.dataset.planId].toLocaleString('en-US'))
+}
+assert.equal(pricing.querySelectorAll('[data-plan-id]').length, tiers.filter((t) => typeof t.monthlyEUR === 'number').length,
+  'Every paid plan must appear on the pricing page, and nothing else')
+
+const packs = objects(source('apps/web/lib/billing/topup.ts')).filter((row) => typeof row.credits === 'number' && typeof row.eurCents === 'number')
+for (const span of pricing.querySelectorAll('[data-pack-id]')) {
+  const entry = packs.find((row) => row.id === span.dataset.packId)
+  assert.ok(entry, `Pack missing from topup.ts: ${span.dataset.packId}`)
+  assert.equal(Number(span.dataset.eurCents), entry.eurCents)
+  assert.equal(Number(span.dataset.credits), entry.credits)
+  assert.equal(span.textContent, `EUR ${entry.eurCents / 100} for ${entry.credits.toLocaleString('en-US')} credits`)
+}
+assert.equal(pricing.querySelectorAll('[data-pack-id]').length, packs.length, 'Every pack must appear, and nothing else')
+
+for (const doc of [pricing, page]) {
+  const limit = doc.querySelector('[data-flash-limit]')
+  assert.equal(Number(limit.dataset.flashLimit), daily, 'flash allowance drift')
+  assert.ok(limit.textContent.startsWith(daily.toLocaleString('en-US')))
+}
+
+// Die gemessene Zahl. Sie steht als Verkaufsargument auf der Seite, also darf
+// sie nur so lange dort stehen, wie der Katalog sie hergibt.
+const catalogSize = catalog.filter((row) => typeof row.inM === 'number' && typeof row.outM === 'number').length
+const unfilteredFull = catalog.filter((row) => row.unfiltered === 'full').length
+const claimed = pricing.querySelector('[data-unfiltered-count]')
+assert.equal(Number(claimed.dataset.unfilteredCount), unfilteredFull, 'unfiltered count drift')
+assert.equal(claimed.textContent, String(unfilteredFull))
+const claimedTotal = pricing.querySelector('[data-catalog-count]')
+assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, 'catalog size drift')
+assert.equal(claimedTotal.textContent, String(catalogSize))
+console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
 for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
   const comparison = new JSDOM(readFileSync(new URL(`../docs/vs/${slug}/index.html`, import.meta.url), 'utf8')).window.document
   const luFacts = [...comparison.querySelectorAll('[data-comparison-row] td:last-child')].map((cell) => cell.textContent).join(' ')

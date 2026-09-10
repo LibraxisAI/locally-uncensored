@@ -9,10 +9,20 @@ it('states cloud restrictions and allowance semantics without blanket privacy pr
   expect(page.documentElement.lang).toBe('en')
   expect(page.querySelectorAll('h1')).toHaveLength(1)
   const text = page.body.textContent!
-  for (const fact of ['Hosted requests leave your machine', 'Hosted image and video prompts are checked',
+  for (const fact of ['Hosted requests leave your machine',
     'API-key usage draws credits', 'one free request', 'Missing final usage', 'visible notice']) {
     expect(text).toContain(fact)
   }
+  // Bis 10.09.2026 stand hier "Hosted image and video prompts are checked" als
+  // Pflichtsatz. Seit dem Kontoschalter ist das keine Eigenschaft des Dienstes
+  // mehr, sondern eine Einstellung, und ein Waechter, der die alte Aussage
+  // erzwingt, haelt die Seite auf einem Stand fest, den es nicht mehr gibt.
+  // Was bleiben MUSS: die Einstellung wird benannt, und die beiden harten
+  // Grenzen stehen dabei.
+  expect(text).toContain("follows your account's content policy")
+  expect(text).toContain('Material involving minors')
+  expect(text).toContain('without their consent')
+  expect(text).not.toContain('bypass its content restrictions')
   expect(html).not.toMatch(/[\u2013\u2014]/u)
   expect(page.querySelectorAll('script')).toHaveLength(0)
 })
