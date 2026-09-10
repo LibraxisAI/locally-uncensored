@@ -225,6 +225,8 @@ export const MEMORY_CONTEXT_TOKEN_CAP = 1000
 export interface MemoryContext {
   text: string
   memoryIds: string[]
+  /** Absent for the local collection. Captured together with selected IDs. */
+  owner?: string
 }
 
 export function renderMemoryContext(ordered: MemoryFile[], budgetTokens: number): MemoryContext {
@@ -697,11 +699,13 @@ export const useMemoryStore = create<MemoryState>()(
       // returns empty/incorrect when the sync path would have returned text.
       getMemoryContextAsync: async (query, contextTokens, opts) => {
         const collectionRevision = get().memoryCollectionRevision
+        const owner = get().activeMemoryOwner
         let memoryIds: string[] = []
         const text = await get().getMemoriesForPromptAsync(query, contextTokens, {
           ...opts, onInjected: ids => { memoryIds = [...ids] },
         })
-        return get().memoryCollectionRevision === collectionRevision ? { text, memoryIds } : { text: '', memoryIds: [] }
+        return get().memoryCollectionRevision === collectionRevision
+          ? { text, memoryIds, ...(owner === null ? {} : { owner }) } : { text: '', memoryIds: [] }
       },
 
       getMemoriesForPromptAsync: async (query, contextTokens, opts) => {

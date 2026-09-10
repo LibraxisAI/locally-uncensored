@@ -473,7 +473,8 @@ export const useChatStore = create<ChatState>()(
           conversations: state.conversations.map(conversation => conversation.id === conversationId ? {
             ...conversation,
             messages: conversation.messages.map(message => message.id === messageId ? {
-              ...message, memorySources: { ids: [...new Set(sources.ids)], scope: sources.scope },
+              ...message, memorySources: { ids: [...new Set(sources.ids)], scope: sources.scope,
+                ...(sources.owner === undefined ? {} : { owner: sources.owner }) },
             } : message),
             updatedAt: Date.now(),
           } : conversation),

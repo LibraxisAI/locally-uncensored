@@ -6,7 +6,8 @@ import { isRecord } from './support/recorded'
 import type { MemoryFile } from '../src/types/agent-mode'
 
 for (const mode of ['Chat', 'Agent', 'Code'] as const) {
-  test(`${mode} sends selected memory and records matching answer sources`, async ({ page }, testInfo) => {
+ for (const collection of ['local', 'account'] as const) {
+  test(`${mode} ${collection} sends selected memory and records matching answer sources`, async ({ page }, testInfo) => {
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(error.message))
     await page.route('**/*', route => {
@@ -29,12 +30,18 @@ for (const mode of ['Chat', 'Agent', 'Code'] as const) {
     }
     // Seed only input state. Retrieval, hooks, provider serialization, answer
     // mutation and rendering all remain production code.
-    await page.evaluate(async () => {
+    await page.evaluate(async selectedCollection => {
       const memoryPath = '/src/stores/memoryStore.ts'
       const chatPath = '/src/stores/chatStore.ts'
       const memory = await import(/* @vite-ignore */ memoryPath) as typeof import('../src/stores/memoryStore')
       const chat = await import(/* @vite-ignore */ chatPath) as typeof import('../src/stores/chatStore')
       await memory.useMemoryStore.persist.rehydrate()
+      if (selectedCollection === 'account') {
+        const authPath = '/src/stores/cloudAuthStore.ts'
+        const { useCloudAuthStore } = await import(authPath) as typeof import('../src/stores/cloudAuthStore')
+        useCloudAuthStore.getState().setSignedIn({ id: 'proof-owner' }, { licenseActive: false, tier: null, access: true, quota: null })
+        if (!memory.useMemoryStore.getState().selectMemoryCollection('proof-owner')) throw new Error('Could not select proof collection')
+      }
       memory.__setMemoryEmbedFn(async () => [])
       const entry = (id: string, extra: Partial<MemoryFile> = {}): MemoryFile => ({
         id, title: `Sourceproof ${id}`, content: `SOURCEPROOF_${id}`, description: '', type: 'user',
@@ -45,7 +52,7 @@ for (const mode of ['Chat', 'Agent', 'Code'] as const) {
       const active = chat.useChatStore.getState().activeConversationId
       if (!active) throw new Error('No active proof conversation')
       chat.useChatStore.getState().setConversationMemoryScope(active, 'proof')
-    })
+    }, collection)
     const composer = page.locator('textarea').first()
     await expect(composer).toBeEnabled()
     await composer.fill('sourceproof preferences please')
@@ -62,7 +69,7 @@ for (const mode of ['Chat', 'Agent', 'Code'] as const) {
       if (!Array.isArray(bodies) || !bodies.every(body => typeof body === 'string')) throw new Error('Missing transport bodies')
       return { sources: answer?.memorySources, bodies: bodies as string[] }
     })
-    expect(result.sources).toEqual({ ids: ['global', 'project'], scope: 'proof' })
+    expect(result.sources).toEqual({ ids: ['global', 'project'], scope: 'proof', ...(collection === 'account' ? { owner: 'proof-owner' } : {}) })
     const body = result.bodies.find(value => value.includes('sourceproof preferences please'))
     expect(body).toBeDefined()
     const payload: unknown = JSON.parse(body!)
@@ -76,8 +83,26 @@ for (const mode of ['Chat', 'Agent', 'Code'] as const) {
     await expect(page.getByText('Sourceproof project', { exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('memory-hook-sources.png') })
     await page.reload()
+    if (collection === 'account') {
+      await expect.poll(() => page.evaluate(async () => {
+        const authPath = '/src/stores/cloudAuthStore.ts'
+        const { useCloudAuthStore } = await import(authPath) as typeof import('../src/stores/cloudAuthStore')
+        return useCloudAuthStore.getState().status
+      })).not.toBe('probing')
+      await expect(page.getByText('Memory sources (2)', { exact: true })).toHaveCount(0)
+      await page.evaluate(async () => {
+        const authPath = '/src/stores/cloudAuthStore.ts'
+        const memoryPath = '/src/stores/memoryStore.ts'
+        const { useCloudAuthStore } = await import(authPath) as typeof import('../src/stores/cloudAuthStore')
+        const { useMemoryStore } = await import(memoryPath) as typeof import('../src/stores/memoryStore')
+        await useMemoryStore.persist.rehydrate()
+        useCloudAuthStore.getState().setSignedIn({ id: 'proof-owner' }, { licenseActive: false, tier: null, access: true, quota: null })
+        if (!useMemoryStore.getState().selectMemoryCollection('proof-owner')) throw new Error('Could not restore proof collection')
+      })
+    }
     await page.getByText('Memory sources (2)', { exact: true }).click()
     await expect(page.getByText('Sourceproof project', { exact: true })).toBeVisible()
     expect(pageErrors).toEqual([])
   })
+ }
 }

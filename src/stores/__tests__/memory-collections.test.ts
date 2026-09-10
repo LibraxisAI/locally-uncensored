@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { useMemoryStore, __setMemoryEmbedFn } from '../memoryStore'
 import { useCloudAuthStore } from '../cloudAuthStore'
+import { useChatStore } from '../chatStore'
 
 const account = { licenseActive: false, tier: null, access: true, quota: null }
 const signIn = (id: string) => useCloudAuthStore.getState().setSignedIn({ id }, account)
@@ -63,6 +64,20 @@ it('keeps valid oversized local account records accessible without loosening clo
   useMemoryStore.getState().selectMemoryCollection(null)
   expect(useMemoryStore.getState().selectMemoryCollection('A')).toBe(true)
   expect(useMemoryStore.getState().entries[0].content).toBe(content)
+})
+it('captures and stores the selected source owner with copied source IDs', async () => {
+  signIn('A')
+  useMemoryStore.getState().selectMemoryCollection('A')
+  const id = add('Account fact')
+  const selected = await useMemoryStore.getState().getMemoryContextAsync('', 8192)
+  expect(selected.owner).toBe('A')
+  expect(selected.memoryIds).toEqual([id])
+  const conversation = useChatStore.getState().createConversation('', '')
+  useChatStore.getState().addMessage(conversation, { id: 'answer', role: 'assistant', content: 'Synthetic answer', timestamp: 1 })
+  useChatStore.getState().updateMessageMemorySources(conversation, 'answer', { ids: selected.memoryIds, owner: selected.owner })
+  selected.memoryIds.length = 0
+  expect(useChatStore.getState().conversations.find(item => item.id === conversation)?.messages[0].memorySources)
+    .toEqual({ ids: [id], owner: 'A', scope: undefined })
 })
 it('does not substitute another collection after asynchronous retrieval, including A-local-A', async () => {
   signIn('A')
