@@ -128,10 +128,16 @@ describe('constants-validation', () => {
       expect(coder).toBeDefined()
     })
 
-    it('contains the "unrestricted" persona with empty system prompt', () => {
+    // Bis 10.09.2026 stand hier `toBe('')`. Ein leerer Systemtext ist aber
+    // nicht neutral: das Modell faellt dann auf seine eigene Grundhaltung
+    // zurueck, und gemessen an 46 Katalogmodellen hat genau das sechs Modelle
+    // vom Antworten aufs Ablehnen gebracht. Die Rolle steht jetzt drin, der
+    // Test haelt fest, dass sie da ist und keine Inhaltsregel enthaelt.
+    it('contains the "unrestricted" persona with a real role and no content policy', () => {
       const unrestricted = BUILT_IN_PERSONAS.find(p => p.id === 'unrestricted')
       expect(unrestricted).toBeDefined()
-      expect(unrestricted!.systemPrompt).toBe('')
+      expect(unrestricted!.systemPrompt.length).toBeGreaterThan(40)
+      expect(unrestricted!.systemPrompt).not.toMatch(/refuse|decline|nsfw|explicit|appropriate/i)
     })
 
     it('all persona names are unique', () => {
