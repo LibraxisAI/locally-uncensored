@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Folder, Shield } from 'lucide-react'
+import { Folder, Shield, X } from 'lucide-react'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import { useChatStore } from '../../stores/chatStore'
 import { AgentWorkspaceDialog } from './AgentWorkspaceDialog'
@@ -46,8 +46,19 @@ export function AgentWorkspaceBadge() {
     setDialogOpen(false)
   }
 
+  // helpslowlydying, 01.09.2026: der Agent stand in einem riesigen Baum, in dem
+  // er nichts zu suchen hatte, und es gab KEINEN Weg hinaus. Die Plakette
+  // konnte den Ordner wechseln, nicht ihn verlassen; clearWorkspace gab es im
+  // Speicher, nur hat es niemand aufgerufen. Jetzt liegt es hier, direkt an der
+  // Stelle, an der der Nutzer den Ordner sieht.
+  const handleLeave = () => {
+    useAgentModeStore.getState().clearWorkspace(activeId)
+    setDialogOpen(false)
+  }
+
   return (
     <>
+      <span className={`flex items-center rounded border transition-colors text-[0.55rem] ${tone}`}>
       <button
         onClick={() => setDialogOpen(true)}
         title={
@@ -55,11 +66,21 @@ export function AgentWorkspaceBadge() {
             ? `Agent working in ${workspace.path}. Click to change.`
             : 'Agent working in a separate folder with a file tool path jail, not a container. Click to change.'
         }
-        className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors text-[0.55rem] bg-transparent hover:bg-white/5 ${tone}`}
+        className="flex items-center gap-1 px-1.5 py-0.5 bg-transparent hover:bg-white/5"
       >
         <Icon size={10} />
         <span className="font-mono max-w-[120px] truncate">{label}</span>
       </button>
+      <button
+        onClick={handleLeave}
+        title="Leave this workspace. The agent asks again before it works anywhere."
+        aria-label="Leave this workspace"
+        data-testid="agent-workspace-leave"
+        className="px-1 py-0.5 bg-transparent hover:bg-white/5"
+      >
+        <X size={9} />
+      </button>
+      </span>
 
       {dialogOpen && (
         <AgentWorkspaceDialog

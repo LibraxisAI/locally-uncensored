@@ -51,6 +51,10 @@ export function AgentWorkspaceDialog({
     initialWorkspace && initialWorkspace.kind === 'folder' ? initialWorkspace : null,
   )
   const [rememberAsDefault, setRememberAsDefault] = useState(false)
+  // Der gemerkte Vorgabeordner, als Pfad. null, wenn keiner gemerkt ist.
+  const rememberedDefault = useSettingsStore(
+    (s) => (s.settings.defaultWorkspace?.kind === 'folder' ? s.settings.defaultWorkspace.path : null),
+  )
 
   const handleSandbox = () => {
     setError(null)
@@ -239,6 +243,27 @@ export function AgentWorkspaceDialog({
                 Remember as default. Future chats open here without asking.
               </span>
             </label>
+
+            {/* Die zweite Haelfte des Berichts vom 01.09.2026: "Ordner wechseln
+                loest es nicht". Ein einmal gemerkter Vorgabeordner ueberspringt
+                die Frage in JEDEM neuen Agentenchat, und es gab keine Stelle,
+                an der man ihn wieder los wurde. Der Satz sagt, was gespeichert
+                ist, der Knopf loescht es. */}
+            {rememberedDefault && (
+              <div className="flex items-center justify-between gap-2 pt-1" data-testid="agent-workspace-default-note">
+                <span className="t-micro text-gray-500 truncate">
+                  Every new agent chat opens in {rememberedDefault} without asking.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => useSettingsStore.getState().updateSettings({ defaultWorkspace: null })}
+                  className="shrink-0 t-micro text-gray-500 underline hover:text-gray-800 dark:hover:text-white"
+                  data-testid="agent-workspace-forget-default"
+                >
+                  Forget it
+                </button>
+              </div>
+            )}
           </div>
         )}
 

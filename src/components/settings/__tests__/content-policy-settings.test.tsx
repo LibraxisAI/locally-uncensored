@@ -10,7 +10,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const api = vi.hoisted(() => ({
-  get: vi.fn(async () => ({ policy: 'soft' as const, ageConfirmedAt: null })),
+  get: vi.fn(async (): Promise<{ policy: 'strict' | 'soft' | 'off'; ageConfirmedAt: string | null }> =>
+    ({ policy: 'soft', ageConfirmedAt: null })),
   set: vi.fn(async (p: string) => p),
 }))
 vi.mock('../../../api/cloud/jobs', () => ({
