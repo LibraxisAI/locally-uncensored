@@ -101,6 +101,7 @@ import { capHiddenToolHistory } from './codex/hidden-history'
 import { asString, errorText, prop } from '../types/json-guards'
 import type { ToolArgs } from '../api/mcp/types'
 import { CREDITS_EXHAUSTED_MESSAGE } from '../lib/credits-exhausted'
+import { buildChatSystemPrompt } from '../lib/system-prompt'
 
 // ── Hook ──────────────────────────────────────────────────────
 
@@ -460,7 +461,7 @@ export function useAgentChat() {
     // Per-chat persona toggle — default OFF. Only apply persona prompt
     // when user explicitly flipped it on. See useChat.ts for the
     // full rationale (Devil's Advocate hijack bug).
-    let systemPrompt = conv.personaEnabled === true ? conv.systemPrompt : ''
+    let systemPrompt = buildChatSystemPrompt(conv)
     const ragState = useRAGStore.getState()
     const ragEnabled = ragState.ragEnabled[convId] ?? false
     let ragSuffix = ''

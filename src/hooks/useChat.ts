@@ -46,6 +46,7 @@ import { CREDITS_EXHAUSTED_MESSAGE } from '../lib/credits-exhausted'
 import { shouldDowngradeThinking, engineDeniedThinking } from './codex/thinking-downgrade'
 import { ProviderError } from '../api/providers/types'
 import { useBackgroundAgentWake } from './useBackgroundAgentWake'
+import { buildChatSystemPrompt } from '../lib/system-prompt'
 
 /**
  * Pull the most recent media generation (image/video) out of an assistant
@@ -86,7 +87,10 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
   }
   useChatStore.getState().addMessage(convId, assistantMessage)
 
-  const personaPrompt = conv.personaEnabled === true ? conv.systemPrompt : ''
+  // Der Grundtext gilt unabhaengig vom Personenschalter: der Schalter
+  // entscheidet ueber die PERSON, nicht darueber, ob ueberhaupt ein Systemtext
+  // rausgeht. Siehe lib/system-prompt.ts.
+  const personaPrompt = buildChatSystemPrompt(conv)
   const providerId = getProviderIdFromModel(model)
   // Same count cap as the plain path: a long group chat must not outgrow the
   // proxy's message gate either.
@@ -548,7 +552,7 @@ export function useChat() {
     // flipped it on via the Plugins dropdown does the persona prompt
     // apply. Undefined / unset → suppress, so a globally selected
     // persona never silently hijacks a new chat.
-    let systemPrompt = conv.personaEnabled === true ? conv.systemPrompt : ''
+    let systemPrompt = buildChatSystemPrompt(conv)
     const ragState = useRAGStore.getState()
     const ragEnabled = ragState.ragEnabled[convId] ?? false
     let ragSuffix = ''

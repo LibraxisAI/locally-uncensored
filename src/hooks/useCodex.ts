@@ -101,6 +101,7 @@ import { codexStallVerdict } from './codex/stall-verdict'
 import { createStagedWriter } from './codex/staged-writes'
 import { codexToolDiff, codexEventKind } from './codex/tool-result-view'
 import { capHiddenToolHistory } from './codex/hidden-history'
+import { withHouseConduct } from '../lib/system-prompt'
 
 // No-op diagnostic hook. Kept as a call site so future debugging can swap
 // this for a file logger without re-editing every iter-point in the loop.
@@ -631,7 +632,10 @@ export function useCodex() {
     // the same on every turn, while the clock changes every minute and now
     // rides at the very end of the prompt, behind everything a prefix cache
     // could otherwise have matched.
-    let systemPrompt = `${baseCodexPrompt}${assetLine}\n\n${platformPromptLine()}\n${workDirLine}`
+    // Die Verhaltenszeile haengt an JEDER Oberflaeche (lib/system-prompt.ts).
+    // Der Coding-Agent bringt seine eigene Rolle mit, deshalb nur die Zeile
+    // und nicht der ganze Grundtext.
+    let systemPrompt = withHouseConduct(`${baseCodexPrompt}${assetLine}\n\n${platformPromptLine()}\n${workDirLine}`)
     // Standing goal (/goal) — ahead of the rules and the repo map so it frames
     // everything that follows instead of reading as an afterthought.
     systemPrompt += renderGoalSection(useAgentGoalStore.getState().getGoal(convId))

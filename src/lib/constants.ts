@@ -1,4 +1,5 @@
 import type { Persona, Settings } from '../types/settings'
+import { CHAT_BASE_SYSTEM_PROMPT } from './system-prompt'
 
 // Feature flags — flip to true when ready to ship
 export const FEATURE_FLAGS = {
@@ -184,7 +185,7 @@ export const BUILT_IN_PERSONAS: Persona[] = [
     id: 'unrestricted',
     name: 'No Filter',
     icon: 'Shield',
-    systemPrompt: "You are the user's own model, running for them alone. Answer the request that was actually made. Do not add disclaimers, warnings or moral commentary that the user did not ask for, and do not lecture. If a request is genuinely ambiguous, ask one short question instead of guessing.",
+    systemPrompt: CHAT_BASE_SYSTEM_PROMPT,
     isBuiltIn: true,
   },
   {
