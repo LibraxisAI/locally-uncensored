@@ -83,9 +83,10 @@ export async function extractMemoriesFromPair(
   userMessage: string,
   assistantResponse: string,
   conversationId: string,
-  options?: { scope?: string },
+  options?: { scope?: string; sourceKind?: MemoryFile['sourceKind'] },
 ): Promise<void> {
   const scope = options?.scope
+  const sourceKind = options?.sourceKind ?? 'chat'
   try {
     const { activeModel } = useModelStore.getState()
     if (!activeModel) return
@@ -154,7 +155,7 @@ export async function extractMemoriesFromPair(
         // we don't fire N concurrent inferences. Each is wrapped so one bad
         // memory never aborts the rest.
         try {
-          await resolveAndSaveMemory(memory, conversationId, scope)
+          await resolveAndSaveMemory(memory, conversationId, scope, sourceKind)
         } catch {
           // Per-memory failure → fall back to a plain add so the fact isn't lost.
           memState.addMemory({
@@ -164,6 +165,8 @@ export async function extractMemoriesFromPair(
             content: memory.content,
             tags: memory.tags,
             source: conversationId,
+            scope,
+            sourceKind,
           })
         }
       }
@@ -185,7 +188,7 @@ export async function extractMemoriesFromPair(
  * Fire-and-forget contract: any embedding/LLM failure falls back to a plain
  * addMemory so a fact is never silently dropped. Never blocks the chat turn.
  */
-async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope?: string): Promise<void> {
+async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope?: string, sourceKind?: MemoryFile['sourceKind']): Promise<void> {
   const memState = useMemoryStore.getState()
   const addPlain = (): string =>
     memState.addMemory({
@@ -195,6 +198,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
       content: memory.content,
       tags: memory.tags,
       source: conversationId,
+      sourceKind,
       scope,
     })
 

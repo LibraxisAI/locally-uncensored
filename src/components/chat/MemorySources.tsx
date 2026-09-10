@@ -22,6 +22,7 @@ export function MemorySources({ sources }: { sources: Message['memorySources'] }
             <span className="font-medium">{entry.title}</span>
             <p>{origin ? `Chat: ${origin.title}` : entry.source === 'manual' ? 'Manual entry' : 'Original source unavailable'}</p>
             {entry.scope && <p>Project: {entry.scope}</p>}
+            {entry.sourceKind && <p>Source type: {entry.sourceKind}</p>}
           </li>
         })}
       </ul>

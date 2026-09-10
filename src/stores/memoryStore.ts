@@ -277,6 +277,7 @@ interface MemoryState {
   addMemory: (memory: Omit<MemoryFile, 'id' | 'createdAt' | 'updatedAt'>) => string
   updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags' | 'sensitive' | 'scope'>>) => void
   removeMemory: (id: string) => void
+  confirmMemory: (id: string) => void
   clearAll: () => void
 
   // Search & Inject
@@ -414,6 +415,8 @@ function asMemoryFile(v: unknown): MemoryFile | null {
     createdAt: asNumber(v.createdAt) ?? now,
     updatedAt: asNumber(v.updatedAt) ?? asNumber(v.createdAt) ?? now,
     source: asString(v.source) ?? 'migration',
+    sourceKind: v.sourceKind === 'chat' || v.sourceKind === 'voice' || v.sourceKind === 'screen' ? v.sourceKind : undefined,
+    confirmedAt: typeof v.confirmedAt === 'number' && Number.isFinite(v.confirmedAt) && v.confirmedAt > 0 && v.confirmedAt <= now ? v.confirmedAt : undefined,
     sensitive: v.sensitive === true,
     scope: asString(v.scope),
     supersededBy: asString(v.supersededBy),
@@ -541,7 +544,9 @@ export const useMemoryStore = create<MemoryState>()(
         if (updates.scope !== undefined && !updates.scope.trim()) return
         set((state) => ({
           entries: state.entries.map((e) =>
-            e.id === id ? { ...e, ...updates, updatedAt: Date.now() } : e
+            e.id === id ? { ...e, ...updates, updatedAt: Date.now(),
+              confirmedAt: Object.keys(updates).some(key => key !== 'sensitive' && Reflect.get(e, key) !== Reflect.get(updates, key)) ? undefined : e.confirmedAt,
+            } : e
           ),
           lastSynced: Date.now(),
         }))
@@ -551,6 +556,12 @@ export const useMemoryStore = create<MemoryState>()(
           const updated = get().entries.find((e) => e.id === id)
           if (updated) void enqueueEmbedding({ id, title: updated.title, content: updated.content })
         }
+      },
+
+      confirmMemory: (id) => {
+        const now = Date.now()
+        set(state => ({ entries: state.entries.map(entry => entry.id === id && !isStale(entry)
+          ? { ...entry, confirmedAt: now, updatedAt: now } : entry), lastSynced: now }))
       },
 
       removeMemory: (id) => {
@@ -737,6 +748,7 @@ export const useMemoryStore = create<MemoryState>()(
               return {
                 ...e,
                 content: merged,
+                confirmedAt: undefined,
                 description: merged.substring(0, 120),
                 updatedAt: now,
                 validFrom: now,
@@ -920,6 +932,8 @@ export const useMemoryStore = create<MemoryState>()(
           const content = (asString(prop(e, 'content')) ?? asString(prop(e, 'text')) ?? asString(prop(e, 'value')) ?? '').trim()
           if (!content) continue
           const type = MEMORY_TYPES.find((t) => t === prop(e, 'type')) ?? 'user'
+          const sourceKind = prop(e, 'sourceKind')
+          const confirmedAt = prop(e, 'confirmedAt')
           newEntries.push({
             // Always mint a fresh id so a re-imported export can never collide
             // with an existing entry's id (which broke edit/remove-by-id).
@@ -932,6 +946,8 @@ export const useMemoryStore = create<MemoryState>()(
             createdAt: asNumber(prop(e, 'createdAt')) ?? now,
             updatedAt: now,
             source: asString(prop(e, 'source')) ?? 'import',
+            sourceKind: sourceKind === 'chat' || sourceKind === 'voice' || sourceKind === 'screen' ? sourceKind : undefined,
+            confirmedAt: typeof confirmedAt === 'number' && Number.isFinite(confirmedAt) && confirmedAt > 0 && confirmedAt <= now ? confirmedAt : undefined,
             sensitive: prop(e, 'sensitive') === true,
             scope: asString(scope),
           })

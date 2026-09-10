@@ -122,19 +122,30 @@ beforeEach(() => {
 })
 
 describe('project extraction isolation', () => {
+  it('preserves project and modality when the first write fails', async () => {
+    activeModel = 'qwen3:8b'
+    addMemory.mockImplementationOnce(() => { throw new Error('Synthetic write failure') })
+    chatStream.mockImplementation(() => (async function* () {
+      yield { content: JSON.stringify({ shouldSave: true, memories: [{ type: 'project', title: 'A fact', description: 'Synthetic fact', content: 'Synthetic project fact', tags: [] }] }), done: true }
+    })())
+    for (let i = 0; i < RATE_LIMIT; i++) await extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', { scope: 'A', sourceKind: 'screen' })
+    expect(addMemory).toHaveBeenCalledTimes(2)
+    expect(addMemory).toHaveBeenLastCalledWith(expect.objectContaining({ scope: 'A', source: 'conv-a', sourceKind: 'screen' }))
+  })
   it('writes extracted facts to the captured project even if the caller changes its options', async () => {
     activeModel = 'qwen3:8b'
     chatStream.mockImplementation(() => (async function* () {
       yield { content: JSON.stringify({ shouldSave: true, memories: [{ type: 'project', title: 'A fact', description: 'Synthetic fact', content: 'Synthetic project fact', tags: [] }] }), done: true }
     })())
     for (let i = 0; i < RATE_LIMIT; i++) {
-      const options = { scope: 'A' }
+      const options: { scope: string; sourceKind: MemoryFile['sourceKind'] } = { scope: 'A', sourceKind: 'voice' }
       const pending = extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', options)
       options.scope = 'B'
+      options.sourceKind = 'screen'
       await pending
     }
     expect(addMemory).toHaveBeenCalledTimes(1)
-    expect(addMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: 'A', source: 'conv-a' }))
+    expect(addMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: 'A', source: 'conv-a', sourceKind: 'voice' }))
   })
   it('does not send sensitive or other-project titles to the extraction provider', async () => {
     activeModel = 'qwen3:8b'

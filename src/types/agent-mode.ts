@@ -164,6 +164,10 @@ export interface MemoryFile {
   createdAt: number
   updatedAt: number
   source: string      // conversationId | 'manual' | 'auto:extraction'
+  /** Input modality, separate from the legacy source conversation ID. */
+  sourceKind?: 'chat' | 'voice' | 'screen'
+  /** Explicit user review time; cleared when the remembered fact changes. */
+  confirmedAt?: number
   /** User-marked sensitive entries stay out of AI requests and embeddings. */
   sensitive?: boolean
   /** Stable project ID. Undefined retains legacy global memory behavior. */

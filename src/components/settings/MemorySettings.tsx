@@ -430,7 +430,7 @@ export function MemorySettings() {
               <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${TYPE_DOT_COLORS[entry.type]}`} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <p className="text-[0.65rem] font-medium text-gray-200 truncate">{entry.title}</p>
+                  <p className="text-[0.65rem] font-medium text-gray-800 dark:text-gray-200 truncate">{entry.title}</p>
                   {stale && (
                     <span className="flex items-center gap-0.5 text-[0.45rem] uppercase tracking-wider text-gray-500 border border-gray-600/40 rounded px-1 py-px shrink-0" title="Outdated, kept for reference, not injected into prompts">
                       <Archive size={8} /> outdated
@@ -439,6 +439,9 @@ export function MemorySettings() {
                 </div>
                 <p className="text-[0.6rem] text-gray-500 break-words line-clamp-2">{entry.content}</p>
                 {entry.scope !== undefined && <p className="text-xs text-gray-500 break-words">Project: {entry.scope}</p>}
+                <p className="text-xs text-gray-500">Source: {entry.sourceKind ?? (entry.source === 'manual' ? 'manual' : 'unknown')}</p>
+                <p className="text-xs text-gray-500">{entry.confirmedAt ? `Reviewed: ${new Date(entry.confirmedAt).toLocaleString('en-US')}` : 'Not reviewed'}</p>
+                {!stale && <button className="text-xs text-gray-500 underline" onClick={() => useMemoryStore.getState().confirmMemory(entry.id)}>Confirm reviewed</button>}
                 <label className="flex gap-2 text-xs text-gray-500">
                   <input type="checkbox" checked={entry.sensitive === true}
                     onChange={e => updateMemory(entry.id, { sensitive: e.target.checked })} />
