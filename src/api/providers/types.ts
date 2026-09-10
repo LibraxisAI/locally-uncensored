@@ -105,6 +105,12 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 
 export interface ProviderModel {
   flash?: import('../../lib/flash-ui').FlashPolicy
+  /** Gemessenes Inhaltsverhalten aus dem Server-Katalog (LU Cloud /models
+   *  `unfiltered`), nie aus dem Modellnamen geraten. 'full' = das Modell
+   *  antwortet ohne Ablehnung. Fehlt das Feld, ist nichts gemessen und nichts
+   *  versprochen. */
+  unfiltered?: 'full' | 'partial'
+
   id: string            // Model ID as provider knows it (e.g. "gpt-4o", "claude-sonnet-4-20250514")
   name: string          // Display name
   provider: ProviderId

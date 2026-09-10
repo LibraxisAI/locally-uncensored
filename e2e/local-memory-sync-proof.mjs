@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium, expect } from '@playwright/test'
 
@@ -13,8 +14,9 @@ const desktopDir = fileURLToPath(new URL('../', import.meta.url))
 const webDir = fileURLToPath(new URL('../../web/apps/web/', import.meta.url))
 const desktopUrl = 'http://127.0.0.1:5273'
 const webUrl = 'http://127.0.0.1:3018'
+const webUiUrl = 'http://127.0.0.1:5277'
 const apiUrl = 'http://127.0.0.1:54321'
-for (const port of [3018, 5273]) {
+for (const port of [3018, 5273, 5277]) {
   const probe = createServer()
   await new Promise((resolve, reject) => {
     probe.once('error', () => reject(Error('Proof port occupied; existing service was not touched')))
@@ -49,6 +51,7 @@ const admin = (path, options = {}) => localFetch(`${apiUrl}${path}`, {
     'content-type': 'application/json', ...options.headers },
 })
 let browser
+let webUi
 const users = []
 let stage = 'server startup'
 let passed = 0
@@ -115,12 +118,35 @@ async function rows(user) {
 try {
   const next = start(`${webDir}node_modules/next/dist/bin/next`, ['dev', '--hostname', '127.0.0.1', '--port', '3018'], webDir, {
     NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_ANON_KEY: credentials.ANON_KEY,
-    SUPABASE_SERVICE_ROLE_KEY: credentials.SERVICE_ROLE_KEY, NEXT_PUBLIC_APP_URL: webUrl,
+    SUPABASE_SERVICE_ROLE_KEY: credentials.SERVICE_ROLE_KEY, NEXT_PUBLIC_APP_URL: webUiUrl,
     DESKTOP_ALLOWED_ORIGINS: desktopUrl, LAUNCH_MAX_ONLY: '0', NEXT_TELEMETRY_DISABLED: '1',
   })
   const vite = start(`${desktopDir}node_modules/vite/bin/vite.js`, ['--host', '127.0.0.1', '--port', '5273', '--strictPort'], desktopDir, {
     VITE_LU_CLOUD_URL: webUrl, VITE_LU_SUPABASE_URL: apiUrl, VITE_LU_SUPABASE_ANON_KEY: credentials.ANON_KEY,
   })
+  // Real web component and SDK, with only a local development proxy. No SDK,
+  // identity, database, or API responses are replaced by this fixture.
+  const webRequire = createRequire(`${webDir}package.json`)
+  const testRequire = createRequire(webRequire.resolve('vitest/package.json'))
+  const { createServer: createViteServer } = await import(pathToFileURL(testRequire.resolve('vite')).href)
+  webUi = await createViteServer({
+    configFile: false, root: webDir, logLevel: 'silent', oxc: { jsx: { runtime: 'automatic' } },
+    define: {
+      'process.env.NEXT_PUBLIC_SUPABASE_URL': JSON.stringify(apiUrl),
+      'process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY': JSON.stringify(credentials.ANON_KEY),
+      'process.env.NEXT_PUBLIC_CLOUD_ONLY': JSON.stringify('1'),
+    },
+    server: { host: '127.0.0.1', port: 5277, strictPort: true,
+      proxy: { '/api/memory': { target: webUrl, changeOrigin: true } } },
+    plugins: [{ name: 'real-web-memory-proof', configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url !== '/proof') return next()
+        res.setHeader('content-type', 'text/html')
+        res.end('<!doctype html><html lang="en" class="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Real account memory proof</title><body><div id="root"></div><button id="preview">Preview selected memory</button><pre id="preview-result"></pre><script type="module" src="/e2e/memory-privacy-fixture.ts"></script></body></html>')
+      })
+    } }],
+  })
+  await webUi.listen()
   for (const [child, url] of [[next, `${webUrl}/api/me`], [vite, `${desktopUrl}/e2e/memory-sensitive-proof.html`]]) {
     let ready = false
     for (let attempt = 0; attempt < 90; attempt++) {
@@ -320,21 +346,167 @@ try {
   await expect(a.getByText('Account B only', { exact: true })).toBeVisible()
   await expect(a.getByText('Account A only', { exact: true })).toHaveCount(0)
   report('real sign-out and account switch discard a held old-owner pull; equal IDs remain isolated through reload')
+
+  stage = 'prepare web proof: delete prior desktop record'
+  await b.getByRole('button', { name: 'Delete entry', exact: true }).click()
+  stage = 'prepare web proof: synchronize desktop deletion'
+  await sync(b, 1, 0)
+  stage = 'prepare web proof: create browser context'
+  const webContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  webContext.setDefaultTimeout(15000)
+  await webContext.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (url.origin === webUiUrl || (url.origin === apiUrl &&
+      (url.pathname.startsWith('/auth/v1/') || url.pathname.startsWith('/rest/v1/')))) return route.continue()
+    blockedRequests++
+    return route.abort()
+  })
+  const web = await webContext.newPage()
+  stage = 'real web fixture loading'
+  await web.goto(`${webUiUrl}/proof`)
+  stage = 'real web SDK sign-in'
+  const verifiedOwner = await web.evaluate(async ({ email, password }) => {
+    const client = (await import('/lib/supabase/client.ts')).supabaseBrowser()
+    if ((await client.auth.signInWithPassword({ email, password })).error) throw Error('Local web sign-in failed')
+    const verified = await client.auth.getUser()
+    if (verified.error) throw Error('Local web identity verification failed')
+    return verified.data.user?.id
+  }, { email: users[0].email, password: users[0].password })
+  assert.equal(verifiedOwner, users[0].id)
+  stage = 'real web verified collection selection'
+  await web.getByRole('button', { name: 'Use account memories', exact: true }).click()
+  await consent(web)
+  const legacy = [{ id: `upgrade-${randomUUID()}`, type: 'user', title: 'Previous private memory', description: '',
+    content: 'Previous private content', tags: [], source: 'manual', sensitive: true,
+    createdAt: 1, updatedAt: 1, embedding: [1, 0] }]
+  const legacyWrite = async memories => web.evaluate(async ({ owner, memories }) => {
+    const client = (await import('/lib/supabase/client.ts')).supabaseBrowser()
+    const result = await client.from('client_sync').upsert({ user_id: owner, memories })
+    return result.error === null
+  }, { owner: users[0].id, memories })
+  const legacyRow = async () => {
+    const response = await admin(`/rest/v1/client_sync?user_id=eq.${users[0].id}`)
+    assert.equal(response.status, 200)
+    return (await response.json())[0]
+  }
+  stage = 'real web authenticated legacy fixture write'
+  assert.ok(await legacyWrite(legacy))
+  const pushConversations = () => web.evaluate(async owner => {
+    localStorage.setItem('lu-sync-owner', owner)
+    const { useSettingsStore } = await import('/stores/settingsStore.ts')
+    useSettingsStore.getState().updateSettings({ cloudSyncEnabled: true })
+    await (await import('/lib/cloud-sync.ts')).pushCloudState()
+    return (await import('/stores/chatStore.ts')).useChatStore.getState().conversations.map(item => item.id)
+  }, users[0].id)
+  stage = 'real web conversation-only push'
+  const conversationIds = await pushConversations()
+  assert.ok(conversationIds.length > 0)
+  stage = 'real web omitted memory column preservation'
+  assert.deepEqual((await legacyRow()).memories, legacy)
+  assert.deepEqual((await legacyRow()).conversations.map(item => item.id), conversationIds)
+  assert.equal((await legacyRow()).memory_sync_finalized_at, null)
+  report('real authenticated web conversation-only PostgREST upsert preserves the previous memory blob before finalization')
+
+  stage = 'web legacy import and real desktop conflict'
+  await web.getByRole('button', { name: 'Import previous cloud memories', exact: true }).click()
+  await expect(status(web)).toContainText('Imported 1 memories.')
+  await button(web).click()
+  await expect(status(web)).toContainText('Sensitive memories need explicit permission')
+  await web.getByLabel('Also allow cloud storage of sensitive memories', { exact: true }).check()
+  await sync(web, 1, 0)
+  assert.ok(!(await rows(users[0])).find(row => row.memory_id === legacy[0].id).payload.embedding)
+  await b.getByLabel('Also allow cloud storage of sensitive memories', { exact: true }).check()
+  await sync(b, 0, 1)
+  await webContext.setOffline(true)
+  await edit(web, 'Offline web correction')
+  await edit(b, 'Desktop correction')
+  await sync(b, 1, 0)
+  await webContext.setOffline(false)
+  await sync(web, 0, 0, 1)
+  await web.getByRole('button', { name: 'Use cloud version', exact: true }).click()
+  await expect(status(web)).toContainText('Synced 0 uploads and 1 downloads.')
+  report('real web legacy import strips vectors, requires sensitive permission and converges with desktop after an offline conflict')
+
+  stage = 'real stale review refusal and explicit finalization'
+  const review = () => web.getByRole('button', { name: 'Review previous cloud copy for removal', exact: true }).click()
+  const confirm = () => web.getByLabel('I reviewed these versions and confirm removing the previous cloud copy, including any differences.', { exact: true }).check()
+  const remove = web.getByRole('button', { name: 'Remove previous cloud copy', exact: true })
+  await review()
+  await expect(remove).toBeDisabled()
+  await confirm()
+  const changedLegacy = [{ ...legacy[0], content: 'Old client changed after review' }]
+  assert.ok(await legacyWrite(changedLegacy))
+  await remove.click()
+  await expect(status(web)).toContainText('Memories changed. Review the previous cloud copy again.')
+  assert.deepEqual((await legacyRow()).memories, changedLegacy)
+  assert.equal((await legacyRow()).memory_sync_finalized_at, null)
+  await review()
+  await web.getByText('Compare previous and synchronized records', { exact: true }).click()
+  const reviewed = web.getByRole('group', { name: 'Legacy memory finalization review', exact: true })
+  await expect(reviewed).toContainText('Old client changed after review')
+  await expect(reviewed).toContainText('Desktop correction')
+  await confirm()
+  await remove.click()
+  await expect(status(web)).toContainText('Previous cloud copy removed.')
+  assert.deepEqual((await legacyRow()).memories, [])
+  assert.ok((await legacyRow()).memory_sync_finalized_at)
+  assert.deepEqual((await legacyRow()).conversations.map(item => item.id), conversationIds)
+  assert.equal((await rows(users[0])).find(row => row.memory_id === legacy[0].id).payload.content, 'Desktop correction')
+  report('real Next finalization refuses an outdated review and removes only the explicitly confirmed old cloud copy')
+
+  stage = 'cookie security, frozen legacy writes and mixed-client tombstones'
+  const receipt = { expectedMemories: [], expectedRevisions: {}, confirmDiscard: true }
+  const cookieRetry = await webContext.request.post(`${webUiUrl}/api/memory/legacy`, {
+    headers: { origin: webUiUrl }, data: receipt,
+  })
+  assert.equal(cookieRetry.status(), 200)
+  assert.equal((await cookieRetry.json()).ownerId, users[0].id)
+  const crossSite = await webContext.request.post(`${webUiUrl}/api/memory/legacy`, {
+    headers: { origin: 'https://not-allowed.example.invalid' }, data: receipt,
+  })
+  assert.equal(crossSite.status(), 403)
+  assert.ok(await legacyWrite(legacy))
+  await pushConversations()
+  assert.deepEqual((await legacyRow()).memories, [])
+  assert.deepEqual((await legacyRow()).conversations.map(item => item.id), conversationIds)
+  await contexts[1].setOffline(true)
+  await edit(b, 'Offline desktop edit must not restore deleted memory')
+  await web.getByRole('button', { name: 'Delete entry', exact: true }).click()
+  await sync(web, 1, 0)
+  await contexts[1].setOffline(false)
+  await sync(b, 0, 0)
+  assert.equal((await state(b)).entries.length, 0)
+  await web.reload()
+  await web.getByRole('button', { name: 'Use account memories', exact: true }).click()
+  await consent(web)
+  await web.getByRole('button', { name: 'Import previous cloud memories', exact: true }).click()
+  await expect(status(web)).toContainText('Imported 0 memories.')
+  assert.equal((await rows(users[0])).find(row => row.memory_id === legacy[0].id).payload, null)
+  assert.equal((await rows(users[1]))[0].payload.content, 'Distinct second account content')
+  report('real cookie retry is owner-bound and cross-site denied; old-client writes stay frozen while conversations survive and web deletion defeats offline desktop edits')
   assert.equal(blockedRequests, 0)
   console.log(`RESULT: ${passed} joined two-device scenarios passed in ${Math.round(performance.now() - startedAt)}ms; unexpected network requests=0; no live provider calls`)
-} catch {
+} catch (error) {
   // Playwright errors may include evaluate arguments or request headers.
   console.error(`FAIL at stage: ${stage}; private diagnostics suppressed`)
+  const location = String(error?.stack ?? '').match(/local-memory-sync-proof\.mjs:(\d+):(\d+)/)
+  if (location) console.error(`Runner location: ${location[1]}:${location[2]}`)
   process.exitCode = 1
 } finally {
   releaseHeld?.()
   let cleanupFailed = false
   try { await browser?.close() } catch { cleanupFailed = true }
+  try { await webUi?.close() } catch { cleanupFailed = true }
   for (const user of users) {
     try {
       const deleted = await admin(`/auth/v1/admin/users/${user.id}`, { method: 'DELETE' })
       assert.equal(deleted.status, 200)
       assert.equal((await rows(user)).length, 0)
+      for (const table of ['client_sync', 'memory_legacy_finalization']) {
+        const response = await admin(`/rest/v1/${table}?user_id=eq.${user.id}`)
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), [])
+      }
     } catch { cleanupFailed = true }
   }
   for (const child of children) {
@@ -353,5 +525,5 @@ try {
     if (!stopped) cleanupFailed = true
   }
   if (cleanupFailed) { console.error('CLEANUP FAILED: inspect owned fixture resources'); process.exitCode = 1 }
-  else console.log('CLEANUP: owned browser closed, both users deleted, owned memory rows=0, owned Next/Vite stopped')
+  else console.log('CLEANUP: owned browser closed, both users deleted, owned memory/conversation/finalization rows=0, owned Next and both Vite servers stopped')
 }

@@ -112,6 +112,8 @@ type ChatFetcher = (
 interface OpenAIModelEntry {
   flash?: unknown
   usage_class?: unknown
+  /** Gemessenes Inhaltsverhalten. Nur unsere eigene Wolke schickt das Feld. */
+  unfiltered?: unknown
   id: string
   object: string
   created?: number
@@ -1014,6 +1016,9 @@ export class OpenAIProvider implements ProviderClient {
           supportsVision: m.input_modalities?.includes('image') || undefined,
           thinkMode: m.think,
           flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
+        // Nur die beiden gemessenen Werte werden uebernommen. Alles andere,
+        // was ein fremder Server in dieses Feld schreibt, faellt weg.
+        unfiltered: m.unfiltered === 'full' || m.unfiltered === 'partial' ? m.unfiltered : undefined,
           effortLevels: m.reasoning_effort_levels,
           effortDefault: m.reasoning_effort_default,
         }
@@ -1041,6 +1046,9 @@ export class OpenAIProvider implements ProviderClient {
         supportsVision: m.input_modalities?.includes('image') || undefined,
         thinkMode: m.think,
         flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
+        // Nur die beiden gemessenen Werte werden uebernommen. Alles andere,
+        // was ein fremder Server in dieses Feld schreibt, faellt weg.
+        unfiltered: m.unfiltered === 'full' || m.unfiltered === 'partial' ? m.unfiltered : undefined,
         // Straight through, no invention: a server that does not declare the
         // ladder leaves both undefined, and undefined is what switches the
         // whole effort feature off for this model.

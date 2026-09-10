@@ -4,6 +4,7 @@ import { Send, Square, Paperclip, X, Brain, Gauge, Terminal } from 'lucide-react
 import { matchAgentCommands, type AgentCommand, type CommandScope } from '../../lib/agent-commands'
 import { VoiceButton } from './VoiceButton'
 import { FlashChatNotice } from './FlashChatNotice'
+import { ModelMarks } from './ModelMarks'
 import { ApprovalDialog } from './ApprovalDialog'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -364,6 +365,8 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
 
   return (
     <div className={`px-3 pb-2 pt-1 w-full ${COMPOSER_MAX_W} mx-auto`}>
+      {/* Was dieses Modell kann, bevor die Frage getippt ist. */}
+      <ModelMarks />
       <FlashChatNotice />
       {/* Approval used to live here as a popup over the chat input.
           Per user feedback ("eventuell in den chat einarbeiten") it now
