@@ -631,20 +631,83 @@ fn run_import_probe_bounded(
     max: std::time::Duration,
 ) -> Result<ImportProbeReport, String> {
     let script = import_probe_script(modules);
+    let run = run_python_bounded(
+        python_bin,
+        &["-c", &script],
+        None,
+        install_status,
+        probe_progress_line,
+        cancel,
+        max,
+    )?;
+    if let Some(spawn_error) = run.spawn_error {
+        return Ok(ImportProbeReport {
+            broken: vec![("python".to_string(), spawn_error)],
+            ..Default::default()
+        });
+    }
+    let mut report = parse_import_probe(&run.stdout, run.success);
+    report.timed_out = run.timed_out;
+    if run.timed_out {
+        report.finished = false;
+    }
+    promote_crash_from_stderr(&mut report, &run.stderr);
+    Ok(report)
+}
+
+/// One bounded run of a python program: everything it printed and how it ended.
+///
+/// `spawn_error` is set when the interpreter never started at all, and then
+/// nothing else in here means anything. `success` is the exit status, and a run
+/// that hit its deadline has `timed_out` set and `success` false, because a
+/// probe that never finished is not a probe that passed.
+pub(crate) struct BoundedRun {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) success: bool,
+    pub(crate) timed_out: bool,
+    pub(crate) spawn_error: Option<String>,
+}
+
+/// Start a python, read both pipes line by line, and stop it at the deadline or
+/// on the cancel flag. Err is only ever "cancelled".
+///
+/// One runner for all three probes in this file. The import probe had it to
+/// itself until Bug j needed the same thing twice more (the runtime probe and
+/// ComfyUI's own start self test), and a second copy of the reader threads,
+/// the deadline and the kill_tree would have been three places to keep in
+/// step. `progress` turns a raw child line into a status line, or None for the
+/// lines the user has no use for.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_python_bounded(
+    python_bin: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    install_status: Option<&Arc<Mutex<InstallState>>>,
+    progress: fn(&str) -> Option<String>,
+    cancel: Option<&Arc<AtomicBool>>,
+    max: std::time::Duration,
+) -> Result<BoundedRun, String> {
     // Die Begruendung fuer die Kodierung wohnt jetzt in python_command, weil
     // sie fuer jeden Python-Start gilt und nicht nur fuer diesen hier
     // (Ticket 003).
     let mut cmd = python_command(python_bin);
-    cmd.arg("-c").arg(&script);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return Ok(ImportProbeReport {
-                broken: vec![("python".to_string(), os_error::english(&e))],
-                ..Default::default()
+            return Ok(BoundedRun {
+                stdout: String::new(),
+                stderr: String::new(),
+                success: false,
+                timed_out: false,
+                spawn_error: Some(os_error::english(&e)),
             })
         }
     };
@@ -667,7 +730,7 @@ fn run_import_probe_bounded(
                 if line.is_empty() {
                     continue;
                 }
-                if let (Some(state), Some(msg)) = (status.as_ref(), probe_progress_line(&line)) {
+                if let (Some(state), Some(msg)) = (status.as_ref(), progress(&line)) {
                     push_install_log(state, &msg);
                 }
                 if let Ok(mut v) = sink.lock() {
@@ -734,26 +797,360 @@ fn run_import_probe_bounded(
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let stdout_text = out_lines.lock().map(|v| v.join("\n")).unwrap_or_default();
-    let stderr_text = err_lines.lock().map(|v| v.join("\n")).unwrap_or_default();
-    let survived = exit.map(|s| s.success()).unwrap_or(false);
-    let mut report = parse_import_probe(&stdout_text, survived);
-    report.timed_out = timed_out;
-    if timed_out {
-        report.finished = false;
+    Ok(BoundedRun {
+        stdout: out_lines.lock().map(|v| v.join("\n")).unwrap_or_default(),
+        stderr: err_lines.lock().map(|v| v.join("\n")).unwrap_or_default(),
+        success: exit.map(|s| s.success()).unwrap_or(false),
+        timed_out,
+        spawn_error: None,
+    })
+}
+
+// ── Bug j: "repaired" has to mean "it starts" ──────────────────────────────
+//
+// anglefire (Discord help-chat, 2026-09-02, Windows 10, RTX 3050, 2.6.7): the
+// repair ran to the end, said the environment was ready, and the next start
+// failed. artoriuskurokami (same day, RX 9070 XT) is the other half of the
+// same hole from the GPU side: everything imports, and the first call that
+// touches the card dies with hipErrorInvalidValue.
+//
+// The import probe above cannot see either of those. It asks `import torch`,
+// which succeeds on a torch with no kernels for this card, and it asks nothing
+// at all about ComfyUI's own start, which imports more than requirements.txt
+// names. Two more stages close that: the card is made to do one piece of real
+// work, and ComfyUI is made to run its own start.
+
+/// Does torch reach the card, and does the first real call survive?
+///
+/// Written as one string rather than assembled, because nothing in it varies.
+/// Every stage announces itself before it runs and flushes, for the reason the
+/// import probe does it: a call that takes the interpreter down with it still
+/// leaves its name behind. The program always exits 0, because the verdict is in the
+/// lines, not in the status, so a card that fails is not confused with an
+/// interpreter that never started.
+pub(crate) const RUNTIME_PROBE_SRC: &str = r#"import sys
+def say(line):
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+def why(e):
+    return type(e).__name__ + ": " + " ".join(str(e).split())
+say("RUN_VENV " + ("1" if sys.prefix != sys.base_prefix else "0"))
+try:
+    import torch
+except BaseException as e:
+    say("RUN_FAIL import :: " + why(e))
+    raise SystemExit(0)
+say("RUN_TORCH " + str(torch.__version__))
+say("RUN_HIP " + str(getattr(torch.version, "hip", None)))
+say("RUN_CUDA " + str(getattr(torch.version, "cuda", None)))
+try:
+    available = bool(torch.cuda.is_available())
+except BaseException as e:
+    say("RUN_FAIL available :: " + why(e))
+    raise SystemExit(0)
+say("RUN_AVAILABLE " + ("1" if available else "0"))
+if not available:
+    say("RUN_DONE")
+    raise SystemExit(0)
+try:
+    say("RUN_ARCHS " + " ".join(torch.cuda.get_arch_list()))
+except BaseException as e:
+    say("RUN_NOTE arch list unavailable :: " + why(e))
+try:
+    props = torch.cuda.get_device_properties(0)
+    say("RUN_DEVICE " + str(getattr(props, "gcnArchName", "") or props.name))
+except BaseException as e:
+    say("RUN_NOTE device properties unavailable :: " + why(e))
+try:
+    say("RUN_TRY allocate")
+    tensor = torch.ones(1).cuda()
+    say("RUN_TRY compute")
+    total = float((tensor + tensor).sum().item())
+    say("RUN_MATH " + repr(total))
+except BaseException as e:
+    say("RUN_FAIL device :: " + why(e))
+    raise SystemExit(0)
+say("RUN_DONE")
+"#;
+
+/// What the runtime probe said.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RuntimeProbe {
+    pub(crate) torch: Option<String>,
+    pub(crate) hip: Option<String>,
+    pub(crate) available: bool,
+    /// `torch.cuda.get_arch_list()`: the gfx or sm targets this build carries.
+    pub(crate) archs: Vec<String>,
+    /// `gcnArchName` on ROCm, the product name everywhere else.
+    pub(crate) device_arch: Option<String>,
+    /// Stage and the exception, for the first stage that failed.
+    pub(crate) failure: Option<(String, String)>,
+    pub(crate) finished: bool,
+}
+
+pub(crate) fn parse_runtime_probe(stdout: &str) -> RuntimeProbe {
+    let mut p = RuntimeProbe::default();
+    for line in stdout.lines().map(str::trim) {
+        if let Some(v) = line.strip_prefix("RUN_TORCH ") {
+            p.torch = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("RUN_HIP ") {
+            // Python prints a missing value as "None"; carrying that string
+            // into a customer message would read like a version.
+            p.hip = (v.trim() != "None").then(|| v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("RUN_AVAILABLE ") {
+            p.available = v.trim() == "1";
+        } else if let Some(v) = line.strip_prefix("RUN_ARCHS ") {
+            p.archs = v.split_whitespace().map(str::to_string).collect();
+        } else if let Some(v) = line.strip_prefix("RUN_DEVICE ") {
+            let v = v.trim();
+            p.device_arch = (!v.is_empty()).then(|| v.to_string());
+        } else if let Some(rest) = line.strip_prefix("RUN_FAIL ") {
+            if p.failure.is_none() {
+                let (stage, why) = rest.split_once(" :: ").unwrap_or((rest, ""));
+                p.failure = Some((stage.trim().to_string(), why.trim().to_string()));
+            }
+        } else if line == "RUN_DONE" {
+            p.finished = true;
+        }
     }
-    promote_crash_from_stderr(&mut report, &stderr_text);
-    Ok(report)
+    p
+}
+
+/// Live lines for the status panel while the runtime probe runs.
+pub(crate) fn runtime_progress_line(line: &str) -> Option<String> {
+    match line.trim() {
+        "RUN_TRY allocate" => Some("Putting a tensor on the card...".to_string()),
+        "RUN_TRY compute" => Some("Running one operation on the card...".to_string()),
+        l => l
+            .strip_prefix("RUN_AVAILABLE ")
+            .map(|v| match v.trim() {
+                "1" => "torch reports a usable card.".to_string(),
+                _ => "torch reports no usable card; ComfyUI will run on the processor.".to_string(),
+            }),
+    }
+}
+
+/// The gfx target of the card, when the probe named one that looks like a gfx
+/// target rather than a product name.
+fn gfx_target(device_arch: Option<&str>) -> Option<&str> {
+    let raw = device_arch?;
+    // ROCm appends its feature flags: "gfx942:sramecc+:xnack-".
+    let base = raw.split(':').next().unwrap_or(raw).trim();
+    base.starts_with("gfx").then_some(base)
+}
+
+/// Does the wheel in this venv carry kernels for this card?
+///
+/// `get_arch_list()` prints the same feature flags the device name carries, so
+/// both sides are cut back to the bare target before they are compared.
+fn arch_list_carries(archs: &[String], target: &str) -> bool {
+    archs
+        .iter()
+        .any(|a| a.split(':').next().unwrap_or(a).trim() == target)
+}
+
+/// The two failures that really do mean "this build has no kernels for this
+/// card", per HIP's own error reference: `hipErrorNoBinaryForGpu` is "no
+/// compatible compiled binary exists" and `hipErrorInvalidDeviceFunction` is
+/// "not available for the current device". A CUDA-only wheel on an AMD card
+/// says the third one.
+fn is_missing_kernel(why: &str) -> bool {
+    let l = why.to_lowercase();
+    l.contains("nobinaryforgpu")
+        || l.contains("no kernel image")
+        || l.contains("invaliddevicefunction")
+        || l.contains("invalid device function")
+        || l.contains("not compiled with cuda enabled")
+}
+
+/// `hipErrorInvalidValue`, which is NOT the missing-kernel error and is the one
+/// artoriuskurokami reported.
+///
+/// HIP's error reference calls it a bad launch parameter: a grid dimension of
+/// zero, or a shared memory size over the limit. On gfx120X it has also come
+/// out of a kernel that IS registered and is a null pointer, which is
+/// ROCm/TheRock#5284. Either way it is not "your architecture is missing", and
+/// answering it with an architecture lecture sends the user shopping for a
+/// wheel he already has.
+fn is_bad_launch_value(why: &str) -> bool {
+    let l = why.to_lowercase();
+    l.contains("hiperrorinvalidvalue") || l.contains("invalid argument")
+}
+
+/// The ROCm PyTorch index that carries this platform's kernels, named from the
+/// constants `plan_pytorch_install` hands to pip so the sentence and the pip
+/// call can never drift apart.
+fn rocm_index_for_this_os() -> String {
+    if cfg!(target_os = "windows") {
+        format!(
+            "{} with the device extra (torch[device-all])",
+            torch_wheels::ROCM_WINDOWS_CHANNELS[0]
+        )
+    } else {
+        torch_wheels::ROCM_CHANNELS[0].to_string()
+    }
+}
+
+/// The ROCm build that is known to be broken for this card, and the one that
+/// fixes it.
+///
+/// ROCm/TheRock#5284: the HIP kernel registered for `aten::_grouped_mm` on
+/// gfx120X in ROCm 7.12 is a null function pointer, and every RDNA 4 card on
+/// Windows hits it. Broken in torch 2.10.0+rocm7.12.0, fixed in
+/// 2.11.0+rocm7.13.0. Nothing else in this file names a version, and this one
+/// is read out of the torch that is actually installed rather than assumed.
+fn known_bad_rocm_build(torch: Option<&str>, target: &str) -> Option<String> {
+    let version = torch?;
+    if !matches!(target, "gfx1200" | "gfx1201") || !version.contains("+rocm7.12") {
+        return None;
+    }
+    Some(format!(
+        "The build installed here is torch {version}, and ROCm 7.12 ships a kernel for {target}          that is registered and empty (ROCm/TheRock issue 5284). torch 2.11.0+rocm7.13.0 is the          first build without it."
+    ))
+}
+
+/// What the architecture facts say, in one sentence, whatever the failure was.
+fn arch_sentence(p: &RuntimeProbe, target: &str) -> String {
+    if p.archs.is_empty() {
+        return format!("Your card reports itself as {target} and this PyTorch build does not say which architectures it carries.");
+    }
+    if arch_list_carries(&p.archs, target) {
+        return format!(
+            "Your card reports itself as {target} and this PyTorch build does carry it ({}), so a              missing architecture is not the reason.",
+            p.archs.join(", ")
+        );
+    }
+    format!(
+        "Your card reports itself as {target} and this PyTorch build carries {} and not {target}.",
+        p.archs.join(", ")
+    )
+}
+
+/// Never suggest this, and say so: it is the first thing a search turns up.
+///
+/// gfx1201 has been natively supported since ROCm 6.4.1, so there is nothing to
+/// override to, and ComfyUI issue 7400 is an RX 9070 XT owner whose machine
+/// needed a hard reset after trying it. ComfyUI's own README lists the override
+/// for RDNA 2 and RDNA 3 only, with no RDNA 4 entry.
+const NO_GFX_OVERRIDE: &str =
+    "Do not set HSA_OVERRIDE_GFX_VERSION on an RX 9000 card. It hands RDNA 3 code to an RDNA 4 \
+     chip, and the one report of it on this card ended in a hard reset.";
+
+/// What to tell the user about a device call that failed.
+///
+/// The branches follow HIP's own error reference rather than the guess that
+/// every AMD failure is an architecture mismatch. Only the first one is that.
+fn device_failure_advice(p: &RuntimeProbe, why: &str) -> Option<String> {
+    let target = gfx_target(p.device_arch.as_deref())?;
+    let rdna4 = matches!(target, "gfx1200" | "gfx1201");
+    let mut out = arch_sentence(p, target);
+    if is_missing_kernel(why) {
+        out.push(' ');
+        out.push_str(&format!(
+            "That is what this error means: the build has no code for this card. The ROCm index \
+             that carries RDNA and CDNA targets is {}.",
+            rocm_index_for_this_os()
+        ));
+    } else if is_bad_launch_value(why) {
+        out.push(' ');
+        out.push_str(
+            "This error is not a missing architecture. HIP returns it for a bad launch, and on \
+             RDNA 4 it has also come from a kernel that exists and is empty. Two things have \
+             fixed exactly this on an RX 9070 XT: start ComfyUI with --disable-smart-memory, and \
+             leave the attention setting on the PyTorch one rather than split attention.",
+        );
+        if let Some(bad) = known_bad_rocm_build(p.torch.as_deref(), target) {
+            out.push(' ');
+            out.push_str(&bad);
+        }
+    }
+    if rdna4 {
+        out.push(' ');
+        out.push_str(NO_GFX_OVERRIDE);
+    }
+    out.push_str(
+        " Settings, Hardware, ComfyUI GPU set to Force CPU renders on the processor in the \
+         meantime.",
+    );
+    Some(out)
+}
+
+/// The verdict on one runtime probe.
+pub(crate) enum RuntimeVerdict {
+    /// The card did real work.
+    Gpu(String),
+    /// No accelerator at all. Not a failed repair: ComfyUI starts with `--cpu`,
+    /// which is exactly what the launcher already decides for such a box.
+    CpuOnly(String),
+    /// The card is there and the first real call failed. This is the one that
+    /// must never come out as "Repair finished. ComfyUI is ready."
+    Fail(String),
+}
+
+pub(crate) fn runtime_verdict(p: &RuntimeProbe) -> RuntimeVerdict {
+    if let Some((stage, why)) = &p.failure {
+        if stage == "import" {
+            return RuntimeVerdict::Fail(format!(
+                "torch is installed but will not import, so ComfyUI cannot start.\n\n{why}"
+            ));
+        }
+        let mut msg = format!("torch found the card and then the first call to it failed.\n\n{why}");
+        if let Some(extra) = device_failure_advice(p, why) {
+            msg.push_str("\n\n");
+            msg.push_str(&extra);
+        }
+        return RuntimeVerdict::Fail(msg);
+    }
+    if !p.finished {
+        return RuntimeVerdict::Fail(
+            "The check that the card really works did not finish, so LU cannot say this \
+             environment starts. Run Repair environment again, and if it stops here a second \
+             time, send the log from this panel."
+                .to_string(),
+        );
+    }
+    if !p.available {
+        return RuntimeVerdict::CpuOnly(
+            "torch in this environment reports no usable card, so ComfyUI will render on the \
+             processor. That is slow but it works."
+                .to_string(),
+        );
+    }
+    // The call survived and the wheel still does not name the card. Nothing is
+    // promised beyond the one tensor that just worked, and the render is where
+    // the user would find that out.
+    if let Some(target) = gfx_target(p.device_arch.as_deref()) {
+        if !p.archs.is_empty() && !arch_list_carries(&p.archs, target) {
+            let mut msg = arch_sentence(p, target);
+            msg.push(' ');
+            msg.push_str(&format!(
+                "One tensor reached the card anyway, but a render needs kernels this build does \
+                 not have. The ROCm index that carries them is {}.",
+                rocm_index_for_this_os()
+            ));
+            if matches!(target, "gfx1200" | "gfx1201") {
+                msg.push(' ');
+                msg.push_str(NO_GFX_OVERRIDE);
+            }
+            return RuntimeVerdict::Fail(msg);
+        }
+    }
+    RuntimeVerdict::Gpu(match &p.torch {
+        Some(v) => format!("The card answered and ran one operation (torch {v})."),
+        None => "The card answered and ran one operation.".to_string(),
+    })
 }
 
 /// Import every package we can name, install back what is missing, import
-/// again. Ok means the environment really starts; Err carries a finished
-/// sentence for the status line.
+/// again. Ok means every package the environment needs is there; Err carries a
+/// finished sentence for the status line.
 ///
 /// This is the step "Repair environment" was missing. It rebuilt the venv and
 /// then trusted pip's exit code, which is the same trust that produced the
-/// broken environment in the first place.
-pub(super) fn verify_and_heal_environment(
+/// broken environment in the first place. What it still does not prove is that
+/// the environment STARTS, which is the two stages in
+/// `verify_environment_really_starts`, which runs after this one.
+fn verify_imports(
     python_bin: &str,
     requirements: &Path,
     install_status: &Arc<Mutex<InstallState>>,
@@ -857,6 +1254,209 @@ pub(super) fn verify_and_heal_environment(
             })
         }
     }
+}
+
+/// How long ComfyUI's own start self test may take.
+///
+/// The same number and the same reason as the import probe: `main.py` imports
+/// for twenty to sixty seconds before it would bind a port, a custom-node-heavy
+/// install takes longer, and a cold Windows drive longer again.
+const START_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The line of a failed run that says what actually went wrong.
+///
+/// A Python traceback puts its cause LAST, under the frames, so the search runs
+/// from the end and stops at the first line that is a cause rather than noise:
+/// the frames themselves are indented, `Traceback (most recent call last):` is
+/// a heading, and a torch or transformers start writes warnings on nearly every
+/// run, which is why the last stderr line by itself is usually a deprecation
+/// notice rather than the fault.
+///
+/// stderr first, because that is where an uncaught exception lands; a ComfyUI
+/// that logs its own refusal to stdout and exits is the fallback.
+pub(crate) fn real_error_line(stdout: &str, stderr: &str) -> Option<String> {
+    fn cause(text: &str) -> Option<String> {
+        text.lines().rev().find_map(|raw| {
+            let line = raw.trim_end();
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || line.starts_with(' ')
+                || line.starts_with('\t')
+                || trimmed.starts_with("Traceback (most recent call last)")
+                || trimmed.starts_with("During handling of")
+                || trimmed.starts_with("The above exception")
+                || is_warning_line(trimmed)
+            {
+                return None;
+            }
+            Some(trimmed.to_string())
+        })
+    }
+    cause(stderr).or_else(|| cause(stdout))
+}
+
+/// A line that is only a library clearing its throat.
+fn is_warning_line(line: &str) -> bool {
+    const NOISE: &[&str] = &[
+        "Warning:",
+        "warning:",
+        "WARNING",
+        "[W ",
+        "warnings.warn",
+    ];
+    NOISE.iter().any(|n| line.contains(n)) && !line.contains("Error")
+}
+
+/// Run ComfyUI's own start, the way ComfyUI's own CI does.
+///
+/// `--quick-test-for-ci` is a flag ComfyUI ships for exactly this: `main.py`
+/// parses its arguments, opens its database, imports `execution`, `server`,
+/// `nodes` and `comfy.model_management`, loads the custom nodes, and then exits
+/// 0 without binding a port. Everything anglefire's start died on happens in
+/// that stretch, and none of it is visible to an import probe that only knows
+/// the names in requirements.txt.
+///
+/// Ok(None) means the start works. Ok(Some(..)) is the finished sentence for
+/// the status line. Err is only ever "cancelled".
+fn run_start_probe(
+    python_bin: &str,
+    comfy_dir: &Path,
+    cpu: bool,
+    install_status: &Arc<Mutex<InstallState>>,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Option<String>, String> {
+    let main_py = comfy_dir.join("main.py");
+    if !main_py.exists() {
+        // repair_precheck refuses a folder without requirements.txt long before
+        // this; a missing main.py here means the folder changed under the run.
+        return Ok(Some(format!(
+            "main.py is gone from {}, so there is nothing to start.",
+            comfy_dir.display()
+        )));
+    }
+    let mut args = vec!["main.py", "--quick-test-for-ci"];
+    if cpu {
+        args.push("--cpu");
+    }
+    let run = run_python_bounded(
+        python_bin,
+        &args,
+        Some(comfy_dir),
+        Some(install_status),
+        |_| None,
+        cancel,
+        START_PROBE_DEADLINE,
+    )?;
+    if let Some(spawn_error) = run.spawn_error {
+        return Ok(Some(format!(
+            "ComfyUI's own start could not be run: {spawn_error}"
+        )));
+    }
+    if run.timed_out {
+        return Ok(Some(format!(
+            "ComfyUI's own start ran for {} seconds without finishing, so LU cannot say this \
+             environment starts. Start ComfyUI from Settings and read the output panel.",
+            START_PROBE_DEADLINE.as_secs()
+        )));
+    }
+    if run.success {
+        return Ok(None);
+    }
+    // A fork or a core older than the flag answers argparse's own refusal and
+    // exit code 2. That says nothing about the environment, and failing a
+    // repair over it would be the opposite of this whole change.
+    if run.stderr.contains("unrecognized arguments") {
+        push_install_log(
+            install_status,
+            "This ComfyUI does not know --quick-test-for-ci, so LU could not run its start \
+             check. Start ComfyUI from Settings to see whether it comes up.",
+        );
+        return Ok(None);
+    }
+    let reason = real_error_line(&run.stdout, &run.stderr)
+        .unwrap_or_else(|| "it exited without saying why".to_string());
+    Ok(Some(format!(
+        "The packages are all there, and ComfyUI still does not start.\n\n{reason}"
+    )))
+}
+
+/// The two stages that turn "pip is happy" into "it starts".
+///
+/// Bug j: the repair used to end here on "Repair finished. ComfyUI is ready."
+/// with nothing behind that sentence but a list of successful imports.
+fn verify_environment_really_starts(
+    python_bin: &str,
+    comfy_dir: &Path,
+    install_status: &Arc<Mutex<InstallState>>,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<(), String> {
+    push_install_log(install_status, "Checking that the card really answers...");
+    // No working directory: `python -c` puts the current one at the head of
+    // sys.path, and a ComfyUI folder is full of module names.
+    let run = run_python_bounded(
+        python_bin,
+        &["-c", RUNTIME_PROBE_SRC],
+        None,
+        Some(install_status),
+        runtime_progress_line,
+        cancel,
+        IMPORT_PROBE_DEADLINE,
+    )?;
+    if let Some(spawn_error) = run.spawn_error {
+        return Err(format!(
+            "The rebuilt environment's Python could not be started: {spawn_error}"
+        ));
+    }
+    let probe = parse_runtime_probe(&run.stdout);
+    // A run that hit its deadline has no lines to judge, so say that and not
+    // whatever the half-written report happens to contain.
+    if run.timed_out {
+        return Err(
+            "The check that the card really works did not finish in time. Start ComfyUI from \
+             Settings and read the output panel."
+                .to_string(),
+        );
+    }
+    let cpu = match runtime_verdict(&probe) {
+        RuntimeVerdict::Gpu(msg) => {
+            push_install_log(install_status, &msg);
+            false
+        }
+        RuntimeVerdict::CpuOnly(msg) => {
+            push_install_log(install_status, &msg);
+            true
+        }
+        RuntimeVerdict::Fail(msg) => return Err(msg),
+    };
+
+    push_install_log(
+        install_status,
+        "Running ComfyUI's own start check. This takes a minute.",
+    );
+    match run_start_probe(python_bin, comfy_dir, cpu, install_status, cancel)? {
+        None => {
+            push_install_log(install_status, "ComfyUI starts.");
+            Ok(())
+        }
+        Some(msg) => Err(msg),
+    }
+}
+
+/// Prove the environment, in the order the failures happen: every package
+/// imports, the card answers, and ComfyUI itself starts.
+///
+/// Ok means all three. Err carries a finished sentence for the status line, and
+/// the caller turns it into `update("error", ..)`, and a repair that reaches any
+/// Err here must never report success.
+pub(super) fn verify_and_heal_environment(
+    python_bin: &str,
+    comfy_dir: &Path,
+    requirements: &Path,
+    install_status: &Arc<Mutex<InstallState>>,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<(), String> {
+    verify_imports(python_bin, requirements, install_status, cancel)?;
+    verify_environment_really_starts(python_bin, comfy_dir, install_status, cancel)
 }
 
 #[cfg(test)]
@@ -1071,7 +1671,7 @@ mod tests {
         let state = Arc::new(Mutex::new(InstallState::default()));
         let gone = std::env::temp_dir().join("lu-no-such-requirements-abc123.txt");
         let _ = std::fs::remove_file(&gone);
-        let _ = verify_and_heal_environment("lu-not-a-python-binary", &gone, &state, None);
+        let _ = verify_imports("lu-not-a-python-binary", &gone, &state, None);
         let logs = state.lock().unwrap().logs.join("\n");
         assert!(logs.contains("requirements.txt could not be read"), "{logs}");
         let count = format!("importing {} packages", probe_targets("").len());
@@ -1080,7 +1680,7 @@ mod tests {
         let there = std::env::temp_dir().join("lu-a-real-requirements-abc123.txt");
         std::fs::write(&there, "torch\n").expect("fixture");
         let second = Arc::new(Mutex::new(InstallState::default()));
-        let _ = verify_and_heal_environment("lu-not-a-python-binary", &there, &second, None);
+        let _ = verify_imports("lu-not-a-python-binary", &there, &second, None);
         let quiet = second.lock().unwrap().logs.join("\n");
         let _ = std::fs::remove_file(&there);
         assert!(!quiet.contains("could not be read"), "{quiet}");
@@ -1534,4 +2134,387 @@ mod tests {
         assert!(started.elapsed() < TEST_CANCEL_DEADLINE, "cancel waited the probe out");
     }
 
+}
+
+// ── Bug j: "repaired" has to mean "it starts" ──────────────────────────────
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// PYTHONPATH is process-global, exactly as in the import-probe tests.
+    static FAKE_ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn probe_python() -> Option<String> {
+        let bin = crate::python::get_python_bin();
+        (!bin.is_empty() && crate::python::is_real_python(&bin)).then_some(bin)
+    }
+
+    /// A `torch` that behaves the way one broken machine behaves, put where the
+    /// real one would be. `cuda_call` is the body of the call that fails, or
+    /// None for a torch that works.
+    fn stage_fake_torch(tag: &str, available: bool, arch: &str, version: &str, cuda_call: Option<&str>) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("lu-fake-torch-{tag}"));
+        std::fs::create_dir_all(&dir).expect("fake torch dir");
+        let body = match cuda_call {
+            Some(boom) => format!("    def cuda(self):\n        raise RuntimeError({boom})\n"),
+            None => "    def cuda(self):\n        return self\n".to_string(),
+        };
+        let src = format!(
+            "import types\n\
+             __version__ = \"{version}\"\n\
+             version = types.SimpleNamespace(hip=\"7.12.0\", cuda=None)\n\
+             class _T:\n\
+             {body}\
+             \x20   def __add__(self, other):\n\
+             \x20       return self\n\
+             \x20   def sum(self):\n\
+             \x20       return self\n\
+             \x20   def item(self):\n\
+             \x20       return 2.0\n\
+             \x20   def cpu(self):\n\
+             \x20       return self\n\
+             def ones(n):\n\
+             \x20   return _T()\n\
+             class _Props:\n\
+             \x20   gcnArchName = \"{arch}\"\n\
+             \x20   name = \"fake card\"\n\
+             cuda = types.SimpleNamespace(\n\
+             \x20   is_available=lambda: {available},\n\
+             \x20   get_arch_list=lambda: [\"gfx1030\", \"gfx1100\"],\n\
+             \x20   get_device_properties=lambda i: _Props(),\n\
+             )\n",
+            available = if available { "True" } else { "False" },
+        );
+        std::fs::write(dir.join("torch.py"), src).expect("fake torch");
+        std::env::set_var("PYTHONPATH", &dir);
+        (dir.clone(), dir.to_string_lossy().to_string())
+    }
+
+    fn run_runtime_probe(python: &str) -> RuntimeProbe {
+        let run = run_python_bounded(
+            python,
+            &["-c", RUNTIME_PROBE_SRC],
+            None,
+            None,
+            runtime_progress_line,
+            None,
+            std::time::Duration::from_secs(60),
+        )
+        .expect("not cancelled");
+        assert!(run.spawn_error.is_none(), "python did not start: {:?}", run.spawn_error);
+        parse_runtime_probe(&run.stdout)
+    }
+
+    // ── The three stages, each against a python that fails there ──────────
+
+    #[test]
+    fn a_torch_that_will_not_import_is_named_and_never_called_healthy() {
+        let _turn = FAKE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live runtime probe");
+            return;
+        };
+        let dir = std::env::temp_dir().join("lu-fake-torch-import");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("torch.py"),
+            "raise ImportError(\"DLL load failed while importing _C\")\n",
+        )
+        .expect("fake torch");
+        std::env::set_var("PYTHONPATH", &dir);
+        let probe = run_runtime_probe(&python);
+        std::env::remove_var("PYTHONPATH");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (stage, why) = probe.failure.clone().expect("{probe:?}");
+        assert_eq!(stage, "import");
+        assert!(why.contains("DLL load failed"), "{why}");
+        match runtime_verdict(&probe) {
+            RuntimeVerdict::Fail(m) => assert!(m.contains("DLL load failed"), "{m}"),
+            _ => panic!("a torch that does not import is not a repaired environment"),
+        }
+    }
+
+    #[test]
+    fn a_torch_without_a_card_is_a_processor_run_and_not_a_failure() {
+        let _turn = FAKE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live runtime probe");
+            return;
+        };
+        let (dir, _) = stage_fake_torch("nocard", false, "gfx1201", "2.13.0", None);
+        let probe = run_runtime_probe(&python);
+        std::env::remove_var("PYTHONPATH");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!probe.available, "{probe:?}");
+        assert!(probe.finished, "{probe:?}");
+        assert!(probe.failure.is_none(), "{probe:?}");
+        assert!(matches!(runtime_verdict(&probe), RuntimeVerdict::CpuOnly(_)));
+    }
+
+    #[test]
+    fn the_first_call_to_an_rdna4_card_failing_names_the_real_cause() {
+        // artoriuskurokami, 2026-09-02, RX 9070 XT: everything imports, the
+        // card answers, and the first HIP call comes back invalid.
+        let _turn = FAKE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live runtime probe");
+            return;
+        };
+        let (dir, _) = stage_fake_torch(
+            "hip",
+            true,
+            "gfx1201",
+            "2.10.0+rocm7.12.0",
+            Some("\"HIP error: invalid argument Search for 'hipErrorInvalidValue' in the ROCm documentation\""),
+        );
+        let probe = run_runtime_probe(&python);
+        std::env::remove_var("PYTHONPATH");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(probe.device_arch.as_deref(), Some("gfx1201"), "{probe:?}");
+        assert_eq!(probe.torch.as_deref(), Some("2.10.0+rocm7.12.0"), "{probe:?}");
+        let RuntimeVerdict::Fail(msg) = runtime_verdict(&probe) else {
+            panic!("a card that fails its first call is not a repaired environment");
+        };
+        assert!(msg.contains("hipErrorInvalidValue"), "{msg}");
+        assert!(msg.contains("gfx1201"), "{msg}");
+        // The correction the research forced: this error is NOT the missing
+        // architecture one, and the message must not send him wheel shopping.
+        assert!(msg.contains("not a missing architecture"), "{msg}");
+        assert!(msg.contains("--disable-smart-memory"), "{msg}");
+        assert!(msg.contains("2.11.0+rocm7.13.0"), "{msg}");
+        assert!(msg.contains("Do not set HSA_OVERRIDE_GFX_VERSION"), "{msg}");
+    }
+
+    #[test]
+    fn a_card_that_works_is_the_only_thing_that_passes() {
+        let _turn = FAKE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live runtime probe");
+            return;
+        };
+        // gfx1100 is in the fake arch list, so nothing is missing either.
+        let (dir, _) = stage_fake_torch("ok", true, "gfx1100", "2.13.0+rocm7.2", None);
+        let probe = run_runtime_probe(&python);
+        std::env::remove_var("PYTHONPATH");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(probe.finished && probe.available, "{probe:?}");
+        assert!(matches!(runtime_verdict(&probe), RuntimeVerdict::Gpu(_)), "{probe:?}");
+    }
+
+    #[test]
+    fn a_card_the_wheel_does_not_carry_fails_even_when_one_tensor_survived() {
+        let _turn = FAKE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live runtime probe");
+            return;
+        };
+        let (dir, _) = stage_fake_torch("noarch", true, "gfx1201", "2.13.0+rocm7.2", None);
+        let probe = run_runtime_probe(&python);
+        std::env::remove_var("PYTHONPATH");
+        let _ = std::fs::remove_dir_all(&dir);
+        let RuntimeVerdict::Fail(msg) = runtime_verdict(&probe) else {
+            panic!("a wheel without this card's kernels is not a repaired environment");
+        };
+        assert!(msg.contains("gfx1201"), "{msg}");
+        assert!(msg.contains("gfx1030, gfx1100"), "{msg}");
+    }
+
+    // ── ComfyUI's own start ───────────────────────────────────────────────
+
+    fn stage_fake_comfy(tag: &str, main_py: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lu-fake-comfy-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fake comfy dir");
+        std::fs::write(dir.join("main.py"), main_py).expect("fake main.py");
+        std::fs::write(dir.join("requirements.txt"), "torch\n").expect("fake requirements");
+        dir
+    }
+
+    #[test]
+    fn a_start_that_dies_reports_the_line_that_says_why() {
+        // anglefire, 2026-09-02: the repair ran to the end and the start still
+        // failed. Every package imported; the start imports more than the
+        // packages requirements.txt names.
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live start probe");
+            return;
+        };
+        let dir = stage_fake_comfy(
+            "broken",
+            "import sys\n\
+             sys.stderr.write('UserWarning: torch clearing its throat\\n')\n\
+             sys.stderr.write('Traceback (most recent call last):\\n')\n\
+             sys.stderr.write('  File \"main.py\", line 1, in <module>\\n')\n\
+             sys.stderr.write(\"ModuleNotFoundError: No module named 'sqlalchemy'\\n\")\n\
+             sys.exit(1)\n",
+        );
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let verdict = run_start_probe(&python, &dir, true, &state, None).expect("not cancelled");
+        let _ = std::fs::remove_dir_all(&dir);
+        let msg = verdict.expect("a start that exits 1 is not a start");
+        assert!(msg.contains("does not start"), "{msg}");
+        assert!(msg.contains("No module named 'sqlalchemy'"), "{msg}");
+        // The warning above the traceback must not be the answer.
+        assert!(!msg.contains("clearing its throat"), "{msg}");
+    }
+
+    #[test]
+    fn a_start_that_comes_up_is_the_only_thing_that_passes() {
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live start probe");
+            return;
+        };
+        let dir = stage_fake_comfy("ok", "import sys\nassert '--quick-test-for-ci' in sys.argv\nsys.exit(0)\n");
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let verdict = run_start_probe(&python, &dir, false, &state, None).expect("not cancelled");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(verdict.is_none(), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_core_that_does_not_know_the_flag_is_not_a_failed_repair() {
+        // A fork, or a core older than the flag. argparse refuses and exits 2,
+        // and that says nothing at all about the environment.
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live start probe");
+            return;
+        };
+        let dir = stage_fake_comfy(
+            "oldflag",
+            "import sys\n\
+             sys.stderr.write('main.py: error: unrecognized arguments: --quick-test-for-ci\\n')\n\
+             sys.exit(2)\n",
+        );
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let verdict = run_start_probe(&python, &dir, false, &state, None).expect("not cancelled");
+        let logs = state.lock().unwrap().logs.join("\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(verdict.is_none(), "{verdict:?}");
+        assert!(logs.contains("does not know --quick-test-for-ci"), "{logs}");
+    }
+
+    #[test]
+    fn a_folder_without_a_main_py_says_that_and_starts_nothing() {
+        let dir = std::env::temp_dir().join("lu-fake-comfy-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let verdict = run_start_probe("lu-not-a-python-binary", &dir, false, &state, None)
+            .expect("not cancelled");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(verdict.expect("no main.py").contains("main.py is gone"));
+    }
+
+    // ── Pure: reading a failed run ────────────────────────────────────────
+
+    #[test]
+    fn the_cause_is_read_from_the_end_past_the_frames_and_the_noise() {
+        let stderr = "UserWarning: deprecated\n\
+                      Traceback (most recent call last):\n\
+                      \x20 File \"main.py\", line 12, in <module>\n\
+                      \x20   import nodes\n\
+                      ImportError: cannot import name 'x' from 'comfy_kitchen'\n";
+        assert_eq!(
+            real_error_line("", stderr).as_deref(),
+            Some("ImportError: cannot import name 'x' from 'comfy_kitchen'")
+        );
+    }
+
+    #[test]
+    fn a_trailing_deprecation_notice_is_not_the_cause() {
+        // torch and transformers write warnings on nearly every start, and the
+        // last stderr line is therefore usually noise.
+        let stderr = "ModuleNotFoundError: No module named 'av'\n\
+                      FutureWarning: `torch.cuda.amp` is deprecated\n";
+        assert_eq!(
+            real_error_line("", stderr).as_deref(),
+            Some("ModuleNotFoundError: No module named 'av'")
+        );
+    }
+
+    #[test]
+    fn stdout_answers_when_stderr_said_nothing() {
+        assert_eq!(
+            real_error_line("Set cuda device to: 0\nERROR: could not open the database\n", "  \n"),
+            Some("ERROR: could not open the database".to_string())
+        );
+        assert_eq!(real_error_line("", ""), None);
+    }
+
+    #[test]
+    fn a_warning_that_names_an_error_is_still_the_cause() {
+        // "RuntimeWarning" next to a real Error must not be filtered away.
+        assert_eq!(
+            real_error_line("", "RuntimeWarning: OSError: [WinError 126] the module was not found\n").as_deref(),
+            Some("RuntimeWarning: OSError: [WinError 126] the module was not found")
+        );
+    }
+
+    // ── Pure: the runtime report ──────────────────────────────────────────
+
+    #[test]
+    fn the_probe_protocol_is_read_back_whole() {
+        let out = "RUN_VENV 1\nRUN_TORCH 2.13.0+rocm7.2\nRUN_HIP 7.2.53211\nRUN_CUDA None\n\
+                   RUN_AVAILABLE 1\nRUN_ARCHS gfx1100 gfx1201\nRUN_DEVICE gfx1201:sramecc+:xnack-\n\
+                   RUN_TRY allocate\nRUN_TRY compute\nRUN_MATH 2.0\nRUN_DONE\n";
+        let p = parse_runtime_probe(out);
+        assert_eq!(p.torch.as_deref(), Some("2.13.0+rocm7.2"));
+        assert_eq!(p.hip.as_deref(), Some("7.2.53211"));
+        assert!(p.available && p.finished);
+        assert_eq!(p.archs, vec!["gfx1100", "gfx1201"]);
+        // The feature flags are cut off on both sides before they are compared.
+        assert!(matches!(runtime_verdict(&p), RuntimeVerdict::Gpu(_)));
+    }
+
+    #[test]
+    fn a_missing_hip_version_never_becomes_the_word_none() {
+        let p = parse_runtime_probe("RUN_HIP None\nRUN_CUDA 13.0\nRUN_DONE\n");
+        assert_eq!(p.hip, None);
+    }
+
+    #[test]
+    fn a_probe_that_never_finished_is_not_a_pass() {
+        // The interpreter died between two lines. Nothing here says the
+        // environment is broken, and nothing says it is fine either.
+        let p = parse_runtime_probe("RUN_VENV 1\nRUN_TORCH 2.13.0\nRUN_AVAILABLE 1\n");
+        assert!(matches!(runtime_verdict(&p), RuntimeVerdict::Fail(_)));
+    }
+
+    #[test]
+    fn a_missing_kernel_really_is_answered_with_the_architecture() {
+        let p = parse_runtime_probe(
+            "RUN_TORCH 2.13.0+cu130\nRUN_AVAILABLE 1\nRUN_ARCHS sm_80 sm_90\nRUN_DEVICE gfx1201\n\
+             RUN_FAIL device :: RuntimeError: Torch not compiled with CUDA enabled\n",
+        );
+        let RuntimeVerdict::Fail(msg) = runtime_verdict(&p) else { panic!() };
+        assert!(msg.contains("no code for this card"), "{msg}");
+        assert!(msg.contains(torch_wheels::ROCM_CHANNELS[0]) || msg.contains(torch_wheels::ROCM_WINDOWS_CHANNELS[0]), "{msg}");
+    }
+
+    #[test]
+    fn the_broken_rocm_build_is_only_named_where_it_is_broken() {
+        assert!(known_bad_rocm_build(Some("2.10.0+rocm7.12.0"), "gfx1201").is_some());
+        assert!(known_bad_rocm_build(Some("2.10.0+rocm7.12.0"), "gfx1100").is_none());
+        assert!(known_bad_rocm_build(Some("2.13.0+rocm7.2"), "gfx1201").is_none());
+        assert!(known_bad_rocm_build(None, "gfx1201").is_none());
+    }
+
+    #[test]
+    fn only_a_gfx_name_counts_as_an_architecture() {
+        // hipinfo gives gcnArchName; everything else gives a product name, and
+        // a product name in an architecture sentence would be nonsense.
+        assert_eq!(gfx_target(Some("gfx1201:xnack-")), Some("gfx1201"));
+        assert_eq!(gfx_target(Some("NVIDIA GeForce RTX 3050")), None);
+        assert_eq!(gfx_target(None), None);
+    }
+
+    #[test]
+    fn the_error_classes_are_told_apart() {
+        assert!(is_missing_kernel("RuntimeError: no kernel image is available for execution"));
+        assert!(is_missing_kernel("hipErrorNoBinaryForGpu"));
+        assert!(!is_missing_kernel("HIP error: invalid argument hipErrorInvalidValue"));
+        assert!(is_bad_launch_value("HIP error: invalid argument"));
+        assert!(!is_bad_launch_value("no kernel image is available"));
+    }
 }

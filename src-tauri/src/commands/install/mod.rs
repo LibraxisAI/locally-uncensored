@@ -204,11 +204,18 @@ mod tests {
             );
             // Jeder Weg gibt der Prüfung das Abbruch-Fähnchen mit. Eine Prüfung
             // mit Frist, aber ohne Cancel, sind fünf Minuten, aus denen der
-            // Nutzer nicht herauskommt.
-            assert!(
-                !src.contains("verify_and_heal_environment(&python_bin, &reqs, &install_status, None)"),
-                "{name}: a path runs the environment check with no way to cancel it",
-            );
+            // Nutzer nicht herauskommt. Ueber die Argumentliste gelesen und
+            // nicht ueber einen ganzen Aufruf im Wortlaut: der Wortlaut hat
+            // sich mit Bug j geaendert (der Ordner kam dazu), und eine
+            // Zeichenkette, die niemand mehr schreiben kann, waere ein
+            // Waechter, der nur noch aussieht wie einer.
+            for call in src.split("verify_and_heal_environment(").skip(1) {
+                let args = call.split(')').next().unwrap_or("");
+                assert!(
+                    !args.trim_end().ends_with("None"),
+                    "{name}: a path runs the environment check with no way to cancel it: {args}",
+                );
+            }
         }
 
         // Der Install muss nach einem vorhandenen venv greifen, bevor er nach
