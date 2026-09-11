@@ -20,11 +20,16 @@
  */
 
 /**
- * probe = der Server hat es gesagt (Katalog oder Metadaten-Endpunkt)
- * user  = der Nutzer hat es im Waehler gesetzt
- * guess = aus dem Modellnamen oder einer Tabelle geraten
+ * probe   = der Server hat sein LAUFENDES Fenster gesagt (Katalog oder
+ *           Metadaten-Endpunkt)
+ * user    = der Nutzer hat es im Waehler gesetzt
+ * trained = der Server hat nur die trainierte Decke des Modells genannt
+ *           (llama.cpp `n_ctx_train`, LM Studio `max_context_length`). Eine
+ *           echte Zahl, aber nicht die des laufenden Servers: er darf kleiner
+ *           gestartet sein, und auf der Box war er es (16384 gegen 40960).
+ * guess   = aus dem Modellnamen oder einer Tabelle geraten
  */
-export type ContextSource = 'probe' | 'user' | 'guess'
+export type ContextSource = 'probe' | 'user' | 'trained' | 'guess'
 
 export interface ResolvedContextWindow {
   /** Das Fenster in Tokens. */
@@ -47,12 +52,28 @@ export interface ResolvedContextWindow {
    * beide von hier stammen und nicht vom Server.
    */
   guessKind?: 'table' | 'name'
+  /**
+   * Bei `source: 'user'`: die gespeicherte Wahl, die ueber dem laufenden
+   * Fenster lag und deshalb darauf geklemmt wurde (0 oder fehlend = nichts
+   * geklemmt).
+   *
+   * Ein Server, der mit 16384 laeuft, wird nicht groesser, weil jemand im
+   * Waehler 40K angeklickt hat. Die Wahl bleibt gespeichert (wer seinen Server
+   * groesser neu startet, bekommt sie zurueck), aber gerechnet und angezeigt
+   * wird das Fenster, und die Oberflaeche sagt in einer Zeile, warum.
+   */
+  clampedFrom?: number
 }
 
-/** Was im Werkzeugtext neben der Zahl steht. Englisch, wie die ganze Oberflaeche. */
+/**
+ * Was im Werkzeugtext neben der Zahl steht. Englisch, wie die ganze
+ * Oberflaeche. Jede Zeile muss sich in beide Rahmen fuegen, in denen sie
+ * steht: "Context window: X." und "Current value X.".
+ */
 export const SOURCE_LABEL: Record<ContextSource, string> = {
   probe: 'from server',
   user: 'set by you',
+  trained: "from the model's training limit (the server may run smaller)",
   guess: 'estimated',
 }
 
@@ -62,9 +83,15 @@ export const SOURCE_LABEL: Record<ContextSource, string> = {
  * Nur wenn die Zahl von jemandem stammt, der sie wissen kann: dem Server oder
  * dem Nutzer. Aus einer Schaetzung ein Budget zu rechnen und das auf die
  * Leitung zu legen ist genau der Fehler aus #129.
+ *
+ * `trained` zaehlt hier NICHT als bekannt. Die Zahl ist echt, aber sie
+ * beschreibt das Modell und nicht den Lauf: ein llama-server mit
+ * `--ctx-size 16384` meldet 40960 als trainierte Decke, und ein daraus
+ * gerechnetes Budget waere groesser als sein ganzes Fenster. Ohne Budget
+ * nimmt der Server seine eigene Voreinstellung, und die kennt er.
  */
 export function windowIsKnown(source: ContextSource): boolean {
-  return source !== 'guess'
+  return source === 'probe' || source === 'user'
 }
 
 /**
@@ -114,6 +141,8 @@ export interface ActiveWindow {
   source: ContextSource
   isTrue: boolean
   adjustable: boolean
+  /** Siehe `ResolvedContextWindow.clampedFrom`. 0 = nichts geklemmt. */
+  clampedFrom: number
 }
 
 /**
@@ -132,13 +161,18 @@ export function resolveActiveWindow(input: ActiveWindowInput): ActiveWindow {
   return {
     contextWindow: tokens,
     /*
-     * Die Decke der Voreinstellungen im Waehler: was der Server als
-     * trainiertes Maximum genannt hat, sonst der aktuelle Wert selbst.
+     * Die Decke der Voreinstellungen im Waehler.
      *
-     * Ausnahme ist die Wahl des Nutzers. Waere sie die Decke, koennte wer
-     * einmal 8K gewaehlt hat nie wieder etwas Groesseres waehlen, denn die
-     * Liste im Waehler endet an dieser Zahl. 0 heisst dort "unbekannt", und
-     * unbekannt oeffnet die ganze Liste.
+     * Kennt die App das laufende Fenster, ist DAS die Decke: LU kann das `-c`
+     * eines fremden Servers nicht setzen, eine groessere Zahl waere also nur
+     * eine Behauptung ueber ihn, und aus ihr wuerde wieder ein `max_tokens`
+     * ueber seinem Fenster. Erst wenn niemand ein laufendes Fenster genannt
+     * hat, darf die Liste bis zur trainierten Decke gehen.
+     *
+     * Ausnahme bleibt die Wahl des Nutzers OHNE gemessenes Fenster: waere sie
+     * selbst die Decke, koennte wer einmal 8K gewaehlt hat nie wieder etwas
+     * Groesseres waehlen, denn die Liste endet an dieser Zahl. 0 heisst dort
+     * "unbekannt", und unbekannt oeffnet die ganze Liste.
      */
     modelMax: input.resolved.modelMax > 0
       ? input.resolved.modelMax
@@ -147,6 +181,7 @@ export function resolveActiveWindow(input: ActiveWindowInput): ActiveWindow {
     source,
     isTrue: source === 'probe',
     adjustable: windowIsAdjustable({ source, localBackend: input.localBackend }),
+    clampedFrom: input.resolved.clampedFrom ?? 0,
   }
 }
 

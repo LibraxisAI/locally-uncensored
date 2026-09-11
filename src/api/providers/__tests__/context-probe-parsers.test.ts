@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   serverRoot, v1Root, parseLlamaCppProps, parseModelsListContext,
-  parseKoboldMaxContext, parseLmStudioModel, parseGenericModelContext,
+  parseKoboldMaxContext, parseLmStudioModel, parseModelRowContext,
 } from '../context-probe'
 
 describe('serverRoot: eine Basis-URL mit und ohne /v1 meint denselben Server', () => {
@@ -125,6 +125,24 @@ describe('llama.cpp GET /v1/models', () => {
     expect(got.trained).toBe(262144)
     expect(got.window).toBeNull()
   })
+
+  it('liest meta.n_ctx als das laufende Fenster, neben derselben Decke', () => {
+    // Der Fall der Box vom 11.09.2026: EIN Server, ZWEI Zahlen in derselben
+    // Karte. Wer nur n_ctx_train liest, zeigt 40960 fuer einen Server, der mit
+    // --ctx-size 16384 gestartet wurde.
+    const box = {
+      object: 'list',
+      data: [{
+        id: 'Qwen3-4B-Q4_K_M.gguf',
+        object: 'model',
+        meta: { n_vocab: 151936, n_ctx: 16384, n_ctx_train: 40960, n_embd: 2560 },
+      }],
+    }
+    expect(parseModelsListContext(box, 'Qwen3-4B-Q4_K_M.gguf')).toEqual({
+      window: 16384,
+      trained: 40960,
+    })
+  })
 })
 
 describe('KoboldCpp GET /api/extra/true_max_context_length', () => {
@@ -149,10 +167,15 @@ describe('LM Studio und die allgemeinen Schluessel', () => {
     expect(parseLmStudioModel(body)).toEqual({ loaded: 8192, max: 32768 })
   })
 
-  it('nimmt das erste, was ein allgemeiner Server nennt', () => {
-    expect(parseGenericModelContext({ max_model_len: 40960 })).toBe(40960)
-    expect(parseGenericModelContext({ n_ctx_train: 131072 })).toBe(131072)
-    expect(parseGenericModelContext({ context_length: 16384 })).toBe(16384)
-    expect(parseGenericModelContext({ id: 'x' })).toBeNull()
+  it('trennt auch beim allgemeinen /v1/models/<id> Fenster und Decke', () => {
+    // Dieselbe Modellkarte, derselbe Leser wie in der Liste: ein zweiter
+    // Parser fuer dieselbe Form waere ein zweiter Pflegeweg.
+    expect(parseModelRowContext({ max_model_len: 40960 }))
+      .toEqual({ window: 40960, trained: null })
+    expect(parseModelRowContext({ n_ctx_train: 131072 }))
+      .toEqual({ window: null, trained: 131072 })
+    expect(parseModelRowContext({ context_length: 16384 }))
+      .toEqual({ window: 16384, trained: null })
+    expect(parseModelRowContext({ id: 'x' })).toEqual({ window: null, trained: null })
   })
 })

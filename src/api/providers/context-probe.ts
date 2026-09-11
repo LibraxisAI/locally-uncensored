@@ -15,15 +15,25 @@
  * pruefbar. Belegt sind die Endpunkte gegen die Dokumentation der Server,
  * nicht gegen eine laufende Maschine: hier laeuft keiner.
  *
+ * Jede Quelle liefert deshalb ZWEI Zahlen getrennt: das laufende Fenster und
+ * die Decke, mit der ein Modell hoechstens koennte. Nur die erste beschreibt
+ * den Server, der gerade antwortet; die zweite ist eine Eigenschaft des
+ * Modells und sagt ueber diesen Lauf nichts. Wer beide in ein Feld legt,
+ * bekommt genau den Fall aus der Box vom 11.09.2026: ein llama-server mit
+ * `--ctx-size 16384` wurde als 40960 angezeigt und bekam ein `max_tokens`
+ * ueber seinem gesamten Fenster.
+ *
  * Die Endpunkte:
  *   llama.cpp llama-server  GET /props
  *                           -> default_generation_settings.n_ctx (GELADEN)
  *   llama.cpp llama-server  GET /v1/models
+ *                           -> data[].meta.n_ctx       (GELADEN)
  *                           -> data[].meta.n_ctx_train (TRAINIERT)
- *   vLLM                    GET /v1/models -> data[].max_model_len
+ *   vLLM                    GET /v1/models -> data[].max_model_len (GELADEN)
  *   KoboldCpp               GET /api/extra/true_max_context_length -> { value }
  *   LM Studio               GET /api/v0/models/<id>
- *                           -> max_context_length / loaded_context_length
+ *                           -> loaded_context_length (GELADEN)
+ *                           -> max_context_length    (TRAINIERT)
  */
 
 import { isRecord, prop, asNumber } from './wire'
@@ -68,23 +78,53 @@ export function parseLlamaCppProps(body: unknown): number | null {
   return typeof n === 'number' && n > 0 ? n : null
 }
 
+/** Fenster und Decke, wie eine Quelle sie nennt. null heisst "nicht gesagt". */
+export interface ProbedContext {
+  /** Das Fenster, mit dem der Server LAEUFT. */
+  window: number | null
+  /** Die trainierte Decke des Modells. Nie das laufende Fenster. */
+  trained: number | null
+}
+
+const positive = (n: number | undefined): number | null =>
+  typeof n === 'number' && n > 0 ? n : null
+
 /**
- * Ein Eintrag aus einer `/v1/models`-Liste, fuer das gesuchte Modell.
+ * Eine einzelne Modellkarte, egal ob aus der Liste `/v1/models` oder aus dem
+ * Einzelabruf `/v1/models/<id>`: beide tragen dieselbe Karte.
  *
- * vLLM schreibt `max_model_len` in jede Modellkarte (die harte Grenze der
- * Bereitstellung), llama-server seit 2025 einen `meta`-Block mit
- * `n_ctx_train` (die TRAINIERTE Grenze, nicht die geladene). Deshalb kommen
- * beide getrennt zurueck: die eine ist ein Fenster, die andere eine Decke.
+ * Fenster: vLLM schreibt `max_model_len` (die harte Grenze dieser
+ * Bereitstellung), LU Cloud `context_length`, llama-server legt in seinen
+ * `meta`-Block `n_ctx`, und das ist dieselbe Zahl, die `/props` nennt.
+ *
+ * Decke: `meta.n_ctx_train` beim llama-server, `n_ctx_train` obenauf bei den
+ * Nachbauten. Bis zum 11.09.2026 lasen beide Leser dieser Karte die Decke als
+ * Fenster; gemessen an einem Server mit `--ctx-size 16384` kam 40960 heraus.
+ */
+export function parseModelRowContext(row: unknown): ProbedContext {
+  return {
+    window: positive(
+      asNumber(prop(row, 'max_model_len')) ??
+        asNumber(prop(row, 'context_window')) ??
+        asNumber(prop(row, 'context_length')) ??
+        asNumber(prop(prop(row, 'meta'), 'n_ctx')) ??
+        asNumber(prop(row, 'n_ctx')),
+    ),
+    trained: positive(
+      asNumber(prop(prop(row, 'meta'), 'n_ctx_train')) ?? asNumber(prop(row, 'n_ctx_train')),
+    ),
+  }
+}
+
+/**
+ * Der Eintrag fuer das gesuchte Modell aus einer `/v1/models`-Liste.
  *
  * Faellt auf den einzigen Eintrag zurueck, wenn die Id nicht passt: ein
  * llama-server, der mit einem Modell laeuft, nennt es oft anders als der
  * Nutzer es im Modellfeld stehen hat, und eine Liste mit genau einem Eintrag
  * laesst keine Verwechslung zu.
  */
-export function parseModelsListContext(
-  body: unknown,
-  model: string,
-): { window: number | null; trained: number | null } {
+export function parseModelsListContext(body: unknown, model: string): ProbedContext {
   const list = prop(body, 'data') ?? prop(body, 'models')
   const rows = Array.isArray(list) ? list.filter(isRecord) : []
   if (rows.length === 0) return { window: null, trained: null }
@@ -93,16 +133,7 @@ export function parseModelsListContext(
     rows.find((r) => prop(r, 'root') === model) ??
     (rows.length === 1 ? rows[0] : undefined)
   if (!hit) return { window: null, trained: null }
-  const win =
-    asNumber(prop(hit, 'max_model_len')) ??
-    asNumber(prop(hit, 'context_window')) ??
-    asNumber(prop(hit, 'context_length'))
-  const trained =
-    asNumber(prop(prop(hit, 'meta'), 'n_ctx_train')) ?? asNumber(prop(hit, 'n_ctx_train'))
-  return {
-    window: typeof win === 'number' && win > 0 ? win : null,
-    trained: typeof trained === 'number' && trained > 0 ? trained : null,
-  }
+  return parseModelRowContext(hit)
 }
 
 /**
@@ -122,26 +153,15 @@ export function parseKoboldMaxContext(body: unknown): number | null {
  * LM Studio `GET /api/v0/models/<id>`.
  *
  * `max_context_length` ist das Koennen des Modells, `loaded_context_length`
- * das, was gerade allokiert ist. Beide getrennt, aus demselben Grund wie oben.
+ * das, was gerade allokiert ist. Beide getrennt, aus demselben Grund wie oben:
+ * LM Studio schneidet jeden Prompt ueber dem geladenen Wert hart ab, also ist
+ * das geladene das Fenster und das Koennen nur die Decke.
  */
 export function parseLmStudioModel(body: unknown): { loaded: number | null; max: number | null } {
-  const loaded = asNumber(prop(body, 'loaded_context_length'))
-  const max = asNumber(prop(body, 'max_context_length')) ?? asNumber(prop(body, 'context_length'))
   return {
-    loaded: typeof loaded === 'number' && loaded > 0 ? loaded : null,
-    max: typeof max === 'number' && max > 0 ? max : null,
+    loaded: positive(asNumber(prop(body, 'loaded_context_length'))),
+    max: positive(
+      asNumber(prop(body, 'max_context_length')) ?? asNumber(prop(body, 'context_length')),
+    ),
   }
-}
-
-/**
- * Ein allgemeines `/v1/models/<id>` (vLLM, Aphrodite, SGLang, TabbyAPI).
- * Dieselben Schluessel, die die Kaskade seit Bug K kennt.
- */
-export function parseGenericModelContext(body: unknown): number | null {
-  const n =
-    asNumber(prop(body, 'context_window')) ??
-    asNumber(prop(body, 'max_model_len')) ??
-    asNumber(prop(body, 'n_ctx_train')) ??
-    asNumber(prop(body, 'context_length'))
-  return typeof n === 'number' && n > 0 ? n : null
 }

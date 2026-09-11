@@ -30,9 +30,9 @@ vi.mock('../../backend', async () => {
   }
 })
 
-import { OpenAIProvider } from '../openai-provider'
+import { OpenAIProvider, __clearContextCatalogForTests } from '../openai-provider'
 import type { ProviderConfig, ChatStreamChunk } from '../types'
-import { resolveActiveWindow, windowIsAdjustable, windowIsKnown, capIsDerivable } from '../../../lib/context-source'
+import { resolveActiveWindow, windowIsAdjustable, windowIsKnown, capIsDerivable, SOURCE_LABEL } from '../../../lib/context-source'
 import { effectiveSendWindow } from '../../../lib/send-window'
 import { formatContextWindow } from '../../../lib/formatters'
 import { useSettingsStore } from '../../../stores/settingsStore'
@@ -74,6 +74,7 @@ function sentBody(): Record<string, unknown> {
 
 beforeEach(() => {
   useSettingsStore.getState().updateSettings({ contextWindowByModel: {} })
+  __clearContextCatalogForTests()
 })
 
 afterEach(() => {
@@ -81,6 +82,7 @@ afterEach(() => {
   localFetch.mockReset()
   localFetchStream.mockReset()
   useSettingsStore.getState().updateSettings({ contextWindowByModel: {} })
+  __clearContextCatalogForTests()
 })
 
 describe('GH #129: woher das Fenster kommt', () => {
@@ -171,7 +173,7 @@ describe('GH #129: woher das Fenster kommt', () => {
     expect(localFetch).not.toHaveBeenCalled()
   })
 
-  it('die Wahl des Nutzers schlaegt die Abfrage und heisst so', async () => {
+  it('die Wahl des Nutzers unter dem Fenster gilt und heisst so', async () => {
     const provider = new OpenAIProvider(reporterConfig(8086))
     serveLlamaCpp()
     useSettingsStore.getState().updateSettings({
@@ -179,8 +181,13 @@ describe('GH #129: woher das Fenster kommt', () => {
     })
 
     const got = await provider.getContextWindow('my-model')
-    expect(got).toEqual({ tokens: 32768, source: 'user', modelMax: 0 })
-    expect(localFetch).not.toHaveBeenCalled()
+    // 32768 liegt unter den 262144, mit denen dieser Server laeuft, also gilt
+    // die Wahl unveraendert. Die Decke der Auswahlliste ist das Fenster.
+    expect(got).toEqual({ tokens: 32768, source: 'user', modelMax: 262144 })
+    // Gefragt wird trotzdem: ohne das laufende Fenster kann niemand wissen, ob
+    // die Wahl darueber liegt. Bis zum 11.09.2026 stieg die Kaskade hier vor
+    // der Abfrage aus, und eine zu grosse Wahl ging ungeprueft auf die Leitung.
+    expect(localFetch).toHaveBeenCalled()
   })
 })
 
@@ -280,6 +287,229 @@ describe('GH #129: max_tokens wird nicht mehr geraten', () => {
     const cap = sentBody().max_tokens
     expect(typeof cap).toBe('number')
     expect(cap as number).toBeLessThanOrEqual(4096)
+  })
+})
+
+/**
+ * T4 auf der Box, 11.09.2026, Punkt 4 und N3.
+ *
+ * Gemessen wurde ein `lu-llama-server.exe ... --ctx-size 16384` hinter einem
+ * Mitschnitt-Proxy. `/props` nannte `n_ctx` 16384, `/models` in derselben
+ * Karte `meta.n_ctx` 16384 und `meta.n_ctx_train` 40960. Die App zeigte 40K
+ * mit dem Etikett `from server`, bot `40K · max` an und legte
+ * `"max_tokens":32768` auf die Leitung, also das Doppelte des ganzen
+ * Serverfensters.
+ *
+ * Die Koerper unten sind aus den in T4.md zitierten Feldern nachgebaut (die
+ * Rohantworten liegen nicht in T4-belege/, der Mitschnitt protokolliert nur
+ * Pfade und Anfragekoerper); die Modell-Id und die 32768 stehen so im
+ * Bericht.
+ */
+const BOX_MODEL =
+  'C:\\Users\\ddrob\\AppData\\Roaming\\Locally Uncensored\\models\\Qwen3-4B-Q4_K_M.gguf'
+const BOX_PROPS = {
+  default_generation_settings: { id: 0, n_ctx: 16384, params: { n_predict: -1 } },
+  total_slots: 1,
+  model_path: BOX_MODEL,
+}
+/** Die Modellkarte, wie llama-server sie liefert: beide Zahlen nebeneinander. */
+const BOX_MODELS = {
+  object: 'list',
+  data: [{
+    id: BOX_MODEL,
+    object: 'model',
+    owned_by: 'llamacpp',
+    meta: { n_vocab: 151936, n_ctx: 16384, n_ctx_train: 40960, n_embd: 2560 },
+  }],
+}
+/** Dieselbe Karte von einem Bau, der `meta.n_ctx` nicht mitschickt. */
+const BOX_MODELS_NUR_TRAIN = {
+  object: 'list',
+  data: [{
+    id: BOX_MODEL,
+    object: 'model',
+    owned_by: 'llamacpp',
+    meta: { n_vocab: 151936, n_ctx_train: 40960, n_embd: 2560 },
+  }],
+}
+
+/** Beantwortet die drei Pfade, die dieser Server wirklich kennt. */
+function serveBox(models: unknown, props: unknown = BOX_PROPS) {
+  localFetch.mockImplementation(async (url: string) => {
+    const u = String(url)
+    if (u.endsWith('/props')) return new Response(JSON.stringify(props), { status: 200 })
+    if (u.endsWith('/models')) return new Response(JSON.stringify(models), { status: 200 })
+    return new Response('{"error":"not found"}', { status: 404 })
+  })
+}
+
+describe('T4 Punkt 4: das laufende Fenster schlaegt die trainierte Decke', () => {
+  it('16384 gelaufen, 40960 trainiert: der Waehler zeigt 16K vom Server', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8131))
+    serveBox(BOX_MODELS)
+
+    // Der Weg der App: erst die Liste fuer den Modellwaehler, dann das Fenster.
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+    const win = resolveActiveWindow({ resolved, localBackend: true })
+
+    expect(resolved.tokens).toBe(16384)
+    expect(resolved.source).toBe('probe')
+    expect(SOURCE_LABEL[resolved.source]).toBe('from server')
+    expect(formatContextWindow(win.contextWindow)).toBe('16K')
+    // Die Auswahlliste endet am laufenden Fenster: LU kann das `-c` dieses
+    // Servers nicht setzen, also waere jede groessere Zahl im Waehler eine
+    // Behauptung ueber ihn. Die trainierten 40960 kommen hier nicht mehr vor.
+    expect(win.modelMax).toBe(16384)
+    expect(formatContextWindow(win.modelMax)).toBe('16K')
+    // Und nicht mehr das, was der Tester sah.
+    expect(formatContextWindow(win.contextWindow)).not.toBe('40K')
+  })
+
+  it('nennt die Liste nur die Decke, wird /props gelesen statt uebergangen', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8132))
+    serveBox(BOX_MODELS_NUR_TRAIN)
+
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+
+    expect(resolved.tokens).toBe(16384)
+    expect(resolved.source).toBe('probe')
+    expect(resolved.modelMax).toBe(16384)
+    expect(localFetch.mock.calls.map(([u]) => String(u)))
+      .toContain('http://192.168.4.132:8132/props')
+  })
+
+  it('nur die Decke und sonst nichts: 40960 mit ehrlichem Etikett', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8133))
+    // Kein /props: der Server antwortet nur mit seiner Modellliste.
+    localFetch.mockImplementation(async (url: string) =>
+      String(url).endsWith('/models')
+        ? new Response(JSON.stringify(BOX_MODELS_NUR_TRAIN), { status: 200 })
+        : new Response('{"error":"not found"}', { status: 404 }))
+
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+
+    expect(resolved.tokens).toBe(40960)
+    expect(resolved.source).toBe('trained')
+    expect(SOURCE_LABEL[resolved.source]).not.toContain('from server')
+    expect(SOURCE_LABEL[resolved.source])
+      .toBe("from the model's training limit (the server may run smaller)")
+    // Aus einer Decke wird kein Budget: der Server kennt seine Voreinstellung.
+    expect(capIsDerivable(resolved)).toBe(false)
+    expect(windowIsKnown('trained')).toBe(false)
+  })
+
+  it('am Draht liegt kein max_tokens ueber dem laufenden Fenster', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8134))
+    serveBox(BOX_MODELS)
+    localFetchStream.mockResolvedValue(new Response('data: [DONE]\n\n', { status: 200 }))
+
+    await provider.listModels()
+    await drain(provider.chatStream(BOX_MODEL, [{ role: 'user', content: 'hi' }]))
+
+    const cap = sentBody().max_tokens as number
+    expect(typeof cap).toBe('number')
+    expect(cap).toBeGreaterThan(0)
+    // Gemessen stand hier 32768, das Doppelte des ganzen Fensters.
+    expect(cap).not.toBe(32768)
+    // Fenster minus Prompt minus Reserve, also strikt unter dem Fenster.
+    expect(cap).toBeLessThanOrEqual(16384 - 512)
+  })
+
+  it('kennt der Server nur seine Decke, geht gar kein max_tokens raus', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8135))
+    localFetch.mockImplementation(async (url: string) =>
+      String(url).endsWith('/models')
+        ? new Response(JSON.stringify(BOX_MODELS_NUR_TRAIN), { status: 200 })
+        : new Response('{"error":"not found"}', { status: 404 }))
+    localFetchStream.mockResolvedValue(new Response('data: [DONE]\n\n', { status: 200 }))
+
+    await provider.listModels()
+    await drain(provider.chatStream(BOX_MODEL, [{ role: 'user', content: 'hi' }]))
+
+    expect(sentBody()).not.toHaveProperty('max_tokens')
+  })
+
+  it('eine gespeicherte Wahl ueber dem Fenster wird darauf geklemmt', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8137))
+    serveBox(BOX_MODELS)
+    useSettingsStore.getState().updateSettings({
+      contextWindowByModel: { [provider.contextWindowKey(BOX_MODEL)]: 40960 },
+    })
+
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+    const win = resolveActiveWindow({ resolved, localBackend: true })
+
+    expect(resolved.tokens).toBe(16384)
+    expect(resolved.source).toBe('user')
+    expect(resolved.clampedFrom).toBe(40960)
+    // Die Liste endet am Fenster, nicht an der alten Wahl.
+    expect(win.modelMax).toBe(16384)
+    // Der Speicher bleibt unangetastet: wer seinen Server groesser neu
+    // startet, bekommt seine 40960 zurueck.
+    expect(useSettingsStore.getState().settings.contextWindowByModel?.[
+      provider.contextWindowKey(BOX_MODEL)
+    ]).toBe(40960)
+  })
+
+  it('und der Draht traegt dann hoechstens das Fenster minus Prompt', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8138))
+    serveBox(BOX_MODELS)
+    localFetchStream.mockResolvedValue(new Response('data: [DONE]\n\n', { status: 200 }))
+    useSettingsStore.getState().updateSettings({
+      contextWindowByModel: { [provider.contextWindowKey(BOX_MODEL)]: 40960 },
+    })
+
+    await provider.listModels()
+    await drain(provider.chatStream(BOX_MODEL, [{ role: 'user', content: 'hi' }]))
+
+    const cap = sentBody().max_tokens as number
+    expect(cap).toBeGreaterThan(0)
+    expect(cap).not.toBe(32768)
+    expect(cap).toBeLessThanOrEqual(16384 - 512)
+  })
+
+  it('ohne laufendes Fenster bleibt die Wahl des Nutzers stehen', async () => {
+    // Kein /props, nur die trainierte Decke: dann weiss niemand, dass 40960 zu
+    // gross waere, und die Wahl ist das Beste, was es gibt.
+    const provider = new OpenAIProvider(reporterConfig(8139))
+    localFetch.mockImplementation(async (url: string) =>
+      String(url).endsWith('/models')
+        ? new Response(JSON.stringify(BOX_MODELS_NUR_TRAIN), { status: 200 })
+        : new Response('{"error":"not found"}', { status: 404 }))
+    useSettingsStore.getState().updateSettings({
+      contextWindowByModel: { [provider.contextWindowKey(BOX_MODEL)]: 40960 },
+    })
+
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+
+    expect(resolved.tokens).toBe(40960)
+    expect(resolved.source).toBe('user')
+    expect(resolved.clampedFrom).toBeUndefined()
+    expect(resolved.modelMax).toBe(40960)
+  })
+
+  it('LM Studio: geladen ist das Fenster, das Koennen nur die Decke', async () => {
+    // Dieselbe Fehlerklasse an der anderen Quelle. LM Studio schneidet einen
+    // Prompt ueber `loaded_context_length` hart ab; ein Budget gegen
+    // `max_context_length` verliert die Mitte des eigenen Prompts.
+    const provider = new OpenAIProvider(reporterConfig(8136))
+    localFetch.mockImplementation(async (url: string) =>
+      String(url).includes('/api/v0/models/')
+        ? new Response(JSON.stringify({
+            id: 'qwen2.5-32b', max_context_length: 131072, loaded_context_length: 8192,
+          }), { status: 200 })
+        : new Response('{"error":"not found"}', { status: 404 }))
+
+    const resolved = await provider.getContextWindow('qwen2.5-32b')
+
+    expect(resolved.tokens).toBe(8192)
+    expect(resolved.source).toBe('probe')
+    expect(resolved.modelMax).toBe(8192)
   })
 })
 

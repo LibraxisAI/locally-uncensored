@@ -120,11 +120,13 @@ test('context dropdown relaunches the built-in engine and the counter follows', 
   // Schreibweisen nebeneinander waren der Befund von D-S06.
   await expect(page.getByText(/ctx \d+K/)).toHaveCount(0)
 
-  // Pick 16K → apply() persists tuning.ctx and swaps the running engine.
+  // Pick 16K, apply() persists tuning.ctx and swaps the running engine.
   // The preset list is capped at the model's TRAINED ceiling (32k from the
-  // GGUF header via the listing) — no 64K/128K options for a 32k model.
+  // GGUF header via the listing), no 64K/128K options for a 32k model. Since
+  // 11.09.2026 the ceiling itself leads the list as "32K · max", so a server
+  // that runs smaller than its model can no longer be offered more.
   await trigger.click()
-  await expect(page.getByRole('button', { name: /^32K$/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^32K( · max)?$/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /^64K$/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /^128K$/ })).toHaveCount(0)
   await page.getByRole('button', { name: /^16K$/ }).click()
