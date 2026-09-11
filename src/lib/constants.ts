@@ -57,6 +57,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Bug AA v2.5.0 — Ollama num_ctx override. 0 = use Ollama default (2048
   // on most builds). Users with RAG / long chats can bump this up.
   contextWindowOverride: 0,
+  // GH #129: leer, bis jemand im Waehler etwas setzt. Siehe types/settings.ts.
+  contextWindowByModel: {},
   // 2.6.6 plan A1/A2: age decay and the paid-provider send cap. ON by
   // default; the switch is the support way back without a rollback release.
   contextDecay: true,
@@ -73,6 +75,8 @@ export const DEFAULT_SETTINGS: Settings = {
   codexDefaultMode: 'ask' as const,
   builtinEngine: {
     ctx: 8192,
+    // GH #129: die 8192 hier ist die Voreinstellung des Hauses, keine Wahl.
+    ctxChosen: false,
     flashAttn: 'auto',
     cacheTypeK: 'f16',
     cacheTypeV: 'f16',

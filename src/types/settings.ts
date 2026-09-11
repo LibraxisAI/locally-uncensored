@@ -12,6 +12,23 @@ export type AppMode = 'local' | 'cloud'
 export interface BuiltinEngineTuning {
   /** `--ctx-size`. 0 = app default (8192). */
   ctx: number
+  /**
+   * Hat der Nutzer dieses `ctx` selbst gewaehlt?
+   *
+   * GH #129: die Voreinstellung dieses Feldes IST 8192, also war "vom Nutzer
+   * auf 8192 gesetzt" von "nie angefasst" nicht zu unterscheiden, und der
+   * Agentendeckel (AGENT_CONTEXT_CAP) hob den Motor trotzdem auf
+   * min(ctx_train, 32768). Wer auf einem schwachen Geraet ausdruecklich 8K
+   * waehlte, bekam beim Agentenlauf 32K und das Ruckeln, das der Melder
+   * beschreibt. Jeder ANDERE Wert war schon vorher als Entscheidung erkennbar,
+   * nur dieser eine nicht.
+   *
+   * Die Marke statt einer Aenderung der Voreinstellung: ein bestehendes Profil
+   * traegt die 8192 seit dem ersten Start, und sie nachtraeglich als Wahl zu
+   * lesen wuerde jeden Agentenlauf auf 8192 festnageln. Das war genau der
+   * Fehler Z36.
+   */
+  ctxChosen?: boolean
   /** Flash Attention: 'auto' (binary default), 'on', 'off'. */
   flashAttn: 'auto' | 'on' | 'off'
   /** KV-cache quantization for K/V. 'f16' = off. Quantized V needs flash attention. */
@@ -139,6 +156,21 @@ export interface Settings {
   // providers ignore this field — they manage context themselves.
   /** User-side context-window override (forwarded as Ollama's num_ctx). 0 = auto. */
   contextWindowOverride: number
+  /**
+   * Die Fensterwahl des Nutzers je Endpunkt UND Modell, in Tokens.
+   * Schluessel: `<baseUrl>|<modelId>` (lib/context-source.ts).
+   *
+   * GH #129: ein eigener OpenAI-kompatibler Server hat kein LU-seitiges
+   * Wissen ueber sein Fenster. Wo keine Abfrage antwortet, ist die Wahl des
+   * Nutzers die einzige Zahl, die stimmen kann. Je Modell und nicht global,
+   * weil `contextWindowOverride` Ollamas num_ctx ist und ein zweites Modell
+   * am selben Server ein anderes Fenster hat.
+   *
+   * Kein STORE_VERSION-Sprung noetig: das migrate im settingsStore mischt
+   * additiv, ein fehlender Schluessel liest sich als undefined, und
+   * `storedWindow` beantwortet das mit 0 ("Auto").
+   */
+  contextWindowByModel?: Record<string, number>
   /**
    * Age decay for tool results plus the paid-provider send cap (2.6.6, plan
    * A1/A2). ON is the shipped behaviour: results older than the newest
