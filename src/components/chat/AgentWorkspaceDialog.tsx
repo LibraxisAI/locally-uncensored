@@ -75,7 +75,12 @@ export function AgentWorkspaceDialog({
       // pick_folder returns the chosen path as a STRING (or null on cancel) —
       // NOT an object. Reading res.path here was the real bug: it was always
       // undefined, so onChoose never fired and the dialog never closed.
-      const res = await backendCall<string | null>('pick_folder', {})
+      //
+      // `asWorkspace: true` (Fehler D): eine Wurzel, die die Rust-Seite nicht
+      // annimmt, kommt jetzt als Fehler zurueck und landet im Kasten darunter,
+      // statt als Pfad ausgeliefert zu werden, den spaeter jede
+      // Dateioperation mit "pick it again to allow it" beantwortet.
+      const res = await backendCall<string | null>('pick_folder', { asWorkspace: true })
       if (res) {
         // Commit + close right after the folder is chosen. Picking IS the
         // decision — the dialog must go away (David 2026-06-06). Multi-repo
@@ -97,7 +102,9 @@ export function AgentWorkspaceDialog({
     setError(null)
     try {
       // pick_folder returns the path as a STRING (or null), not an object.
-      const res = await backendCall<string | null>('pick_folder', {})
+      // Ein Zusatzpfad ist genauso eine Kaefigwurzel wie der Hauptordner, also
+      // dieselbe Meldung (Fehler D).
+      const res = await backendCall<string | null>('pick_folder', { asWorkspace: true })
       if (!res) {
         setPicking(false)
         return

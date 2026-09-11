@@ -15,16 +15,44 @@
  * Wortlaut pruefbar ist. Ohne Renderer im Testlauf waere er sonst die einzige
  * Stelle dieser Reparatur, die niemand messen kann.
  */
+/**
+ * Der Grund aus einem geworfenen Ding. `backendCall` wirft nicht immer ein
+ * Error. Ein roher String muss genauso durchkommen wie eine Message, sonst
+ * steht am Ende "undefined" im Satz.
+ */
+function grundText(fehler: unknown): string {
+  return fehler instanceof Error ? fehler.message
+    : typeof fehler === 'string' ? fehler
+      : String(fehler)
+}
+
 export function workspaceRejectedMessage(pfad: string, fehler: unknown): string {
-  // `backendCall` wirft nicht immer ein Error. Ein roher String muss genauso
-  // durchkommen wie eine Message, sonst steht am Ende "undefined" im Satz.
-  const grund =
-    fehler instanceof Error ? fehler.message
-      : typeof fehler === 'string' ? fehler
-        : String(fehler)
   return (
-    `Cannot use "${pfad}" as the workspace: ${grund}. `
+    `Cannot use "${pfad}" as the workspace: ${grundText(fehler)}. `
     + `Nothing was started, and no folder is bound to the remote session. `
     + `Pick a project folder instead of a system or home directory.`
+  )
+}
+
+/**
+ * Derselbe Fall eine Stufe frueher: der NATIVE DIALOG hat einen Ordner
+ * geliefert, den die Rust-Seite nicht als Arbeitsordner annimmt, und
+ * `pick_folder` meldet das seit Fehler D (aldrich_ironhart, 08.09.2026) mit
+ * `asWorkspace`, statt den Pfad auszuliefern, als waere nichts gewesen.
+ *
+ * Eigener Satz und nicht `workspaceRejectedMessage`: dort steht "no folder is
+ * bound to the remote session", und der Code-Reiter hat keine Fernsitzung. Der
+ * Pfad steht hier auch nicht drin: bei einem Fehler gibt der Dialog keinen
+ * zurueck, und ein erfundener waere schlimmer als keiner. Der Ordner bleibt in
+ * diesem Fall UNGESETZT, das ist die eigentliche Reparatur: ein abgelehnter
+ * Ordner in der Kopfzeile beantwortet jede spaetere Dateioperation mit
+ * "pick it again to allow it", also genau mit dem, was der Nutzer gerade getan
+ * hat.
+ */
+export function workspacePickRefusedMessage(fehler: unknown): string {
+  return (
+    `That folder cannot be the workspace: ${grundText(fehler)}. `
+    + `The folder was not taken. `
+    + `Pick a project folder, not a drive root, a home directory or a system folder.`
   )
 }
