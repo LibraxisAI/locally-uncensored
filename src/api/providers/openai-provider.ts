@@ -1474,42 +1474,66 @@ export class OpenAIProvider implements ProviderClient {
    * Das Fenster UND woher es kommt (GH #129).
    *
    * Kaskade, in dieser Reihenfolge und aus diesen Gruenden:
-   *   1. Die Wahl des Nutzers. Wer eine Zahl gesetzt hat, hat sie gesetzt.
-   *   2. Das `context_length` aus dem /models-Katalog der Bereitstellung.
-   *      Vom Server gesagt, schlaegt jede Heuristik.
+   *   1. Das laufende Fenster: erst das `context_length` aus dem /models-
+   *      Katalog der Bereitstellung, sonst die Metadaten-Abfragen
+   *      (`serverWindow`). Vom Server gesagt, schlaegt jede Heuristik.
+   *   2. Die Wahl des Nutzers. Wer eine Zahl gesetzt hat, hat sie gesetzt,
+   *      ABER nur bis an das laufende Fenster: LU kann das `-c` eines fremden
+   *      Servers nicht setzen, eine groessere Wahl waere also eine Behauptung
+   *      ueber ihn und wuerde wieder ein `max_tokens` ueber seinem Fenster
+   *      ergeben. Geklemmt wird nur die Rechnung, nicht der Speicher: wer
+   *      seinen Server groesser neu startet, bekommt seine Wahl zurueck.
    *   3. KNOWN_CONTEXT. Eine Tabelle in DIESEM Haus, kein Server hat sie
    *      bestaetigt, also `guess`: sie kann veraltet sein, und aus ihr darf
    *      kein hartes Budget abgeleitet werden.
-   *   4. Die Metadaten-Abfragen (probeWindow).
-   *   5. Die trainierte Decke, wenn niemand ein laufendes Fenster genannt hat.
+   *   4. Die trainierte Decke, wenn niemand ein laufendes Fenster genannt hat.
    *      Sie heisst dann auch so (`trained`) und traegt kein Budget: ein
    *      Server darf jederzeit kleiner laufen, als das Modell koennte.
-   *   6. Die Namensheuristik, mit 8192 als letztem Boden. Geraten.
+   *   5. Die Namensheuristik, mit 8192 als letztem Boden. Geraten.
    *
-   * Die Decke steht nie in Schritt 2. Bis zum 11.09.2026 legte `toModelEntry`
+   * Die Decke steht nie in Schritt 1. Bis zum 11.09.2026 legte `toModelEntry`
    * das `n_ctx_train` der Liste in denselben Katalog wie ein echtes Fenster,
-   * womit Schritt 2 die Abfrage in Schritt 4 ueberholte und `/props` gar nicht
-   * mehr gelesen wurde.
+   * womit der Katalog die Abfrage ueberholte und `/props` gar nicht mehr
+   * gelesen wurde.
    */
   async getContextWindow(model: string, signal?: AbortSignal): Promise<ResolvedContextWindow> {
+    const { window, trained } = await this.serverWindow(model, signal)
     const chosen = this.userWindow(model)
-    if (chosen > 0) return { tokens: chosen, source: 'user', modelMax: 0 }
-    const key = this.catalogKey(model)
-    const catalog = catalogContext.get(key) ?? 0
-    const declaredMax = catalogTrained.get(key) ?? 0
-    if (catalog > 0) {
-      return { tokens: catalog, source: 'probe', modelMax: Math.max(catalog, declaredMax) }
+    if (chosen > 0) {
+      return window > 0 && chosen > window
+        ? { tokens: window, source: 'user', modelMax: window, clampedFrom: chosen }
+        : { tokens: chosen, source: 'user', modelMax: window || trained }
     }
+    if (window > 0) return { tokens: window, source: 'probe', modelMax: window }
     if (KNOWN_CONTEXT[model]) {
       return { tokens: KNOWN_CONTEXT[model], source: 'guess', modelMax: 0, guessKind: 'table' }
     }
-    const probed = await this.probeWindow(model, signal)
-    const ceiling = Math.max(probed.trained ?? 0, declaredMax)
-    if (probed.window) {
-      return { tokens: probed.window, source: 'probe', modelMax: Math.max(ceiling, probed.window) }
-    }
-    if (ceiling > 0) return { tokens: ceiling, source: 'trained', modelMax: ceiling }
+    if (trained > 0) return { tokens: trained, source: 'trained', modelMax: trained }
     return { tokens: guessContextFromName(model), source: 'guess', modelMax: 0, guessKind: 'name' }
+  }
+
+  /**
+   * Was der Server ueber sein Fenster und die Decke gesagt hat, Katalog vor
+   * Abfrage. Beide Zahlen, damit die Kaskade daraus eine machen kann.
+   *
+   * Der Katalog kommt aus derselben Modellliste, die der Waehler ohnehin holt,
+   * kostet also nichts; die Abfrage liegt hinter der Fuenfminutenablage und
+   * ruehrt einen Cloud-Endpunkt nie an (`probeWindow` steigt fuer alles aus,
+   * was nicht auf diesem Rechner oder im LAN steht).
+   */
+  private async serverWindow(
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<{ window: number; trained: number }> {
+    const key = this.catalogKey(model)
+    const declared = catalogContext.get(key) ?? 0
+    const declaredMax = catalogTrained.get(key) ?? 0
+    if (declared > 0) return { window: declared, trained: declaredMax }
+    const probed = await this.probeWindow(model, signal)
+    return {
+      window: probed.window ?? 0,
+      trained: Math.max(probed.trained ?? 0, declaredMax),
+    }
   }
 
   /** Die gespeicherte Wahl des Nutzers fuer dieses Modell, 0 = keine. */

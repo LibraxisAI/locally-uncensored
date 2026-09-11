@@ -94,7 +94,9 @@ test('die Kontextliste bleibt ganz in der Flaeche, die sie abschneiden koennte',
   // von der obersten Auswahl bis zur letzten Zeile. Ohne diese beiden Faelle
   // waere ein Menue gruen, das die Kante haelt und trotzdem an der Auswahl
   // vorbeigeht.
-  await expect(page.getByRole('button', { name: /^32K$/ })).toBeInViewport({ ratio: 1 })
+  // Seit dem 11.09.2026 heisst die oberste Zeile "32K · max": die Decke
+  // fuehrt die Liste sichtbar an.
+  await expect(page.getByRole('button', { name: /^32K( · max)?$/ })).toBeInViewport({ ratio: 1 })
   await expect(page.getByText('Reloads the model on change.')).toBeInViewport({ ratio: 1 })
 })
 

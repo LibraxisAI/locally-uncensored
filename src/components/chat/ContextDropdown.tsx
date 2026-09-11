@@ -179,9 +179,25 @@ export function ContextDropdown({ children }: { children?: ReactNode }) {
   // Nicht verstellbar (Cloud): kein Regler, aber der Fuellstand bleibt stehen.
   if (!activeModel || !ctx.adjustable) return <>{children}</>
 
-  const max = ctx.modelMax > 0 ? ctx.modelMax : 131072
-  const options = PRESETS.filter((p) => p <= Math.max(max, 4096))
-  const showMax = ctx.modelMax > 0 && !options.includes(ctx.modelMax) && ctx.modelMax > (options[options.length - 1] || 0)
+  /*
+   * Die Liste endet an der Decke, und die Decke ist der groesste Eintrag.
+   *
+   * Vorher hiess der oberste Eintrag nur dann `· max`, wenn die Decke keine
+   * der Voreinstellungen war. Bei einem Server, der mit 16384 laeuft, stand
+   * deshalb ein schlichtes `16K` ganz oben, und darueber (vor dem Fix vom
+   * 11.09.2026) noch `32K` und `40K · max`, die dieser Server gar nicht kann.
+   * Jetzt fuehrt die Decke die Liste immer sichtbar an, und die
+   * Voreinstellungen darueber fallen weg.
+   */
+  const cap = ctx.modelMax > 0 ? Math.max(ctx.modelMax, 4096) : 0
+  const options = PRESETS.filter((p) => (cap > 0 ? p < cap : true))
+  const showMax = cap > 0
+  /*
+   * Der Haken sitzt auf dem, was WIRKLICH gilt. Eine gespeicherte Wahl ueber
+   * dem Fenster des Servers ist auf das Fenster geklemmt, und ein Haken auf
+   * einer Zahl, die nirgends mehr in der Liste steht, waere unsichtbar.
+   */
+  const selectedNow = (ctx.clampedFrom ?? 0) > 0 ? ctx.contextWindow : selected
 
   const apply = async (value: number) => {
     setOpen(false)
@@ -336,26 +352,28 @@ export function ContextDropdown({ children }: { children?: ReactNode }) {
               platz?.nachOben ? 'bottom-full mb-1' : 'top-full mt-1'
             }`}
           >
-            <button onClick={() => apply(0)} className={rowCls(selected === 0)}>
+            <button onClick={() => apply(0)} className={rowCls(selectedNow === 0)}>
               <span>Auto{ctx.provider === 'ollama' ? ` · ${formatContextWindow(effectiveContextWindow(ctx.modelMax, 0))}` : ctx.provider === 'builtin' ? ` · ${formatContextWindow(ENGINE_DEFAULT_CTX)}` : ctx.provider === 'custom' && ctx.source !== 'user' ? ` · ${formatContextWindow(ctx.contextWindow)}` : ''}</span>
-              {selected === 0 && <Check size={10} />}
+              {selectedNow === 0 && <Check size={10} />}
             </button>
             {options.map((p) => (
-              <button key={p} onClick={() => apply(p)} className={rowCls(selected === p)}>
+              <button key={p} onClick={() => apply(p)} className={rowCls(selectedNow === p)}>
                 <span>{formatContextWindow(p)}</span>
-                {selected === p && <Check size={10} />}
+                {selectedNow === p && <Check size={10} />}
               </button>
             ))}
             {showMax && (
-              <button onClick={() => apply(ctx.modelMax)} className={rowCls(selected === ctx.modelMax)}>
+              <button onClick={() => apply(ctx.modelMax)} className={rowCls(selectedNow === ctx.modelMax)}>
                 <span>{formatContextWindow(ctx.modelMax)} · max</span>
-                {selected === ctx.modelMax && <Check size={10} />}
+                {selectedNow === ctx.modelMax && <Check size={10} />}
               </button>
             )}
             <div className="mt-0.5 px-2 pt-1 border-t border-gray-100 dark:border-white/[0.06] text-[0.5rem] text-gray-400 leading-snug">
-              {ctx.provider === 'custom'
-                ? `Current value ${SOURCE_LABEL[ctx.source]}. Your pick is saved for this model on this server.`
-                : 'Reloads the model on change.'}
+              {ctx.provider !== 'custom'
+                ? 'Reloads the model on change.'
+                : (ctx.clampedFrom ?? 0) > 0
+                  ? `Your saved ${formatContextWindow(ctx.clampedFrom ?? 0)} is more than this server runs, so ${formatContextWindow(ctx.contextWindow)} is used. Start the server larger to use it.`
+                  : `Current value ${SOURCE_LABEL[ctx.source]}. Your pick is saved for this model on this server.`}
             </div>
           </div>
         </>

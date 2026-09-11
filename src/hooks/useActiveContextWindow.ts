@@ -51,6 +51,13 @@ export interface ActiveContext {
    * (`<baseUrl>|<modelId>`). Leer, wo es keine modellgenaue Wahl gibt.
    */
   windowKey: string
+  /**
+   * Die gespeicherte Wahl, die ueber dem laufenden Fenster des Servers lag und
+   * darauf geklemmt wurde (0 oder fehlend = nichts geklemmt). Nur der eigene
+   * OpenAI-kompatible Endpunkt kennt diesen Fall: Ollama, LM Studio und der
+   * LU-Motor laden bei einer Wahl neu, ein fremder Server nicht.
+   */
+  clampedFrom?: number
 }
 
 /** What the hook reports while there is no model, or none resolved yet. */
@@ -233,6 +240,7 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             adjustable: win.adjustable,
             source: win.source,
             windowKey: provider.contextWindowKey?.(modelId) ?? '',
+            clampedFrom: win.clampedFrom,
           })
           return
         }

@@ -52,6 +52,17 @@ export interface ResolvedContextWindow {
    * beide von hier stammen und nicht vom Server.
    */
   guessKind?: 'table' | 'name'
+  /**
+   * Bei `source: 'user'`: die gespeicherte Wahl, die ueber dem laufenden
+   * Fenster lag und deshalb darauf geklemmt wurde (0 oder fehlend = nichts
+   * geklemmt).
+   *
+   * Ein Server, der mit 16384 laeuft, wird nicht groesser, weil jemand im
+   * Waehler 40K angeklickt hat. Die Wahl bleibt gespeichert (wer seinen Server
+   * groesser neu startet, bekommt sie zurueck), aber gerechnet und angezeigt
+   * wird das Fenster, und die Oberflaeche sagt in einer Zeile, warum.
+   */
+  clampedFrom?: number
 }
 
 /**
@@ -130,6 +141,8 @@ export interface ActiveWindow {
   source: ContextSource
   isTrue: boolean
   adjustable: boolean
+  /** Siehe `ResolvedContextWindow.clampedFrom`. 0 = nichts geklemmt. */
+  clampedFrom: number
 }
 
 /**
@@ -148,13 +161,18 @@ export function resolveActiveWindow(input: ActiveWindowInput): ActiveWindow {
   return {
     contextWindow: tokens,
     /*
-     * Die Decke der Voreinstellungen im Waehler: was der Server als
-     * trainiertes Maximum genannt hat, sonst der aktuelle Wert selbst.
+     * Die Decke der Voreinstellungen im Waehler.
      *
-     * Ausnahme ist die Wahl des Nutzers. Waere sie die Decke, koennte wer
-     * einmal 8K gewaehlt hat nie wieder etwas Groesseres waehlen, denn die
-     * Liste im Waehler endet an dieser Zahl. 0 heisst dort "unbekannt", und
-     * unbekannt oeffnet die ganze Liste.
+     * Kennt die App das laufende Fenster, ist DAS die Decke: LU kann das `-c`
+     * eines fremden Servers nicht setzen, eine groessere Zahl waere also nur
+     * eine Behauptung ueber ihn, und aus ihr wuerde wieder ein `max_tokens`
+     * ueber seinem Fenster. Erst wenn niemand ein laufendes Fenster genannt
+     * hat, darf die Liste bis zur trainierten Decke gehen.
+     *
+     * Ausnahme bleibt die Wahl des Nutzers OHNE gemessenes Fenster: waere sie
+     * selbst die Decke, koennte wer einmal 8K gewaehlt hat nie wieder etwas
+     * Groesseres waehlen, denn die Liste endet an dieser Zahl. 0 heisst dort
+     * "unbekannt", und unbekannt oeffnet die ganze Liste.
      */
     modelMax: input.resolved.modelMax > 0
       ? input.resolved.modelMax
@@ -163,6 +181,7 @@ export function resolveActiveWindow(input: ActiveWindowInput): ActiveWindow {
     source,
     isTrue: source === 'probe',
     adjustable: windowIsAdjustable({ source, localBackend: input.localBackend }),
+    clampedFrom: input.resolved.clampedFrom ?? 0,
   }
 }
 

@@ -173,7 +173,7 @@ describe('GH #129: woher das Fenster kommt', () => {
     expect(localFetch).not.toHaveBeenCalled()
   })
 
-  it('die Wahl des Nutzers schlaegt die Abfrage und heisst so', async () => {
+  it('die Wahl des Nutzers unter dem Fenster gilt und heisst so', async () => {
     const provider = new OpenAIProvider(reporterConfig(8086))
     serveLlamaCpp()
     useSettingsStore.getState().updateSettings({
@@ -181,8 +181,13 @@ describe('GH #129: woher das Fenster kommt', () => {
     })
 
     const got = await provider.getContextWindow('my-model')
-    expect(got).toEqual({ tokens: 32768, source: 'user', modelMax: 0 })
-    expect(localFetch).not.toHaveBeenCalled()
+    // 32768 liegt unter den 262144, mit denen dieser Server laeuft, also gilt
+    // die Wahl unveraendert. Die Decke der Auswahlliste ist das Fenster.
+    expect(got).toEqual({ tokens: 32768, source: 'user', modelMax: 262144 })
+    // Gefragt wird trotzdem: ohne das laufende Fenster kann niemand wissen, ob
+    // die Wahl darueber liegt. Bis zum 11.09.2026 stieg die Kaskade hier vor
+    // der Abfrage aus, und eine zu grosse Wahl ging ungeprueft auf die Leitung.
+    expect(localFetch).toHaveBeenCalled()
   })
 })
 
@@ -352,8 +357,11 @@ describe('T4 Punkt 4: das laufende Fenster schlaegt die trainierte Decke', () =>
     expect(resolved.source).toBe('probe')
     expect(SOURCE_LABEL[resolved.source]).toBe('from server')
     expect(formatContextWindow(win.contextWindow)).toBe('16K')
-    // Die Decke bleibt, was sie ist: die Obergrenze der Auswahlliste.
-    expect(win.modelMax).toBe(40960)
+    // Die Auswahlliste endet am laufenden Fenster: LU kann das `-c` dieses
+    // Servers nicht setzen, also waere jede groessere Zahl im Waehler eine
+    // Behauptung ueber ihn. Die trainierten 40960 kommen hier nicht mehr vor.
+    expect(win.modelMax).toBe(16384)
+    expect(formatContextWindow(win.modelMax)).toBe('16K')
     // Und nicht mehr das, was der Tester sah.
     expect(formatContextWindow(win.contextWindow)).not.toBe('40K')
   })
@@ -367,7 +375,7 @@ describe('T4 Punkt 4: das laufende Fenster schlaegt die trainierte Decke', () =>
 
     expect(resolved.tokens).toBe(16384)
     expect(resolved.source).toBe('probe')
-    expect(resolved.modelMax).toBe(40960)
+    expect(resolved.modelMax).toBe(16384)
     expect(localFetch.mock.calls.map(([u]) => String(u)))
       .toContain('http://192.168.4.132:8132/props')
   })
@@ -424,6 +432,67 @@ describe('T4 Punkt 4: das laufende Fenster schlaegt die trainierte Decke', () =>
     expect(sentBody()).not.toHaveProperty('max_tokens')
   })
 
+  it('eine gespeicherte Wahl ueber dem Fenster wird darauf geklemmt', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8137))
+    serveBox(BOX_MODELS)
+    useSettingsStore.getState().updateSettings({
+      contextWindowByModel: { [provider.contextWindowKey(BOX_MODEL)]: 40960 },
+    })
+
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+    const win = resolveActiveWindow({ resolved, localBackend: true })
+
+    expect(resolved.tokens).toBe(16384)
+    expect(resolved.source).toBe('user')
+    expect(resolved.clampedFrom).toBe(40960)
+    // Die Liste endet am Fenster, nicht an der alten Wahl.
+    expect(win.modelMax).toBe(16384)
+    // Der Speicher bleibt unangetastet: wer seinen Server groesser neu
+    // startet, bekommt seine 40960 zurueck.
+    expect(useSettingsStore.getState().settings.contextWindowByModel?.[
+      provider.contextWindowKey(BOX_MODEL)
+    ]).toBe(40960)
+  })
+
+  it('und der Draht traegt dann hoechstens das Fenster minus Prompt', async () => {
+    const provider = new OpenAIProvider(reporterConfig(8138))
+    serveBox(BOX_MODELS)
+    localFetchStream.mockResolvedValue(new Response('data: [DONE]\n\n', { status: 200 }))
+    useSettingsStore.getState().updateSettings({
+      contextWindowByModel: { [provider.contextWindowKey(BOX_MODEL)]: 40960 },
+    })
+
+    await provider.listModels()
+    await drain(provider.chatStream(BOX_MODEL, [{ role: 'user', content: 'hi' }]))
+
+    const cap = sentBody().max_tokens as number
+    expect(cap).toBeGreaterThan(0)
+    expect(cap).not.toBe(32768)
+    expect(cap).toBeLessThanOrEqual(16384 - 512)
+  })
+
+  it('ohne laufendes Fenster bleibt die Wahl des Nutzers stehen', async () => {
+    // Kein /props, nur die trainierte Decke: dann weiss niemand, dass 40960 zu
+    // gross waere, und die Wahl ist das Beste, was es gibt.
+    const provider = new OpenAIProvider(reporterConfig(8139))
+    localFetch.mockImplementation(async (url: string) =>
+      String(url).endsWith('/models')
+        ? new Response(JSON.stringify(BOX_MODELS_NUR_TRAIN), { status: 200 })
+        : new Response('{"error":"not found"}', { status: 404 }))
+    useSettingsStore.getState().updateSettings({
+      contextWindowByModel: { [provider.contextWindowKey(BOX_MODEL)]: 40960 },
+    })
+
+    await provider.listModels()
+    const resolved = await provider.getContextWindow(BOX_MODEL)
+
+    expect(resolved.tokens).toBe(40960)
+    expect(resolved.source).toBe('user')
+    expect(resolved.clampedFrom).toBeUndefined()
+    expect(resolved.modelMax).toBe(40960)
+  })
+
   it('LM Studio: geladen ist das Fenster, das Koennen nur die Decke', async () => {
     // Dieselbe Fehlerklasse an der anderen Quelle. LM Studio schneidet einen
     // Prompt ueber `loaded_context_length` hart ab; ein Budget gegen
@@ -440,7 +509,7 @@ describe('T4 Punkt 4: das laufende Fenster schlaegt die trainierte Decke', () =>
 
     expect(resolved.tokens).toBe(8192)
     expect(resolved.source).toBe('probe')
-    expect(resolved.modelMax).toBe(131072)
+    expect(resolved.modelMax).toBe(8192)
   })
 })
 
