@@ -78,8 +78,16 @@ const TABS = ['General', 'AI Backends', 'Agent', 'Voice & Remote']
  * so an already-open section is never clicked shut — a blind "click them all"
  * pass closes as many panels as it opens and the walk misses half the screen.
  */
+const WALK_ROUNDS = 40
+
 async function openEverySection(page: Page) {
-  for (let round = 0; round < 12; round++) {
+  // Der Deckel ist die Notbremse gegen einen Lauf, der sich selbst Arbeit
+  // macht, und keine Obergrenze fuer die Zahl der Abschnitte. Er stand auf 12
+  // und wurde nur VOR einem Klick geprueft: bei genau 12 Abschnitten machte
+  // die letzte Runde den letzten auf, und die Schleife lief aus, ohne noch
+  // einmal nachzuzaehlen. Der General-Tab traegt seit 3.0.0 genau 12. Jetzt
+  // zaehlt der Lauf nach der letzten Runde nach, und der Deckel hat Luft.
+  for (let round = 0; round < WALK_ROUNDS; round++) {
     // Visible, and inside the settings body: the header carries a hidden
     // menu button with the same attribute, and waiting for it to become
     // clickable is a thirty-second way to learn nothing.
@@ -89,7 +97,9 @@ async function openEverySection(page: Page) {
     await collapsed.first().click()
     await page.waitForTimeout(220)
   }
-  throw new Error('sections kept appearing after 12 rounds — the walk is not converging')
+  const left = await page.locator('main button[aria-expanded="false"]:visible').count()
+  if (left === 0) return
+  throw new Error(`${left} sections still collapsed after ${WALK_ROUNDS} rounds, the walk is not converging`)
 }
 
 test('no German reaches the screen in any settings section', async ({ page }) => {
