@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 use tokio_util::sync::CancellationToken;
 
+use crate::commands::comfy_folders;
 use crate::state::{AppState, DownloadProgress};
 
 /// Reduce a download filename to a safe basename — no path separators, no
@@ -98,6 +99,112 @@ mod delete_message_tests {
         assert_eq!(msg, "ghost.safetensors was not found in the ComfyUI models folders");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// The write target, held against the engine that has to find the file.
+///
+/// .__nothing_, Discord help-chat 2026-09-02: FramePack F1 and Wan 2.1 both
+/// downloaded through the Get button and appeared in no picker, and moving the
+/// files into a different ComfyUI folder by hand fixed it. That sentence is
+/// this test: the download went where LU guessed, the picker reads what the
+/// running ComfyUI enumerates, and on his box those were two different trees.
+#[cfg(test)]
+mod model_folder_tests {
+    use super::models_dir_in;
+    use crate::commands::comfy_folders::ComfyFolders;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("lu-model-folders")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The shape of the report: `main.py` in the program folder, the models
+    /// under the base directory the desktop app starts ComfyUI with.
+    #[test]
+    fn the_download_follows_the_engine_and_not_our_guess() {
+        let root = scratch("base-directory");
+        let program = root.join("Programs").join("ComfyUI").join("resources").join("ComfyUI");
+        let base = root.join("Documents").join("ComfyUI");
+        let engine_dir = base.join("models").join("diffusion_models");
+        let folders = ComfyFolders::parse(&json!({
+            "diffusion_models": [
+                base.join("models").join("unet").to_string_lossy(),
+                engine_dir.to_string_lossy(),
+            ],
+        }));
+
+        let dest = models_dir_in(
+            Some(&folders),
+            &Some(program.to_string_lossy().to_string()),
+            "diffusion_models",
+        )
+        .unwrap();
+
+        // Where FramePackI2V_HY_fp8_e4m3fn.safetensors and
+        // wan2.1_t2v_1.3B_bf16.safetensors have to land to be offered.
+        assert_eq!(dest, engine_dir);
+        assert!(dest.is_dir());
+        // And NOT where the old rule put them, which is the folder he had to
+        // move them out of.
+        assert_ne!(dest, program.join("models").join("diffusion_models"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// No engine to ask (the Model Manager downloads with ComfyUI shut down all
+    /// the time) keeps the rule that has always been there.
+    #[test]
+    fn without_an_answer_the_old_rule_stands() {
+        let root = scratch("no-engine");
+        let dest = models_dir_in(None, &Some(root.to_string_lossy().to_string()), "checkpoints").unwrap();
+        assert_eq!(dest, root.join("models").join("checkpoints"));
+
+        // An engine that answers about other folders says nothing about this
+        // one, and inventing a folder from a key it does not have would be the
+        // same guess in a new place.
+        let folders = ComfyFolders::parse(&json!({"vae": ["/srv/ai/vae"]}));
+        let dest = models_dir_in(Some(&folders), &Some(root.to_string_lossy().to_string()), "checkpoints").unwrap();
+        assert_eq!(dest, root.join("models").join("checkpoints"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A pack folder is not a ComfyUI folder key. It stays relative to the
+    /// ComfyUI root, where the pack itself is.
+    #[test]
+    fn a_pack_folder_stays_under_the_comfyui_root() {
+        let root = scratch("pack-folder");
+        let folders = ComfyFolders::parse(&json!({
+            "diffusion_models": ["/srv/ai/models/diffusion_models"]
+        }));
+        let dest = models_dir_in(
+            Some(&folders),
+            &Some(root.to_string_lossy().to_string()),
+            "custom_nodes/ComfyUI-AnimateDiff-Evolved/models",
+        )
+        .unwrap();
+        assert_eq!(dest, root.join("custom_nodes/ComfyUI-AnimateDiff-Evolved/models"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The jail is unchanged, and it runs BEFORE anything the engine said.
+    #[test]
+    fn an_escaping_subfolder_is_still_refused() {
+        let folders = ComfyFolders::parse(&json!({"checkpoints": ["/srv/ai/models/checkpoints"]}));
+        for bad in ["../../etc", "a/../../b", "/abs/path", "C:/x"] {
+            assert!(
+                models_dir_in(Some(&folders), &Some("/tmp/comfy".to_string()), bad).is_err(),
+                "{bad}",
+            );
+        }
     }
 }
 
@@ -422,14 +529,26 @@ pub fn delete_comfy_model(
     }
     let base = sanitize_filename(&base);
     let models_root = PathBuf::from(&comfy_path).join("models");
+    // Both trees, because the download may have written into either: the
+    // engine's own folders when it was running and could be asked, the classic
+    // guess when it could not (see models_dir_in). A file the app put there is
+    // a file the app has to be able to take away again.
+    let mut roots: Vec<PathBuf> = MODEL_SUBDIRS.iter().map(|d| models_root.join(d)).collect();
+    if let Some(folders) = comfy_folders::cached() {
+        for dir in folders.all_dirs() {
+            if !roots.contains(&dir) {
+                roots.push(dir);
+            }
+        }
+    }
     let mut hits: Vec<PathBuf> = Vec::new();
-    for d in MODEL_SUBDIRS {
+    for root in &roots {
         let cand = if sub.is_empty() {
-            models_root.join(d).join(&base)
+            root.join(&base)
         } else {
-            models_root.join(d).join(&sub).join(&base)
+            root.join(&sub).join(&base)
         };
-        if cand.is_file() {
+        if cand.is_file() && !hits.contains(&cand) {
             hits.push(cand);
         }
     }
@@ -456,9 +575,33 @@ pub fn delete_comfy_model(
     }
 }
 
-fn models_dir(comfy_path: &Option<String>, subfolder: &str) -> Result<PathBuf, String> {
-    let base = comfy_path.as_ref().ok_or("ComfyUI path not set. Please set it in settings or install ComfyUI first.")?;
+/// Where a file of `subfolder` goes, and where every other path in this module
+/// looks for it afterwards. THE definition, which is the whole point: the
+/// download, the size probe, the space check and the delete all come through
+/// here, so they cannot end up in different trees.
+///
+/// `folders` is what the RUNNING ComfyUI says about its own model folders
+/// (see commands/comfy_folders.rs). It wins whenever it has an answer, because
+/// the picker is built from that same process: a file written anywhere else is
+/// a file no picker can ever offer (.__nothing_, 2026-09-02 — FramePack F1 and
+/// Wan 2.1 downloaded fine and showed up nowhere until he moved them into the
+/// other ComfyUI folder by hand).
+///
+/// The old rule stays underneath for the two cases where there is nothing
+/// better: ComfyUI is not running (the Model Manager downloads with the engine
+/// shut down all the time), and the pack folders under `custom_nodes`, which
+/// are not a ComfyUI `folder_paths` key at all.
+fn models_dir_in(
+    folders: Option<&comfy_folders::ComfyFolders>,
+    comfy_path: &Option<String>,
+    subfolder: &str,
+) -> Result<PathBuf, String> {
     safe_subfolder(subfolder)?;
+    if let Some(dir) = folders.and_then(|f| f.dir_for(subfolder)) {
+        fs::create_dir_all(&dir).map_err(|e| format!("Create models dir: {}", os_error::english(&e)))?;
+        return Ok(dir);
+    }
+    let base = comfy_path.as_ref().ok_or("ComfyUI path not set. Please set it in settings or install ComfyUI first.")?;
     // Subfolders starting with "custom_nodes/" are relative to ComfyUI root, not models/
     let dir = if subfolder.starts_with("custom_nodes/") || subfolder.starts_with("custom_nodes\\") {
         PathBuf::from(base).join(subfolder)
@@ -467,6 +610,19 @@ fn models_dir(comfy_path: &Option<String>, subfolder: &str) -> Result<PathBuf, S
     };
     fs::create_dir_all(&dir).map_err(|e| format!("Create models dir: {}", os_error::english(&e)))?;
     Ok(dir)
+}
+
+/// The engine's answer, asked fresh, for the paths that can await it.
+async fn engine_folders(state: &State<'_, AppState>) -> Option<comfy_folders::ComfyFolders> {
+    let host = state.comfy_host.lock().map(|h| h.clone()).unwrap_or_default();
+    let port = state.comfy_port.lock().map(|p| *p).unwrap_or(0);
+    if port == 0 {
+        return comfy_folders::cached();
+    }
+    match comfy_folders::folders_of(&host, port).await {
+        Some(f) => Some(f),
+        None => comfy_folders::cached(),
+    }
 }
 
 #[allow(non_snake_case)]
@@ -496,7 +652,7 @@ pub async fn download_model(
         p.clone()
     };
 
-    let dest_dir = models_dir(&comfy_path, &subfolder)?;
+    let dest_dir = models_dir_in(engine_folders(&state).await.as_ref(), &comfy_path, &subfolder)?;
     let dest_file = dest_dir.join(sanitize_filename(&filename));
 
     let expected_sha256 = match expectedSha256.as_deref() {
@@ -876,6 +1032,7 @@ pub(crate) fn is_huggingface_host(url: &str) -> bool {
 /// A refusal from CivitAI names the field and the way to it. Everything else
 /// goes to `http_error_message`: inventing a CivitAI hint for a dead
 /// HuggingFace link would send people to the wrong setting.
+
 ///
 /// The CivitAI text carries its status WITHOUT the `(HTTP nnn)` brackets on
 /// purpose. That shape is the contract `isPermanentDownloadError` reads in
@@ -1448,7 +1605,7 @@ pub fn check_download_space(
         (_, Some(d)) if !d.is_empty() => PathBuf::from(d),
         (Some(sub), _) => {
             let comfy_path = state.comfy_path.lock().unwrap().clone();
-            models_dir(&comfy_path, &sub)?
+            models_dir_in(comfy_folders::cached().as_ref(), &comfy_path, &sub)?
         }
         _ => return Err("check_download_space needs a subfolder or a destDir".to_string()),
     };
@@ -1675,7 +1832,7 @@ pub async fn resume_download(
         p.clone()
     };
 
-    let dest_dir = models_dir(&comfy_path, &subfolder)?;
+    let dest_dir = models_dir_in(engine_folders(&state).await.as_ref(), &comfy_path, &subfolder)?;
     let dest_file = dest_dir.join(&id);
     let tmp_path = dest_file.with_extension("download");
 
@@ -2105,11 +2262,14 @@ pub async fn check_model_sizes(
         }
         p.clone()
     };
+    // The same folders the download wrote into. Asking the old way here would
+    // measure a tree nothing was written to and report every file as missing.
+    let folders = engine_folders(&state).await;
 
     let mut results = Vec::with_capacity(files.len());
 
     for file in &files {
-        let dest_dir = match models_dir(&comfy_path, &file.subfolder) {
+        let dest_dir = match models_dir_in(folders.as_ref(), &comfy_path, &file.subfolder) {
             Ok(d) => d,
             Err(_) => {
                 results.push(CheckFileResult {

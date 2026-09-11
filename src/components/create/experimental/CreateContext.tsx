@@ -5,7 +5,7 @@ import { useCloudSession } from '../../../hooks/useCloudSession'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
 import { getLoraModels, getVAEModels, checkComfyConnection, refreshComfyModels, bundleForVideoIntent } from '../../../api/comfyui'
 import { getAllNodeInfo, clearNodeCache } from '../../../api/comfyui-nodes'
-import { installCustomNodes, getImageBundles, getVideoBundles, getAudioBundles, getLipsyncBundles, getMotionBundles, startModelDownload, getDownloadProgress, modelsNotVisibleInComfy, ENUM_SUBFOLDERS } from '../../../api/discover'
+import { installCustomNodes, getImageBundles, getVideoBundles, getAudioBundles, getLipsyncBundles, getMotionBundles, startModelDownload, getDownloadProgress, modelsNotVisibleInComfy, judgeableFolders } from '../../../api/discover'
 import { backendCall, isMacOS, isLinux } from '../../../api/backend'
 import { asComfyGpuMode, comfyCpuBannerText, type ComfyCpuBannerFacts } from '../../../lib/comfy-cpu-banner'
 import { installMlxStack } from '../../../api/mlx-install'
@@ -462,6 +462,7 @@ export function CreateExpProvider({ children }: { children: ReactNode }) {
         signal,
       },
     )
+    const judgeable = await judgeableFolders()
     onProgress?.('Refreshing the model list…')
     const refreshLists = async () => {
       await refreshComfyModels().catch(() => false)
@@ -476,7 +477,11 @@ export function CreateExpProvider({ children }: { children: ReactNode }) {
     // stayed on "Refreshing the model list…" forever (C8, Voxyl AI and Aldrich
     // Ironhart 2026-08-13): the install returned happy, and Stage keeps the
     // card up until the lists refill.
-    const enumFiles = files.filter((f) => ENUM_SUBFOLDERS.has(f.subfolder!))
+    // The folders THIS ComfyUI enumerates. A loader it does not have (the audio
+    // encoder node is younger than the boxes some people run) says nothing
+    // about its folder, and waiting for it to list a file it will never list
+    // ends in a red card blaming the model folder for a missing node.
+    const enumFiles = files.filter((f) => judgeable.has(f.subfolder!))
     if (enumFiles.length > 0) {
       const wanted = enumFiles.map((f) => f.filename!)
       // The probe itself lives in discover.ts, because the Model Manager
