@@ -8,8 +8,11 @@ import { HINWEIS_TEXT, HINWEIS_ZEILE } from '../../lib/hinweis'
 
 /**
  * Top-of-app notice shown when the startup health scan finds installed
- * Ollama models whose manifests are rejected by 0.20.7. Auto-hides when
- * all models are refreshed or the user dismisses for this session.
+ * Ollama models whose manifests are rejected by 0.20.7. Auto-hides when all
+ * models are refreshed, or when the user dismisses it, and a dismissal LASTS:
+ * it is written to disk with the rest of the store and only the next scan that
+ * finds a DIFFERENT set of stale models brings the banner back
+ * (stores/modelHealthStore, `setStaleModels`).
  *
  * Cause: Ollama auto-upgraded 0.20.6 to 0.20.7 today and started strict-
  * rejecting manifests pulled before the registry-side capabilities refresh.
@@ -102,8 +105,14 @@ export function StaleModelsBanner() {
       <button
         onClick={dismiss}
         className="self-center shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 transition-opacity"
-        aria-label="Dismiss until next launch"
-        title="Dismiss until next launch"
+        /* Hiess bis 3.0.0 "Dismiss until next launch" und war seit 2.5.9
+           falsch: a3b05a44 hat die Ablage dauerhaft gemacht, weil der Knopf
+           vorher nichts bewirkte (die Anlaufpruefung raeumte die Marke bei
+           jedem Start wieder weg), und niemand hat die Beschriftung
+           mitgenommen. Wer sie las, erwartete den Hinweis am naechsten Tag
+           wieder und bekam ihn nie. */
+        aria-label="Dismiss. It comes back only when a different model goes stale."
+        title="Dismiss. It comes back only when a different model goes stale."
       >
         <X size={11} />
       </button>
