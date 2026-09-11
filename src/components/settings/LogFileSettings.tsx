@@ -14,18 +14,13 @@
 import { useEffect, useState } from 'react'
 import { FileText, FolderOpen, Check, Copy } from 'lucide-react'
 import { backendCall, isTauri } from '../../api/backend'
+import { formatBytes } from '../../lib/formatters'
 
 interface LogLocation {
   dir: string
   file: string
   exists: boolean
   size_bytes: number
-}
-
-function prettySize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 export function LogFileSettings() {
@@ -105,7 +100,7 @@ export function LogFileSettings() {
           </div>
           <div className="text-[0.55rem] text-gray-500">
             {loc.exists
-              ? `today's file: ${prettySize(loc.size_bytes)}`
+              ? `today's file: ${formatBytes(loc.size_bytes)}`
               : 'nothing logged yet today'}
           </div>
         </>

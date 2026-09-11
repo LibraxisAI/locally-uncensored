@@ -27,6 +27,9 @@ vi.mock('../../../api/backend', () => ({
   backendCall: (...args: unknown[]) => backendCall(...args),
   isTauri: () => true,
   isMacOS: () => false,
+  // Die Attrappe muss spiegeln, was die Flaeche wirklich einfuehrt: der
+  // ComfyUI-Platzhalter fragt seit dem Linux-Fund nach der Plattform.
+  isWindows: () => true,
   openExternal: vi.fn(),
   secretGet: vi.fn().mockRejectedValue(new Error('no keychain here')),
   secretSet: vi.fn(),

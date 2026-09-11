@@ -30,6 +30,28 @@ import { backendCall } from '../../api/backend'
 import { isTauri } from './onboarding-host'
 import type { LmStudioServerStatus } from '../models/ModelSelector'
 
+/**
+ * Der Deckel ueber dem GANZEN Scan, nicht ueber einer einzelnen Sonde.
+ *
+ * T2 hat auf der Box gemessen, was ohne ihn passiert: nach `Re-run onboarding`
+ * stand `Scanning for local backends...` ueber vier Minuten, ohne Knopf, ohne
+ * neue Logzeile, und erst ein Neustart der App loeste es.
+ *
+ * Jede einzelne Sonde IST gedeckelt (`lib/backend-detector.ts`: 2000 ms
+ * Anfrage, 2500 ms Rennen darueber), und sie laufen parallel, nach 2,5
+ * Sekunden ist der Klopfteil also in jedem Fall vorbei. Der Scan endet dort
+ * aber nicht: findet er nichts, fragt er danach `lmstudio_server_status`, und
+ * dieser Aufruf geht OHNE Frist nach Rust. Antwortet Rust nicht, bleibt
+ * `detecting` fuer immer wahr, und in diesem Zustand zeichnet der Schritt
+ * keinen einzigen Knopf.
+ *
+ * 6000 ms ist gerechnet und nicht geraten: 2500 ms fuer die Sonden, die
+ * restlichen 3500 ms fuer die eine Nachfrage. Wer darueber hinaus laeuft,
+ * haelt den Assistenten nicht mehr auf; der Schritt zeigt dann, was bis dahin
+ * da ist, und der Weg weiter steht offen.
+ */
+export const SCAN_DEADLINE_MS = 6000
+
 export interface BackendScan {
   detectedBackends: DetectedBackend[]
   detecting: boolean
@@ -40,6 +62,8 @@ export interface BackendScan {
   /** GGUFs in `~/.lmstudio/models/`, als Vertrauenshinweis in der Karte. */
   lmstudioModelCount: number
   runDetection: () => Promise<void>
+  /** Nicht laenger warten und mit dem weitermachen, was bis hierhin da ist. */
+  stopDetection: () => void
 }
 
 export function useBackendScan(): BackendScan {
@@ -65,10 +89,9 @@ export function useBackendScan(): BackendScan {
   const [lmstudioModelCount, setLmstudioModelCount] = useState(0)
 
   /* ── Scan for backends ──────────────────────────────────── */
-  const runDetection = async () => {
-    setDetecting(true)
-    setLmstudioOfflineDetected(false)
-    setLmstudioModelCount(0)
+
+  /** Der Scan selbst. Wie lange der Bildschirm auf ihn wartet, sagt er nicht. */
+  const detect = async () => {
     const backends = await detectLocalBackends()
     setDetectedBackends(backends)
     if (backends.length > 0 && !selectedBackend) {
@@ -95,10 +118,31 @@ export function useBackendScan(): BackendScan {
           setLmstudioOfflineDetected(true)
           setLmstudioModelCount(Number(status?.model_count) || 0)
         }
-      } catch { /* command unavailable — ignore */ }
+      } catch { /* command unavailable, ignore */ }
     }
+  }
+
+  /**
+   * Der Scan, wie der Bildschirm ihn erlebt: mit Deckel.
+   *
+   * Der Scan laeuft weiter, wenn der Deckel ihn ueberholt, und was er danach
+   * noch findet, schreibt er nach. Nur WARTEN muss der Bildschirm nicht mehr
+   * darauf. Deshalb ein eigenes Versprechen statt eines `await`, und deshalb
+   * faengt es seinen eigenen Fehler ab: "nichts erreichbar" ist im Assistenten
+   * kein Fehler, den jemand zu lesen bekommt.
+   */
+  const runDetection = async () => {
+    setDetecting(true)
+    setLmstudioOfflineDetected(false)
+    setLmstudioModelCount(0)
+    const scan = detect().catch(() => { /* nothing reachable, the screen says so */ })
+    const deadline = new Promise<void>((resolve) => { setTimeout(resolve, SCAN_DEADLINE_MS) })
+    await Promise.race([scan, deadline])
     setDetecting(false)
   }
+
+  /** Nicht laenger warten: der Bildschirm zeigt, was bis hierhin da ist. */
+  const stopDetection = () => setDetecting(false)
 
   return {
     detectedBackends,
@@ -108,5 +152,6 @@ export function useBackendScan(): BackendScan {
     lmstudioOfflineDetected,
     lmstudioModelCount,
     runDetection,
+    stopDetection,
   }
 }

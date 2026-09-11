@@ -228,7 +228,7 @@
 <h2 id="linux">Linux notes</h2>
 
 <ul>
-<li>The window stays black on some Wayland desktops: chapter 2 has the two environment variables the app sets and how to override them.</li>
+<li>The window stays black on some Wayland desktops: chapter 2 has the environment variables the app sets on a Wayland session and how to switch them off.</li>
 <li>"Open folder" buttons need <code>xdg-utils</code> installed; without it nothing opens.</li>
 <li>The AppImage clears <code>PYTHONHOME</code> and <code>PYTHONPATH</code> for the Python it starts, so a ComfyUI install from the AppImage works on a system Python.</li>
 <li>The engine needs <code>libvulkan.so.1</code> and <code>libgomp.so.1</code>; the .deb and .rpm depend on them, the AppImage tells you if one is missing.</li>

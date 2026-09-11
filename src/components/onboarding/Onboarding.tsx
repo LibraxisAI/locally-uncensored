@@ -168,7 +168,14 @@ export function Onboarding() {
         baseUrl: 'http://127.0.0.1:8127/v1', isLocal: true, managed: true,
       })
     } else if (selectedBackend === 'ollama') {
-      setProviderConfig('ollama', { enabled: true })
+      // `disabledByUser: false` gehoert dazu und fehlte: wer Ollama HIER
+      // anklickt, schaltet ihn ein, genau wie der Enable-Knopf der
+      // Anbieterkarte, und der schreibt beide Felder
+      // (`settings/ProviderConfig.tsx`). Ohne das zweite Feld blieb ein
+      // eingeschalteter Anbieter mit der Marke "vom Nutzer ausgeschaltet"
+      // zurueck, und die Marke ist genau die Frage, die
+      // `lib/onboarding-provider-gate.ts` dem Assistenten stellt.
+      setProviderConfig('ollama', { enabled: true, disabledByUser: false })
       setProviderConfig('openai', { enabled: false, managed: false })
     } else {
       const backend = detectedBackends.find(b => b.id === selectedBackend)

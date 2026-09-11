@@ -132,7 +132,7 @@ sudo dnf install ./Locally.Uncensored-3.0.0-1.x86_64.rpm</code></pre>
 
 <div class="callout info">
 <div class="callout-title">Wayland and a window that stays black</div>
-On some Wayland desktops and some Mesa versions the window opens and never paints. The app sets two environment variables at start to avoid that, <code>WEBKIT_DISABLE_DMABUF_RENDERER=1</code> and <code>WEBKIT_DISABLE_COMPOSITING_MODE=1</code>, but only if you have not set them yourself. If you want the GPU path back, set either variable before starting the app and the app leaves your value alone. The AppImage also clears <code>PYTHONHOME</code> and <code>PYTHONPATH</code> for every Python it starts, because the AppImage runtime exports them into its own mount and a system Python would otherwise die on "No module named 'encodings'".
+On some Wayland desktops and some Mesa versions the window opens and never paints. On a Wayland session the app sets up to three environment variables at start to avoid that: <code>WEBKIT_DISABLE_DMABUF_RENDERER=1</code>, <code>WEBKIT_DISABLE_COMPOSITING_MODE=1</code>, and, in the AppImage only, <code>LD_PRELOAD</code> pointing at the system <code>libwayland-client.so.0</code>, because the AppImage carries its own copy and the host Mesa cannot create an EGL display against it. The app sets each one only if you have not set it yourself, and it prints one line per variable with the reason. If you want the GPU path back, set any of those variables before starting the app and the app leaves your value alone, or set <code>LU_NO_WAYLAND_WORKAROUND=1</code> and it sets none of them. The AppImage also clears <code>PYTHONHOME</code> and <code>PYTHONPATH</code> for every Python it starts, because the AppImage runtime exports them into its own mount and a system Python would otherwise die on "No module named 'encodings'".
 </div>
 
 <h2 id="warnings">What the security warnings mean</h2>
@@ -221,7 +221,7 @@ After an update the app opens a sheet with the release notes once. It does not o
 
 <p><strong>The .deb refuses to install because of <code>/usr/bin/llama-server</code>.</strong> That was version 2.6.6 and older, whose package shipped the engine under the same name as Debian's <code>llama.cpp-tools</code>. Since 2.6.7 the engine is called <code>lu-llama-server</code> and the conflict is gone. Download the current package.</p>
 
-<p><strong>Linux: the window opens but stays empty.</strong> See the Wayland callout above. If you have set <code>WEBKIT_DISABLE_DMABUF_RENDERER</code> or <code>WEBKIT_DISABLE_COMPOSITING_MODE</code> yourself, unset them so the app can apply its defaults. The app also reveals its window after ten seconds at the latest, so wait that long before you decide.</p>
+<p><strong>Linux: the window opens but stays empty.</strong> See the Wayland callout above. If you have set <code>WEBKIT_DISABLE_DMABUF_RENDERER</code>, <code>WEBKIT_DISABLE_COMPOSITING_MODE</code> or <code>LD_PRELOAD</code> yourself, unset them so the app can apply its defaults. The app also reveals its window after ten seconds at the latest, so wait that long before you decide.</p>
 
 <hr>
 <p class="small">Previous chapter: <a href="/guide/what-it-is/">What it is</a>. Next chapter: <a href="/guide/first-start/">First start</a>. Back to the <a href="/guide/">handbook overview</a>.</p>
