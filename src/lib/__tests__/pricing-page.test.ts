@@ -3,10 +3,17 @@
  * Die Preisseite auf locallyuncensored.com.
  *
  * Die Zahlen selbst haelt scripts/check-cloud-sales.mjs gegen das Web-Repo,
- * weil nur dort die Quelle liegt. Hier steht, was die Seite SAGEN muss und was
- * sie nicht sagen darf: sie nimmt kein Geld an, sie verspricht nichts, was
- * hinter einem Schalter liegt, ohne den Schalter zu nennen, und sie nennt die
- * beiden Grenzen, die keine Einstellung verschiebt.
+ * weil nur dort die Quelle liegt. Das Skript braucht aber einen Pfad auf ein
+ * ausgechecktes Web-Repo und laeuft deshalb NICHT in `npm test`. Ein Preis
+ * konnte hier also still veralten, bis jemand den Release-Waechter von Hand
+ * anwarf; genau das ist am 10.09.2026 passiert, als die Packs neu bepreist
+ * wurden und diese Seite die alten Zahlen weiter nannte. Darum stehen die
+ * sechs Betraege unten als Literale, die bei jedem Testlauf anschlagen.
+ *
+ * Sonst steht hier, was die Seite SAGEN muss und was sie nicht sagen darf:
+ * sie nimmt kein Geld an, sie verspricht nichts, was hinter einem Schalter
+ * liegt, ohne den Schalter zu nennen, und sie nennt die beiden Grenzen, die
+ * keine Einstellung verschiebt.
  */
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
@@ -59,4 +66,71 @@ it('is discoverable, canonical and free of dashes', () => {
   expect(readFileSync('docs/index.html', 'utf8')).toContain('href="/pricing/"')
   expect(readFileSync('docs/sitemap.xml', 'utf8')).toContain('<loc>https://locallyuncensored.com/pricing/</loc>')
   expect(html).not.toMatch(/[–—]/u)
+})
+
+// Quelle der Wahrheit im Web-Repo, nicht hier: die Packs stehen in
+// `apps/web/lib/billing/topup.ts` (TOPUP_PACKS), die Monatsguthaben in
+// `apps/web/lib/billing/credits.ts` (TIER_CREDITS), die Preise in
+// `apps/web/lib/pricing.ts`. Wer dort eine Zahl aendert, aendert sie hier
+// mit, und scripts/check-cloud-sales.mjs beweist vor dem Release, dass beide
+// Seiten dieselbe nennen. Diese Literale sind die Reissleine dazwischen.
+const PACKS = [
+  { id: 'small', eurCents: 500, credits: 230_000 },
+  { id: 'medium', eurCents: 1000, credits: 465_000 },
+  { id: 'large', eurCents: 2500, credits: 1_175_000 },
+] as const
+
+const PLANS = [
+  { id: 'hosted', monthlyEUR: 19, annualEUR: 190, credits: 900_000 },
+  { id: 'hosted-pro', monthlyEUR: 49, annualEUR: 490, credits: 2_350_000 },
+  { id: 'hosted-max', monthlyEUR: 99, annualEUR: 990, credits: 5_000_000 },
+] as const
+
+it('names the three credit packs the web repo actually sells', () => {
+  const spans = [...page.querySelectorAll<HTMLElement>('[data-pack-id]')]
+  expect(spans).toHaveLength(PACKS.length)
+  for (const pack of PACKS) {
+    const span = spans.find((s) => s.dataset.packId === pack.id)
+    expect(span, `pack missing from the page: ${pack.id}`).toBeTruthy()
+    expect(Number(span!.dataset.eurCents)).toBe(pack.eurCents)
+    expect(Number(span!.dataset.credits)).toBe(pack.credits)
+    // Der Kaeufer liest den Text, nicht das Attribut. Beide muessen stimmen.
+    expect(span!.textContent).toBe(
+      `EUR ${pack.eurCents / 100} for ${pack.credits.toLocaleString('en-US')} credits`,
+    )
+  }
+})
+
+it('names the three monthly plans the web repo actually sells', () => {
+  const cells = [...page.querySelectorAll<HTMLElement>('[data-plan-id]')]
+  expect(cells).toHaveLength(PLANS.length)
+  for (const plan of PLANS) {
+    const cell = cells.find((c) => c.dataset.planId === plan.id)
+    expect(cell, `plan missing from the page: ${plan.id}`).toBeTruthy()
+    expect(Number(cell!.dataset.monthlyEur)).toBe(plan.monthlyEUR)
+    expect(cell!.textContent).toBe(`EUR ${plan.monthlyEUR}`)
+    const row = cell!.closest('[data-plan-row]')!
+    const annual = row.querySelector<HTMLElement>('[data-annual-eur]')!
+    expect(Number(annual.dataset.annualEur)).toBe(plan.annualEUR)
+    expect(annual.textContent).toBe(`EUR ${plan.annualEUR}`)
+    const credits = row.querySelector<HTMLElement>('[data-plan-credits]')!
+    expect(Number(credits.dataset.planCredits)).toBe(plan.credits)
+    expect(credits.textContent).toBe(plan.credits.toLocaleString('en-US'))
+  }
+})
+
+it('never says how many tokens a euro or a pack buys', () => {
+  // Davids Ansage vom 10.09.2026. Die Credit-Rate je Token darf bleiben, die
+  // IST der Einkaufspreis. Verboten ist die Umrechnung von Geld in eine
+  // Tokenmenge, weil sie in einem Schritt den Aufschlag verraet und ein
+  // Versprechen gibt, das keine Rechnung je einloest. Das Tagesbudget der
+  // Flash-Klasse ist keine solche Umrechnung: es haengt am Konto, nicht am
+  // Preis, und steht deshalb ohne Geldwort im selben Satz.
+  const money = /\bEUR\b|\beuro\b|\bpack\b|\bcredits?\b/i
+  const tokenAmount = /\d[\d,.]*\s*(?:k|m|million|thousand)?\s+(?:\w+\s+){0,5}tokens?\b/i
+  for (const sentence of text().split(/(?<=[.!?])\s+/)) {
+    if (tokenAmount.test(sentence) && money.test(sentence)) {
+      throw new Error(`Money converted into tokens: ${sentence.trim()}`)
+    }
+  }
 })
