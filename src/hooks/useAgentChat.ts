@@ -123,6 +123,13 @@ export function useAgentChat() {
   const [pendingApproval, setPendingApproval] = useState<AgentToolCall | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  /**
+   * Welche Unterhaltung der Lauf oben gehoert. Siehe useChat.ts: `abortRef`,
+   * `runningRef` und `isAgentRunning` gibt es einmal je Hook-Instanz, nicht je
+   * Unterhaltung, und Stop nahm sie unbesehen. Damit brach Stop in einer
+   * zweiten Unterhaltung den Agentenlauf der ersten ab (T1 Punkt 4).
+   */
+  const abortConvRef = useRef<string | null>(null)
   // "The user pressed stop" lives in lib/run-stop, keyed by conversation, NOT
   // in a ref of this hook instance — for the same reason agentLoopTimer above
   // is module scope. It was also never RESET: one stop anywhere in the session
@@ -699,6 +706,7 @@ export function useAgentChat() {
     // Setup
     const abort = new AbortController()
     abortRef.current = abort
+    abortConvRef.current = convId
     // Hand Stop to everything this run starts, including the nested ReAct loop
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
@@ -2480,6 +2488,7 @@ export function useAgentChat() {
       useGenerationStore.getState().clearAborter(convId)
       runningRef.current = false
       abortRef.current = null
+      abortConvRef.current = null
       // Chat-tools artifact mode: attach any files the model "wrote" (captured
       // in-memory, NOT on disk) to the assistant message so they render inline
       // with a preview + Download button. takeChatArtifacts drains this run's
@@ -2606,15 +2615,23 @@ export function useAgentChat() {
       agentLoopTimer = null
     }
     useAgentLoopStore.getState().clear()
-    runningRef.current = false
-    abortRef.current?.abort()
-    abortRef.current = null
+    // NUR den eigenen Lauf. `runningRef`, `abortRef` und `isAgentRunning`
+    // gehoeren der Hook-Instanz, nicht der Unterhaltung; ohne diese Bedingung
+    // beendete Stop in einer zweiten Unterhaltung den Agentenlauf der ersten
+    // (T1 Punkt 4). Laeuft der Agent woanders, hat `stopRun` oben den Stopp
+    // fuer DIESE Unterhaltung vermerkt und mehr ist hier nicht zu tun.
+    if (abortConvRef.current === stoppedConvId) {
+      runningRef.current = false
+      abortRef.current?.abort()
+      abortRef.current = null
+      abortConvRef.current = null
+      setIsAgentRunning(false)
+    }
     // Interrupt any in-flight ComfyUI gen too — the main Stop button only aborted
     // the agent loop before, so a running image/video kept burning unless the user
     // happened to click the small in-chat tool Stop. Now both Stops agree.
     requestGenerationCancel()
     drainApprovals(stoppedConvId)
-    setIsAgentRunning(false)
   }, [])
 
   return {
