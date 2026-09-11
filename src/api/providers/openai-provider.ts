@@ -1,3 +1,5 @@
+import { captureFlashGeneration, parseFlashPolicy, recordFlashResponse } from '../../lib/flash-ui'
+
 /**
  * OpenAI-Compatible Provider
  *
@@ -14,6 +16,7 @@ import type {
   ChatStreamChunk, ToolCall, ToolDefinition,
 } from './types'
 import { ProviderError } from './types'
+import { RepetitionStop } from '../../lib/repetition-stop'
 import { parseSSEStream } from '../sse'
 import { idleAbortGuard, isStreamIdleTimeout } from '../stream-idle'
 import { sendWithTransientRetry } from './retry'
@@ -107,6 +110,10 @@ type ChatFetcher = (
 ) => Promise<Response>
 
 interface OpenAIModelEntry {
+  flash?: unknown
+  usage_class?: unknown
+  /** Gemessenes Inhaltsverhalten. Nur unsere eigene Wolke schickt das Feld. */
+  unfiltered?: unknown
   id: string
   object: string
   created?: number
@@ -153,6 +160,8 @@ function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
     created: asNumber(m.created),
     owned_by: asString(m.owned_by),
     name: asString(m.name),
+    flash: m.flash,
+    usage_class: m.usage_class,
     context_length: asNumber(m.context_length),
     input_modalities: Array.isArray(m.input_modalities)
       ? m.input_modalities.filter((x): x is string => typeof x === 'string')
@@ -527,6 +536,7 @@ export class OpenAIProvider implements ProviderClient {
     signal: AbortSignal | undefined,
     fetcher: ChatFetcher,
   ): Promise<Response> {
+    const billingGeneration = captureFlashGeneration()
     // Sanierungspfad: a throttle or a gateway hiccup is not the request's
     // fault, and the user used to read the raw status line for it. The retry
     // sits HERE, around the request, so it can never replay a stream that has
@@ -589,6 +599,7 @@ export class OpenAIProvider implements ProviderClient {
       else if (survived !== asked) this.rememberEffort(memoryKey, lane, 'minimal')
     }
 
+    recordFlashResponse(this.catalogKey(model), res, billingGeneration)
     return res
   }
 
@@ -723,6 +734,8 @@ export class OpenAIProvider implements ProviderClient {
     // Stop still propagates inward, and a stream that goes silent can cancel
     // its own request instead of leaving reader.read() pending forever.
     const guard = idleAbortGuard(options?.signal)
+    const repetitionStop = this.config.managed === true ? new RepetitionStop() : undefined
+    const reasoningRepetitionStop = this.config.managed === true ? new RepetitionStop() : undefined
     let res: Response
     try {
       res = await this.sendChat(model, body, guard.signal, fetcher)
@@ -808,6 +821,10 @@ export class OpenAIProvider implements ProviderClient {
         // without this the entire reasoning phase of a cloud reasoner is
         // silently dropped and the chat sits in dead air (uselu fc55c91).
         const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning ?? ''
+        if (repetitionStop?.push(content) || reasoningRepetitionStop?.push(reasoning)) {
+          guard.abort()
+          throw new Error('Generation stopped because the local model repeated question marks continuously. Try setting GPU Layers to 0 in LU Engine settings, or verify and download the model again.')
+        }
         if (reasoning) {
           yield { content: '', thinking: reasoning, done: false }
         }
@@ -998,6 +1015,10 @@ export class OpenAIProvider implements ProviderClient {
             : (serverTools ?? m.supports_tools ?? true),
           supportsVision: m.input_modalities?.includes('image') || undefined,
           thinkMode: m.think,
+          flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
+        // Nur die beiden gemessenen Werte werden uebernommen. Alles andere,
+        // was ein fremder Server in dieses Feld schreibt, faellt weg.
+        unfiltered: m.unfiltered === 'full' || m.unfiltered === 'partial' ? m.unfiltered : undefined,
           effortLevels: m.reasoning_effort_levels,
           effortDefault: m.reasoning_effort_default,
         }
@@ -1024,6 +1045,10 @@ export class OpenAIProvider implements ProviderClient {
         supportsTools: m.supports_tools ?? true,
         supportsVision: m.input_modalities?.includes('image') || undefined,
         thinkMode: m.think,
+        flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
+        // Nur die beiden gemessenen Werte werden uebernommen. Alles andere,
+        // was ein fremder Server in dieses Feld schreibt, faellt weg.
+        unfiltered: m.unfiltered === 'full' || m.unfiltered === 'partial' ? m.unfiltered : undefined,
         // Straight through, no invention: a server that does not declare the
         // ladder leaves both undefined, and undefined is what switches the
         // whole effort feature off for this model.

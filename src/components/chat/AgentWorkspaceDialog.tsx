@@ -51,6 +51,10 @@ export function AgentWorkspaceDialog({
     initialWorkspace && initialWorkspace.kind === 'folder' ? initialWorkspace : null,
   )
   const [rememberAsDefault, setRememberAsDefault] = useState(false)
+  // Der gemerkte Vorgabeordner, als Pfad. null, wenn keiner gemerkt ist.
+  const rememberedDefault = useSettingsStore(
+    (s) => (s.settings.defaultWorkspace?.kind === 'folder' ? s.settings.defaultWorkspace.path : null),
+  )
 
   const handleSandbox = () => {
     setError(null)
@@ -139,8 +143,12 @@ export function AgentWorkspaceDialog({
           </h3>
           <p className="text-[0.7rem] text-gray-500">
             {phase === 'pick'
-              ? 'Pick a folder to edit your real files, or use a sandbox to keep this chat isolated. You can change this later.'
+              ? 'Pick a folder to edit your real files, or use a separate workspace for this chat. You can change this later.'
               : 'Primary anchors relative paths. Extras give the agent absolute access, perfect for "sync the API in repo-A with the client in repo-B".'}
+          </p>
+          <p className="text-[0.7rem] text-gray-500" data-testid="workspace-security-boundary">
+            Workspace protection is a folder path jail, not a container or virtual machine.
+            Commands run on this computer. Review tool requests before allowing them.
           </p>
         </div>
 
@@ -155,7 +163,7 @@ export function AgentWorkspaceDialog({
             <WorkspaceOption
               icon={<Shield size={16} className="text-emerald-500" />}
               title="Sandbox"
-              body="Isolated workspace under ~/agent-workspace/. Nothing outside it can be touched."
+              body="Separate folder under ~/agent-workspace/, protected by the file tool path jail."
               onClick={handleSandbox}
               disabled={picking}
             />
@@ -235,6 +243,27 @@ export function AgentWorkspaceDialog({
                 Remember as default. Future chats open here without asking.
               </span>
             </label>
+
+            {/* Die zweite Haelfte des Berichts vom 01.09.2026: "Ordner wechseln
+                loest es nicht". Ein einmal gemerkter Vorgabeordner ueberspringt
+                die Frage in JEDEM neuen Agentenchat, und es gab keine Stelle,
+                an der man ihn wieder los wurde. Der Satz sagt, was gespeichert
+                ist, der Knopf loescht es. */}
+            {rememberedDefault && (
+              <div className="flex items-center justify-between gap-2 pt-1" data-testid="agent-workspace-default-note">
+                <span className="t-micro text-gray-500 truncate">
+                  Every new agent chat opens in {rememberedDefault} without asking.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => useSettingsStore.getState().updateSettings({ defaultWorkspace: null })}
+                  className="shrink-0 t-micro text-gray-500 underline hover:text-gray-800 dark:hover:text-white"
+                  data-testid="agent-workspace-forget-default"
+                >
+                  Forget it
+                </button>
+              </div>
+            )}
           </div>
         )}
 

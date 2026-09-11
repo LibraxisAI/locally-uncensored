@@ -21,6 +21,7 @@ import { useProviderStore } from '../../stores/providerStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useRemoteStore } from '../../stores/remoteStore'
+import { useRemoteRecovery } from '../../hooks/useRemoteRecovery'
 import { useModelHealthStore } from '../../stores/modelHealthStore'
 import { extractMemoriesFromPair } from '../../hooks/useMemory'
 import { detectLocalBackends, type DetectedBackend } from '../../lib/backend-detector'
@@ -118,6 +119,7 @@ const loadOnboarding = () => import('../onboarding/Onboarding').then((m) => ({ d
  * der Wurzel statt an 668 Call-Sites) steht dort.
  */
 export function AppShell() {
+  useRemoteRecovery()
   // Targeted, NOT `useUIStore()`. A whole-store subscription here put the
   // entire app tree behind every uiStore write — and the explorer's resize
   // handle writes `explorerWidth` on every pointermove, so dragging the

@@ -52,12 +52,12 @@ describe('an empty model list is not a reason to drop the pick', () => {
     expect(useModelStore.getState().activeModel).toBe(QWEN)
   })
 
-  it('NEGATIVE CONTROL: a pick that is genuinely gone still hands over', () => {
+  it('clears a deleted pick when only small replacements remain', () => {
     // The dead-name guard has to keep working, or the picker shows a model
     // the provider no longer has and clicking it opens an empty list.
     useModelStore.setState({ activeModel: 'openai::deleted-model' })
     useModelStore.getState().setModels([chat(HERMES), chat(QWEN)])
-    expect(useModelStore.getState().activeModel).toBe(HERMES)
+    expect(useModelStore.getState().activeModel).toBeNull()
   })
 
   it('NEGATIVE CONTROL: an empty list does not invent a pick out of nothing', () => {
@@ -76,6 +76,11 @@ describe('an empty model list is not a reason to drop the pick', () => {
 })
 
 describe('the pick is written to disk in the first place', () => {
+  it('automatically chooses the first verified 7B model, not a small or opaque row', () => {
+    useModelStore.setState({ activeModel: null })
+    useModelStore.getState().setModels([chat(HERMES), chat('opaque'), chat('test-7B')])
+    expect(useModelStore.getState().activeModel).toBe('test-7B')
+  })
   it('activeModel is part of what persist keeps', () => {
     expect(storeSrc).toMatch(/partialize:.*activeModel: state\.activeModel/)
   })

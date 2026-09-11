@@ -42,8 +42,8 @@
     "publisher": "PurpleDoubleD",
     "copyright": "Copyright (c) 2026 PurpleDoubleD. Licensed under AGPL-3.0.",
     "category": "DeveloperTool",
-    "shortDescription": "LU by LU Labs — private, local AI chat, image, and video generation",
-    "longDescription": "LU (by LU Labs) is an open-source desktop app that runs AI chat, image generation, and video generation entirely on your own machine. Ships with a built-in inference engine — zero setup, no external software required — so chat and document RAG work the moment you open the app. Also auto-detects 12 optional local backends (Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang, TGI). Includes a coding agent (Codex), an agent mode with 14 tools and MCP support, A/B model comparison, local benchmarking, document chat with RAG, voice chat, and remote access from your phone over LAN or Cloudflare Tunnel. No telemetry, no analytics, no data leaves your device.",
+    "shortDescription": "LU by LU Labs: local AI tools with optional cloud inference",
+    "longDescription": "LU by LU Labs is an open-source desktop app for AI chat, document retrieval, coding tools, and image and video workflows. Local inference requires compatible hardware and downloaded models. Some workflows require additional backends or runtime components. Optional cloud inference sends requests to hosted services and has separate usage limits, billing and content restrictions. Downloads, connected tools, remote access and other network features can communicate outside your device. Review the selected backend, tool permissions and data destination before sharing sensitive information.",
     "homepage": "https://lu-labs.ai",
     "license": "AGPL-3.0-only",
     "resources": [

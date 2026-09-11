@@ -38,6 +38,8 @@ import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { ModelPickerSkeleton } from '../layout/ViewSkeletons'
 import type { AIModel } from '../../types/models'
 import { MOTION_S } from '../ui/motion'
+import { ModelRowMarks } from './ModelRowMarks'
+import type { CloudModel as CloudModelMarks } from '../../types/models'
 
 // ── Local-mode cloud discovery (2.5.8): an "LU Cloud" section at the list's
 // tail. Signed-in accounts show their real hosted chat models (the appMode
@@ -1407,6 +1409,11 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                             {nameEnde && <span className="shrink-0">{nameEnde}</span>}
                           </span>
 
+                          {/* Marken aus dem Katalog: unzensiert gemessen, ohne
+                              Credits. Dasselbe Bauteil wie in der
+                              Webanwendung, damit beide Oberflaechen dasselbe
+                              sagen. */}
+                          <ModelRowMarks model={model as { flash?: CloudModelMarks['flash']; unfiltered?: CloudModelMarks['unfiltered'] }} />
                           {/* Subtle meta */}
                           {model.type !== 'text' && (
                             <span className={`text-[0.5rem] uppercase font-medium tracking-wide ${TYPE_COLOR[model.type] || 'text-gray-500'} opacity-60`}>

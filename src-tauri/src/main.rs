@@ -436,6 +436,7 @@ fn main() {
             commands::local_api::local_api_status,
             commands::local_api::local_api_new_token,
             commands::remote::start_remote_server,
+            commands::remote::revoke_remote_memory,
             commands::remote::stop_remote_server,
             commands::remote::restart_remote_server,
             commands::remote::remote_server_status,

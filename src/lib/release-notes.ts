@@ -31,6 +31,67 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  // ENTWURF. 3.0.0 ist nicht veroeffentlicht, package.json steht auf 2.6.9.
+  // Ein Eintrag fuer eine Version, die niemand ausfuehrt, zeigt kein Fenster:
+  // die Tabelle wird gegen die LAUFENDE Version gelesen. Der Eintrag steht
+  // trotzdem hier und nicht in einer Textdatei daneben, weil der Waechter in
+  // stores/__tests__/releaseNotesStore.test.ts nur hier prueft, ob eine
+  // Zusage im Text zur Wirklichkeit im Code passt.
+  {
+    version: '3.0.0',
+    headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
+    lines: [
+      '27 of the 46 cloud chat models answer without refusing. We asked every one of them, twice, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.',
+      'Twelve of those models cost no credits at all in chat on a paid plan, up to 500,000 input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.',
+      'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
+      'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so a finished image now has an Animate button that carries it straight over.',
+      'Sampling controls sit next to the prompt: temperature, top P, top K and answer length, collapsed until you want them. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
+    ],
+    details: [
+      {
+        title: 'Models and marks',
+        items: [
+          'Every cloud chat model was asked the same question twice and judged on what came back, not on whether it started with a refusal sentence. 27 of 46 answer in full. Four answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of.',
+          'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
+          'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number.',
+          'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
+        ],
+      },
+      {
+        title: 'Flash chat without credits',
+        items: [
+          'Twelve models run unmetered in chat inside the apps: GLM 5.3 Flash, DeepSeek V4 Flash 0731, Ling 3.0 flash, gpt-oss 120B, gpt-oss 20B, Gemma 4 26B, Gemma 4 31B Turbo, Qwen3 32B, Qwen 3.5 9B, Llama 3.3 70B Turbo, Llama 3.1 8B Turbo and Mistral Small 3.2 24B.',
+          'The ceiling is 500,000 input and output tokens per account per day, resetting at 00:00 UTC, one free request at a time. It went up tenfold from the 50,000 of the first version, where a working day ran out before lunch.',
+          'It is a paid-plan benefit. An account that has never paid keeps its starting credits and pays credits for Flash exactly like for any other model.',
+          'API keys always pay credits, including on these models. The unmetered path is the app, not the endpoint.',
+        ],
+      },
+      {
+        title: 'Content policy',
+        items: [
+          'The setting lives in your LU Cloud account and reads the same in the desktop app and in the browser, because it is one setting behind one route, not two copies.',
+          'Off requires an age confirmation in the same step, and the server stamps the time itself. Switching back to another option clears that confirmation, so re-opening it asks again.',
+          'Two lines no setting moves: material involving minors is refused on every request and reported, and you may not upload a photograph of a real, identifiable person without their consent.',
+          'The refusal message used to say cloud rendering cannot do this at all, which sent people to a local backend for something that was a setting. It now names the setting and where it is.',
+        ],
+      },
+      {
+        title: 'Prompt and sampling',
+        items: [
+          'Temperature, top P, top K and maximum answer length sit next to the model picker, collapsed, with the current temperature visible and one reset for all of them. Reasoning models accept these and react less to them, which the help line says instead of hiding the control.',
+          'The default persona had an empty system prompt. An empty prompt is not neutral: the model falls back to whatever its provider trained it to be, and that is where the refusals come from. It now states the role and nothing else, no content rule in either direction.',
+          'Chat, Agent and Coding all send that baseline now. The persona switch decides which PERSONA applies, not whether anything is sent at all.',
+        ],
+      },
+      {
+        title: 'Fixes',
+        items: [
+          'The agent can leave a workspace folder. There is an x on the folder pill, and the remembered default folder can be forgotten in the workspace dialog, which is what made changing the folder feel useless.',
+          'Models under 7B carry a plain warning in the catalogue and are no longer offered as a starting pick for chat.',
+        ],
+      },
+    ],
+  },
   {
     version: '2.6.9',
     headline: 'The navigation is back to the 2.6.7 layout, and updates work on every Linux install',

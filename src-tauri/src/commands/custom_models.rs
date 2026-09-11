@@ -120,8 +120,12 @@ pub(crate) fn yaml_path_line(key: &str, path: &Path) -> String {
 /// Where the generated file lives: beside the app's own models dir, never
 /// inside the user's ComfyUI folder.
 pub(crate) fn extra_model_paths_file() -> Result<PathBuf, String> {
+    #[cfg(not(test))]
     let base = dirs::data_dir().ok_or("Cannot resolve app data directory")?;
+    #[cfg(not(test))]
     let dir = base.join(crate::app_identity::APP_DISPLAY_DIR);
+    #[cfg(test)]
+    let dir = crate::os_paths::test_storage::display_data_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Create app data dir: {}", crate::os_error::english(&e)))?;
     Ok(dir.join("lu_extra_model_paths.yaml"))

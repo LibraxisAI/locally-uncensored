@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LU Cloud and Cerebras Code: historical plans and current API access</title>
+<meta name="description" content="A dated, source-linked comparison separating historical Cerebras Code plans from current API access and LU Cloud allowances.">
+<link rel="canonical" href="https://locallyuncensored.com/vs/cerebras-code/">
+<link rel="icon" href="/favicon.png">
+<link rel="stylesheet" href="/assets/lu.css">
+<style>.comparison-scroll{overflow-x:auto;max-width:100%}.comparison-scroll table{min-width:680px}.comparison-scroll th,.comparison-scroll td{vertical-align:top}.comparison-source{display:block;margin-top:12px;font-size:.85rem}</style>
+</head>
+<body>
+<main class="container lu-doc">
+<nav aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/alternatives/">Comparisons</a> / Cerebras Code</nav>
+<article>
+<h1>LU Cloud and Cerebras Code</h1>
+<p>Older Code subscription announcements and current inference API plans describe different offers. Do not assume an old plan is still available. This is not a performance benchmark or a price-per-token ranking.</p>
+<p>Checked <time datetime="2026-09-09">September 9, 2026</time>. Plans can change. Follow the sources and recheck before purchasing.</p>
+<p id="comparison-help">On a narrow screen, scroll the table horizontally to see both services. Keyboard users can focus the table and use the arrow keys, or tab to its source links.</p>
+<div class="comparison-scroll" role="region" aria-label="Plan and usage comparison" aria-describedby="comparison-help" tabindex="0">
+<table>
+<caption>Historical Code plans and current API facts</caption>
+<thead><tr><th scope="col">Question</th><th scope="col">Cerebras</th><th scope="col">LU Cloud</th></tr></thead>
+<tbody>
+<tr data-comparison-row><th scope="row">Code subscription status</th><td>The August 1, 2025 launch announced Code Pro at USD 50/month and Code Max at USD 200/month. These are historical launch prices, not a verified current offer. The current public pricing page lists inference API tiers instead; Code availability is not established by these sources.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://www.cerebras.ai/blog/introducing-cerebras-code">2025 Code announcement</a>; <a href="https://www.cerebras.ai/pricing">current Cerebras pricing</a></span></td><td>Credit packs start at EUR 5 for 165,000 credits without a subscription. Review the calculator for your workload; credit units from different services are not interchangeable.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://lu-labs.ai/pricing?src=luc">LU packs and calculator</a></span></td></tr>
+<tr data-comparison-row><th scope="row">Current API access</th><td>The current pricing page lists Free Trial, Developer and Enterprise, with self-serve Developer payments starting at USD 10. The API documentation requires a verified payment method for the USD 5 trial credits, which expire after 30 days. This is not a recurring free allowance.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://www.cerebras.ai/pricing">Cerebras API tiers</a>; <a href="https://inference-docs.cerebras.ai/support/rate-limits">trial conditions</a></span></td><td>Flash app sessions have a 500,000 combined input/output token allowance per account per day. Reservations that cannot fit follow the visible credit path. API keys use credits, including for Flash models; the free allowance does not apply to API keys.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://lu-labs.ai/pricing?src=luc">LU allowance and API billing</a></span></td></tr>
+<tr data-comparison-row><th scope="row">Request limits</th><td>Current API limits apply per organization and vary by model. Request, uncached-token and total-token limits can each constrain throughput. Developer PAYGO has no hourly or daily caps, but minute limits and the available budget still apply. Check your account's Limits section for its actual values.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://inference-docs.cerebras.ai/support/rate-limits">Cerebras API limit rules</a></span></td><td>The free Flash app-session path admits one request at a time per account. Paid request limits and model capabilities are published separately. Full native context for every model is not promised.<span class="comparison-source"><time datetime="2026-09-09">2026-09-09</time>: <a href="https://lu-labs.ai/pricing?src=luc">LU request limits and model capabilities</a></span></td></tr>
+</tbody>
+</table>
+</div>
+<h2>Confirm the offer before comparing workloads</h2>
+<p>This review does not verify Code checkout availability and does not establish that the plans are discontinued or sold out. Ask Cerebras to confirm any subscription you intend to buy. Old daily allowances are not a substitute for the current API limits in your account.</p>
+<p>Read <a href="/cloud/">LU's cloud capabilities and restrictions</a> before buying. Hosted requests leave your machine, and image and video generation have content restrictions. Local inference depends on your hardware and backend.</p>
+<p><a class="cta-btn" href="https://lu-labs.ai/pricing?tab=credits&amp;src=luc">Review LU packs and calculator</a></p>
+</article>
+</main>
+</body>
+</html>

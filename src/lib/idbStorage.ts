@@ -184,6 +184,53 @@ function emitWrite(key: string, value: string | null): void {
   }
 }
 
+/** Confirmed, atomic replacement for synchronization snapshots. Unlike the
+ * ordinary persist adapter, this never falls back or silently loses a write.
+ * Keep entries and their acknowledged revisions in the same serialized value.
+ * Callers must recheck account/local state after awaiting the commit. */
+export async function compareAndSetIdbItem(
+  key: string, expected: string | null, value: string, isCurrent: () => boolean,
+): Promise<boolean> {
+  const failure = () => new Error('Could not commit synchronized memory storage')
+  if (!hasIDB || !key || readFailed.has(key)) throw failure()
+  // A legacy copy must first pass through normal migration. Do not overwrite
+  // or remove it on the strength of an absent IndexedDB row.
+  if (lsGet(key) !== null) throw failure()
+  try {
+    const db = await getDB()
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite')
+      let written = false
+      const store = tx.objectStore(STORE)
+      const request = store.get(key)
+      request.onsuccess = () => {
+        try {
+          const actual: unknown = request.result
+          if (actual !== undefined && typeof actual !== 'string') {
+            tx.abort()
+            return
+          }
+          if ((actual ?? null) !== expected || readFailed.has(key) || lsGet(key) !== null || !isCurrent()) return
+          // No await between the predicate and put: account revocation and
+          // local edits cannot interleave this critical section.
+          store.put(value, key)
+          written = true
+        } catch {
+          tx.abort()
+        }
+      }
+      tx.oncomplete = () => {
+        if (written) emitWrite(key, value)
+        resolve(written)
+      }
+      tx.onerror = () => reject(failure())
+      tx.onabort = () => reject(failure())
+    })
+  } catch {
+    throw failure()
+  }
+}
+
 let _persistAsked = false
 function askPersist(): void {
   if (_persistAsked) return

@@ -17,6 +17,8 @@ export function cloudModelRow(pm: ProviderModel): CloudModel {
   return {
     name: prefixModelName(pm.provider, pm.id),
     model: pm.id,
+    flash: pm.flash,
+    unfiltered: pm.unfiltered,
     size: 0,
     type: 'text',
     provider: pm.provider,

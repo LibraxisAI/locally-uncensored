@@ -546,17 +546,21 @@ fn image_model_is_installed(entry: &ImageCatalogEntry) -> bool {
 /// at least one non-empty weights file. Scheduler/tokenizer entries are
 /// config-only and skipped.
 fn snapshot_is_complete(snap: &std::path::Path) -> bool {
+    snapshot_problem(snap).is_none()
+}
+
+fn snapshot_problem(snap: &std::path::Path) -> Option<String> {
     let index = snap.join("model_index.json");
     let Ok(raw) = std::fs::read_to_string(&index) else {
-        return false;
+        return Some("model_index.json is missing or unreadable".into());
     };
     let Ok(json) = serde_json::from_str::<Value>(&raw) else {
-        return false;
+        return Some("model_index.json contains invalid JSON".into());
     };
     let Some(map) = json.as_object() else {
-        return false;
+        return Some("model_index.json must contain an object".into());
     };
-    map.iter()
+    for (component, _) in map.iter()
         .filter(|(k, _)| !k.starts_with('_'))
         // Only real component references count: a ["lib", "Class"] pair.
         // Manifests also carry scalars (requires_safety_checker: true) and
@@ -570,18 +574,46 @@ fn snapshot_is_complete(snap: &std::path::Path) -> bool {
                 || class.contains("Processor")
                 || class.contains("FeatureExtractor"))
         })
-        .all(|(component, _)| {
-            let dir = snap.join(component);
-            let Ok(read) = std::fs::read_dir(&dir) else {
-                return false;
-            };
-            read.flatten().any(|f| {
-                let p = f.path();
-                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                (ext == "safetensors" || ext == "bin")
-                    && f.metadata().map(|m| m.len() > 0).unwrap_or(false)
-            })
-        })
+    {
+        // Reject traversal, platform separators, control characters and alternate streams.
+        if component.is_empty()
+            || !component.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Some("model_index.json contains an invalid component path".into());
+        }
+        let dir = snap.join(component);
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            return Some(format!("{component}/ is missing or unreadable"));
+        };
+        let has_weights = read.flatten().any(|f| {
+            let p = f.path();
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            (ext == "safetensors" || ext == "bin")
+                && f.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false)
+        });
+        if !has_weights {
+            return Some(format!("{component}/ has no readable, non-empty .safetensors or .bin weights file"));
+        }
+    }
+    None
+}
+
+fn image_model_incomplete_message(entry: &ImageCatalogEntry) -> String {
+    snapshot_cache_incomplete_message(&image_model_cache_dir(entry.repo).join("snapshots"))
+}
+
+fn snapshot_cache_incomplete_message(snapshots: &std::path::Path) -> String {
+    let mut paths: Vec<_> = std::fs::read_dir(snapshots)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    paths.sort();
+    let detail = paths.iter().find_map(|path| snapshot_problem(path))
+        .unwrap_or_else(|| "no readable model snapshot was found".into());
+    format!("Model installation did not finish: {detail}. Retry the download to repair the missing files.")
 }
 
 pub fn mlx_image_models(_state: &AppState, _args: &Value) -> CmdResult {
@@ -679,7 +711,7 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
         if let Err(e) = crate::commands::video::run_streamed(&slot2, &mut cmd) {
             slot2.fail(e);
         } else if !image_model_is_installed(&entry2) {
-            slot2.fail("download finished but the model snapshot is incomplete");
+            slot2.fail(image_model_incomplete_message(&entry2));
         } else {
             slot2.complete(format!("{} installed", entry2.id));
         }
@@ -1014,6 +1046,49 @@ mod tests {
         // Scheduler and tokenizer are config-only and must not be required
         // to carry weights (they never do).
         let _ = std::fs::remove_dir_all(&snap);
+    }
+
+    #[test]
+    fn snapshot_diagnostic_names_manifest_and_missing_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
+        assert_eq!(snapshot_problem(snap).as_deref(), Some("model_index.json is missing or unreadable"));
+        std::fs::write(snap.join("model_index.json"), "{").unwrap();
+        assert_eq!(snapshot_problem(snap).as_deref(), Some("model_index.json contains invalid JSON"));
+        std::fs::write(snap.join("model_index.json"), "[]").unwrap();
+        assert_eq!(snapshot_problem(snap).as_deref(), Some("model_index.json must contain an object"));
+        std::fs::write(snap.join("model_index.json"), r#"{"unet":["diffusers","UNet2DConditionModel"]}"#).unwrap();
+        assert_eq!(snapshot_problem(snap).as_deref(), Some("unet/ is missing or unreadable"));
+        std::fs::create_dir(snap.join("unet")).unwrap();
+        std::fs::create_dir(snap.join("unet/fake.safetensors")).unwrap();
+        assert_eq!(snapshot_problem(snap).as_deref(), Some("unet/ has no readable, non-empty .safetensors or .bin weights file"));
+        std::fs::write(snap.join("unet/model.safetensors"), b"").unwrap();
+        assert!(snapshot_problem(snap).is_some());
+        std::fs::write(snap.join("unet/model.safetensors"), b"fixture").unwrap();
+        assert_eq!(snapshot_problem(snap), None);
+    }
+
+    #[test]
+    fn snapshot_diagnostic_rejects_manifest_path_traversal_without_echoing_it() {
+        let temp = tempfile::tempdir().unwrap();
+        for component in ["../outside", "..\\outside", "/outside", "a/b", "a\\b", "line\nbreak", "a:stream", ".. "] {
+            let manifest = json!({component: ["diffusers", "UNet2DConditionModel"]});
+            std::fs::write(temp.path().join("model_index.json"), manifest.to_string()).unwrap();
+            assert_eq!(snapshot_problem(temp.path()).as_deref(), Some("model_index.json contains an invalid component path"));
+            assert!(!snapshot_is_complete(temp.path()));
+        }
+    }
+
+    #[test]
+    fn snapshot_cache_diagnostic_reaches_the_install_error_without_private_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(snapshot_cache_incomplete_message(temp.path()),
+            "Model installation did not finish: no readable model snapshot was found. Retry the download to repair the missing files.");
+        std::fs::create_dir(temp.path().join("revision")).unwrap();
+        let message = snapshot_cache_incomplete_message(temp.path());
+        assert_eq!(message,
+            "Model installation did not finish: model_index.json is missing or unreadable. Retry the download to repair the missing files.");
+        assert!(!message.contains(temp.path().to_str().unwrap()));
     }
 
     #[test]

@@ -89,7 +89,13 @@ describe('the appData backup covers every persisted store', () => {
       // imported idbStorage with double quotes was invisible to this check and
       // could go on being backed up out of a localStorage key the 2.5.0
       // migration had already deleted.
-      const backedByIdb = /from\s+["']\.\.\/lib\/idbStorage(\.js)?["']/.test(src)
+      const usesMemoryQueue = /from\s+["']\.\.\/lib\/memory-persistence(\.js)?["']/.test(src)
+      const queueSource = usesMemoryQueue ? readFileSync(join(HERE, '../memory-persistence.ts'), 'utf8') : ''
+      // Follow the memory queue to its real backend. Do not exempt its key
+      // from either side of the backup coverage assertion.
+      const backedByIdb = /from\s+["']\.\.\/lib\/idbStorage(\.js)?["']/.test(src) ||
+        (usesMemoryQueue && /from\s+["']\.\/idbStorage["']/.test(queueSource) &&
+          /idbStorage\.setItem\(/.test(queueSource) && /idbStorage\.getItem\(/.test(queueSource))
       for (const name of names) {
         if (backedByIdb && !IDB_STORE_KEYS.has(name)) wrong.push(`${file}: ${name} is on IndexedDB but not in IDB_STORE_KEYS`)
         if (!backedByIdb && IDB_STORE_KEYS.has(name)) wrong.push(`${file}: ${name} is in IDB_STORE_KEYS but not on IndexedDB`)

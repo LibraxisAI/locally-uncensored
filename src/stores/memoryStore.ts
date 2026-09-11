@@ -3,13 +3,15 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
 import type { MemoryCategory, MemoryFile, MemoryType, MemorySettings, MemoryBudgetTier } from '../types/agent-mode'
 import { MEMORY_MIGRATION_MAP, MEMORY_BUDGET_TIERS } from '../types/agent-mode'
-import { idbStorage } from '../lib/idbStorage'
+import { memoryPersistence } from '../lib/memory-persistence'
 import { generateEmbeddings } from '../api/rag'
 import { saveVector, loadVectors, deleteVector, clearAll as clearAllVectors, type MemoryVectorRecord } from '../lib/memoryEmbedDB'
 import { scoreMemoriesBlended, isStale, type BlendCandidate } from '../lib/memory-retrieval'
 import type { ResolutionDecision } from '../lib/memory-extraction'
 import { isRecord, prop, asString, asNumber, asStringArray } from '../types/json-guards'
 import { log } from '../lib/logger'
+import { useCloudAuthStore } from './cloudAuthStore'
+import type { MemorySyncBaseline } from '../lib/memory-sync-plan'
 
 // ── Embedding model + dim (mirrors rag.ts default) ────────────────
 const MEMORY_EMBED_MODEL = 'nomic-embed-text'
@@ -32,6 +34,10 @@ function embedText(m: Pick<MemoryFile, 'title' | 'content'>): string {
 
 // ── Injection options ──────────────────────────────────────────────
 export interface MemoryInjectOpts {
+  /** Internal selection observer, after filtering and the final render budget. */
+  onInjected?: (ids: readonly string[]) => void
+  /** A scoped memory is eligible only for this exact nonempty project ID. */
+  scope?: string
   /**
    * Drop memories that are raw TOOL RESULTS (extracted from agent sessions as
    * "web_search result: web_search({...}) → …"). Injected into a PLAIN chat
@@ -55,6 +61,11 @@ export function isToolResultMemory(m: Pick<MemoryFile, 'title' | 'content'>): bo
   const probe = `${m.title || ''}\n${m.content || ''}`
   return /\b[a-z][a-z0-9_]* result:/i.test(probe)
 }
+
+export function memoryMatchesScope(memory: Pick<MemoryFile, 'scope'>, scope?: string): boolean {
+  return memory.scope === undefined ||
+    (typeof memory.scope === 'string' && memory.scope.trim().length > 0 && memory.scope === scope)
+}
 function hashContent(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i)
@@ -67,10 +78,17 @@ function hashContent(s: string): string {
  * Skips when the existing stored vector already matches the content hash.
  */
 async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'content'>): Promise<void> {
+  const collectionRevision = useMemoryStore.getState().memoryCollectionRevision
   try {
     const text = embedText(entry)
     const contentHash = hashContent(text)
+    const isCurrent = () => {
+      const current = useMemoryStore.getState().entries.find((item) => item.id === entry.id)
+      return useMemoryStore.getState().memoryCollectionRevision === collectionRevision &&
+        !!current && !current.sensitive && !isStale(current) && embedText(current) === text
+    }
     const existing = await loadVectors([entry.id])
+    if (!isCurrent()) return
     const prior = existing.get(entry.id)
     if (prior && prior.contentHash === contentHash && prior.model === MEMORY_EMBED_MODEL) return
     const [vector] = await _embedFn([text])
@@ -81,7 +99,7 @@ async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'conten
       vector,
       contentHash,
     }
-    await saveVector(entry.id, record)
+    await saveVector(entry.id, record, isCurrent)
   } catch {
     // Embedding is best-effort — retrieval falls back to keyword scoring.
   }
@@ -205,8 +223,15 @@ export const MEMORY_CONTEXT_TOKEN_CAP = 1000
  * injection site (useChat, useAgentChat, useCodex, the remote dispatcher)
  * inherits it and none of them can drift.
  */
-function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number): string {
-  if (ordered.length === 0) return ''
+export interface MemoryContext {
+  text: string
+  memoryIds: string[]
+  /** Absent for the local collection. Captured together with selected IDs. */
+  owner?: string
+}
+
+export function renderMemoryContext(ordered: MemoryFile[], budgetTokens: number): MemoryContext {
+  if (ordered.length === 0) return { text: '', memoryIds: [] }
   const cappedTokens = Math.min(budgetTokens, MEMORY_CONTEXT_TOKEN_CAP)
 
   // Group by type for structured output (preserve incoming order within type).
@@ -217,6 +242,7 @@ function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number): s
 
   const maxChars = cappedTokens * 4
   let result = ''
+  const memoryIds: string[] = []
 
   for (const type of TYPE_ORDER) {
     const items = grouped[type]
@@ -231,25 +257,40 @@ function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number): s
       const line = `- ${item.title}: ${sanitized}\n`
       if (result.length + line.length > maxChars) break
       result += line
+      memoryIds.push(item.id)
     }
     result += '\n'
   }
 
-  if (!result.trim()) return ''
-  return `<remembered_context>\n${result.trim()}\n</remembered_context>`
+  if (memoryIds.length === 0) return { text: '', memoryIds: [] }
+  return { text: `<remembered_context>\n${result.trim()}\n</remembered_context>`, memoryIds }
+}
+
+function renderRememberedContext(ordered: MemoryFile[], budgetTokens: number, onInjected?: MemoryInjectOpts['onInjected']): string {
+  const context = renderMemoryContext(ordered, budgetTokens)
+  onInjected?.(context.memoryIds)
+  return context.text
 }
 
 // ── Store Interface ───────────────────────────────────────────
 
 interface MemoryState {
   entries: MemoryFile[]
+  localEntries: MemoryFile[]
+  accountCollections: Record<string, MemoryFile[]>
+  memorySyncBaselines: Record<string, Record<string, MemorySyncBaseline>>
+  memorySyncPending: Record<string, Record<string, MemorySyncBaseline>>
+  activeMemoryOwner: string | null
+  memoryCollectionRevision: number
+  selectMemoryCollection: (owner: string | null) => boolean
   settings: MemorySettings
   lastSynced: number
 
   // CRUD
   addMemory: (memory: Omit<MemoryFile, 'id' | 'createdAt' | 'updatedAt'>) => string
-  updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags'>>) => void
+  updateMemory: (id: string, updates: Partial<Pick<MemoryFile, 'title' | 'description' | 'content' | 'type' | 'tags' | 'sensitive' | 'scope'>>) => void
   removeMemory: (id: string) => void
+  confirmMemory: (id: string) => void
   clearAll: () => void
 
   // Search & Inject
@@ -257,6 +298,7 @@ interface MemoryState {
   getMemoriesForPrompt: (query: string, contextTokens: number, opts?: MemoryInjectOpts) => string
   /** Embedding-first retrieval; falls back to getMemoriesForPrompt on any error. */
   getMemoriesForPromptAsync: (query: string, contextTokens: number, opts?: MemoryInjectOpts) => Promise<string>
+  getMemoryContextAsync: (query: string, contextTokens: number, opts?: MemoryInjectOpts) => Promise<MemoryContext>
 
   // Write-decision + embedding maintenance (Feature FF)
   applyWriteDecision: (decision: ResolutionDecision, ctx?: { newId?: string }) => void
@@ -371,6 +413,7 @@ function migrateV2toV3(oldState: unknown): unknown {
  */
 function asMemoryFile(v: unknown): MemoryFile | null {
   if (!isRecord(v)) return null
+  if (v.scope !== undefined && (typeof v.scope !== 'string' || !v.scope.trim())) return null
   const content = asString(v.content)
   if (!content) return null
   const now = Date.now()
@@ -385,6 +428,10 @@ function asMemoryFile(v: unknown): MemoryFile | null {
     createdAt: asNumber(v.createdAt) ?? now,
     updatedAt: asNumber(v.updatedAt) ?? asNumber(v.createdAt) ?? now,
     source: asString(v.source) ?? 'migration',
+    sourceKind: v.sourceKind === 'chat' || v.sourceKind === 'voice' || v.sourceKind === 'screen' ? v.sourceKind : undefined,
+    confirmedAt: typeof v.confirmedAt === 'number' && Number.isFinite(v.confirmedAt) && v.confirmedAt > 0 && v.confirmedAt <= now ? v.confirmedAt : undefined,
+    sensitive: v.sensitive === true,
+    scope: asString(v.scope),
     supersededBy: asString(v.supersededBy),
     supersedesId: asString(v.supersedesId),
     stale: v.stale === true,
@@ -393,6 +440,25 @@ function asMemoryFile(v: unknown): MemoryFile | null {
 }
 
 const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference']
+
+/** Local account collections retain valid local records, including records
+ * larger than the cloud protocol permits. Upload validation is separate. */
+function readAccountMemory(raw: unknown): MemoryFile {
+  const invalid = () => new Error('Could not open this memory collection')
+  if (!isRecord(raw) || !['id', 'title', 'description', 'content', 'source'].every(key => typeof raw[key] === 'string') ||
+    !raw.id || !(raw.content as string).trim() || !MEMORY_TYPES.some(type => type === raw.type) ||
+    !Array.isArray(raw.tags) || !raw.tags.every(tag => typeof tag === 'string') ||
+    !['createdAt', 'updatedAt'].every(key => typeof raw[key] === 'number' && Number.isFinite(raw[key]))) throw invalid()
+  for (const key of ['sensitive', 'stale']) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw invalid()
+  for (const key of ['scope', 'supersededBy', 'supersedesId']) {
+    if (raw[key] !== undefined && (typeof raw[key] !== 'string' || !raw[key].trim())) throw invalid()
+  }
+  for (const key of ['confirmedAt', 'validFrom']) {
+    if (raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isFinite(raw[key]))) throw invalid()
+  }
+  if (raw.sourceKind !== undefined && !['chat', 'voice', 'screen'].some(kind => kind === raw.sourceKind)) throw invalid()
+  return { ...raw, tags: [...raw.tags] } as unknown as MemoryFile
+}
 
 /**
  * The persist `migrate` hook. Exported so a test can drive it directly — the
@@ -468,6 +534,34 @@ export const useMemoryStore = create<MemoryState>()(
   persist(
     (set, get) => ({
       entries: [],
+      localEntries: [],
+      accountCollections: {},
+      memorySyncBaselines: {},
+      memorySyncPending: {},
+      activeMemoryOwner: null,
+      memoryCollectionRevision: 0,
+      selectMemoryCollection: (owner) => {
+        if (!useMemoryStore.persist.hasHydrated()) return false
+        const state = get()
+        const auth = useCloudAuthStore.getState()
+        if (owner !== null && (auth.status !== 'signed-in' || auth.user?.id !== owner)) return false
+        if (owner === state.activeMemoryOwner) return true
+        const collections = { ...state.accountCollections }
+        if (state.activeMemoryOwner !== null) collections[state.activeMemoryOwner] = state.entries
+        const local = state.activeMemoryOwner === null ? state.entries : state.localEntries
+        let entries = local
+        if (owner !== null) {
+          const stored: unknown = Object.hasOwn(collections, owner) ? collections[owner] : []
+          // Preserve unreadable collections unchanged rather than hydrating
+          // them as empty and later overwriting their data.
+          if (!Array.isArray(stored)) return false
+          try { entries = stored.map(readAccountMemory) } catch { return false }
+          if (new Set(entries.map(entry => entry.id)).size !== entries.length) return false
+        }
+        set({ entries, localEntries: local, accountCollections: collections,
+          activeMemoryOwner: owner, memoryCollectionRevision: state.memoryCollectionRevision + 1 })
+        return true
+      },
       settings: {
         autoExtractEnabled: true,
         autoExtractInAllModes: true,
@@ -479,12 +573,13 @@ export const useMemoryStore = create<MemoryState>()(
       // ── CRUD ────────────────────────────────────────────────
 
       addMemory: (memory) => {
+        if (memory.scope !== undefined && !memory.scope.trim()) return ''
         const trimmedContent = memory.content.trim()
         if (!trimmedContent) return ''
 
         // Deduplicate: don't add if exact same content + type exists
         const existing = get().entries
-        if (existing.some(e => e.content === trimmedContent && e.type === memory.type)) return ''
+        if (existing.some(e => e.content === trimmedContent && e.type === memory.type && e.scope === memory.scope)) return ''
 
         const id = uuid()
         set((state) => ({
@@ -506,17 +601,27 @@ export const useMemoryStore = create<MemoryState>()(
       },
 
       updateMemory: (id, updates) => {
+        if (updates.scope !== undefined && !updates.scope.trim()) return
         set((state) => ({
           entries: state.entries.map((e) =>
-            e.id === id ? { ...e, ...updates, updatedAt: Date.now() } : e
+            e.id === id ? { ...e, ...updates, updatedAt: Date.now(),
+              confirmedAt: Object.keys(updates).some(key => key !== 'sensitive' && Reflect.get(e, key) !== Reflect.get(updates, key)) ? undefined : e.confirmedAt,
+            } : e
           ),
           lastSynced: Date.now(),
         }))
+        if (updates.sensitive === true) void deleteVector(id)
         // Re-embed when title/content changed (hashContent skips a no-op).
         if (updates.title !== undefined || updates.content !== undefined) {
           const updated = get().entries.find((e) => e.id === id)
           if (updated) void enqueueEmbedding({ id, title: updated.title, content: updated.content })
         }
+      },
+
+      confirmMemory: (id) => {
+        const now = Date.now()
+        set(state => ({ entries: state.entries.map(entry => entry.id === id && !isStale(entry)
+          ? { ...entry, confirmedAt: now, updatedAt: now } : entry), lastSynced: now }))
       },
 
       removeMemory: (id) => {
@@ -567,7 +672,7 @@ export const useMemoryStore = create<MemoryState>()(
         if (budget.budgetTokens === 0 || budget.maxMemories === 0) return ''
 
         const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2)
-        let candidates = get().entries.filter(e => !isStale(e))
+        let candidates = get().entries.filter(e => !e.sensitive && !isStale(e) && memoryMatchesScope(e, opts?.scope))
         if (opts?.excludeToolResults) {
           candidates = candidates.filter(e => !isToolResultMemory(e))
         }
@@ -585,7 +690,7 @@ export const useMemoryStore = create<MemoryState>()(
           .slice(0, budget.maxMemories)
           .map(({ entry }) => entry)
 
-        return renderRememberedContext(ordered, budget.budgetTokens)
+        return renderRememberedContext(ordered, budget.budgetTokens, opts?.onInjected)
       },
 
       // ── Context-Aware Prompt Injection (async, embedding-first) ──
@@ -597,8 +702,23 @@ export const useMemoryStore = create<MemoryState>()(
       // (Ollama unreachable, nomic missing, IDB absent, dim mismatch) falls
       // back to the keyword result. Offline correctness invariant: this never
       // returns empty/incorrect when the sync path would have returned text.
+      getMemoryContextAsync: async (query, contextTokens, opts) => {
+        const collectionRevision = get().memoryCollectionRevision
+        const owner = get().activeMemoryOwner
+        let memoryIds: string[] = []
+        const text = await get().getMemoriesForPromptAsync(query, contextTokens, {
+          ...opts, onInjected: ids => { memoryIds = [...ids] },
+        })
+        return get().memoryCollectionRevision === collectionRevision
+          ? { text, memoryIds, ...(owner === null ? {} : { owner }) } : { text: '', memoryIds: [] }
+      },
+
       getMemoriesForPromptAsync: async (query, contextTokens, opts) => {
-        const fallback = () => get().getMemoriesForPrompt(query, contextTokens, opts)
+        const requestOpts = opts ? { ...opts } : undefined
+        const collectionRevision = get().memoryCollectionRevision
+        const fallback = () => get().memoryCollectionRevision === collectionRevision
+          ? get().getMemoriesForPrompt(query, contextTokens, requestOpts) : ''
+        const snapshot = get().entries
         try {
           const budget = effectiveMemoryBudget(contextTokens, get().settings.maxMemoriesOverride)
           // No-op cases (no budget, no candidates, empty query) must return
@@ -607,8 +727,8 @@ export const useMemoryStore = create<MemoryState>()(
           // stubbed sync method in tests is honoured).
           if (budget.budgetTokens === 0 || budget.maxMemories === 0) return fallback()
 
-          let candidates = get().entries.filter(e => !isStale(e))
-          if (opts?.excludeToolResults) {
+          let candidates = get().entries.filter(e => !e.sensitive && !isStale(e) && memoryMatchesScope(e, requestOpts?.scope))
+          if (requestOpts?.excludeToolResults) {
             candidates = candidates.filter(e => !isToolResultMemory(e))
           }
           if (budget.typesAllowed !== 'all') {
@@ -629,6 +749,9 @@ export const useMemoryStore = create<MemoryState>()(
           // Hydrate candidate vectors into a hot Map. dim-mismatched vectors
           // are dropped here (scorer also guards) → treated as keyword-only.
           const vecMap = await loadVectors(candidates.map(c => c.id))
+          // Do not inject a deleted, edited or superseded snapshot after
+          // asynchronous work. Recompute from the current store instead.
+          if (get().entries !== snapshot) return fallback()
           const blendCandidates: BlendCandidate[] = candidates.map((memory) => {
             const rec = vecMap.get(memory.id)
             const vector = rec && rec.dim === queryVec.length ? rec.vector : null
@@ -651,7 +774,7 @@ export const useMemoryStore = create<MemoryState>()(
           // it CAN still catch is an entry whose embedding is missing or bad.
           if (ordered.length === 0) return fallback()
 
-          return renderRememberedContext(ordered, budget.budgetTokens)
+          return renderRememberedContext(ordered, budget.budgetTokens, requestOpts?.onInjected)
         } catch {
           return fallback()
         }
@@ -676,7 +799,9 @@ export const useMemoryStore = create<MemoryState>()(
         const { targetId, mergedContent } = decision
         if (!targetId || !mergedContent) return
         const target = get().entries.find((e) => e.id === targetId)
-        if (!target) return
+        if (!target || target.sensitive) return
+        const candidate = ctx?.newId ? get().entries.find(e => e.id === ctx.newId) : undefined
+        if (target.scope !== candidate?.scope) return
 
         const merged = mergedContent.trim()
         if (!merged) return
@@ -688,6 +813,7 @@ export const useMemoryStore = create<MemoryState>()(
               return {
                 ...e,
                 content: merged,
+                confirmedAt: undefined,
                 description: merged.substring(0, 120),
                 updatedAt: now,
                 validFrom: now,
@@ -724,7 +850,7 @@ export const useMemoryStore = create<MemoryState>()(
       ensureMemoryEmbeddings: async (batchSize = 8) => {
         let embedded = 0
         try {
-          const entries = get().entries.filter((e) => !isStale(e))
+          const entries = get().entries.filter((e) => !e.sensitive && !isStale(e))
           if (entries.length === 0) return 0
           const ids = entries.map((e) => e.id)
           const existing = await loadVectors(ids)
@@ -759,7 +885,7 @@ export const useMemoryStore = create<MemoryState>()(
       // ── Export / Import ─────────────────────────────────────
 
       exportAsMarkdown: () => {
-        const entries = get().entries
+        const entries = get().entries.filter(e => !e.sensitive && e.scope === undefined)
         if (entries.length === 0) return '# Memory\n\nNo entries yet.\n'
 
         const typeOrder: MemoryType[] = ['user', 'feedback', 'project', 'reference']
@@ -862,17 +988,28 @@ export const useMemoryStore = create<MemoryState>()(
           : []
         const now = Date.now()
         const newEntries: MemoryFile[] = []
+        const importedIds = new Map<string, string | null>()
+        const history: Array<{ supersededBy?: string; supersedesId?: string }> = []
         for (const e of arr) {
+          const scope = prop(e, 'scope')
+          if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) continue
           // `content` may also arrive as `text` / `value` — a foreign export's
           // spelling. Only a real string counts: the old String(...) turned an
           // object into the literal "[object Object]" and imported that.
           const content = (asString(prop(e, 'content')) ?? asString(prop(e, 'text')) ?? asString(prop(e, 'value')) ?? '').trim()
           if (!content) continue
           const type = MEMORY_TYPES.find((t) => t === prop(e, 'type')) ?? 'user'
+          const sourceKind = prop(e, 'sourceKind')
+          const confirmedAt = prop(e, 'confirmedAt')
+          const id = uuid()
+          const originalId = asString(prop(e, 'id'))
+          if (originalId) importedIds.set(originalId, importedIds.has(originalId) ? null : id)
+          const supersededBy = asString(prop(e, 'supersededBy'))
+          history.push({ supersededBy, supersedesId: asString(prop(e, 'supersedesId')) })
           newEntries.push({
             // Always mint a fresh id so a re-imported export can never collide
             // with an existing entry's id (which broke edit/remove-by-id).
-            id: uuid(),
+            id,
             type,
             title: (asString(prop(e, 'title')) ?? content).slice(0, 60).replace(/\n/g, ' '),
             description: (asString(prop(e, 'description')) ?? content).slice(0, 120),
@@ -881,8 +1018,22 @@ export const useMemoryStore = create<MemoryState>()(
             createdAt: asNumber(prop(e, 'createdAt')) ?? now,
             updatedAt: now,
             source: asString(prop(e, 'source')) ?? 'import',
+            sourceKind: sourceKind === 'chat' || sourceKind === 'voice' || sourceKind === 'screen' ? sourceKind : undefined,
+            confirmedAt: typeof confirmedAt === 'number' && Number.isFinite(confirmedAt) && confirmedAt > 0 && confirmedAt <= now ? confirmedAt : undefined,
+            sensitive: prop(e, 'sensitive') === true,
+            scope: asString(scope),
+            // A missing replacement must not reactivate an outdated fact.
+            stale: prop(e, 'stale') === true || supersededBy !== undefined,
+            validFrom: asNumber(prop(e, 'validFrom')),
           })
         }
+        // References may only bind to unique IDs in this imported batch,
+        // never to existing local entries or an ambiguous duplicate ID.
+        newEntries.forEach((entry, index) => {
+          const links = history[index]
+          entry.supersededBy = links.supersededBy ? importedIds.get(links.supersededBy) ?? undefined : undefined
+          entry.supersedesId = links.supersedesId ? importedIds.get(links.supersedesId) ?? undefined : undefined
+        })
         if (newEntries.length > 0) {
           set((state) => ({
             entries: [...state.entries, ...newEntries],
@@ -926,13 +1077,38 @@ export const useMemoryStore = create<MemoryState>()(
       // shouldn't be capped at ~5 MB; idb is disk-backed and migrates existing
       // localStorage data on first read. createJSONStorage wrap still required
       // (zustand v5 PersistStorage; raw StateStorage → "[object Object]", FIX-3).
-      storage: createJSONStorage(() => idbStorage),
+      storage: createJSONStorage(() => memoryPersistence),
       migrate: migrateMemoryState,
+      merge: (persisted, current) => {
+        const saved = isRecord(persisted) ? persisted : {}
+        const local = current.activeMemoryOwner === null ? current.entries : current.localEntries
+        const collections = current.activeMemoryOwner === null ? current.accountCollections
+          : { ...current.accountCollections, [current.activeMemoryOwner]: current.entries }
+        return { ...current, ...saved,
+          // Never expose an account collection during session restoration.
+          // Selection is explicit and checked against the signed-in owner.
+          entries: Array.isArray(saved.entries) ? saved.entries : local,
+          localEntries: Array.isArray(saved.entries) ? saved.entries : local,
+          accountCollections: isRecord(saved.accountCollections) ? saved.accountCollections : collections,
+          activeMemoryOwner: null,
+          memoryCollectionRevision: current.memoryCollectionRevision + 1,
+        } as MemoryState
+      },
       partialize: (state) => ({
-        entries: state.entries,
+        entries: state.activeMemoryOwner === null ? state.entries : state.localEntries,
+        accountCollections: state.activeMemoryOwner === null ? state.accountCollections
+          : { ...state.accountCollections, [state.activeMemoryOwner]: state.entries },
+        memorySyncBaselines: state.memorySyncBaselines,
+        memorySyncPending: state.memorySyncPending,
         settings: state.settings,
         lastSynced: state.lastSynced,
       }),
     }
   )
 )
+
+useCloudAuthStore.subscribe((state, previous) => {
+  if (state.status !== previous.status || state.user?.id !== previous.user?.id) {
+    useMemoryStore.getState().selectMemoryCollection(null)
+  }
+})

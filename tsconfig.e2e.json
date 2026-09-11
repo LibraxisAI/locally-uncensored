@@ -27,6 +27,7 @@
     "target": "ES2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
+    "jsx": "react-jsx",
     /* `node` fuer process.env in playwright.config.ts, `vite/client` fuer die
        src-Dateien, die die Spezifikationen mitziehen. */
     "types": ["node", "vite/client"],
@@ -50,5 +51,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["e2e", "playwright.config.ts"]
+  "include": ["e2e", "playwright.config.ts", "src/types/react-syntax-highlighter.d.ts"]
 }

@@ -164,6 +164,14 @@ export interface MemoryFile {
   createdAt: number
   updatedAt: number
   source: string      // conversationId | 'manual' | 'auto:extraction'
+  /** Input modality, separate from the legacy source conversation ID. */
+  sourceKind?: 'chat' | 'voice' | 'screen'
+  /** Explicit user review time; cleared when the remembered fact changes. */
+  confirmedAt?: number
+  /** User-marked sensitive entries stay out of AI requests and embeddings. */
+  sensitive?: boolean
+  /** Stable project ID. Undefined retains legacy global memory behavior. */
+  scope?: string
   // ── Staleness / supersession (Feature FF, v2.5.0) ─────────────
   // All OPTIONAL so pre-v2.5 persisted memories rehydrate unchanged; the
   // store's migrate() leaves them undefined and the retrieval layer treats

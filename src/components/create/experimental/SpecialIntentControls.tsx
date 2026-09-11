@@ -362,7 +362,7 @@ function LocalTrainControls() {
             {busy === 'install' ? 'Setting up…' : 'Set up trainer'}
           </Button>
         </div>
-        {note && <div className="t-label text-gray-600 max-w-[520px] text-center break-words">{note}</div>}
+        {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
   }
@@ -375,7 +375,7 @@ function LocalTrainControls() {
             {busy === 'bases' ? 'Downloading…' : 'Download base files'}
           </Button>
         </div>
-        {note && <div className="t-label text-gray-600 max-w-[520px] text-center break-words">{note}</div>}
+        {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
   }
@@ -421,6 +421,7 @@ function LocalTrainControls() {
           </button>
         </div>
       )}
+      {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
     </div>
   )
 }

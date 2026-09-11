@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { Brain, Download, Upload, Trash2, Search, Plus, X, Check, Pencil, Zap, FileJson, Archive, Sparkles } from 'lucide-react'
 import { useMemoryStore, effectiveMemoryBudget } from '../../stores/memoryStore'
+import { useRemoteStore } from '../../stores/remoteStore'
 import { useModelStore } from '../../stores/modelStore'
+import { useChatStore, persistConversationMemoryScope } from '../../stores/chatStore'
 import { getModelMaxTokens } from '../../lib/context-compaction'
 // Eine Schreibweise fuer jedes Kontextfenster. Hier stand zweimal
 // `Math.round(ctx / 1024)}K`, eine eigene Rechnung: bei 32000 Token sagte
@@ -9,6 +11,8 @@ import { getModelMaxTokens } from '../../lib/context-compaction'
 import { formatContextWindow } from '../../lib/formatters'
 import { GlowButton } from '../ui/GlowButton'
 import type { MemoryType, MemoryFile } from '../../types/agent-mode'
+import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { synchronizeMemoryCollection, type MemorySyncResolution } from '../../lib/memory-sync'
 
 // ── Subtle type indicator (internal, not user-facing) ─────────
 
@@ -27,6 +31,29 @@ const TYPE_DOT_COLORS: Record<MemoryType, string> = {
 // ── Component ─────────────────────────────────────────────────
 
 export function MemorySettings() {
+  const revision = useMemoryStore(state => state.memoryCollectionRevision)
+  return <MemorySettingsPanel key={revision} />
+}
+
+function MemorySettingsPanel() {
+  const [syncConsent, setSyncConsent] = useState(false)
+  const [sensitiveSyncConsent, setSensitiveSyncConsent] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const syncController = useRef<AbortController | null>(null)
+  useEffect(() => () => {
+    const controller = syncController.current
+    syncController.current = null
+    controller?.abort()
+  }, [])
+  const [syncMessage, setSyncMessage] = useState('')
+  const [syncConflicts, setSyncConflicts] = useState<Awaited<ReturnType<typeof synchronizeMemoryCollection>>['conflicts']>([])
+  const owner = useCloudAuthStore(state => state.status === 'signed-in' ? state.user?.id : undefined)
+  const activeOwner = useMemoryStore(state => state.activeMemoryOwner)
+  const [collectionError, setCollectionError] = useState(false)
+  const remoteMemoryNotice = useRemoteStore(s => s.memoryNotice)
+  const conversation = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId))
+  const [savedProject, setSavedProject] = useState<string | null>(null)
+  const [projectSaveError, setProjectSaveError] = useState(false)
   const { entries, removeMemory, updateMemory, clearAll, settings, updateMemorySettings, exportAsMarkdown, importFromMarkdown, exportAsJSON, importFromJSON } = useMemoryStore()
   const [search, setSearch] = useState('')
   const [confirmClear, setConfirmClear] = useState(false)
@@ -45,15 +72,49 @@ export function MemorySettings() {
   // imported — or why none were. The import used to fail silently.
   const [importMsg, setImportMsg] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => useMemoryStore.subscribe((state, previous) => {
+    // Do not retain cloud previews after local editing or forgetting. A new
+    // sync can fetch a fresh review; the durable metadata contains hashes only.
+    if (state.entries !== previous.entries) setSyncConflicts([])
+  }), [])
+  const runSync = async (resolution?: MemorySyncResolution) => {
+    if (activeOwner === null || !syncConsent || syncController.current) return
+    const controller = new AbortController()
+    syncController.current = controller
+    setSyncBusy(true)
+    setSyncConflicts([])
+    setSyncMessage('Synchronizing memories...')
+    try {
+      const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution, controller.signal)
+      if (syncController.current !== controller) return
+      setSyncConflicts(result.conflicts)
+      setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
+    } catch (error) {
+      if (syncController.current !== controller) return
+      const messages = ['Sensitive memories need explicit permission for cloud storage before this collection can synchronize',
+        'This conflict changed. Sync again before choosing a version.',
+        'Memory synchronization cancelled. Some changes may already be saved.']
+      setSyncMessage(error instanceof Error && messages.includes(error.message) ? error.message
+        : 'Could not complete memory synchronization. Check this account and try again. Some changes may already be saved.')
+    } finally {
+      if (syncController.current === controller) {
+        syncController.current = null
+        setSyncBusy(false)
+      }
+    }
+  }
 
   // ── New memory form state ───────────────────────────────────
   const [newTitle, setNewTitle] = useState('')
   const [newContent, setNewContent] = useState('')
+  const [newSensitive, setNewSensitive] = useState(false)
+  const [useProject, setUseProject] = useState(true)
   const [addError, setAddError] = useState<string | null>(null)
 
   // ── Edit form state ─────────────────────────────────────────
   const [editTitle, setEditTitle] = useState('')
   const [editContent, setEditContent] = useState('')
+  const [editScope, setEditScope] = useState('')
 
   // ── Context budget detection ────────────────────────────────
   const contextBudgetLabel = activeModel ? budgetLabel : 'No model selected'
@@ -121,7 +182,9 @@ export function MemorySettings() {
     e.target.value = '' // allow re-picking the same file
     if (!file) return
     const reader = new FileReader()
+    const collectionRevision = useMemoryStore.getState().memoryCollectionRevision
     reader.onload = (ev) => {
+      if (useMemoryStore.getState().memoryCollectionRevision !== collectionRevision) return
       const content = ev.target?.result as string
       if (!content) { setImportMsg('Could not read that file.'); return }
       const trimmed = content.trimStart()
@@ -174,9 +237,12 @@ export function MemorySettings() {
       content: newContent.trim(),
       tags: [],
       source: 'manual',
+      sensitive: newSensitive,
+      scope: useProject ? conversation?.memoryScope : undefined,
     })
     setNewTitle('')
     setNewContent('')
+    setNewSensitive(false)
     setAddError(null)
     setAddingNew(false)
   }
@@ -185,6 +251,7 @@ export function MemorySettings() {
     setEditingId(entry.id)
     setEditTitle(entry.title)
     setEditContent(entry.content)
+    setEditScope(entry.scope ?? '')
   }
 
   const saveEdit = () => {
@@ -193,12 +260,45 @@ export function MemorySettings() {
       title: editTitle.trim().substring(0, 60),
       content: editContent.trim(),
       description: editContent.trim().substring(0, 120),
+      scope: editScope.trim() || undefined,
     })
     setEditingId(null)
   }
 
   return (
     <div className="space-y-3">
+      <section aria-label="Memory collection" className="space-y-2 rounded-lg border border-gray-200 p-3 text-xs text-gray-700 dark:border-white/10 dark:text-gray-300">
+        <p>Memory collection: {activeOwner === null ? 'Local' : 'Signed-in account'}</p>
+        <p>Local memories stay separate. Account collections are saved on this device. Cloud sync runs only when explicitly requested below.</p>
+        <button className="mr-3 underline" disabled={activeOwner === null} onClick={() => setCollectionError(!useMemoryStore.getState().selectMemoryCollection(null))}>Use local memories</button>
+        {owner && <button className="underline" disabled={activeOwner === owner} onClick={() => setCollectionError(!useMemoryStore.getState().selectMemoryCollection(owner))}>Use account memories</button>}
+        {collectionError && <p role="alert">Could not open this memory collection. Existing data has not been replaced.</p>}
+        {activeOwner !== null && <div className="space-y-2 border-t border-gray-200 pt-2 dark:border-white/10">
+          <p>Sync uploads this account collection to LU Cloud and downloads changes. Deletions are shared across devices. Conflicting edits are not overwritten automatically.</p>
+          <p>Marking a memory sensitive does not erase existing cloud copies. Delete the memory and sync to request its removal from cloud sync.</p>
+          <label className="block"><input type="checkbox" checked={syncConsent} disabled={syncBusy} onChange={event => setSyncConsent(event.target.checked)} /> Allow cloud storage for this account collection</label>
+          <label className="block"><input type="checkbox" checked={sensitiveSyncConsent} disabled={syncBusy} onChange={event => setSensitiveSyncConsent(event.target.checked)} /> Also allow cloud storage of sensitive memories</label>
+          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync()}>Sync account memories</button>
+          {syncBusy && <button className="ml-3 underline" onClick={() => syncController.current?.abort()}>Cancel synchronization</button>}
+          {syncMessage && <p role="status">{syncMessage}</p>}
+          {syncConflicts.map((conflict, index) => {
+            const local = entries.find(entry => entry.id === conflict.id)
+            const review = conflict.review
+            return <div key={conflict.id} role="group" aria-label={`Memory conflict ${index + 1}`} className="space-y-2 border-t border-gray-200 pt-2 dark:border-white/10">
+              <p>Conflicting memory: {local?.title ?? conflict.id}</p>
+              {review ? <>
+                <details><summary className="cursor-pointer">Compare full memory records</summary>
+                  <p>Local version</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(local, null, 2)}</pre>
+                  <p>Cloud version, revision {review.token.remoteRevision}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(review.cloud, null, 2)}</pre>
+                </details>
+                <p>Choosing a version replaces the other version, including scope and privacy settings. Newer changes require another review.</p>
+                <button className="mr-3 underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync({ ...review.token, choice: 'local' })}>Keep local version</button>
+                <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync({ ...review.token, choice: 'cloud' })}>Use cloud version</button>
+              </> : <p>The cloud record is missing or has an inconsistent deletion history. No version was overwritten. Sync again after checking the account.</p>}
+            </div>
+          })}
+        </div>}
+      </section>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -270,6 +370,29 @@ export function MemorySettings() {
       </div>
 
       {/* Search */}
+      {conversation && (
+        <label className="block text-xs text-gray-500">
+          Memory project ID for this conversation
+          <input value={conversation.memoryScope ?? ''} maxLength={128}
+            onChange={e => useChatStore.getState().setConversationMemoryScope(conversation.id, e.target.value)}
+            placeholder="Blank uses global memories only"
+            className="block w-full rounded border border-gray-300 bg-transparent p-2" />
+          Use the same stable ID in related conversations. Changes apply to future requests, not a running response. Existing memories are not moved, and earlier conversation content is not removed.
+          <button type="button" onClick={async () => {
+            const key = JSON.stringify([conversation.id, conversation.memoryScope])
+            setSavedProject(null)
+            setProjectSaveError(false)
+            const saved = await persistConversationMemoryScope(conversation.id, conversation.memoryScope)
+            if (saved) setSavedProject(key)
+            else setProjectSaveError(true)
+          }} className="block rounded border p-1">Save project assignment</button>
+          {savedProject === JSON.stringify([conversation.id, conversation.memoryScope]) && <span role="status">Project assignment saved</span>}
+          {projectSaveError && <span role="alert">Could not verify the saved project assignment. Try again before closing the app.</span>}
+        </label>
+      )}
+      <p className="text-xs text-gray-500">Mark sensitive memories to exclude them from AI requests and embeddings. This does not detect secrets automatically or erase earlier requests. Markdown export omits sensitive and project-scoped entries; JSON export preserves their flags and scope.</p>
+      <p className="text-xs text-gray-500" role="note">Remote sessions can retain previously shared memory in their prompts. This control cannot revoke those copies. End the remote session before handling sensitive data.</p>
+      {remoteMemoryNotice && <p role="status" className="text-sm text-red-600 dark:text-red-300">{remoteMemoryNotice}</p>}
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
         <input
@@ -318,6 +441,14 @@ export function MemorySettings() {
           {addError && (
             <p className="text-[0.55rem] text-red-400 px-0.5">{addError}</p>
           )}
+          <label className="flex gap-2 text-xs">
+            <input type="checkbox" checked={newSensitive} onChange={e => setNewSensitive(e.target.checked)} />
+            Sensitive: exclude from AI requests
+          </label>
+          {conversation?.memoryScope && <label className="flex gap-2 text-xs">
+            <input type="checkbox" checked={useProject} onChange={e => setUseProject(e.target.checked)} />
+            Save in project {conversation.memoryScope}
+          </label>}
           <div className="flex gap-1.5">
             <button
               onClick={handleAddMemory}
@@ -364,6 +495,10 @@ export function MemorySettings() {
                   className="w-full px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[0.65rem] text-gray-300 focus:outline-none resize-none"
                 />
                 <div className="flex gap-1.5">
+                  <label className="text-xs">Project ID
+                    <input value={editScope} maxLength={128} onChange={e => setEditScope(e.target.value)}
+                      placeholder="Blank is global" className="block rounded border p-1" />
+                  </label>
                   <button onClick={saveEdit} className="flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-[0.6rem]">
                     <Check size={10} /> Save
                   </button>
@@ -381,7 +516,7 @@ export function MemorySettings() {
               <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${TYPE_DOT_COLORS[entry.type]}`} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <p className="text-[0.65rem] font-medium text-gray-200 truncate">{entry.title}</p>
+                  <p className="text-[0.65rem] font-medium text-gray-800 dark:text-gray-200 truncate">{entry.title}</p>
                   {stale && (
                     <span className="flex items-center gap-0.5 text-[0.45rem] uppercase tracking-wider text-gray-500 border border-gray-600/40 rounded px-1 py-px shrink-0" title="Outdated, kept for reference, not injected into prompts">
                       <Archive size={8} /> outdated
@@ -389,6 +524,15 @@ export function MemorySettings() {
                   )}
                 </div>
                 <p className="text-[0.6rem] text-gray-500 break-words line-clamp-2">{entry.content}</p>
+                {entry.scope !== undefined && <p className="text-xs text-gray-500 break-words">Project: {entry.scope}</p>}
+                <p className="text-xs text-gray-500">Source: {entry.sourceKind ?? (entry.source === 'manual' ? 'manual' : 'unknown')}</p>
+                <p className="text-xs text-gray-500">{entry.confirmedAt ? `Reviewed: ${new Date(entry.confirmedAt).toLocaleString('en-US')}` : 'Not reviewed'}</p>
+                {!stale && <button className="text-xs text-gray-500 underline" onClick={() => useMemoryStore.getState().confirmMemory(entry.id)}>Confirm reviewed</button>}
+                <label className="flex gap-2 text-xs text-gray-500">
+                  <input type="checkbox" checked={entry.sensitive === true}
+                    onChange={e => updateMemory(entry.id, { sensitive: e.target.checked })} />
+                  Sensitive: exclude from AI requests
+                </label>
               </div>
               <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                 {/* Outdated entries are read-only — no edit affordance. */}

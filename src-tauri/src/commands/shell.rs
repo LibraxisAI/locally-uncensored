@@ -177,6 +177,7 @@ pub(crate) fn descendants(root: u32, sys: &sysinfo::System) -> Vec<u32> {
 /// shell itself, so a timed-out `npm run dev`, build script or spawned server
 /// kept running after the tool call gave up — still holding its port and CPU,
 /// and still writing into a pipe nobody reads.
+#[cfg(not(windows))]
 pub(crate) fn kill_tree(root: u32) {
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut sys = System::new();
@@ -188,6 +189,37 @@ pub(crate) fn kill_tree(root: u32) {
     for pid in order {
         if let Some(p) = sys.process(Pid::from_u32(pid)) {
             p.kill();
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn kill_tree(root: u32) {
+    if root == 0 { return; }
+    // sysinfo0.33 kills each snapshot member with a separate taskkill /PID.
+    // During shell startup a new child can appear between those calls and
+    // retain the output pipe after its parent dies. Ask Windows to end the
+    // owned tree in one operation, not a stale list of individual processes.
+    let mut command = Command::new("taskkill.exe");
+    command.args(["/PID", &root.to_string(), "/T", "/F"])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    crate::process_util::suppress_window(&mut command);
+    if let Ok(mut killer) = command.spawn() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match killer.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                _ => {
+                    // Only the helper is killed here. Never broaden the target
+                    // to an image name or another process if termination fails.
+                    let _ = killer.kill();
+                    let _ = killer.wait();
+                    break;
+                }
+            }
         }
     }
 }

@@ -12,7 +12,7 @@
  *
  * Lauf: npx vitest run src/api/__tests__/fremde-lokale-server-heissen-beim-namen.test.ts
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ProviderConfig } from '../providers/types'
 
 vi.mock('../backend', async (importOriginal) => {
@@ -29,6 +29,7 @@ vi.mock('../backend', async (importOriginal) => {
 import { OpenAIProvider } from '../providers/openai-provider'
 import { OllamaProvider } from '../providers/ollama-provider'
 import { localFetchStream } from '../backend'
+import { MAX_TRANSIENT_ATTEMPTS } from '../providers/retry'
 
 const stream = localFetchStream as ReturnType<typeof vi.fn>
 
@@ -64,6 +65,7 @@ const fehlerVon = async (gen: AsyncGenerator<unknown>): Promise<Error> => {
 }
 
 beforeEach(() => { vi.clearAllMocks() })
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('ein fremder lokaler Server, der nicht laeuft', () => {
   it('wird beim Namen genannt, nicht mit einem Rust-Befehl', async () => {
@@ -110,8 +112,12 @@ describe('was NICHT uebersetzt werden darf', () => {
   })
 
   it('ein Cloud-Anbieter bekommt keinen Satz ueber das Starten von Servern', async () => {
-    stream.mockResolvedValue(abgelehnt('https://api.openai.com/v1/chat/completions'))
+    // Cloud uses fetch directly, not the local proxy. Never call the network.
+    const cloudFetch = vi.fn(async () => abgelehnt('https://api.openai.com/v1/chat/completions'))
+    vi.stubGlobal('fetch', cloudFetch)
     const e = await fehlerVon(new OpenAIProvider(echteCloud).chatStream('gpt-4o', []))
+    expect(cloudFetch).toHaveBeenCalledTimes(MAX_TRANSIENT_ATTEMPTS)
+    expect(e.message).toContain('proxy_localhost_stream_chunked')
     expect(e.message).not.toContain('is not answering')
     expect(e.message).not.toContain('Start it and send again')
   })

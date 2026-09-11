@@ -670,6 +670,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_runs_a_command_and_status_eventually_reports_finished() {
+        let _isolation = super::sweep_isolation().await;
         let r = shell_task_start_impl(&json!({ "command": echo_cmd("hi") }))
             .await
             .unwrap();
@@ -701,6 +702,7 @@ mod tests {
 
     #[tokio::test]
     async fn kill_cancels_a_running_task() {
+        let _isolation = super::sweep_isolation().await;
         let r = shell_task_start_impl(&json!({ "command": sleep_cmd_30s() }))
             .await
             .unwrap();
@@ -721,6 +723,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_active_tasks_newest_first() {
+        let _isolation = super::sweep_isolation().await;
         let r1 = shell_task_start_impl(&json!({ "command": echo_cmd("a") }))
             .await
             .unwrap();
@@ -741,6 +744,31 @@ mod tests {
         let pos1 = ids.iter().position(|s| *s == id1).unwrap();
         let pos2 = ids.iter().position(|s| *s == id2).unwrap();
         assert!(pos2 < pos1, "newer task should appear first");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelling_during_shell_startup_drains_the_pipes() {
+        let _isolation = super::sweep_isolation().await;
+        // Exercise the startup window repeatedly, not just a settled tree.
+        // A missed ping child holds stdout open for30seconds with the old
+        // per-process snapshot kill, even after the shell itself is gone.
+        for _ in 0..3 {
+            let started = shell_task_start_impl(&json!({ "command": sleep_cmd_30s() })).await.unwrap();
+            let id = started["id"].as_str().unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            shell_task_kill_impl(&json!({ "id": id })).await.unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let status = shell_task_status_impl(&json!({ "id": id })).await.unwrap();
+                if status["running"] == false {
+                    assert_eq!(status["cancelled"], true);
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "cancelled tree kept its output pipes open");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
     }
 }
 

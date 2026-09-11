@@ -64,6 +64,7 @@ import {
 import { CivitaiApiKeySetting } from './CivitaiApiKeySetting'
 import { HfTokenSetting } from './HfTokenSetting'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
+import { ContentPolicySettings } from './ContentPolicySettings'
 
 // ── User profile picture (Appearance) ───────────────────────────
 // Self-contained like HfDownloadPathSetting. Stores the picture as a
@@ -1746,6 +1747,11 @@ export function SettingsPage() {
                 />
               </button>
             </div>
+          </Section>
+          {/* Dieselbe Einstellung wie in der Webanwendung, ueber dieselbe
+              Route. Zwei Kopien waeren zwei Wahrheiten. */}
+          <Section title="Content policy">
+            <ContentPolicySettings />
           </Section>
           {/* Keys are minted and revoked on lu-labs.ai only; the desktop app
               never sees the plaintext, so this section just points there. */}

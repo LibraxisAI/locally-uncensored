@@ -49,16 +49,16 @@ describe('the picked model survives a restart', () => {
     expect(pickForMode(QWEN, LOCAL_LIST, 'local')).toMatchObject({ change: false, next: QWEN })
   })
 
-  it('NEGATIVE CONTROL: a model that really is gone still hands over to the first one', () => {
+  it('clears a missing choice instead of automatically selecting a small model', () => {
     // The dead-name guard is the reason this rule exists. A picker showing a
     // model the provider no longer has opens an empty list on click.
     expect(pickForMode('openai::deleted-model', LOCAL_LIST, 'local'))
-      .toMatchObject({ change: true, next: HERMES })
+      .toMatchObject({ change: true, next: null })
   })
 
   it('NEGATIVE CONTROL: flipping to Cloud still moves off a local model', () => {
     const withCloud = [...LOCAL_LIST, { name: 'lu-cloud::glm-5.3', type: 'text', provider: 'lu-cloud' }]
-    expect(pickForMode(QWEN, withCloud, 'cloud')).toMatchObject({ change: true, next: 'lu-cloud::glm-5.3' })
+    expect(pickForMode(QWEN, withCloud, 'cloud')).toMatchObject({ change: true, next: null })
   })
 
   it('NEGATIVE CONTROL: Local mode with nothing but cloud models clears the pick', () => {
@@ -80,7 +80,7 @@ describe('the picked model survives a restart', () => {
     expect(pickForMode(null, [], 'local')).toMatchObject({ change: false, next: null })
   })
 
-  it('a first launch with models and no pick takes the first in-mode one', () => {
-    expect(pickForMode(null, LOCAL_LIST, 'local')).toMatchObject({ change: true, next: HERMES })
+  it('a first launch with only small models waits for an explicit choice', () => {
+    expect(pickForMode(null, LOCAL_LIST, 'local')).toMatchObject({ change: false, next: null })
   })
 })

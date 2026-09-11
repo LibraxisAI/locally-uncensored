@@ -75,6 +75,7 @@ export function sectionsFor(tab: SettingsTab, flags: SettingsSectionFlags): stri
     case 'general':
       return [
         'LU Cloud Account',
+        'Content policy',
         'Cloud API Keys',
         'Appearance',
         'Generation',

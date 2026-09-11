@@ -17,6 +17,10 @@
  * Run: npx vitest run src/hooks/__tests__/memory-silent-call-gate.test.ts
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { MemoryFile } from '../../types/agent-mode'
+import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { generateEmbeddings, cosineSimilarity } from '../../api/rag'
+import { loadVectors } from '../../lib/memoryEmbedDB'
 
 // ── Mocked module graph ────────────────────────────────────────
 // Everything the extraction touches, kept dumb so the only interesting
@@ -24,11 +28,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 const chatStream = vi.fn()
 const addMemory = vi.fn(() => 'mem-1')
+const applyWriteDecision = vi.fn()
 
 let activeModel = 'qwen3:8b'
 let models: Array<{ name: string; type: string }> = []
 let memoryCloudOptIn = false
 let memorySettings = { autoExtractEnabled: true, autoExtractInAllModes: false }
+let memoryEntries: MemoryFile[] = []
 
 vi.mock('../../stores/modelStore', () => ({
   useModelStore: { getState: () => ({ activeModel, models }) },
@@ -38,10 +44,10 @@ vi.mock('../../stores/memoryStore', () => ({
   useMemoryStore: {
     getState: () => ({
       settings: memorySettings,
-      entries: [],
+      entries: memoryEntries,
       addMemory,
       removeMemory: vi.fn(),
-      applyWriteDecision: vi.fn(),
+      applyWriteDecision,
     }),
   },
 }))
@@ -110,12 +116,102 @@ beforeEach(() => {
   chatStream.mockReset()
   chatStream.mockImplementation(() => emptyStream())
   addMemory.mockClear()
+  applyWriteDecision.mockClear()
+  vi.mocked(generateEmbeddings).mockResolvedValue([[]])
+  vi.mocked(cosineSimilarity).mockReturnValue(0)
+  vi.mocked(loadVectors).mockResolvedValue(new Map())
+  useCloudAuthStore.getState().setSignedOut()
+  memoryEntries = []
   memorySettings = { autoExtractEnabled: true, autoExtractInAllModes: false }
   models = [
     { name: 'lu-cloud::Qwen/Qwen3-Coder-480B-A35B-Instruct', type: 'text' },
     { name: 'lu-cloud::meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo', type: 'text' },
     { name: 'qwen3:8b', type: 'text' },
   ]
+})
+
+describe('late extraction writes', () => {
+  const extracted = JSON.stringify({ shouldSave: true, memories: [{ type: 'user', title: 'Fact', description: 'Fact', content: 'New fact', tags: [] }] })
+  it('does not restore data after local memories change during extraction', async () => {
+    activeModel = 'qwen3:8b'
+    chatStream.mockImplementation(() => (async function* () {
+      memoryEntries = []
+      yield { content: extracted, done: true }
+    })())
+    await threeTurns()
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    expect(addMemory).not.toHaveBeenCalled()
+  })
+  it('permanently revokes a pending write across sign-out and sign-in to the same account', async () => {
+    activeModel = 'qwen3:8b'
+    const account = { licenseActive: false, tier: null, access: true, quota: null }
+    useCloudAuthStore.getState().setSignedIn({ id: 'owner-a' }, account)
+    chatStream.mockImplementation(() => (async function* () {
+      useCloudAuthStore.getState().setSignedOut()
+      useCloudAuthStore.getState().setSignedIn({ id: 'owner-a' }, account)
+      yield { content: extracted, done: true }
+    })())
+    await threeTurns()
+    expect(addMemory).not.toHaveBeenCalled()
+  })
+  it('does not apply a late merge over a target edited while the resolver streamed', async () => {
+    activeModel = 'qwen3:8b'
+    memoryEntries = [{ id: 'target', type: 'user', title: 'Original', content: 'Original', description: '', tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }]
+    vi.mocked(generateEmbeddings).mockResolvedValue([[1]])
+    vi.mocked(cosineSimilarity).mockReturnValue(0.75)
+    vi.mocked(loadVectors).mockResolvedValue(new Map([['target', { dim: 1, vector: [1], model: 'fixture', contentHash: 'fixture' }]]))
+    chatStream.mockImplementationOnce(() => (async function* () { yield { content: extracted, done: true } })())
+    chatStream.mockImplementationOnce(() => (async function* () {
+      memoryEntries = memoryEntries.map(entry => ({ ...entry, content: 'User correction' }))
+      yield { content: JSON.stringify({ action: 'UPDATE', targetId: 'target', mergedContent: 'Late overwrite' }), done: true }
+    })())
+    await threeTurns()
+    expect(chatStream).toHaveBeenCalledTimes(2)
+    expect(addMemory).toHaveBeenCalledTimes(1)
+    expect(applyWriteDecision).not.toHaveBeenCalled()
+    expect(memoryEntries[0].content).toBe('User correction')
+  })
+})
+
+describe('project extraction isolation', () => {
+  it('preserves project and modality when the first write fails', async () => {
+    activeModel = 'qwen3:8b'
+    addMemory.mockImplementationOnce(() => { throw new Error('Synthetic write failure') })
+    chatStream.mockImplementation(() => (async function* () {
+      yield { content: JSON.stringify({ shouldSave: true, memories: [{ type: 'project', title: 'A fact', description: 'Synthetic fact', content: 'Synthetic project fact', tags: [] }] }), done: true }
+    })())
+    for (let i = 0; i < RATE_LIMIT; i++) await extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', { scope: 'A', sourceKind: 'screen' })
+    expect(addMemory).toHaveBeenCalledTimes(2)
+    expect(addMemory).toHaveBeenLastCalledWith(expect.objectContaining({ scope: 'A', source: 'conv-a', sourceKind: 'screen' }))
+  })
+  it('writes extracted facts to the captured project even if the caller changes its options', async () => {
+    activeModel = 'qwen3:8b'
+    chatStream.mockImplementation(() => (async function* () {
+      yield { content: JSON.stringify({ shouldSave: true, memories: [{ type: 'project', title: 'A fact', description: 'Synthetic fact', content: 'Synthetic project fact', tags: [] }] }), done: true }
+    })())
+    for (let i = 0; i < RATE_LIMIT; i++) {
+      const options: { scope: string; sourceKind: MemoryFile['sourceKind'] } = { scope: 'A', sourceKind: 'voice' }
+      const pending = extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', options)
+      options.scope = 'B'
+      options.sourceKind = 'screen'
+      await pending
+    }
+    expect(addMemory).toHaveBeenCalledTimes(1)
+    expect(addMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: 'A', source: 'conv-a', sourceKind: 'voice' }))
+  })
+  it('does not send sensitive or other-project titles to the extraction provider', async () => {
+    activeModel = 'qwen3:8b'
+    memoryEntries = [
+      { id: 'a', title: 'Allowed Alpha', scope: 'A' },
+      { id: 'b', title: 'Forbidden Beta', scope: 'B' },
+      { id: 's', title: 'Forbidden Sensitive', scope: 'A', sensitive: true },
+    ].map(e => ({ ...e, type: 'user', description: '', content: e.title, tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }))
+    for (let i = 0; i < RATE_LIMIT; i++) await extractMemoriesFromPair('question', LONG_REPLY, 'conv-a', { scope: 'A' })
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    const sent = JSON.stringify(chatStream.mock.calls[0][1])
+    expect(sent).toContain('Allowed Alpha')
+    expect(sent).not.toMatch(/Forbidden Beta|Forbidden Sensitive/)
+  })
 })
 
 describe('lu-cloud', () => {

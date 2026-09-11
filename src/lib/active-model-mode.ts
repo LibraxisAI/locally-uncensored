@@ -1,4 +1,5 @@
 import type { AppMode } from '../types/settings'
+import { canAutoSelectChat, type ChatSizeCandidate } from './chat-model-minimum'
 
 /**
  * Which chat model may stay selected under the current Local/Cloud switch.
@@ -14,7 +15,7 @@ import type { AppMode } from '../types/settings'
  * An empty list is not evidence that a model is gone. It is the absence of
  * evidence, and this rule is re-run the moment the real list lands.
  */
-export interface ModeCandidate {
+export interface ModeCandidate extends ChatSizeCandidate {
   name: string
   type?: string
   provider?: string
@@ -76,7 +77,7 @@ export function pickForMode(
   const current = activeModel ? models.find((m) => m.name === activeModel) : undefined
   if (current && wanted(current)) return { change: false, next: activeModel, usedRequest: false }
 
-  const fallback = models.find(wanted)
+  const fallback = models.find(model => wanted(model) && canAutoSelectChat(model))
   if (activeModel === null && !fallback) return { change: false, next: null, usedRequest: false }
   return { change: true, next: fallback ? fallback.name : null, usedRequest: false }
 }

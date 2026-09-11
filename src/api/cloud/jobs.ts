@@ -222,3 +222,40 @@ export async function pollJob(
 }
 
 export { CloudJobError }
+
+// ── Kontoeinstellung: Inhaltsrichtlinie (Migration 0042) ─────────────
+
+export type ContentPolicy = 'strict' | 'soft' | 'off'
+
+export interface ContentPolicyState {
+  policy: ContentPolicy
+  ageConfirmedAt: string | null
+}
+
+/**
+ * Die Inhaltsrichtlinie dieses Kontos, gelesen und gesetzt ueber DIESELBE
+ * Route wie in der Webanwendung.
+ *
+ * Zwei Kopien derselben Einstellung waeren zwei Wahrheiten. Die Desktop-App
+ * bringt hier nichts Eigenes mit, sie zeigt und schickt nur, was der Server
+ * sagt. 'off' verlangt eine Altersbestaetigung in derselben Anfrage; den
+ * Zeitstempel setzt der Server selbst, ein mitgeschickter waere wertlos.
+ */
+export async function getContentPolicy(): Promise<ContentPolicyState> {
+  const res = await cloudFetch('/api/account/content-policy')
+  const data = await jsonOrError<{ policy?: string; ageConfirmedAt?: string | null }>(res)
+  return {
+    policy: data.policy === 'strict' || data.policy === 'off' ? data.policy : 'soft',
+    ageConfirmedAt: data.ageConfirmedAt ?? null,
+  }
+}
+
+export async function setContentPolicy(policy: ContentPolicy, ageConfirmed = false): Promise<ContentPolicy> {
+  const res = await cloudFetch('/api/account/content-policy', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ policy, ageConfirmed }),
+  })
+  const data = await jsonOrError<{ policy?: string }>(res)
+  return data.policy === 'strict' || data.policy === 'off' ? data.policy : 'soft'
+}
