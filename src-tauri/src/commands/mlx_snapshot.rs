@@ -195,7 +195,7 @@ fn strip_shard(stem: &str) -> &str {
 
 /// Split `model.fp16-00001-of-00002.safetensors` into ("model", Some("fp16")).
 /// A name without a dotted middle segment is the plain, full-precision family.
-fn weights_family(name: &str) -> Option<(String, Option<String>)> {
+pub(crate) fn weights_family(name: &str) -> Option<(String, Option<String>)> {
     let (stem, ext) = name.rsplit_once('.')?;
     if ext != "safetensors" && ext != "bin" {
         return None;
