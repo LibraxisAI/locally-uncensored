@@ -107,7 +107,17 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 
 ## Key Pages
 - Homepage: https://locallyuncensored.com/
-- Getting Started Guide: https://locallyuncensored.com/guide/
+- Handbook (install, first start, chat, agent, Code tab, Create, LU Cloud, settings, troubleshooting, FAQ): https://locallyuncensored.com/guide/
+  - Handbook chapter, What it is: https://locallyuncensored.com/guide/what-it-is/
+  - Handbook chapter, Install and update: https://locallyuncensored.com/guide/install/
+  - Handbook chapter, First start (setup wizard): https://locallyuncensored.com/guide/first-start/
+  - Handbook chapter, Chat: https://locallyuncensored.com/guide/chat/
+  - Handbook chapter, Agent mode: https://locallyuncensored.com/guide/agent/
+  - Handbook chapter, The Code tab: https://locallyuncensored.com/guide/code/
+  - Handbook chapter, Create (images, video, audio, Character Studio): https://locallyuncensored.com/guide/create/
+  - Handbook chapter, LU Cloud: https://locallyuncensored.com/guide/cloud/
+  - Handbook chapter, Settings and troubleshooting: https://locallyuncensored.com/guide/settings-and-troubleshooting/
+  - Handbook chapter, FAQ and glossary: https://locallyuncensored.com/guide/faq-and-glossary/
 - Blog (guides, comparisons, release notes): https://locallyuncensored.com/blog/
 - Full text for LLMs: https://locallyuncensored.com/llms-full.txt
 - How to Run AI Locally (5-minute beginner guide): https://locallyuncensored.com/blog/how-to-run-ai-locally.html
