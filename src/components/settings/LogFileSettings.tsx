@@ -92,7 +92,7 @@ export function LogFileSettings() {
 
       <p className="text-[0.6rem] text-gray-500 leading-relaxed">
         LU writes a log every day and keeps the last seven. Attach today's file
-        to a bug report — it holds what the app was doing right before the
+        to a bug report. It holds what the app was doing right before the
         problem, which a screenshot cannot show.
       </p>
 
