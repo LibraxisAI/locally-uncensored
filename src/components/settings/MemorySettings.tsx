@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Brain, Download, Upload, Trash2, Search, Plus, X, Check, Pencil, Zap, FileJson, Archive, Sparkles } from 'lucide-react'
-import { useMemoryStore, effectiveMemoryBudget } from '../../stores/memoryStore'
+import { useMemoryStore, effectiveMemoryBudget, describeMemoryImport } from '../../stores/memoryStore'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useChatStore, persistConversationMemoryScope } from '../../stores/chatStore'
@@ -189,10 +189,10 @@ function MemorySettingsPanel() {
       if (!content) { setImportMsg('Could not read that file.'); return }
       const trimmed = content.trimStart()
       const isJson = /\.json$/i.test(file.name) || trimmed.startsWith('{') || trimmed.startsWith('[')
-      const count = isJson ? importFromJSON(content) : importFromMarkdown(content)
+      const result = isJson ? importFromJSON(content) : importFromMarkdown(content)
       setImportMsg(
-        count > 0
-          ? `Imported ${count} ${count === 1 ? 'memory' : 'memories'}.`
+        result.added + result.updated + result.alreadyPresent > 0
+          ? describeMemoryImport(result)
           : 'No memories found in that file. Use an LU .md or .json export (JSON needs an "entries" or "memories" array).',
       )
     }

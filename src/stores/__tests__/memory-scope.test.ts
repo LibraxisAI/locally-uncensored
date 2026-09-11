@@ -29,10 +29,10 @@ it('preserves JSON scope and never promotes malformed scope to global', () => {
   add('A')
   const json = useMemoryStore.getState().exportAsJSON()
   useMemoryStore.getState().clearAll()
-  expect(useMemoryStore.getState().importFromJSON(json)).toBe(1)
+  expect(useMemoryStore.getState().importFromJSON(json).added).toBe(1)
   expect(useMemoryStore.getState().entries[0].scope).toBe('A')
   for (const scope of [null, 12, '', ' ']) {
-    expect(useMemoryStore.getState().importFromJSON(JSON.stringify([{ content: 'bad scope', scope }]))).toBe(0)
+    expect(useMemoryStore.getState().importFromJSON(JSON.stringify([{ content: 'bad scope', scope }])).added).toBe(0)
   }
   expect(useMemoryStore.getState().exportAsMarkdown()).not.toContain('Project fixture')
 })

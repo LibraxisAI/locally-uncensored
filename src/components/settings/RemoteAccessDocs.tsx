@@ -67,7 +67,7 @@ export function RemoteAccessDocs() {
         <Step n={3} icon={<Globe size={12} className="text-gray-500" />} title="Dispatch over the internet">
           Choose <span className="text-gray-400 font-medium">Dispatch → Internet</span> instead to
           reach LU from anywhere. LU starts a Cloudflare tunnel and gives you a public
-          <span className="text-gray-400"> https://…trycloudflare.com</span> URL — no router or
+          <span className="text-gray-400"> https://…trycloudflare.com</span> URL, with no router or
           port-forwarding setup. The tunnel only exists while the session is dispatched.
         </Step>
 

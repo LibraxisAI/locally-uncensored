@@ -35,7 +35,7 @@ it('round trips source identity, modality and review through JSON without invent
   const original = useMemoryStore.getState().entries[0]
   const json = useMemoryStore.getState().exportAsJSON()
   useMemoryStore.getState().clearAll()
-  expect(useMemoryStore.getState().importFromJSON(json)).toBe(1)
+  expect(useMemoryStore.getState().importFromJSON(json).added).toBe(1)
   expect(useMemoryStore.getState().entries[0]).toMatchObject({ source: original.source, sourceKind: 'voice', confirmedAt: original.confirmedAt })
   useMemoryStore.getState().importFromJSON(JSON.stringify([{ content: 'Legacy fact' }, { content: 'Invalid metadata', sourceKind: 'forged', confirmedAt: 1e99 }]))
   for (const entry of useMemoryStore.getState().entries.slice(1)) {
