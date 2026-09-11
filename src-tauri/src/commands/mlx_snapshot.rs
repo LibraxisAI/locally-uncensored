@@ -685,15 +685,21 @@ pub(crate) fn repair_plan(defects: &[SnapshotDefect]) -> (Vec<Repair>, Vec<Snaps
     (repairs, stuck)
 }
 
+/// Die Groessenangabe fuer Nutzertexte, in 1024er-Schritten.
+///
+/// Dieselbe Zaehlweise wie `formatBytes` in `src/lib/formatters.ts`, denn im
+/// Kasten "Live install output" steht diese Zeile neben dem Fortschritt
+/// derselben Datei. Mit 1000er-Schritten meldete der Log "pulling ... (8.6 GB)",
+/// waehrend der Balken darunter 8.0 GB derselben Bytes zeigte.
 pub(crate) fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
-    if bytes < 1000 {
+    if bytes < 1024 {
         return format!("{bytes} bytes");
     }
-    let mut value = bytes as f64 / 1000.0;
+    let mut value = bytes as f64 / 1024.0;
     let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
         unit += 1;
     }
     format!("{value:.1} {}", UNITS[unit])
@@ -1068,7 +1074,7 @@ mod tests {
         std::fs::remove_file(snap.join("text_encoder/model-00002-of-00002.safetensors")).unwrap();
         let report = audit_snapshot(snap, Some(&files), None);
         assert!(
-            describe(&report).contains("text_encoder/model-00002-of-00002.safetensors is missing (expected 1.7 GB)"),
+            describe(&report).contains("text_encoder/model-00002-of-00002.safetensors is missing (expected 1.6 GB)"),
             "{}",
             describe(&report)
         );
@@ -1124,8 +1130,8 @@ mod tests {
         let report = audit_snapshot(snap, Some(&files), Some("fp16"));
         assert!(!report.is_complete());
         let text = describe(&report);
-        assert!(text.contains("text_encoder/model.safetensors is missing (expected 492.3 MB)"), "{text}");
-        assert!(text.contains("text_encoder_2/model.safetensors is missing (expected 2.8 GB)"), "{text}");
+        assert!(text.contains("text_encoder/model.safetensors is missing (expected 469.5 MB)"), "{text}");
+        assert!(text.contains("text_encoder_2/model.safetensors is missing (expected 2.6 GB)"), "{text}");
         assert!(!text.contains(snap.to_str().unwrap()), "no private paths in UI text");
 
         let (repairs, stuck) = repair_plan(&report.defects);
@@ -1153,7 +1159,7 @@ mod tests {
         let report = audit_snapshot(snap, Some(&files), Some("fp16"));
         let text = describe(&report);
         assert!(
-            text.contains("unet/diffusion_pytorch_model.fp16.safetensors is a Git LFS pointer, not the weights (expected 5.1 GB)"),
+            text.contains("unet/diffusion_pytorch_model.fp16.safetensors is a Git LFS pointer, not the weights (expected 4.8 GB)"),
             "{text}"
         );
         let (repairs, stuck) = repair_plan(&report.defects);
@@ -1188,7 +1194,7 @@ mod tests {
         let report = audit_snapshot(snap, Some(&files), Some("fp16"));
         let text = describe(&report);
         assert!(
-            text.contains("text_encoder/model.safetensors is 14 bytes on disk (expected 492.3 MB)"),
+            text.contains("text_encoder/model.safetensors is 14 bytes on disk (expected 469.5 MB)"),
             "{text}"
         );
         assert!(audit_snapshot(snap, None, Some("fp16")).is_complete(), "size needs the listing");
@@ -1316,7 +1322,7 @@ mod tests {
         let report = audit_snapshot(&snap, Some(&files), Some("fp16"));
         let text = describe(&report);
         assert!(
-            text.contains("unet/diffusion_pytorch_model.fp16.safetensors is still a partial download (expected 5.1 GB)"),
+            text.contains("unet/diffusion_pytorch_model.fp16.safetensors is still a partial download (expected 4.8 GB)"),
             "{text}"
         );
         // Without the orphan the very same state is a plain missing file.
@@ -1337,11 +1343,13 @@ mod tests {
     }
 
     #[test]
-    fn sizes_read_the_way_the_catalog_writes_them() {
+    fn human_bytes_counts_the_way_the_interface_counts() {
         assert_eq!(human_bytes(0), "0 bytes");
-        assert_eq!(human_bytes(999), "999 bytes");
-        assert_eq!(human_bytes(492265168), "492.3 MB");
-        assert_eq!(human_bytes(5135149760), "5.1 GB");
+        assert_eq!(human_bytes(1023), "1023 bytes");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(492265168), "469.5 MB");
+        assert_eq!(human_bytes(5135149760), "4.8 GB");
+        assert_eq!(human_bytes(8576626335), "8.0 GB");
     }
 
     #[test]
