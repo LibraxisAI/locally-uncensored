@@ -204,17 +204,22 @@ fn active_comfy_dir(state: &AppState) -> Option<PathBuf> {
 /// exactly when the train step finally has a step total. Force UTF-8 stdio
 /// on every trainer child instead.
 ///
-/// The same hook carries the second Windows-only environment fix. GitHub #121
-/// (Z0mbieK, two GPUs, 2026-08-29): the train step died at start with
-/// "use_libuv was requested but PyTorch was build without libuv support".
-/// torch 2.4+ asks for libuv by default when torch.distributed sets up its
-/// store on Windows, and the Windows wheels are built without it. USE_LIBUV=0
-/// is the knob torch itself reads for that; it changes nothing on a single
-/// GPU and nothing outside the trainer's children.
-fn force_python_utf8(cmd: &mut Command) {
+/// The same hook carries the second environment fix. GitHub #121 (Z0mbieK,
+/// two GPUs, 2026-08-29) and Discord (sdrairsoft, 2026-09-09): the run died at
+/// start with "use_libuv was requested but PyTorch was build without libuv
+/// support". torch 2.4+ asks for libuv when torch.distributed sets up its
+/// store, and the Windows wheels are built without it. USE_LIBUV=0 is the knob
+/// torch reads in `rendezvous.py` for an `env://` store, which is the store
+/// musubi's own `InitProcessGroupKwargs` opens on a machine with more than one
+/// card. It is set on every platform now, not only on Windows: the value is
+/// what every other platform does anyway, and a knob that only exists in the
+/// Windows build is a knob no test on this machine can read.
+///
+/// It is NOT the whole fix. The launcher path (step 3 below) never asked
+/// torch's env store anything; see `training_command`.
+fn trainer_child_env(cmd: &mut Command) {
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PYTHONUTF8", "1");
-    #[cfg(target_os = "windows")]
     cmd.env("USE_LIBUV", "0");
 }
 
@@ -918,7 +923,7 @@ fn run_child(
     pid_slot: &Arc<Mutex<Option<u32>>>,
     echo: Echo,
 ) -> Result<(), String> {
-    force_python_utf8(&mut cmd);
+    trainer_child_env(&mut cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -992,8 +997,9 @@ fn run_child(
 
     let exit = loop {
         if cancel.load(Ordering::SeqCst) {
-            // The whole tree, not just this child: accelerate spawns the
-            // trainer underneath and `Child::kill` never reaches it.
+            // The whole tree, not just this child: the train step keeps two
+            // persistent data loader workers and pip spawns its own children,
+            // and `Child::kill` never reaches either.
             kill_trainer_tree(child.id());
             let _ = child.wait();
             // The reader threads are deliberately NOT joined here. They sit in
@@ -1465,7 +1471,7 @@ struct ProbeOutcome {
 fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome {
     let mut probe = Command::new(vpy);
     probe.args(["-c", TORCH_PREFLIGHT_PY]);
-    force_python_utf8(&mut probe);
+    trainer_child_env(&mut probe);
     #[cfg(target_os = "windows")]
     probe.creation_flags(CREATE_NO_WINDOW);
     match probe.output() {
@@ -1763,6 +1769,69 @@ pub fn clear_training_set(app: tauri::AppHandle, setId: String) -> Result<(), St
 
 // ── the training run ─────────────────────────────────────────────────────────
 
+/// The files and numbers one run of step 3 is made of.
+struct TrainStep<'a> {
+    dit: &'a str,
+    vae: &'a str,
+    text_encoder: &'a str,
+    dataset: &'a str,
+    steps: &'a str,
+    out_dir: &'a str,
+    out_name: &'a str,
+}
+
+/// Step 3, the train itself: the venv's own python runs musubi's trainer, the
+/// same way steps 1, 2 and 4 do.
+///
+/// It used to be `accelerate launch <script>`, which is what musubi's README
+/// writes, and that is what GitHub #121 (Z0mbieK, two cards) and the Discord
+/// report (sdrairsoft, 2026-09-09) died on:
+///
+///   RuntimeError: use_libuv was requested but PyTorch was build without
+///   libuv support
+///
+/// `accelerate launch` with no `--num_processes` sets `num_processes =
+/// torch.cuda.device_count()` and turns multi-GPU on by itself as soon as that
+/// is more than one. A second card therefore silently swapped LU's one-card
+/// recipe onto torch's elastic launcher, which opens a rendezvous TCPStore,
+/// and the Windows wheels carry no libuv. That store is built from rendezvous
+/// parameters and never reads the USE_LIBUV environment variable, so no
+/// environment fix reaches it (`torch/distributed/elastic/rendezvous/
+/// c10d_rendezvous_backend.py`, read 2026-09-11). `--num_processes 1` is no
+/// answer either: a leftover `accelerate config` from any other tool is read
+/// first, and a config that says MULTI_GPU turns the same flag into
+/// "You need to use at least 2 processes to use `--multi_gpu`".
+///
+/// For a single process the launcher does nothing else: accelerate's
+/// `simple_launcher` sets OMP_NUM_THREADS and runs `python <script> <args>`
+/// (`prepare_simple_launcher_cmd_env`). So this is that, minus the launcher,
+/// minus its guesses about the machine. `--mixed_precision bf16` was already
+/// among the script's own arguments; musubi passes it to `Accelerator`.
+fn training_command(vpy: &str, repo: &Path, step: &TrainStep<'_>) -> Command {
+    let mut cmd = Command::new(vpy);
+    // What `--num_cpu_threads_per_process 1` used to set, nothing more.
+    cmd.current_dir(repo).env("OMP_NUM_THREADS", "1").args([
+        "src/musubi_tuner/zimage_train_network.py",
+        "--dit", step.dit,
+        "--vae", step.vae,
+        "--text_encoder", step.text_encoder,
+        "--dataset_config", step.dataset,
+        "--sdpa", "--mixed_precision", "bf16",
+        "--fp8_base", "--fp8_scaled",
+        "--blocks_to_swap", "16",
+        "--timestep_sampling", "shift", "--weighting_scheme", "none", "--discrete_flow_shift", "2.0",
+        "--optimizer_type", "adamw8bit", "--learning_rate", "1e-4", "--gradient_checkpointing",
+        "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
+        "--network_module", "networks.lora_zimage", "--network_dim", "32",
+        "--max_train_steps", step.steps,
+        "--save_precision", "bf16",
+        "--seed", "42",
+        "--output_dir", step.out_dir,
+        "--output_name", step.out_name,
+    ]);
+    cmd
+}
+
 #[allow(non_snake_case)]
 #[tauri::command]
 pub fn start_character_training(
@@ -2016,35 +2085,18 @@ pub fn start_character_training(
             }
         }
         set_status(&run, "running", &format!("Step 3/4: Training ({steps} steps). This runs for a while, the counter follows every step."));
-        let accelerate = {
-            #[cfg(target_os = "windows")]
-            { root.join("venv").join("Scripts").join("accelerate.exe") }
-            #[cfg(not(target_os = "windows"))]
-            { root.join("venv").join("bin").join("accelerate") }
-        };
         let steps_s = steps.to_string();
         let out_name = format!("char_{lora_name}_zimage");
-        let mut c3 = Command::new(accelerate);
-        c3.current_dir(&repo).args([
-            "launch", "--num_cpu_threads_per_process", "1", "--mixed_precision", "bf16",
-            "src/musubi_tuner/zimage_train_network.py",
-            "--dit", &dit_s,
-            "--vae", &vae_s,
-            "--text_encoder", &te_s,
-            "--dataset_config", &toml_s,
-            "--sdpa", "--mixed_precision", "bf16",
-            "--fp8_base", "--fp8_scaled",
-            "--blocks_to_swap", "16",
-            "--timestep_sampling", "shift", "--weighting_scheme", "none", "--discrete_flow_shift", "2.0",
-            "--optimizer_type", "adamw8bit", "--learning_rate", "1e-4", "--gradient_checkpointing",
-            "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
-            "--network_module", "networks.lora_zimage", "--network_dim", "32",
-            "--max_train_steps", &steps_s,
-            "--save_precision", "bf16",
-            "--seed", "42",
-            "--output_dir", &out_dir.to_string_lossy(),
-            "--output_name", &out_name,
-        ]);
+        let out_dir_s = out_dir.to_string_lossy().to_string();
+        let c3 = training_command(&vpy_s, &repo, &TrainStep {
+            dit: &dit_s,
+            vae: &vae_s,
+            text_encoder: &te_s,
+            dataset: &toml_s,
+            steps: &steps_s,
+            out_dir: &out_dir_s,
+            out_name: &out_name,
+        });
         if let Err(e) = run_streamed(c3, "training", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2119,8 +2171,8 @@ pub async fn cancel_character_training(app: tauri::AppHandle) -> Result<(), Stri
 /// Shared with `AppState::shutdown_subprocesses`: the trainer PID lives in
 /// AppState like every other long-running child, but shutdown never killed it,
 /// so quitting mid-training left an orphaned Python process holding the GPU
-/// with no UI left to stop it. The whole tree matters: the trainer runs
-/// accelerate, which spawns the actual worker underneath.
+/// with no UI left to stop it. The whole tree matters: the train step keeps
+/// two persistent data loader workers of its own under it.
 pub(crate) fn kill_trainer_tree(pid: u32) {
     // This used to be `taskkill /T /F` on Windows and a bare `kill -9`
     // elsewhere, and both left the worker alive. Measured on the box
@@ -2137,7 +2189,7 @@ pub(crate) fn kill_trainer_tree(pid: u32) {
 
 fn cancel_character_training_blocking(state: &AppState) -> Result<(), String> {
     state.trainer_cancel.store(true, Ordering::SeqCst);
-    // Kill the live child directly too — pip/accelerate ignore the flag.
+    // Kill the live child directly too: pip and the trainer ignore the flag.
     if let Ok(mut slot) = state.trainer_process.lock() {
         if let Some(pid) = slot.take() {
             kill_trainer_tree(pid);
@@ -2594,25 +2646,124 @@ mod tests {
         let _ = fs::remove_dir_all(&root2);
     }
 
-    #[test]
-    fn every_trainer_child_gets_utf8_stdio() {
-        use super::force_python_utf8;
-        let mut cmd = std::process::Command::new("python");
-        force_python_utf8(&mut cmd);
-        let envs: Vec<(String, Option<String>)> = cmd
-            .get_envs()
+    /// The environment of a built command, as pairs a test can read.
+    fn env_of(cmd: &std::process::Command) -> Vec<(String, Option<String>)> {
+        cmd.get_envs()
             .map(|(k, v)| (
                 k.to_string_lossy().into_owned(),
                 v.map(|v| v.to_string_lossy().into_owned()),
             ))
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn every_trainer_child_gets_utf8_stdio() {
+        let mut cmd = std::process::Command::new("python");
+        super::trainer_child_env(&mut cmd);
+        let envs = env_of(&cmd);
         assert!(envs.contains(&("PYTHONIOENCODING".into(), Some("utf-8".into()))));
         assert!(envs.contains(&("PYTHONUTF8".into(), Some("1".into()))));
-        // GitHub #121: only Windows wheels lack libuv, so only Windows gets the knob.
-        #[cfg(target_os = "windows")]
-        assert!(envs.contains(&("USE_LIBUV".into(), Some("0".into()))));
-        #[cfg(not(target_os = "windows"))]
-        assert!(!envs.iter().any(|(k, _)| k == "USE_LIBUV"));
+        // GitHub #121: the knob is set on every platform, so it is one code
+        // path, readable by a test on any machine. Elsewhere it is what torch
+        // does by default anyway.
+        assert!(
+            envs.contains(&("USE_LIBUV".into(), Some("0".into()))),
+            "the libuv knob is gone from the trainer children",
+        );
+    }
+
+    /// Positive control, path 1 of 2: the setup's own smoke test. It runs
+    /// `python -c "import torch ..."` outside run_child, so its environment is
+    /// its own and has to carry the same knob.
+    #[test]
+    fn the_setup_smoke_test_carries_the_libuv_knob() {
+        let src = include_str!("trainer.rs");
+        let probe = &src[src.find("fn probe_trainer_env(").expect("probe")..];
+        let probe = &probe[..probe.find("/// The four install steps").expect("end of probe")];
+        assert!(
+            probe.contains("trainer_child_env(&mut probe)"),
+            "the smoke test builds its child without the trainer environment",
+        );
+        assert!(probe.contains("TORCH_PREFLIGHT_PY"), "the smoke test still imports torch");
+        // And the function it calls really sets it (the assertion above only
+        // proves the call).
+        let mut cmd = std::process::Command::new("python");
+        super::trainer_child_env(&mut cmd);
+        assert!(env_of(&cmd).contains(&("USE_LIBUV".into(), Some("0".into()))));
+    }
+
+    /// Positive control, path 2 of 2: the training run. The command is built
+    /// here exactly as the run builds it, then handed the environment
+    /// `run_child` gives every child it spawns.
+    #[test]
+    fn the_training_child_carries_the_libuv_knob() {
+        let mut cmd = super::training_command(
+            "/tmp/venv/bin/python",
+            std::path::Path::new("/tmp/musubi-tuner"),
+            &super::TrainStep {
+                dit: "/m/dit.safetensors",
+                vae: "/m/ae.safetensors",
+                text_encoder: "/m/qwen.safetensors",
+                dataset: "/t/set.toml",
+                steps: "400",
+                out_dir: "/t/out",
+                out_name: "char_dave_zimage",
+            },
+        );
+        super::trainer_child_env(&mut cmd);
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&("USE_LIBUV".into(), Some("0".into()))),
+            "the training child lost the libuv knob",
+        );
+        assert!(
+            envs.contains(&("OMP_NUM_THREADS".into(), Some("1".into()))),
+            "the one thread the launcher used to set is gone",
+        );
+    }
+
+    /// The root of GitHub #121: a second card used to turn `accelerate launch`
+    /// into torch's elastic launcher, whose rendezvous store never reads
+    /// USE_LIBUV. The train step runs the script itself now.
+    #[test]
+    fn the_training_step_runs_the_script_not_a_distributed_launcher() {
+        let cmd = super::training_command(
+            "/tmp/venv/bin/python",
+            std::path::Path::new("/tmp/musubi-tuner"),
+            &super::TrainStep {
+                dit: "/m/dit.safetensors",
+                vae: "/m/ae.safetensors",
+                text_encoder: "/m/qwen.safetensors",
+                dataset: "/t/set.toml",
+                steps: "400",
+                out_dir: "/t/out",
+                out_name: "char_dave_zimage",
+            },
+        );
+        assert_eq!(
+            cmd.get_program().to_string_lossy(),
+            "/tmp/venv/bin/python",
+            "the train step must run the venv's python, like steps 1, 2 and 4",
+        );
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args.first().map(String::as_str), Some("src/musubi_tuner/zimage_train_network.py"));
+        assert!(!args.iter().any(|a| a == "launch"), "the launcher is back: {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "--num_cpu_threads_per_process"),
+            "a launcher flag survived into the script's own arguments",
+        );
+        // The recipe itself is unchanged, and the script still gets the
+        // precision the launcher used to be told about as well.
+        for flag in ["--fp8_base", "--fp8_scaled", "--blocks_to_swap", "--gradient_checkpointing", "--mixed_precision"] {
+            assert!(args.iter().any(|a| a == flag), "{flag} is missing from the recipe");
+        }
+        assert_eq!(args.iter().filter(|a| *a == "--mixed_precision").count(), 1);
+        let src = include_str!("trainer.rs");
+        let code = &src[..src.find("#[cfg(test)]").expect("tests start")];
+        assert!(
+            !code.contains("accelerate.exe") && !code.contains("\"launch\""),
+            "the accelerate launcher is back in the production code",
+        );
     }
 
     #[test]
@@ -3347,6 +3498,32 @@ mod journey_tests {
         assert!(base.contains("winget_install(\"Python.Python.3.12\", true"), "Python comes through the quiet winget path");
         let code = &src[..src.find("#[cfg(test)]").expect("tests start")];
         assert!(!code.contains("run_streamed(winget"), "winget lines never stream into the note");
+    }
+
+    /// The interpreter is decided BEFORE the setup spends anything. A machine
+    /// with only Python 3.13 or 3.14 has to be told so in one sentence, not
+    /// after an archive, a venv and 2.5 GB of wheels (ticket 0004,
+    /// sockenmonster 2026-09-05, whose setup died in pip's step 4 with
+    /// "requires a different Python").
+    #[test]
+    fn the_python_rule_is_enforced_before_anything_is_downloaded() {
+        let src = include_str!("trainer.rs");
+        let body = &src[src.find("fn provision_trainer_env(").expect("provision")..];
+        let body = &body[..body.find("pub fn character_trainer_status").expect("end of provision")];
+        let gate = body.find("trainer_base_python(python_bin").expect("the interpreter is chosen");
+        for later in ["fetch_musubi_source(", "Command::new(python_bin)", "pip_with_retry(", "create_dir_all("] {
+            let at = body.find(later).unwrap_or_else(|| panic!("{later} is gone from the setup"));
+            assert!(gate < at, "{later} runs before the Python rule is enforced");
+        }
+        assert!(body.contains("trainer_base_python(python_bin, state, status_kind, cancel, pid_slot)?"),
+            "a Python the trainer cannot use has to end the setup, not warn");
+        // The sentence names the versions, and the range is the one musubi and
+        // the wheels agree on.
+        assert_eq!(TRAINER_PYTHON_RANGE, "3.10, 3.11 or 3.12");
+        let msg = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        assert!(msg.contains("3.10, 3.11 or 3.12"), "{msg}");
+        assert!(msg.contains("3.14.6"), "the message names what is on the machine: {msg}");
+        assert!(!trainer_supports_python("3.13.0") && !trainer_supports_python("3.14.6"));
     }
 }
 
