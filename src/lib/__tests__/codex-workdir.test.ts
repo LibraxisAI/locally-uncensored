@@ -81,7 +81,7 @@ describe('what the empty state is allowed to promise', () => {
 })
 
 describe('when the working directory is held', () => {
-  const free = { sendsInFlight: 0, threads: {}, loop: null }
+  const free = { sendsInFlight: 0, threads: {}, generating: {}, loop: null }
 
   it('is free when nothing at all is going on', () => {
     expect(codexBusyReason(free)).toBeNull()
@@ -91,8 +91,55 @@ describe('when the working directory is held', () => {
     expect(codexBusyReason({ ...free, sendsInFlight: 1 })).toBe('run')
   })
 
-  it('is held by a thread the store calls running', () => {
-    expect(codexBusyReason({ ...free, threads: { a: { status: 'running' } } })).toBe('run')
+  it('is held by a thread that is really streaming', () => {
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: { a: true },
+    })).toBe('run')
+  })
+
+  it('and by one waiting for an approval or writing its staged changes', () => {
+    // Beides ist laufende Arbeit. Der Vergleich von Hand fragte `=== running`
+    // und liess genau diese beiden Zustaende als "nichts los" durch.
+    for (const status of ['awaiting_approval', 'applying', 'cancelling'] as const) {
+      expect(codexBusyReason({
+        ...free,
+        threads: { a: { status } },
+        generating: { a: true },
+      }), status).toBe('run')
+    }
+  })
+
+  it('but a thread left standing on running by a dead run holds nothing', () => {
+    // Der Fall, der den Ordner fuer den Rest der Sitzung sperrte: Stop raeumt
+    // die Erzeugungsfahne sofort, der Status kommt erst im `finally` des Laufs
+    // zurueck, und ein Shell-Befehl, der das Signal nicht beachtet, dehnt das
+    // Fenster beliebig weit. Der Status allein ist kein Beweis, dass noch
+    // etwas laeuft.
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: {},
+    })).toBeNull()
+    // Und eine Fahne, die auf false steht, ist dasselbe wie keine.
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: { a: false },
+    })).toBeNull()
+  })
+
+  it('a run in ANOTHER chat still holds it, a chat tab streaming does not', () => {
+    // Beide Haelften auf einmal: die Fahne zaehlt nur zusammen mit einem
+    // Faden des Coding-Agenten, sonst sperrte jeder streamende Chat-Reiter
+    // diese Spalte mit (Pruefung S3).
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: { a: true },
+    })).toBe('run')
+    expect(codexBusyReason({ ...free, threads: {}, generating: { chat: true } })).toBeNull()
   })
 
   it('is held between two loop passes, where the thread says idle', () => {
@@ -117,5 +164,14 @@ describe('when the working directory is held', () => {
   it('says a different sentence for a loop than for a run', () => {
     expect(CODEX_WORKDIR_LOCK_TITLE.run).not.toBe(CODEX_WORKDIR_LOCK_TITLE.loop)
     expect(CODEX_WORKDIR_LOCK_TITLE.loop).toContain('loop')
+  })
+
+  it('and every sentence names a way out, not just a wait', () => {
+    // Warten ist keine Auskunft, solange der Nutzer nicht weiss, worauf. Beide
+    // Saetze nennen deshalb den Knopf, der die Sperre wirklich loest: Stop
+    // raeumt die Erzeugungsfahne, und der Ordner ist im selben Augenblick frei.
+    for (const satz of Object.values(CODEX_WORKDIR_LOCK_TITLE)) {
+      expect(satz, satz).toContain('Stop')
+    }
   })
 })

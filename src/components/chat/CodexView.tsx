@@ -114,10 +114,12 @@ export function CodexView() {
   // found none. The header always shows the folder, so it also carries the way
   // to give it back. Locked, not hidden, while a coding turn is in flight, and
   // the verdict is the shared one so the two buttons cannot drift apart.
+  // Beide Karten, aus demselben Grund wie im Explorer: ein Faden, der auf
+  // 'running' stehengeblieben ist, sperrt den Ordner nicht mehr allein.
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
   const loop = useAgentLoopStore((s) => s.loop)
-  const lockReason = codexBusyReason({ sendsInFlight, threads, loop })
+  const lockReason = codexBusyReason({ sendsInFlight, threads, generating: generatingMap, loop })
 
   // Where the agent goes while no folder is picked: a per-chat workspace or
   // settings.defaultWorkspace both beat an empty picker, so the header and the
