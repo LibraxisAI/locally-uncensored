@@ -159,10 +159,9 @@ describe('the notes table', () => {
     // himself, the AUR customer whose update asked for a password and died,
     // the teaser that names the card's own VRAM, and the per-account count of
     // the Cloud switch, which is new telemetry and therefore said out loud.
-    const shipping = JSON.parse(
-      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
-    ).version as string
-    expect(shipping).toBe('2.6.9')
+    // 3.0.0 shipped on top of it, so these anchors pin the 2.6.9 entry by
+    // version and the shipping entry gets its own list below.
+    const shipping = '2.6.9'
     const prose = proseOf(shipping)
     for (const anchor of [
       'back to the 2.6.7 layout', 'nothing is cut off', 'opens upwards',
@@ -180,6 +179,32 @@ describe('the notes table', () => {
       expect(proseOf(version), `${version} still promises the engine fix for 2.6.9`)
         .not.toContain('2.6.9 brings the engine back')
     }
+  })
+
+  it('the 3.0.0 entry names the measurement, the free Flash chat, the policy, the six fixes and the open card', () => {
+    // Same blind spot, next release. The measurement says which 46 were asked
+    // and that the 47th carries no mark yet; Flash chat names its ceiling and
+    // that keys keep paying; the policy names the age step; and the six fixes
+    // merged on 11.09. (trainer, engine log and layers, Stop, Code tab,
+    // custom backend context, GitHub 129) each get an anchor, plus the one
+    // report that stays open because nobody here owns the card.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    expect(shipping).toBe('3.0.0')
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      'without refusing', 'we measured', 'no mark until it is measured',
+      'no credits', '500,000', 'api keys always pay',
+      'content policy', '18 or older', 'animate button', 'sampling controls',
+      'libuv', 'exit code', 'runs on the cpu', 'stop means stop',
+      'why a folder was refused', 'cut off at the token limit',
+      'real context window', 'no guessed budget', '2 gb card',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
+    // The old suffix must not be sold as a feature again.
+    expect(prose).not.toContain('(unrestricted)" mark')
   })
 
   it('says nothing in the shipping note twice, word for word', () => {
