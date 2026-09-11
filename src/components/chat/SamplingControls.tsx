@@ -92,12 +92,23 @@ export function SamplingControls() {
 
   /** Give the keyboard back to the trigger, but only while it is still in the
    *  popup: on an outside press the browser is already moving it somewhere the
-   *  user chose, and taking it back from them is worse than a lost menu. */
+   *  user chose, and taking it back from them is worse than a lost menu.
+   *
+   *  The draft is dropped here as well, and that line is not redundant with the
+   *  field's own onBlur. Measured 2026-09-11 against this component: an emptied
+   *  Max tokens box survived every close path unless something moved the focus
+   *  off the input first, because onBlur was the ONLY thing that cleared it.
+   *  Today the focus move above happens to do that, so a real user never saw
+   *  the stale box. That is luck, not a rule: whoever changes the focus rule
+   *  next reopens the popup on an empty field while the store holds 0. The
+   *  onBlur stays, because it covers the other half, leaving the field with the
+   *  popup still open (Tab to Reset, grab a slider). */
   const close = useCallback(() => {
     const panel = panelRef.current
     if (panel && panel.contains(document.activeElement)) {
       wrapRef.current?.querySelector('button')?.focus()
     }
+    setDraft(null)
     setOpen(false)
   }, [])
 
