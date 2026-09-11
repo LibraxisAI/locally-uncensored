@@ -2736,7 +2736,7 @@ Rules:
  * "you MUST use tools / execute end-to-end" prompt — that would turn ordinary
  * chat into an agent. Kept short so it doesn't crowd a small model's context.
  */
-function buildChatToolsSystemPrompt(basePrompt: string): string {
+export function buildChatToolsSystemPrompt(basePrompt: string): string {
   const p = `You are a helpful chat assistant in LU, having a normal conversation. You also have a few tools for things you cannot do from memory, use one ONLY when the user's request actually needs it, otherwise just reply normally:
 - web_search, look up current/real-world facts (returns short snippets)
 - web_fetch, read a specific web page or URL (after a search, or when the user gives a link)
