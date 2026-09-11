@@ -32,6 +32,13 @@ import {
   parseOpenAIStreamChunk, parseOpenAIChatResponse, keyForUnindexedBlock,
   isRecord, prop, asString, asNumber, asBoolean, asRecordArray,
 } from './wire'
+import {
+  serverRoot, v1Root, parseLlamaCppProps, parseModelsListContext,
+  parseKoboldMaxContext, parseLmStudioModel, parseGenericModelContext,
+} from './context-probe'
+import type { ResolvedContextWindow } from '../../lib/context-source'
+import { contextWindowKey, storedWindow, capIsDerivable } from '../../lib/context-source'
+import { useSettingsStore } from '../../stores/settingsStore'
 
 // Transport routing lives in the `useLocalProxy` getter (below) plus the shared
 // host helpers in backend.ts. A direct webview fetch only works for hosts the
@@ -162,7 +169,16 @@ function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
     name: asString(m.name),
     flash: m.flash,
     usage_class: m.usage_class,
-    context_length: asNumber(m.context_length),
+    /*
+     * GH #129: dieselbe Zahl, wie der jeweilige Server sie nennt.
+     * vLLM schreibt `max_model_len` in jede Modellkarte, llama-server einen
+     * `meta`-Block mit `n_ctx_train`. Beides hier mitzulesen kostet keine
+     * einzige zusaetzliche Anfrage und erspart der Kaskade die meisten.
+     */
+    context_length:
+      asNumber(m.context_length) ??
+      asNumber(m.max_model_len) ??
+      asNumber(prop(m.meta, 'n_ctx_train')),
     input_modalities: Array.isArray(m.input_modalities)
       ? m.input_modalities.filter((x): x is string => typeof x === 'string')
       : undefined,
@@ -642,6 +658,11 @@ export class OpenAIProvider implements ProviderClient {
    * 2026-07-11). Under-estimating the context is safe (a shorter cap); we never
    * over-request. Runs for every request, so an UNSET budget (settings.maxTokens
    * = 0) sends the full safe remainder instead of letting the server over-default.
+   *
+   * Ab GH #129 gilt das nur noch fuer ein GEMESSENES Fenster. Was die Rechnung
+   * schuetzen soll, ist ein Server, der sein eigenes Fenster kennt; ist die
+   * Zahl geraten, schuetzt sie nichts und behauptet nur etwas. Siehe den Block
+   * im Rumpf.
    */
   private async applyMaxTokens(
     model: string,
@@ -650,15 +671,36 @@ export class OpenAIProvider implements ProviderClient {
   ): Promise<void> {
     const requested = options?.maxTokens && options.maxTokens > 0 ? options.maxTokens : 0
     let ctxLen = 0
+    let derivable = false
     // Audit: the probe behind this runs on the SEND path. Without the signal a
     // Stop could not interrupt it, and without a timeout a hung LAN backend
     // held the message hostage for the proxy's full 300 s (twice). Both are
     // threaded through probeInit(); on a timeout the cascade just falls back to
     // the heuristic, which is what an optional optimisation should do.
-    try { ctxLen = await this.getContextLength(model, options?.signal) } catch { ctxLen = 0 }
-    if (ctxLen <= 0) {
-      // No context info at all — honor an explicit request, else a safe default.
-      body.max_tokens = requested || 4096
+    try {
+      const resolved = await this.getContextWindow(model, options?.signal)
+      ctxLen = resolved.tokens
+      derivable = capIsDerivable(resolved)
+    } catch { ctxLen = 0 }
+    /*
+     * GH #129: aus einer GERATENEN Zahl wird kein Budget.
+     *
+     * Der Melder betreibt einen eigenen Server mit einem 256k-Modell. Weil
+     * weder Katalog noch Abfrage etwas lieferten, riet die Namensheuristik
+     * 8192 (nach dem Umbenennen auf "qwen" dann 32768), und diese Zahl ging
+     * als `max_tokens` auf die Leitung. Sein Server antwortete mit "token
+     * limit exceeded": wir hatten ihm ein Budget genannt, das niemand
+     * gemessen hatte.
+     *
+     * Ein ausdruecklicher Wunsch des Nutzers geht weiterhin raus, der gehoert
+     * ihm. Ohne einen solchen bleibt das Feld WEG, und der Server nimmt seine
+     * eigene Voreinstellung. Das ist die einzige Antwort, die nicht raet.
+     * Fuer den LU-Motor, Ollama und LM Studio aendert sich nichts: deren
+     * Fenster ist gemessen, also bleibt die Rechnung unten.
+     */
+    if (!derivable || ctxLen <= 0) {
+      if (requested > 0) body.max_tokens = requested
+      else delete body.max_tokens
       return
     }
     const RESERVE = 512
@@ -1087,59 +1129,129 @@ export class OpenAIProvider implements ProviderClient {
    * Returnt `null` wenn nichts gefunden, damit Callers cascaden koennen.
    */
   private async probeContextFromServer(model: string, signal?: AbortSignal): Promise<number | null> {
+    return (await this.probeWindow(model, signal))?.tokens ?? null
+  }
+
+  /** Eine Metadaten-Abfrage, die nie wirft: ein toter Endpunkt ist eine
+   *  Antwort wie jede andere (naemlich keine). */
+  private async probeJson(url: string, signal?: AbortSignal): Promise<unknown> {
+    try {
+      const res = await localFetch(url, this.probeInit(signal))
+      if (!res.ok) return undefined
+      return await res.json()
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Die Kaskade selbst, mit der trainierten Decke daneben (GH #129).
+   *
+   * Reihenfolge und Grund:
+   *   1. LM Studio `/api/v0/models/<id>`  ist die genaueste Auskunft, die es
+   *      hier gibt, und Bug K will fuer die ANZEIGE das Koennen des Modells.
+   *   2. `/v1/models/<id>`                vLLM, Aphrodite, SGLang, TabbyAPI.
+   *   3. `/props`                         llama.cpp. Die Zahl dort ist das
+   *      WIRKLICH geladene Fenster; ein Prompt darueber stirbt serverseitig.
+   *   4. `/v1/models` (Liste)             vLLM `max_model_len`, llama.cpp
+   *      `meta.n_ctx_train`. Ein Server mit genau einem Modell darf dabei
+   *      seinen eigenen Namen verwenden, siehe parseModelsListContext.
+   *   5. `/api/extra/true_max_context_length`  KoboldCpp.
+   *
+   * Alle Wege haengen an `serverRoot`, also funktionieren sie auch fuer eine
+   * Basis-URL OHNE `/v1` (llama-server startet in seiner eigenen Anleitung auf
+   * http://localhost:8080). Vorher war das der Fall, in dem gar nicht gefragt
+   * wurde. LAN-Regel unveraendert: ein fremder Host im Internet bekommt keine
+   * einzige dieser Anfragen.
+   */
+  private async probeWindow(
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<{ tokens: number; modelMax: number } | null> {
     if (!this.isLanBackend) return null
 
     // Probe cache (audit E5): applyMaxTokens calls getContextLength on EVERY
     // request, and a LAN backend without a catalog entry paid one or two HTTP
     // probes per agent iteration. A loaded model's window does not move
     // between iterations; 5 minutes covers an LM Studio reload with changed
-    // settings. Negative answers cache too — a server that has no context
-    // endpoint will not grow one mid-run.
+    // settings. Negative answers cache too, because a server that has no
+    // context endpoint will not grow one mid-run.
     const cacheKey = `${this.baseUrl}|${model}`
     const hit = OpenAIProvider.probeCache.get(cacheKey)
-    if (hit && Date.now() - hit.at < 300_000) return hit.ctx
-    const remember = (ctx: number | null): number | null => {
-      OpenAIProvider.probeCache.set(cacheKey, { at: Date.now(), ctx })
-      return ctx
+    if (hit && Date.now() - hit.at < 300_000) {
+      return hit.ctx ? { tokens: hit.ctx, modelMax: hit.max ?? 0 } : null
+    }
+    const remember = (tokens: number | null, modelMax = 0) => {
+      OpenAIProvider.probeCache.set(cacheKey, { at: Date.now(), ctx: tokens, max: modelMax })
+      return tokens ? { tokens, modelMax } : null
     }
 
-    // 1. LM Studio Enhanced API: /api/v0/models/<id>
-    //    Base-URL ist typischerweise http://localhost:1234/v1 — wir tauschen
-    //    /v1 gegen /api/v0 aus. Wenn der Server kein LM Studio ist, kommt 404
-    //    zurueck und wir cascaden weiter.
-    try {
-      const lmStudioBase = this.baseUrl.replace(/\/v1\/?$/, '/api/v0')
-      const lmsRes = await localFetch(
-        `${lmStudioBase}/models/${encodeURIComponent(model)}`,
-        this.probeInit(signal),
-      )
-      if (lmsRes.ok) {
-        const data = await lmsRes.json()
-        const max = data?.max_context_length ?? data?.context_length
-        if (max && Number(max) > 0) return remember(Number(max))
-      }
-    } catch { /* fall through */ }
+    const root = serverRoot(this.baseUrl)
+    const v1 = v1Root(this.baseUrl)
+    const id = encodeURIComponent(model)
 
-    // 2. Generic /v1/models/<id> — vLLM, llama.cpp server, etc. expose Context
-    //    unter wechselnden Keys. Wir akzeptieren das erste was > 0 ist.
-    try {
-      const res = await localFetch(
-        `${this.baseUrl}/models/${encodeURIComponent(model)}`,
-        this.probeInit(signal),
-      )
-      if (res.ok) {
-        const data = await res.json()
-        const ctx =
-          data?.context_window ??
-          data?.max_model_len ??
-          data?.n_ctx_train ??
-          data?.context_length
-        if (ctx && Number(ctx) > 0) return remember(Number(ctx))
-      }
-    } catch { /* fall through */ }
+    const lms = parseLmStudioModel(await this.probeJson(`${root}/api/v0/models/${id}`, signal))
+    if (lms.max) return remember(lms.max, lms.max)
+    if (lms.loaded) return remember(lms.loaded, lms.loaded)
+
+    const generic = parseGenericModelContext(await this.probeJson(`${v1}/models/${id}`, signal))
+    if (generic) return remember(generic, generic)
+
+    const props = parseLlamaCppProps(await this.serverFact('props', `${root}/props`, signal))
+    if (props) return remember(props, props)
+
+    const list = parseModelsListContext(
+      await this.serverFact('models', `${v1}/models`, signal),
+      model,
+    )
+    if (list.window) return remember(list.window, list.trained ?? list.window)
+    if (list.trained) return remember(list.trained, list.trained)
+
+    const kobold = parseKoboldMaxContext(
+      await this.serverFact('kobold', `${root}/api/extra/true_max_context_length`, signal),
+    )
+    if (kobold) return remember(kobold, kobold)
 
     return remember(null)
   }
+
+  /**
+   * Eine Auskunft ueber den SERVER, hoechstens einmal je Endpunkt und
+   * Fuenfminutenfenster.
+   *
+   * `/props`, die Modellliste und KoboldCpps Endpunkt beschreiben die
+   * Maschine, nicht ein Modell. Ohne diese Ablage haette eine Modellliste mit
+   * zwanzig Eintraegen zwanzig Mal dasselbe `/props` geholt, und genau diese
+   * N-plus-1-Rechnung hat die Auflistung an LU Cloud schon einmal auf
+   * einundzwanzig Sekunden gedehnt. Das `/props` teilt sich die Ablage mit der
+   * Werkzeugfrage aus G37: dieselbe Antwort, zwei Leser, eine Anfrage.
+   */
+  private async serverFact(
+    kind: 'props' | 'models' | 'kobold',
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const now = Date.now()
+    let entry = OpenAIProvider.serverFacts.get(this.baseUrl)
+    if (!entry || now - entry.at >= 300_000) {
+      entry = { at: now, asked: {} }
+      OpenAIProvider.serverFacts.set(this.baseUrl, entry)
+    }
+    // Gespeichert wird das VERSPRECHEN, nicht die Antwort. `listModels` faehrt
+    // alle Modelle mit Promise.all parallel, und wer erst nach dem Warten
+    // ablegt, hat zwanzig gleichzeitige Anfragen auf dieselbe URL, bevor die
+    // erste zurueck ist. Gemessen an dieser Stelle: drei Modelle, drei
+    // /props. `probeJson` wirft nie, also ist ein abgelegtes Versprechen
+    // gefahrlos.
+    if (!(kind in entry.asked)) entry.asked[kind] = this.probeJson(url, signal)
+    return await entry.asked[kind]
+  }
+
+  /** Server-weite Metadaten je Endpunkt (GH #129), siehe `serverFact`. */
+  private static serverFacts = new Map<
+    string,
+    { at: number; asked: Partial<Record<'props' | 'models' | 'kobold', Promise<unknown>>> }
+  >()
 
   /**
    * G32: per-model tool capability from LM Studio's enhanced listing
@@ -1175,21 +1287,17 @@ export class OpenAIProvider implements ProviderClient {
    * the optimistic default stands (vLLM and friends are untouched).
    */
   private async fetchServerToolCaps(): Promise<boolean | undefined> {
-    const propsUrl = this.baseUrl.replace(/\/v1\/?$/, '') + '/props'
-    try {
-      const res = await localFetch(propsUrl, this.probeInit())
-      if (!res.ok) return undefined
-      const data = await res.json()
-      const flag = data?.chat_template_caps?.supports_tools
-      return typeof flag === 'boolean' ? flag : undefined
-    } catch {
-      return undefined
-    }
+    // GH #129: dasselbe `/props`, das die Kontextabfrage liest, aus derselben
+    // Ablage. Vorher holten die beiden Fragen die Antwort getrennt.
+    const data = await this.serverFact('props', `${serverRoot(this.baseUrl)}/props`)
+    const flag = prop(prop(data, 'chat_template_caps'), 'supports_tools')
+    return typeof flag === 'boolean' ? flag : undefined
   }
 
   /** Probe results per endpoint+model (audit E5). Static, not an instance
-   *  field: the lu-cloud provider builds a fresh delegate per call. */
-  private static probeCache = new Map<string, { at: number; ctx: number | null }>()
+   *  field: the lu-cloud provider builds a fresh delegate per call. `max` ist
+   *  die trainierte Decke, wenn der Server sie mitgeliefert hat (GH #129). */
+  private static probeCache = new Map<string, { at: number; ctx: number | null; max?: number }>()
 
   /**
    * How far the thinking knob had to be walked down for an endpoint and model,
@@ -1289,35 +1397,68 @@ export class OpenAIProvider implements ProviderClient {
       OpenAIProvider.probeCache.set(cacheKey, { at: Date.now(), ctx })
       return ctx
     }
-    const lmStudioBase = this.baseUrl.replace(/\/v1\/?$/, '/api/v0')
-    if (lmStudioBase === this.baseUrl) return remember(null)
-    try {
-      const res = await localFetch(
-        `${lmStudioBase}/models/${encodeURIComponent(model)}`,
-        this.probeInit(),
-      )
-      if (!res.ok) return remember(null)
-      const data = await res.json()
-      const loaded = data?.loaded_context_length
-      if (loaded && Number(loaded) > 0) return remember(Number(loaded))
-    } catch { /* not LM Studio — no enhanced API */ }
+    const root = serverRoot(this.baseUrl)
+    const lms = parseLmStudioModel(
+      await this.probeJson(`${root}/api/v0/models/${encodeURIComponent(model)}`),
+    )
+    if (lms.loaded) return remember(lms.loaded)
+    // GH #129: llama.cpp hat keine erweiterte API, aber `/props` nennt mit
+    // `default_generation_settings.n_ctx` genau dasselbe, naemlich das
+    // wirklich allokierte Fenster. Bis hierher stieg diese Abfrage aus, sobald
+    // die Basis-URL nicht auf `/v1` endete, also bei jedem llama-server auf
+    // seinem eigenen Standardpfad http://localhost:8080.
+    const props = parseLlamaCppProps(await this.probeJson(`${root}/props`))
+    if (props) return remember(props)
     return remember(null)
   }
 
-  async getContextLength(model: string, signal?: AbortSignal): Promise<number> {
-    // Cascade:
-    //   1. Server-declared context_length from the /models catalogue (LU
-    //      Cloud) — authoritative for the deployment, beats every heuristic
-    //   2. KNOWN_CONTEXT lookup (kein Network, instant)
-    //   3. probeContextFromServer (LM Studio enhanced + generic /v1/models/<id>)
-    //   4. Heuristik aus dem Modell-Namen
-    //   5. Konservativer 8192er-Fallback (in guessContextFromName)
+  /**
+   * Der Schluessel, unter dem die Fensterwahl des Nutzers liegt. Endpunkt und
+   * Modell, dieselbe Form wie `catalogKey`: zwei Server laden dasselbe Modell
+   * verschieden gross.
+   */
+  contextWindowKey(model: string): string {
+    return contextWindowKey(this.baseUrl, model)
+  }
+
+  /**
+   * Das Fenster UND woher es kommt (GH #129).
+   *
+   * Kaskade, in dieser Reihenfolge und aus diesen Gruenden:
+   *   1. Die Wahl des Nutzers. Wer eine Zahl gesetzt hat, hat sie gesetzt.
+   *   2. Das `context_length` aus dem /models-Katalog der Bereitstellung.
+   *      Vom Server gesagt, schlaegt jede Heuristik.
+   *   3. KNOWN_CONTEXT. Eine Tabelle in DIESEM Haus, kein Server hat sie
+   *      bestaetigt, also `guess`: sie kann veraltet sein, und aus ihr darf
+   *      kein hartes Budget abgeleitet werden.
+   *   4. Die Metadaten-Abfragen (probeWindow).
+   *   5. Die Namensheuristik, mit 8192 als letztem Boden. Geraten.
+   */
+  async getContextWindow(model: string, signal?: AbortSignal): Promise<ResolvedContextWindow> {
+    const chosen = this.userWindow(model)
+    if (chosen > 0) return { tokens: chosen, source: 'user', modelMax: 0 }
     const catalog = catalogContext.get(this.catalogKey(model))
-    if (catalog && catalog > 0) return catalog
-    if (KNOWN_CONTEXT[model]) return KNOWN_CONTEXT[model]
-    const probed = await this.probeContextFromServer(model, signal)
-    if (probed) return probed
-    return guessContextFromName(model)
+    if (catalog && catalog > 0) return { tokens: catalog, source: 'probe', modelMax: catalog }
+    if (KNOWN_CONTEXT[model]) {
+      return { tokens: KNOWN_CONTEXT[model], source: 'guess', modelMax: 0, guessKind: 'table' }
+    }
+    const probed = await this.probeWindow(model, signal)
+    if (probed) return { tokens: probed.tokens, source: 'probe', modelMax: probed.modelMax }
+    return { tokens: guessContextFromName(model), source: 'guess', modelMax: 0, guessKind: 'name' }
+  }
+
+  /** Die gespeicherte Wahl des Nutzers fuer dieses Modell, 0 = keine. */
+  private userWindow(model: string): number {
+    try {
+      const map = useSettingsStore.getState().settings.contextWindowByModel
+      return storedWindow(map, this.contextWindowKey(model))
+    } catch {
+      return 0
+    }
+  }
+
+  async getContextLength(model: string, signal?: AbortSignal): Promise<number> {
+    return (await this.getContextWindow(model, signal)).tokens
   }
 
   // ── Message conversion ───────────────────────────────────────

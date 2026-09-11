@@ -9,6 +9,10 @@ import { newestCompaction, isModelVisible } from '../../lib/run-compact-command'
 // 8192/1000 und dort 8192/1024, also `8.2k` neben `8K` fuer eine einzige Zahl
 // (Gegenprobe G2, 04.09.2026).
 import { formatContextWindow } from '../../lib/formatters'
+// GH #129: der Nenner sagt jetzt auch, woher er kommt. Eine geratene Zahl
+// sieht genauso aus wie eine gemessene, und der Melder hat zwei Wochen lang
+// eine geratene fuer eine Zusage gehalten.
+import { SOURCE_LABEL } from '../../lib/context-source'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
 
 export function TokenCounter() {
@@ -89,7 +93,9 @@ export function TokenCounter() {
       ? 'Ollama num_ctx'
       : ctx.provider === 'builtin'
         ? 'LU Engine loaded context'
-        : 'model context'
+        : ctx.provider === 'custom'
+          ? `server context, ${SOURCE_LABEL[ctx.source]}`
+          : `model context, ${SOURCE_LABEL[ctx.source]}`
   const capped = ctx.sendWindow > 0 && ctx.contextWindow > ctx.sendWindow
   // Dieselbe Schreibweise wie die sichtbare Zeile darunter. Bis zur
   // Nachpruefung G3 am 04.09.2026 stand hier `formatCount`, also las der Kunde

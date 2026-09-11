@@ -90,9 +90,20 @@ describe('the side probes on the send path are bounded and cancellable', () => {
     ))
 
     expect(chunks.map(c => c.content).join('')).toBe('Hi')
-    // The heuristic still produced a usable budget instead of nothing.
+    /*
+     * GH #129 hat die zweite Zusage dieser Probe gedreht.
+     *
+     * Hier stand `max_tokens > 0`: "die Heuristik hat trotzdem ein Budget
+     * geliefert". Genau dieses Budget war der zweite Teil des Fehlers. Wenn
+     * die Abfrage nichts geliefert hat, kennt niemand das Fenster, und eine
+     * aus dem Modellnamen geratene Zahl auf die Leitung zu legen liest sich
+     * beim Server als Zusage. Der Melder bekam darauf "token limit exceeded".
+     *
+     * Die Zusage dieser Probe bleibt: die Nachricht geht raus. Ohne Feld
+     * nimmt der Server seine eigene Voreinstellung, und die kennt er.
+     */
     const body = JSON.parse(String(localFetchStream.mock.calls[0][1].body))
-    expect(body.max_tokens).toBeGreaterThan(0)
+    expect(body).not.toHaveProperty('max_tokens')
   })
 
   it('a probed window still wins over the name heuristic', async () => {

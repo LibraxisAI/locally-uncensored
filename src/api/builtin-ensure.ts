@@ -282,6 +282,7 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
   // promised 32K (counter-check round 2, 2026-08-29). See lib/builtin-ctx.ts.
   const keepCtx = preservedSwapCtx({
     tuningCtx: settingsTuning?.ctx,
+    tuningChosen: settingsTuning?.ctxChosen,
     currentCtx: status?.ctx,
     ctxTrain: hit.ctx_train,
   })
@@ -344,7 +345,12 @@ export async function ensureBuiltinAgentCtx(modelName: string): Promise<void> {
   if (!isManagedBuiltinSlot()) return
   const settings = useSettingsStore.getState().settings
   const tuning = settings.builtinEngine as (typeof settings.builtinEngine) | undefined
-  if (tuning && typeof tuning.ctx === 'number' && tuning.ctx > 0 && tuning.ctx !== ENGINE_DEFAULT_CTX) {
+  // GH #129: die Marke zuerst. Ohne sie war "Nutzer hat 8K gewaehlt" von "nie
+  // angefasst" nicht zu unterscheiden, und der Deckel hob den Motor auf
+  // min(ctx_train, 32768) gegen den ausdruecklichen Wunsch. Jede andere Zahl
+  // war schon vorher eine Entscheidung.
+  if (tuning && typeof tuning.ctx === 'number' && tuning.ctx > 0 &&
+      (tuning.ctxChosen === true || tuning.ctx !== ENGINE_DEFAULT_CTX)) {
     return // explicit expert choice, do not second-guess it
   }
 

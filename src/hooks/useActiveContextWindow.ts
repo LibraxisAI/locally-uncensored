@@ -10,8 +10,16 @@ import { effectiveSendWindow } from '../lib/send-window'
 import { isManagedBuiltinSlot } from '../api/builtin-ensure'
 import { ENGINE_DEFAULT_CTX } from '../lib/builtin-ctx'
 import { bundledEngineStatus, bundledCtxTrain } from '../api/engine'
+import { getProviderForModel } from '../api/providers'
+import { isPrivateOrLanHost, hostnameOf } from '../api/backend'
+import { useProviderStore } from '../stores/providerStore'
+import type { ContextSource } from '../lib/context-source'
+import type { ProviderClient } from '../api/providers/types'
+import { resolveActiveWindow } from '../lib/context-source'
 
-export type CtxProvider = 'ollama' | 'lmstudio' | 'builtin' | 'cloud' | 'unknown'
+/** `custom` ist jeder andere OpenAI-kompatible Server auf diesem Rechner oder
+ *  im LAN: llama.cpp, vLLM, KoboldCpp, text-generation-webui (GH #129). */
+export type CtxProvider = 'ollama' | 'lmstudio' | 'builtin' | 'cloud' | 'custom' | 'unknown'
 
 export interface ActiveContext {
   /** Which backend the active model runs on. */
@@ -33,11 +41,50 @@ export interface ActiveContext {
   isTrue: boolean
   /** Whether the user can change it from the dropdown (local backends only). */
   adjustable: boolean
+  /**
+   * Woher die Zahl stammt: vom Server, vom Nutzer, oder geraten (GH #129).
+   * Der Zaehler schreibt es in seinen Werkzeugtext, und `applyMaxTokens`
+   * leitet nur aus den ersten beiden ein `max_tokens` ab.
+   */
+  source: ContextSource
+  /**
+   * Der Schluessel, unter dem die Wahl des Nutzers gespeichert wird
+   * (`<baseUrl>|<modelId>`). Leer, wo es keine modellgenaue Wahl gibt.
+   */
+  windowKey: string
 }
 
 /** What the hook reports while there is no model, or none resolved yet. */
 const NO_CONTEXT: ActiveContext = {
-  provider: 'unknown', contextWindow: 0, modelMax: 0, sendWindow: 0, isTrue: false, adjustable: false,
+  provider: 'unknown', contextWindow: 0, modelMax: 0, sendWindow: 0, isTrue: false,
+  adjustable: false, source: 'guess', windowKey: '',
+}
+
+/**
+ * Laeuft der eingestellte OpenAI-Slot auf diesem Rechner oder im LAN?
+ *
+ * Dieselbe Frage, die `isLanBackend` im Provider stellt, und bewusst dieselbe
+ * Antwortquelle: die Voreinstellung des Slots ODER der Hostname. Ein fremder
+ * Host im Internet bekommt weder Metadaten-Abfragen noch einen Fensterwaehler.
+ */
+function isLanOpenAiBackend(): boolean {
+  try {
+    const cfg = useProviderStore.getState().providers.openai
+    if (!cfg) return false
+    return cfg.isLocal === true || isPrivateOrLanHost(hostnameOf(cfg.baseUrl))
+  } catch {
+    return false
+  }
+}
+
+/** Der Client zu einem Modellnamen, ohne zu werfen, wenn der Slot fehlt. */
+function safeProviderFor(modelName: string): { provider: ProviderClient | null; modelId: string } {
+  try {
+    const { provider, modelId } = getProviderForModel(modelName)
+    return { provider, modelId }
+  } catch {
+    return { provider: null, modelId: displayModelName(modelName) }
+  }
 }
 
 /**
@@ -96,6 +143,8 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
           sendWindow: ollamaCtx,
           isTrue: true,
           adjustable: true,
+          source: override > 0 ? 'user' : max > 0 ? 'probe' : 'guess',
+          windowKey: '',
         })
         return
       }
@@ -120,6 +169,9 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             sendWindow: status.ctx,
             isTrue: true,
             adjustable: true,
+            // Der laufende Motor hat gesagt, mit welchem -c er startete.
+            source: 'probe',
+            windowKey: '',
           })
         } else {
           // Managed but not up (offloaded / before first send): the next
@@ -136,6 +188,9 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             sendWindow: nextCtx,
             isTrue: false,
             adjustable: true,
+            // Eine Vorhersage des naechsten Starts, kein Messwert.
+            source: 'guess',
+            windowKey: '',
           })
         }
         return
@@ -160,6 +215,42 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             sendWindow: lmCtx,
             isTrue: loaded > 0,
             adjustable: true,
+            source: loaded > 0 ? 'probe' : override > 0 ? 'user' : 'guess',
+            windowKey: '',
+          })
+          return
+        }
+      }
+
+      /*
+       * GH #129: jeder ANDERE OpenAI-kompatible Server auf diesem Rechner oder
+       * im LAN. llama.cpp, vLLM, KoboldCpp, text-generation-webui, Jan.
+       *
+       * Bis hierher fielen sie alle in den Cloud-Zweig unten, und der tut
+       * zweierlei, was fuer eine eigene Maschine falsch ist: er nennt das
+       * Fenster nicht verstellbar (also kein Waehler, obwohl der Nutzer der
+       * Einzige ist, der die Zahl kennt), und er zieht den BEZAHLTEN
+       * Sendedeckel ab, obwohl hier niemand etwas bezahlt. Beim Melder ergab
+       * das aus einer geratenen 8192 die Anzeige "6.4K" (8192 mal 0,8, geteilt
+       * durch 1024) neben einem Modell mit 262144.
+       */
+      if (providerId === 'openai' && isLanOpenAiBackend()) {
+        const { provider, modelId } = safeProviderFor(activeModel)
+        const resolved = provider?.getContextWindow
+          ? await provider.getContextWindow(modelId).catch(() => null)
+          : null
+        if (cancelled) return
+        if (provider && resolved && resolved.tokens > 0) {
+          const win = resolveActiveWindow({ resolved, localBackend: true })
+          setState({
+            provider: 'custom',
+            contextWindow: win.contextWindow,
+            modelMax: win.modelMax,
+            sendWindow: win.sendWindow,
+            isTrue: win.isTrue,
+            adjustable: win.adjustable,
+            source: win.source,
+            windowKey: provider.contextWindowKey?.(modelId) ?? '',
           })
           return
         }
@@ -169,7 +260,11 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
       // DEFAULT_CONTEXT_CAP and the local num_ctx override are local-runtime
       // levers — applying them here would falsify the denominator for
       // 128k-context hosted models. ──
-      const max = await getModelMaxTokens(activeModel).catch(() => 4096)
+      const { provider: cloudClient, modelId: cloudId } = safeProviderFor(activeModel)
+      const cloudResolved = cloudClient?.getContextWindow
+        ? await cloudClient.getContextWindow(cloudId).catch(() => null)
+        : null
+      const max = cloudResolved?.tokens || await getModelMaxTokens(activeModel).catch(() => 4096)
       if (cancelled) return
       setState({
         provider: 'cloud',
@@ -184,7 +279,20 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
           capEnabled,
         }),
         isTrue: false,
+        // Aus der Ferne ist das Fenster keine Sache des Nutzers: es gehoert
+        // einer fremden Bereitstellung, und der Sendedeckel ist hier der
+        // Hebel, der den Nenner regelt.
         adjustable: false,
+        /*
+         * Woher die Zahl kommt, auch wenn sie hier niemand verstellen kann.
+         * Der Katalog eines Anbieters (LU Cloud) und die feste Liste von
+         * Anthropic sind Auskuenfte des Betreibers; was die
+         * KNOWN_CONTEXT-Tabelle dieses Hauses oder die Namensheuristik
+         * liefert, ist geraten, und der Werkzeugtext des Zaehlers sagt das
+         * jetzt auch.
+         */
+        source: cloudResolved?.source ?? 'probe',
+        windowKey: '',
       })
     })()
 
