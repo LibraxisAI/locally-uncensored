@@ -18,6 +18,7 @@ pub mod local_api;
 pub mod logging;
 pub mod media_cmds;
 pub mod mlx;
+pub mod mlx_snapshot;
 pub mod oauth;
 pub mod process;
 pub mod proxy;
