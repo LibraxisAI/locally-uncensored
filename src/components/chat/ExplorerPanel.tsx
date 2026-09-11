@@ -67,6 +67,7 @@ import { FilePreview } from './FilePreview'
 import { useChatStore } from '../../stores/chatStore'
 import { useTodoStore } from '../../stores/todoStore'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { workspacePickRefusedMessage } from '../../lib/workspace-rejected'
 
 const fsList: FsList = (args) => backendCall('fs_list', args as unknown as Record<string, unknown>)
 
@@ -181,20 +182,41 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
     if (next.includes(node.path) && !listings[node.path]) load(node.path)
   }
 
-  // Native folder picker. Tauri uses the Rust dialog, dev mode a prompt.
+  // Der Ordner-Dialog der gepackten App (Fehler D, aldrich_ironhart,
+  // 08.09.2026).
+  //
+  // `asWorkspace: true` laesst die Rust-Seite einen Ordner, den sie nicht als
+  // Arbeitsordner annimmt, MELDEN statt den Pfad zurueckzugeben, als waere
+  // nichts gewesen. Vorher landete so ein Ordner in der Kopfzeile, und jede
+  // Dateioperation darunter antwortete mit "pick it again to allow it", also
+  // genau mit dem, was der Nutzer gerade getan hatte. Ein abgelehnter Ordner
+  // wird deshalb GAR NICHT gesetzt.
+  //
+  // Der getippte Pfad als RUECKFALL ist weg, und nur er. Auf die
+  // Erlaubnisliste der gepackten App kommt ein Ordner ausschliesslich ueber
+  // `system::pick_folder` (weiter zu `remember_picked_root`); ein in ein
+  // `window.prompt` getippter Pfad war dort also ein Arbeitsordner, der nie
+  // funktionieren konnte, und der Weg heraus aus dem Fehler war derselbe
+  // Prompt. Im Browser des Dev-Servers ist es umgekehrt: dort gibt es weder
+  // einen nativen Dialog noch ueberhaupt eine Erlaubnisliste (die Begruendung
+  // steht in lib/dev-fs-jail.ts), der getippte Pfad ist der vorgesehene Weg
+  // und er funktioniert. Deshalb steht er dort und nur dort.
   const pickFolder = async () => {
-    let picked: string | null = null
-    if (isTauri()) {
-      try {
-        const invoke = (await import('@tauri-apps/api/core')).invoke
-        picked = await invoke<string | null>('pick_folder', { defaultPath: root || undefined })
-      } catch {
-        picked = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
-      }
-    } else {
-      picked = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
+    setError(null)
+    if (!isTauri()) {
+      const typed = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
+      if (typed) setWorkingDirectory(typed)
+      return
     }
-    if (picked) setWorkingDirectory(picked)
+    try {
+      const picked = await backendCall<string | null>('pick_folder', {
+        defaultPath: root || undefined,
+        asWorkspace: true,
+      })
+      if (picked) setWorkingDirectory(picked)
+    } catch (e) {
+      setError(workspacePickRefusedMessage(e))
+    }
   }
 
   // Give the folder back (A8). Users reported no way out of a folder they had
