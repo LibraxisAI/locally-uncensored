@@ -33,6 +33,7 @@ import { idbKeysToRestore, mayReloadForIdbRestore } from '../../lib/idb-restore'
 import { log } from '../../lib/logger'
 import { withDetail } from '../../lib/error-text'
 import { pickForMode, replacedBehindTheUsersBack } from '../../lib/active-model-mode'
+import { oweEngineResume } from '../../lib/engine-resume-policy'
 import { announceChatModelReplaced } from '../../api/lu-engine-switch'
 import type { TextChunk } from '../../types/rag'
 import type { Role } from '../../types/chat'
@@ -199,7 +200,7 @@ export function AppShell() {
     // An empty list is not evidence that a model is gone; it is the absence
     // of evidence, and this effect only ever runs again the moment the real
     // list arrives.
-    const { activeModel, setActiveModel } = useModelStore.getState()
+    const { activeModel, setActiveModel, lastLocalModel } = useModelStore.getState()
     // The rule itself lives in lib/active-model-mode.ts, where it can be
     // tested. It keeps chat models only (a ComfyUI checkpoint shares this
     // list and routes to Ollama as a chat model, where every send fails), it
@@ -214,8 +215,13 @@ export function AppShell() {
     // which hosted model came out, which is why clicking DeepSeek V3.2 landed
     // on Kimi K3 (Nebenbefund 1, R10 re-measure 2026-08-30). The request is
     // dropped the moment it is answered, so it never steers a later flip.
+    //
+    // Das fuenfte ist die Gegenrichtung: die lokale Wahl von vor dem Ausflug in
+    // die Cloud. Ohne sie stand der Waehler nach Cloud an und wieder aus auf
+    // `Select a chat model`, weil der Ersatz mindestens 7B haben muss und das
+    // Modell der Box 3B hat (Fund 1, T3 auf der Box, 11.09.2026).
     const { pendingCloudModel, setPendingCloudModel } = useUIStore.getState()
-    const pick = pickForMode(activeModel, allModels, appMode, pendingCloudModel)
+    const pick = pickForMode(activeModel, allModels, appMode, pendingCloudModel, lastLocalModel)
     // Und wenn dieser Griff die Wahl des Nutzers ersetzt, sagt die App es.
     // Gegenprobe G1, 04.09.2026: Provider LM Studio wieder herausgenommen, das
     // gewaehlte Modell ging mit, und die Regel nahm den ersten Eintrag der
@@ -246,20 +252,41 @@ export function AppShell() {
   // ComfyUI VRAM are freed by offload_local_models; LM Studio via its own JIT
   // unload (`lms unload --all`). Local mode reloads LAZILY on first use
   // (chat/voice/render) — nothing is pre-warmed. Fires on entering cloud
-  // (switch OR launch-in-cloud); local mode is a no-op.
+  // (switch OR launch-in-cloud).
+  //
+  // Und der Rueckweg steht seit Fund 1 daneben (T3 auf der Box, 11.09.2026).
+  // Das Anhalten war nie das Problem, das Zurueckkommen war es: die Einbettung
+  // kam von selbst wieder, der Chatmotor auf 8127 blieb 77 Minuten zu, ohne
+  // ein Wort. Beides haengt an derselben Runde `fetchModels`, der eine Teil mit
+  // einem Schuss, den der Start der App laengst verbraucht hatte. Hier wird der
+  // Schuss wieder faellig gemacht (der Motor ist gerade angehalten worden), und
+  // der Weg zurueck bittet um dieselbe Runde, die der Nutzer sonst mit einem
+  // Klick in den Waehler ausloest. Kein zweiter Startweg: gestartet wird in
+  // hooks/useModels, genau wie beim Start der App.
+  const warInDerCloud = useRef(false)
   useEffect(() => {
-    if (!isTauri() || appMode !== 'cloud') return
-    // Level (a): silent on purpose, both of them. These free memory the user
-    // is no longer using; they are not the switch itself, which has already
-    // happened by the time they run. The LM Studio one in particular REJECTS
-    // by design on every machine without LM Studio installed
-    // ("lms CLI not found", install.rs:3511) — reporting that would put an
-    // error in front of the majority of users every time they go to Cloud,
-    // about a program they never installed. If a model really does stay
-    // resident, it shows up where the user can act on it: the backend panel
-    // in Settings.
-    backendCall('offload_local_models').catch(() => {})
-    backendCall('lmstudio_unload_model', { model: '--all' }).catch(() => {})
+    if (!isTauri()) return
+    if (appMode === 'cloud') {
+      warInDerCloud.current = true
+      oweEngineResume()
+      // Level (a): silent on purpose, both of them. These free memory the user
+      // is no longer using; they are not the switch itself, which has already
+      // happened by the time they run. The LM Studio one in particular REJECTS
+      // by design on every machine without LM Studio installed
+      // ("lms CLI not found", install.rs:3511) — reporting that would put an
+      // error in front of the majority of users every time they go to Cloud,
+      // about a program they never installed. If a model really does stay
+      // resident, it shows up where the user can act on it: the backend panel
+      // in Settings.
+      backendCall('offload_local_models').catch(() => {})
+      backendCall('lmstudio_unload_model', { model: '--all' }).catch(() => {})
+      return
+    }
+    // Der Start der App ist kein Rueckweg: dort holt die erste Runde die
+    // Modelliste ohnehin, und eine zweite waere reine Arbeit.
+    if (!warInDerCloud.current) return
+    warInDerCloud.current = false
+    window.dispatchEvent(new CustomEvent('lu-models-refresh'))
   }, [appMode])
 
   // Push the persisted ComfyUI GPU override to the backend on boot + change

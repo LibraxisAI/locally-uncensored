@@ -39,6 +39,18 @@ export interface PullState {
 interface ModelState {
   models: AIModel[]
   activeModel: string | null
+  /**
+   * Die letzte LOKALE Chatwahl, damit sie den Ausflug in die Cloud ueberlebt.
+   *
+   * Fund 1 der Kampagne 3.0.0 (T3, Box, 11.09.2026): Cloud an, Cloud aus, und
+   * der Waehler stand auf `Select a chat model`. `activeModel` traegt in der
+   * Cloud den Wolkennamen, der lokale Name war damit weg, und die Ersatzregel
+   * in lib/active-model-mode darf von sich aus nur Modelle ab 7B waehlen. Das
+   * Modell der Box hat 3B, also blieb nichts uebrig. Hier steht, was der
+   * Nutzer zuletzt lokal gewaehlt hatte; gelesen wird es NUR auf dem Rueckweg
+   * aus der Cloud.
+   */
+  lastLocalModel: string | null
   activePulls: Record<string, PullState>
   isModelLoading: boolean
   categoryFilter: ModelCategory
@@ -135,6 +147,7 @@ export const useModelStore = create<ModelState>()(
     (set, get) => ({
       models: [],
       activeModel: null,
+      lastLocalModel: null,
       activePulls: {},
       isModelLoading: false,
       categoryFilter: 'all',
@@ -196,7 +209,16 @@ export const useModelStore = create<ModelState>()(
       setActiveModel: (name) => {
         const prev = get().activeModel
         const prevModel = prev ? get().models.find((m) => m.name === prev) : undefined
-        set({ activeModel: name })
+        // Dieselbe Tuer, durch die JEDE Wahl geht, merkt sich die lokale davon.
+        // Ein Wolkenmodell und eine Zeile, die gar keine Chatzeile ist, sind
+        // keine lokale Wahl; eine geraeumte Wahl (null) loescht die Erinnerung
+        // NICHT, denn sie wird nur gegen die lebende Liste gelesen, und was
+        // dort fehlt, kommt ueber sie auch nicht zurueck.
+        const neueZeile = name ? get().models.find((m) => m.name === name) : undefined
+        const istLokaleChatwahl =
+          !!neueZeile && neueZeile.provider !== 'lu-cloud' &&
+          neueZeile.type !== 'image' && neueZeile.type !== 'video'
+        set(istLokaleChatwahl ? { activeModel: name, lastLocalModel: name } : { activeModel: name })
         // Befund 4 of the abnahme counter-check (2026-08-29): the open chat
         // kept the model it was created with while the wire of that same turn
         // already carried the new one. Every path that changes the selection
@@ -412,7 +434,14 @@ export const useModelStore = create<ModelState>()(
     {
       name: 'chat-models',
       storage: safeJSONStorage(),
-      partialize: (state) => ({ activeModel: state.activeModel, categoryFilter: state.categoryFilter }),
+      // `lastLocalModel` liegt mit im Speicher, weil der Ausflug in die Cloud
+      // einen App-Neustart ueberdauern kann: wer die App in der Cloud schliesst
+      // und am naechsten Tag lokal weiterarbeitet, bekommt dieselbe Wahl zurueck.
+      partialize: (state) => ({
+        activeModel: state.activeModel,
+        lastLocalModel: state.lastLocalModel,
+        categoryFilter: state.categoryFilter,
+      }),
     }
   )
 )

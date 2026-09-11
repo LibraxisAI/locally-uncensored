@@ -176,7 +176,10 @@ describe('the wiring, so the rule reaches the screen', () => {
   })
 
   it('the mode rule is asked with the request, and drops it once answered', () => {
-    expect(shell).toMatch(/pickForMode\(activeModel, allModels, appMode, pendingCloudModel\)/)
+    // Das fuenfte Argument ist die Gegenrichtung (Fund 1, T3 auf der Box): die
+    // lokale Wahl von vor dem Ausflug in die Cloud. Der Auftrag hier bleibt das
+    // vierte.
+    expect(shell).toMatch(/pickForMode\(activeModel, allModels, appMode, pendingCloudModel, lastLocalModel\)/)
     expect(shell).toMatch(/if \(pick\.usedRequest\) setPendingCloudModel\(null\)/)
   })
 

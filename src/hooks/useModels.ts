@@ -13,7 +13,7 @@ import {
 import { parseNDJSONStream } from '../api/stream'
 import { log } from '../lib/logger'
 import { cloudModelRow } from '../lib/cloud-model-row'
-import { runEngineResume } from '../lib/engine-resume-policy'
+import { runEngineResume, engineResumeIsOwed, spendEngineResume } from '../lib/engine-resume-policy'
 import { engineStartIsWorthRetrying } from '../lib/engine-start-failure'
 import { commandIsUnavailable } from '../lib/engine-command-availability'
 import { dropDuplicateLuEngineRows, dropStandbyRowsServedByLuEngine, LU_ENGINE_GROUP, zeileZumEinklappen } from '../lib/lu-engine-rows'
@@ -44,9 +44,9 @@ import type { PullProgress, AIModel, ModelCategory, ImageModel, VideoModel, Clou
 // children are reaped on app quit and nothing on the Rust side respawns them,
 // so after a relaunch the persisted active model points at a dead
 // 127.0.0.1:8127 (and RAG at a dead 8128) until the user re-picks the model.
-// Runs at most once per app session (fetchModels fires repeatedly), and only
-// starts a server that reports running:false.
-let builtinResumeAttempted = false
+// Runs at most once per ANLASS (fetchModels fires repeatedly), and only
+// starts a server that reports running:false. Der Schuss selbst liegt in
+// lib/engine-resume-policy, weil der Cloud-Schalter ihn wieder faellig macht.
 
 // GH #118: the boot resume used to be a single shot, and a failure was
 // swallowed without a word. The one moment it runs is the worst moment to ask
@@ -64,6 +64,10 @@ async function resumeBuiltinEngines(bundled: BundledModel[]) {
   // attempts. Waiting its turn is how a slow chat start used to take
   // Document-Chat down with it (review S3).
   const embedResumed = resumeEmbedServer(bundled)
+  // Der letzte Wurf, damit ein aufgegebener Wiederanlauf denselben Satz sagen
+  // kann wie jeder andere Fehlstart. Vorher stand er nur im Logbuch, und der
+  // Nutzer sass vor einem Chat, der ohne ein Wort nicht antwortete.
+  let letzterFehler: unknown = null
   const outcome = await runEngineResume({
     status: () => bundledEngineStatus(),
     eligible: () => {
@@ -81,10 +85,21 @@ async function resumeBuiltinEngines(bundled: BundledModel[]) {
     // and another Ollama eviction (review S3).
     worthRetrying: engineStartIsWorthRetrying,
     sleep: wait,
-    onError: (attempt, err) =>
-      log.warn('[useModels] LU Engine resume failed', { attempt, err }),
+    onError: (attempt, err) => {
+      letzterFehler = err
+      log.warn('[useModels] LU Engine resume failed', { attempt, err })
+    },
   })
   log.info('[useModels] LU Engine resume', outcome)
+  // Aufgegeben heisst: die App hat es versucht, der Motor laeuft nicht, und
+  // niemand hat es angestossen. Genau dann gehoert der Satz auf die stehende
+  // Zeile ueber dem Eingabefeld, wortgleich mit dem Fehlstart aus dem Waehler
+  // (api/lu-engine-switch), samt dem Satz, den llama-server selbst geschickt
+  // hat.
+  if (outcome.outcome === 'gave-up' && letzterFehler) {
+    const gewaehlt = useModelStore.getState().activeModel
+    if (gewaehlt) announceLuEngineStartFailure(gewaehlt, letzterFehler, false)
+  }
   await embedResumed
 }
 
@@ -347,8 +362,13 @@ export function useModels() {
       // the shot exactly once (a refusal is an answer, and it spends it
       // without a resume because there is no list to resume from), while no
       // answer at all teaches nothing and spends nothing.
-      const mayResume = backendAnswered && !builtinResumeAttempted
-      if (mayResume) builtinResumeAttempted = true
+      //
+      // In der Cloud wird nichts wiederbelebt UND nichts verbraucht: dort hat
+      // die App Motor und Einbettung gerade selbst angehalten, und ein Schuss,
+      // den eine Liste im Cloud-Modus verbraucht, fehlt genau auf dem Rueckweg.
+      const inDerCloud = useSettingsStore.getState().settings.appMode === 'cloud'
+      const mayResume = backendAnswered && !inDerCloud && engineResumeIsOwed()
+      if (mayResume) spendEngineResume()
       if (bundledRaw) {
         const bundled = bundledToAIModels(bundledRaw).filter(m => !isEmbeddingModel(m.name))
         // One file, one row: with the folder pointed at ~/.lmstudio/models,

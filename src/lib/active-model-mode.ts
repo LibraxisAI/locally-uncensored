@@ -59,6 +59,19 @@ export function pickForMode(
    * has to be in the list and still has to be usable in this mode.
    */
   requested: string | null = null,
+  /**
+   * Die lokale Wahl von vor dem Ausflug in die Cloud (stores/modelStore,
+   * `lastLocalModel`).
+   *
+   * Fund 1 der Kampagne 3.0.0 (T3, Box, 11.09.2026): Cloud an, Cloud aus, und
+   * der Waehler stand auf `Select a chat model`. In der Cloud traegt
+   * `activeModel` den Wolkennamen, auf dem Rueckweg faellt der durch, und was
+   * dann einspringt, muss `canAutoSelectChat` bestehen, also mindestens 7B
+   * haben. Das Modell auf der Box hat 3B, also sprang nichts ein. Die Wahl von
+   * Hand ist aber kein Vorschlag der App, sondern eine Ansage des Nutzers, und
+   * sie kommt hier zurueck, bevor der Kopf der Liste zum Zug kommt.
+   */
+  remembered: string | null = null,
 ): ModePick {
   // Nothing to judge against. THE guard: without it, the mount-time run of
   // this rule wipes a perfectly good persisted pick.
@@ -76,6 +89,19 @@ export function pickForMode(
 
   const current = activeModel ? models.find((m) => m.name === activeModel) : undefined
   if (current && wanted(current)) return { change: false, next: activeModel, usedRequest: false }
+
+  // Der Rueckweg aus der Cloud, und nur der: `current` ist hier eine
+  // Wolkenzeile, die in Local nichts verloren hat. Bevor der Kopf der Liste
+  // einspringt, bekommt die Wahl von vor dem Ausflug ihren Platz zurueck. Eng
+  // an diesen einen Fall gebunden, damit die Erinnerung nirgends sonst in eine
+  // Wahl hineinredet, die gerade aus einem anderen Grund geraeumt wurde.
+  const rueckwegAusDerCloud = appMode === 'local' && !!current && current.provider === 'lu-cloud'
+  const behalten = rueckwegAusDerCloud && remembered
+    ? models.find((m) => m.name === remembered)
+    : undefined
+  if (behalten && wanted(behalten)) {
+    return { change: activeModel !== behalten.name, next: behalten.name, usedRequest: false }
+  }
 
   const fallback = models.find(model => wanted(model) && canAutoSelectChat(model))
   if (activeModel === null && !fallback) return { change: false, next: null, usedRequest: false }
