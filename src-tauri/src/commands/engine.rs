@@ -251,6 +251,35 @@ pub(crate) fn build_server_args(model_path: &str, tuning: &EngineTuning, port: u
     args
 }
 
+/// The whole `llama-server` invocation as one line, for the log file.
+///
+/// Bug o of the 3.0.0 list: every line this module wrote went to `println!`,
+/// and a shipped Windows build has no stdout (`windows_subsystem = "windows"`,
+/// see the finding at the top of commands/logging.rs). So the file behind
+/// Settings, Troubleshoot said nothing at all about the engine: not the model,
+/// not the context, not the layer count, not the port. A user whose engine
+/// died on start could send a log that did not contain the start.
+///
+/// Quoting is for the human reading the file, not for a shell: a Windows model
+/// path contains spaces, and without quotes `-m C:\Program Files\...` reads
+/// like two arguments. Nothing here is ever executed, and nothing in this argv
+/// is a secret: it is paths, numbers and flags.
+pub(crate) fn command_line(binary: &Path, args: &[String]) -> String {
+    let quote = |s: &str| -> String {
+        if s.is_empty() || s.chars().any(char::is_whitespace) {
+            format!("\"{s}\"")
+        } else {
+            s.to_string()
+        }
+    };
+    let mut line = quote(&binary.to_string_lossy());
+    for a in args {
+        line.push(' ');
+        line.push_str(&quote(a));
+    }
+    line
+}
+
 /// Build the `llama-server` argv for the EMBEDDINGS server (P5). `--embeddings`
 /// switches llama-server into pooled-embedding mode so `/v1/embeddings`
 /// returns vectors instead of chat completions. `--pooling mean` matches how
@@ -866,7 +895,10 @@ fn wait_for_health(port: u16, timeout: Duration) -> Result<(), String> {
 enum HealthWait {
     Ready,
     /// The child we spawned is gone. Nothing more will happen on that port.
-    ChildExited,
+    /// Carries the process exit code, which is the single most useful number
+    /// in a support log for this failure and used to be thrown away: `None`
+    /// when a signal killed it, or when the status carried no code.
+    ChildExited(Option<i32>),
     TimedOut,
 }
 
@@ -887,14 +919,16 @@ fn wait_for_health_or_exit(state: &AppState, port: u16, timeout: Duration) -> He
         let gone = {
             let mut guard = state.bundled_engine.lock().unwrap();
             match guard.as_mut() {
-                Some(e) => e.child.try_wait().ok().flatten().is_some(),
-                None => true,
+                Some(e) => e.child.try_wait().ok().flatten().map(|s| s.code()),
+                // The slot was cleared under us, so there is no child left to
+                // wait on and no exit code to report.
+                None => Some(None),
             }
         };
-        if gone {
+        if let Some(code) = gone {
             // One last look: a server can bind, answer, and the process can
             // still be reaped between the two checks on a fast load.
-            return if engine_healthy(port) { HealthWait::Ready } else { HealthWait::ChildExited };
+            return if engine_healthy(port) { HealthWait::Ready } else { HealthWait::ChildExited(code) };
         }
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -1444,7 +1478,7 @@ const RESTORED_NOTE: &str = "The model that was serving before is running again.
 /// hier waere nichts, woran ein Nutzer etwas aendern koennte. Er wuerde nur
 /// die Fehlermeldung des eigentlichen Problems um Minuten verzoegern.
 fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> bool {
-    println!("[Engine] the switch failed, bringing back {}", vorher.model_path);
+    tracing::warn!(target: "engine", model = %vorher.model_path, port = vorher.port, "the model switch failed, bringing the previous model back");
     let ok = spawn_engine_attempt(
         state,
         binary,
@@ -1455,7 +1489,7 @@ fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> b
     )
     .is_ok();
     if !ok {
-        println!("[Engine] could not bring back {}", vorher.model_path);
+        tracing::error!(target: "engine", model = %vorher.model_path, port = vorher.port, "could not bring the previous model back");
     }
     ok
 }
@@ -1504,10 +1538,12 @@ fn start_after_stop(
     // ComfyUI that is not this machine's is reported as such instead of
     // reading like an idle one.
     match crate::commands::process::free_comfyui_memory(state) {
-        r if r.released() => println!("[Engine] asked ComfyUI to free VRAM before engine start"),
+        r if r.released() => {
+            tracing::info!(target: "engine", "asked ComfyUI to free VRAM before engine start")
+        }
         r => {
-            if let Some((target, why)) = r.not_responsible() {
-                println!("[Engine] did not free ComfyUI VRAM ({target}) — {why}");
+            if let Some((addr, why)) = r.not_responsible() {
+                tracing::info!(target: "engine", addr = %addr, reason = %why, "did not free ComfyUI VRAM");
             }
         }
     }
@@ -1519,11 +1555,11 @@ fn start_after_stop(
     // fine). Evict via keep_alive:0 — Ollama reloads lazily on its next use.
     match crate::commands::process::offload_ollama_loaded_models(state) {
         r if r.released() => {
-            println!("[Engine] asked Ollama to evict loaded models before engine start")
+            tracing::info!(target: "engine", "asked Ollama to evict loaded models before engine start")
         }
         r => {
-            if let Some((target, why)) = r.not_responsible() {
-                println!("[Engine] did not evict Ollama models ({target}) — {why}");
+            if let Some((addr, why)) = r.not_responsible() {
+                tracing::info!(target: "engine", addr = %addr, reason = %why, "did not evict Ollama models");
             }
         }
     }
@@ -1567,7 +1603,7 @@ fn start_after_stop(
         }
     };
     if port != preferred_port {
-        println!("[Engine] port {preferred_port} is taken, the LU Engine moves to {port}");
+        tracing::warn!(target: "engine", wanted = preferred_port, port, "the preferred port is taken, the LU Engine moves");
     }
     let desired_args =
         build_server_args(model_path, tuning, port, slot_dir, mmproj);
@@ -1577,7 +1613,7 @@ fn start_after_stop(
     let first = spawn_engine_attempt(state, &binary, &desired_args, model_path, port, ctx);
     let failure = match first {
         Ok(()) => {
-            println!("[Engine] LU Engine healthy on port {port}");
+            tracing::info!(target: "engine", port, attempt = 1, "the LU Engine is serving");
             return Ok(serde_json::json!({
                 "status": "started",
                 "port": port,
@@ -1594,7 +1630,7 @@ fn start_after_stop(
         return Err(start_failure_message(&failure, port, deadline));
     }
 
-    println!("[Engine] first start attempt exited immediately, retrying once");
+    tracing::warn!(target: "engine", port, "the first start attempt exited before it served, retrying once");
     std::thread::sleep(Duration::from_millis(1500));
     // A start that died ON THE PORT does not get better by using the same port
     // a second time, so the retry moves. The bind check above said the port was
@@ -1613,7 +1649,7 @@ fn start_after_stop(
     let retry_args = if retry_port == port {
         desired_args.clone()
     } else {
-        println!("[Engine] the first attempt could not open port {port}, retrying on {retry_port}");
+        tracing::warn!(target: "engine", port, retry_port, "the first attempt could not open the port, the retry moves");
         build_server_args(
             model_path,
             tuning,
@@ -1624,7 +1660,7 @@ fn start_after_stop(
     };
     match spawn_engine_attempt(state, &binary, &retry_args, model_path, retry_port, ctx) {
         Ok(()) => {
-            println!("[Engine] LU Engine healthy on port {retry_port} (second attempt)");
+            tracing::info!(target: "engine", port = retry_port, attempt = 2, "the LU Engine is serving");
             Ok(serde_json::json!({
                 "status": "started",
                 "port": retry_port,
@@ -1660,7 +1696,17 @@ fn spawn_engine_attempt(
     port: u16,
     ctx: Option<u32>,
 ) -> Result<(), StartFailure> {
-    println!("[Engine] Starting LU Engine llama-server on port {port}, model {model_path}");
+    // The one line a support log has to carry. Everything the start depends on
+    // is in the argv: model path, context size, layer count, cache types,
+    // thread count, mlock/mmap flags, the vision file and the port.
+    tracing::info!(
+        target: "engine",
+        port,
+        ctx = ctx.unwrap_or_default(),
+        model_bytes = std::fs::metadata(model_path).map(|m| m.len()).unwrap_or(0),
+        command = %command_line(binary, args),
+        "starting the LU Engine llama-server"
+    );
     let mut cmd = Command::new(binary);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -1682,10 +1728,12 @@ fn spawn_engine_attempt(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            let why = os_error::english(&e);
+            tracing::error!(target: "engine", port, reason = %why, "the LU Engine program could not be started at all");
             return Err(StartFailure {
                 died: true,
                 port_taken: false,
-                stderr: format!("Failed to spawn bundled engine: {}", os_error::english(&e)),
+                stderr: format!("Failed to spawn bundled engine: {why}"),
             })
         }
     };
@@ -1709,6 +1757,23 @@ fn spawn_engine_attempt(
     });
 
     let outcome = wait_for_health_or_exit(state, port, health_timeout_for(model_path));
+    match &outcome {
+        HealthWait::Ready => {
+            tracing::info!(target: "engine", port, "the health probe answered")
+        }
+        HealthWait::ChildExited(code) => tracing::warn!(
+            target: "engine",
+            port,
+            exit_code = code.map(|c| c.to_string()).unwrap_or_else(|| "none (killed by a signal)".into()),
+            "the LU Engine exited before it served"
+        ),
+        HealthWait::TimedOut => tracing::warn!(
+            target: "engine",
+            port,
+            budget_s = health_timeout_for(model_path).as_secs(),
+            "the health budget ran out with the LU Engine still alive"
+        ),
+    }
     if matches!(outcome, HealthWait::Ready) {
         // Health said OK, but was it OUR child that answered? A spawn that
         // loses the port to an orphaned llama-server (left behind by a crashed
@@ -1740,7 +1805,7 @@ fn spawn_engine_attempt(
         .unwrap_or_default();
     stop_engine_locked(state);
     Err(StartFailure {
-        died: matches!(outcome, HealthWait::ChildExited),
+        died: matches!(outcome, HealthWait::ChildExited(_)),
         port_taken: false,
         stderr: why,
     })
@@ -2319,7 +2384,7 @@ pub(crate) fn reap_dead_engine(slot: &mut Option<BundledEngine>) -> bool {
         if let Some(mut e) = slot.take() {
             let _ = e.child.wait();
             // Said for both sidecars, so the wording names neither.
-            println!("[Engine] the sidecar on port {} is gone, clearing the handle", e.port);
+            tracing::warn!(target: "engine", port = e.port, "the sidecar is gone, clearing the handle");
         }
     }
     gone
@@ -2413,7 +2478,7 @@ pub(crate) fn stop_engine_locked(state: &AppState) -> bool {
     if let Some(mut engine) = guard.take() {
         let _ = engine.child.kill();
         let _ = engine.child.wait();
-        println!("[Engine] LU Engine stopped (port {})", engine.port);
+        tracing::info!(target: "engine", port = engine.port, model = %engine.model_path, "the LU Engine was stopped");
         true
     } else {
         false
@@ -2490,9 +2555,15 @@ fn start_bundled_embed_blocking(
         )
     })?;
 
-    println!("[Engine] Starting the LU Engine embeddings server on port {port}, model {model_path}");
+    let embed_args = build_embed_args(&model_path, port);
+    tracing::info!(
+        target: "engine",
+        port,
+        command = %command_line(&binary, &embed_args),
+        "starting the LU Engine embeddings server"
+    );
     let mut cmd = Command::new(&binary);
-    cmd.args(build_embed_args(&model_path, port))
+    cmd.args(&embed_args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -2549,7 +2620,7 @@ fn start_bundled_embed_blocking(
         ));
     }
 
-    println!("[Engine] LU Engine embeddings server healthy on port {port}");
+    tracing::info!(target: "engine", port, "the LU Engine embeddings server is serving");
     Ok(serde_json::json!({
         "status": "started",
         "port": port,
@@ -2610,7 +2681,7 @@ pub(crate) fn stop_embed_locked(state: &AppState) -> bool {
     if let Some(mut embed) = guard.take() {
         let _ = embed.child.kill();
         let _ = embed.child.wait();
-        println!("[Engine] LU Engine embeddings server stopped (port {})", embed.port);
+        tracing::info!(target: "engine", port = embed.port, "the LU Engine embeddings server was stopped");
         true
     } else {
         false
@@ -2858,6 +2929,107 @@ mod tests {
                 "--no-mmap",
             ]
         );
+    }
+
+    #[test]
+    fn the_log_line_of_a_start_carries_every_resolved_value() {
+        // Bug o, positive control. A support log is worth having only if the
+        // start it describes can be reconstructed from it, so every knob the
+        // user can turn has to be IN the rendered line, with the value the
+        // start resolved it to and not the value the settings file wrote.
+        let tuning = EngineTuning {
+            ctx: 0, // resolves to 8192
+            flash_attn: "on".into(),
+            cache_type_k: "q8_0".into(),
+            cache_type_v: "q4_0".into(),
+            threads: 6,
+            gpu_layers: 24,
+            mlock: true,
+            no_mmap: true,
+        };
+        let args = build_server_args(
+            "/Users/me/Library/Application Support/LU/models/Nemo 12B.gguf",
+            &tuning,
+            8129,
+            Some("/slots"),
+            Some("/models/Nemo 12B.mmproj.gguf"),
+        );
+        let line = command_line(Path::new("/opt/lu/lu-llama-server"), &args);
+
+        for wanted in [
+            "/opt/lu/lu-llama-server",
+            "--port 8129",
+            "--ctx-size 8192",
+            "-ngl 24",
+            "-fa on",
+            "-ctk q8_0",
+            "-ctv q4_0",
+            "-t 6",
+            "--mlock",
+            "--no-mmap",
+            "--slot-save-path /slots",
+        ] {
+            assert!(line.contains(wanted), "{wanted:?} missing from:\n{line}");
+        }
+        // A path with spaces stays ONE argument to the eye, or the reader of
+        // the log counts two files where the start passed one.
+        assert!(
+            line.contains("-m \"/Users/me/Library/Application Support/LU/models/Nemo 12B.gguf\""),
+            "{line}"
+        );
+        assert!(line.contains("--mmproj \"/models/Nemo 12B.mmproj.gguf\""), "{line}");
+    }
+
+    #[test]
+    fn the_log_line_never_invents_a_flag_the_start_did_not_send() {
+        // The negative control for the test above. A line that names flags the
+        // argv does not carry sends the next reader hunting a setting nobody
+        // made.
+        let line = command_line(
+            Path::new("/opt/lu/lu-llama-server"),
+            &build_server_args("/m.gguf", &EngineTuning::default(), 8127, None, None),
+        );
+        for unwanted in ["-ctk", "-ctv", "-fa", "-t ", "--mlock", "--no-mmap", "--mmproj", "--slot-save-path"] {
+            assert!(!line.contains(unwanted), "{unwanted:?} invented in:\n{line}");
+        }
+        assert!(line.contains("-ngl 999"), "{line}");
+    }
+
+    #[test]
+    fn nothing_in_this_module_writes_to_a_stream_the_user_cannot_send() {
+        // Bug o, and the guard against it coming back. A shipped Windows build
+        // is linked with `windows_subsystem = "windows"` and has no stdout at
+        // all (commands/logging.rs, finding #01), so a `println!` here is a
+        // line that exists on a developer machine and nowhere else.
+        //
+        // The level matters as much as the macro: `init_tracing` in main.rs
+        // builds its EnvFilter as `EnvFilter::new("info")` when RUST_LOG says
+        // nothing, and that filter sits on the registry, ABOVE the rolling
+        // file layer. Anything below info is therefore filtered out before the
+        // file writer ever sees it, so a debug line would be exactly as
+        // invisible as the println! it replaced.
+        // Only what ships. `split` takes what stands BEFORE the first
+        // `#[cfg(test)]`, so the four macro names spelled out below are not
+        // themselves findings.
+        let source = include_str!("engine.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("engine.rs has production code above its tests");
+        let mut offenders: Vec<(usize, &str)> = Vec::new();
+        for (no, line) in source.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("*") {
+                continue;
+            }
+            if code.contains("println!")
+                || code.contains("eprintln!")
+                || code.contains("tracing::debug!")
+                || code.contains("tracing::trace!")
+            {
+                offenders.push((no + 1, line.trim()));
+            }
+        }
+        assert!(offenders.is_empty(), "lines the log file will never hold: {offenders:#?}");
     }
 
     #[test]
@@ -3467,7 +3639,12 @@ mod tests {
         let out = wait_for_health_or_exit(&state, DEAD_PORT, Duration::from_secs(30));
         let took = began.elapsed();
 
-        assert_eq!(out, HealthWait::ChildExited);
+        // The exit code rides along now (bug o): the child was told to exit
+        // with 3, and 3 is what the log line has to be able to print. This
+        // used to be thrown away at the `is_some()` above, and a support log
+        // that says "it exited" without saying how is a log that cannot tell a
+        // refused GGUF from a card that ran out of memory.
+        assert_eq!(out, HealthWait::ChildExited(Some(3)));
         assert!(took < Duration::from_secs(5), "waited {took:?}, which is the old dead wait");
     }
 
@@ -3641,9 +3818,10 @@ mod tests {
     fn an_empty_engine_slot_is_not_something_to_wait_for() {
         let state = AppState::new();
         let began = Instant::now();
+        // No child, so there is no exit code to report either.
         assert_eq!(
             wait_for_health_or_exit(&state, DEAD_PORT, Duration::from_secs(30)),
-            HealthWait::ChildExited
+            HealthWait::ChildExited(None)
         );
         assert!(began.elapsed() < Duration::from_secs(5));
     }

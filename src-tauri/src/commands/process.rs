@@ -3614,7 +3614,7 @@ pub(crate) fn offload_local_models_blocking(state: &AppState, include_comfyui: O
     let mut not_ours: Vec<serde_json::Value> = Vec::new();
     let mut note = |backend: &str, outcome: &VramRelease| {
         if let Some((target, why)) = outcome.not_responsible() {
-            println!("[Offload] {backend}: not this app's to free ({target}) — {why}");
+            tracing::info!(target: "engine", backend, addr = %target, reason = %why, "not this app's to free");
             not_ours.push(serde_json::json!({
                 "backend": backend,
                 "target": target,
@@ -3641,11 +3641,12 @@ pub(crate) fn offload_local_models_blocking(state: &AppState, include_comfyui: O
         note("comfyui", &comfy);
     }
 
-    println!(
-        "[Offload] released local model backends (comfyui={}): {:?}; not ours: {}",
-        free_comfy,
-        freed,
-        not_ours.len()
+    tracing::info!(
+        target: "engine",
+        comfyui = free_comfy,
+        freed = ?freed,
+        not_ours = not_ours.len(),
+        "released local model backends"
     );
     Ok(serde_json::json!({ "offloaded": freed, "notOurs": not_ours }))
 }
