@@ -20,11 +20,16 @@
  */
 
 /**
- * probe = der Server hat es gesagt (Katalog oder Metadaten-Endpunkt)
- * user  = der Nutzer hat es im Waehler gesetzt
- * guess = aus dem Modellnamen oder einer Tabelle geraten
+ * probe   = der Server hat sein LAUFENDES Fenster gesagt (Katalog oder
+ *           Metadaten-Endpunkt)
+ * user    = der Nutzer hat es im Waehler gesetzt
+ * trained = der Server hat nur die trainierte Decke des Modells genannt
+ *           (llama.cpp `n_ctx_train`, LM Studio `max_context_length`). Eine
+ *           echte Zahl, aber nicht die des laufenden Servers: er darf kleiner
+ *           gestartet sein, und auf der Box war er es (16384 gegen 40960).
+ * guess   = aus dem Modellnamen oder einer Tabelle geraten
  */
-export type ContextSource = 'probe' | 'user' | 'guess'
+export type ContextSource = 'probe' | 'user' | 'trained' | 'guess'
 
 export interface ResolvedContextWindow {
   /** Das Fenster in Tokens. */
@@ -49,10 +54,15 @@ export interface ResolvedContextWindow {
   guessKind?: 'table' | 'name'
 }
 
-/** Was im Werkzeugtext neben der Zahl steht. Englisch, wie die ganze Oberflaeche. */
+/**
+ * Was im Werkzeugtext neben der Zahl steht. Englisch, wie die ganze
+ * Oberflaeche. Jede Zeile muss sich in beide Rahmen fuegen, in denen sie
+ * steht: "Context window: X." und "Current value X.".
+ */
 export const SOURCE_LABEL: Record<ContextSource, string> = {
   probe: 'from server',
   user: 'set by you',
+  trained: "from the model's training limit (the server may run smaller)",
   guess: 'estimated',
 }
 
@@ -62,9 +72,15 @@ export const SOURCE_LABEL: Record<ContextSource, string> = {
  * Nur wenn die Zahl von jemandem stammt, der sie wissen kann: dem Server oder
  * dem Nutzer. Aus einer Schaetzung ein Budget zu rechnen und das auf die
  * Leitung zu legen ist genau der Fehler aus #129.
+ *
+ * `trained` zaehlt hier NICHT als bekannt. Die Zahl ist echt, aber sie
+ * beschreibt das Modell und nicht den Lauf: ein llama-server mit
+ * `--ctx-size 16384` meldet 40960 als trainierte Decke, und ein daraus
+ * gerechnetes Budget waere groesser als sein ganzes Fenster. Ohne Budget
+ * nimmt der Server seine eigene Voreinstellung, und die kennt er.
  */
 export function windowIsKnown(source: ContextSource): boolean {
-  return source !== 'guess'
+  return source === 'probe' || source === 'user'
 }
 
 /**
