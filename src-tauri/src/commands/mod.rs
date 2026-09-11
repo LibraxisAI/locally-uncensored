@@ -5,6 +5,7 @@ pub mod comfy_ws;
 pub mod custom_models;
 pub mod download;
 pub mod engine;
+pub mod engine_sanity;
 pub mod filesystem;
 pub mod gguf;
 pub mod gpu;

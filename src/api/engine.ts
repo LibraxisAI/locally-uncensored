@@ -60,6 +60,18 @@ export interface EngineStartResult {
   model_path: string
   ctx?: number | null
   retried?: boolean
+  /** The start ended up on the processor: either the first attempt died and
+   * the retry dropped GPU offload, or the sanity probe below found the card's
+   * answer unreadable. */
+  cpuOnly?: boolean
+  /** Bug a (GitHub 128 and two Discord reports): the engine reported healthy
+   * and then answered the start-time probe in question marks or symbol salad.
+   * Set whether or not the restart on the processor repaired it. */
+  garbled?: boolean
+  /** One English sentence for the user when something was worked around,
+   * written by the Rust side (engine_sanity.rs). Absent on a healthy start,
+   * which is every start on a machine that has no such problem. */
+  note?: string
 }
 
 export interface EngineStatus {
