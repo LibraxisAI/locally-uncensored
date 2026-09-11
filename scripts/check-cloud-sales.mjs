@@ -102,8 +102,12 @@ for (const span of pricing.querySelectorAll('[data-pack-id]')) {
 }
 assert.equal(pricing.querySelectorAll('[data-pack-id]').length, packs.length, 'Every pack must appear, and nothing else')
 
-for (const doc of [pricing, page]) {
+// Das Handbuch-Kapitel zu LU Cloud nennt dasselbe Tagesbudget mit demselben
+// Anker und haengt hier an derselben Quelle wie die beiden Verkaufsseiten.
+const handbookCloud = new JSDOM(readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')).window.document
+for (const doc of [pricing, page, handbookCloud]) {
   const limit = doc.querySelector('[data-flash-limit]')
+  assert.ok(limit, 'flash allowance anchor missing')
   assert.equal(Number(limit.dataset.flashLimit), daily, 'flash allowance drift')
   assert.ok(limit.textContent.startsWith(daily.toLocaleString('en-US')))
 }
