@@ -22,6 +22,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::{AppState, BundledEngine};
+use super::engine_sanity;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -1890,14 +1891,21 @@ fn start_after_stop(
     let ctx = Some(ctx_size);
     let first = spawn_engine_attempt(state, &binary, &desired_args, model_path, port, ctx, auto_layers);
     let failure = match first {
-        Ok(()) => {
+        Ok(startup) => {
             tracing::info!(target: "engine", port, attempt = 1, "the LU Engine is serving");
-            return Ok(serde_json::json!({
-                "status": "started",
-                "port": port,
-                "model_path": model_path,
-                "ctx": ctx,
-            }));
+            return Ok(serve_or_heal_garbled(
+                state,
+                &binary,
+                model_path,
+                tuning,
+                port,
+                slot_dir,
+                mmproj,
+                &desired_args,
+                ctx,
+                auto_layers,
+                &startup,
+            ));
         }
         Err(f) => f,
     };
@@ -1960,7 +1968,7 @@ fn start_after_stop(
     // again.
     let retry_auto = auto_layers && !offload_was_tried;
     match spawn_engine_attempt(state, &binary, &retry_args, model_path, retry_port, ctx, retry_auto) {
-        Ok(()) => {
+        Ok(_) => {
             if offload_was_tried {
                 tracing::warn!(
                     target: "engine",
@@ -1983,6 +1991,173 @@ fn start_after_stop(
     }
 }
 
+/// What a start answers when there is nothing to report about it. The exact
+/// object this function has always returned; the probe below only ever ADDS
+/// keys to it, so a healthy machine sees precisely what it saw before.
+fn started_answer(port: u16, model_path: &str, ctx: Option<u32>) -> serde_json::Value {
+    serde_json::json!({
+        "status": "started",
+        "port": port,
+        "model_path": model_path,
+        "ctx": ctx,
+    })
+}
+
+/// The same request with Flash Attention switched off, and nothing else moved.
+fn without_flash_attention(tuning: &EngineTuning) -> EngineTuning {
+    EngineTuning { flash_attn: "off".into(), ..tuning.clone() }
+}
+
+/// The same request with the graphics card taken out of it.
+///
+/// `gpu_layers: 0` rather than a smaller number on purpose. A card that
+/// answered unreadably has not proven it can be trusted with fewer layers, and
+/// halving a broken thing is a guess; the processor is the one part of the
+/// machine the three reports have never implicated. Everything else the user
+/// asked for (context, cache types, threads, mlock, mmap, the vision file)
+/// survives untouched, so only the one suspect variable moves.
+fn on_the_processor(tuning: &EngineTuning) -> EngineTuning {
+    EngineTuning { gpu_layers: 0, ..tuning.clone() }
+}
+
+/// The sanity probe, and the restart it may decide on (bug a).
+///
+/// Runs AFTER the engine has reported healthy, which is the whole point: a
+/// healthy port is what the three reporters already had. One fixed question at
+/// temperature 0, 24 tokens, and a look at the shape of the answer. Readable,
+/// or unreadable and the graphics card comes out.
+///
+/// Costs nothing on a healthy machine that it would not have paid anyway: the
+/// probe's prompt is the warm-up the user's first message would otherwise have
+/// paid for, and it only ever runs at a start, never per message. A probe that
+/// times out, is refused, or answers something unjudgeable leaves the engine
+/// exactly where it is.
+#[allow(clippy::too_many_arguments)]
+fn serve_or_heal_garbled(
+    state: &AppState,
+    binary: &Path,
+    model_path: &str,
+    tuning: &EngineTuning,
+    port: u16,
+    slot_dir: Option<&str>,
+    mmproj: Option<&str>,
+    args: &[String],
+    ctx: Option<u32>,
+    auto_layers: bool,
+    startup: &str,
+) -> serde_json::Value {
+    let mut answer = started_answer(port, model_path, ctx);
+    // Measured once, from what llama-server itself printed on its way up. A
+    // restart does not change the card, so this is not asked again.
+    let no_matrix_cores = engine_sanity::device_without_matrix_cores(startup).unwrap_or(false);
+    // What the engine currently runs with. Both move as the ladder is climbed,
+    // and both are read back out of the argv that was actually spawned.
+    let mut serving = tuning.clone();
+    let mut serving_args = args.to_vec();
+    // Three rungs at most (as it is, without flash attention, on the
+    // processor), so a machine that is broken in some way this cannot mend
+    // ends in seconds instead of restarting for ever.
+    for _ in 0..3 {
+        let Some(probe) = engine_sanity::probe_engine(port, engine_sanity::PROBE_TIMEOUT) else {
+            tracing::info!(
+                target: "engine",
+                port,
+                "the sanity probe got no usable answer, the LU Engine is left as it is"
+            );
+            return answer;
+        };
+        let facts = engine_sanity::EngineFacts {
+            gpu_layers: gpu_layers_in(&serving_args),
+            flash_attention_on: serving.flash_attn != "off",
+            every_device_without_matrix_cores: no_matrix_cores,
+        };
+        tracing::info!(
+            target: "engine",
+            port,
+            verdict = probe.verdict.label(),
+            ms = probe.took.as_millis() as u64,
+            ngl = facts.gpu_layers.map(|n| n.to_string()).unwrap_or_else(|| "none".into()),
+            flash_attention = facts.flash_attention_on,
+            matrix_cores = !no_matrix_cores,
+            answer = %probe.sample,
+            "sanity probe on the LU Engine"
+        );
+        let next = match engine_sanity::decide(probe.verdict, &facts) {
+            engine_sanity::AfterProbe::Serve => return answer,
+            engine_sanity::AfterProbe::GiveUp => {
+                tracing::error!(
+                    target: "engine",
+                    port,
+                    verdict = probe.verdict.label(),
+                    "the LU Engine answers unreadably without the graphics card, so the card is not the cause"
+                );
+                answer["garbled"] = serde_json::json!(true);
+                answer["note"] = serde_json::json!(engine_sanity::GARBLED_ON_CPU_NOTE);
+                return answer;
+            }
+            engine_sanity::AfterProbe::RestartWithoutFlashAttention => {
+                tracing::warn!(
+                    target: "engine",
+                    port,
+                    verdict = probe.verdict.label(),
+                    "this card reports no matrix cores, restarting the LU Engine with Flash Attention off"
+                );
+                without_flash_attention(&serving)
+            }
+            engine_sanity::AfterProbe::RestartOnCpu => {
+                tracing::warn!(
+                    target: "engine",
+                    port,
+                    verdict = probe.verdict.label(),
+                    "the graphics card produced unreadable output, restarting the LU Engine on the processor"
+                );
+                on_the_processor(&serving)
+            }
+        };
+        // A restart is a measurement thrown away: whatever `plan_offload` said
+        // for the first start is not asked again, because the argument that is
+        // being changed is not the layer count. `None` for `auto_ngl` keeps the
+        // layer count out of the way, and the rung above puts the one value it
+        // cares about into the tuning.
+        let next_args = build_server_args(model_path, &next, port, slot_dir, mmproj, None);
+        stop_engine_locked(state);
+        // A restart is never an auto layer count, whatever the request said, so
+        // the idempotence key must not remember it as one: the next start with
+        // these settings has to be allowed to try the card again. Same rule as
+        // the died-on-start retry.
+        if spawn_engine_attempt(state, binary, &next_args, model_path, port, ctx, false).is_err() {
+            // The restart did not come up, and an engine that at least served
+            // has just been torn down for it. Put the first one back rather
+            // than leave the user with nothing; ONE attempt, for the same
+            // reason `restore_engine` takes only one.
+            tracing::error!(
+                target: "engine",
+                port,
+                "the restart did not come up, bringing the first LU Engine back"
+            );
+            let _ = spawn_engine_attempt(state, binary, args, model_path, port, ctx, auto_layers);
+            answer["garbled"] = serde_json::json!(true);
+            answer["note"] = serde_json::json!(engine_sanity::GARBLED_ON_CPU_NOTE);
+            return answer;
+        }
+        answer["retried"] = serde_json::json!(true);
+        answer["garbled"] = serde_json::json!(true);
+        answer["cpuOnly"] = serde_json::json!(next.gpu_layers == 0);
+        // The note tells the truth only after the next pass round this loop has
+        // judged the new engine. Until then it says what was done, and the pass
+        // that finds the answer readable returns it; a pass that does not
+        // overwrites it.
+        answer["note"] = serde_json::json!(if next.gpu_layers == 0 {
+            engine_sanity::HEALED_ON_CPU_NOTE
+        } else {
+            engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE
+        });
+        serving = next;
+        serving_args = next_args;
+    }
+    answer
+}
+
 /// What one spawn-and-wait produced when it did not come up.
 pub(crate) struct StartFailure {
     /// The child was gone before the health budget ran out. Distinguishes a
@@ -1998,7 +2173,12 @@ pub(crate) struct StartFailure {
 /// Spawn the engine and wait for it, watching BOTH the health endpoint and the
 /// child. Reaps the child on every failure path so no half-loaded server is
 /// left behind.
-#[allow(clippy::too_many_arguments)]
+///
+/// On success this hands back what llama-server said on its way up. That text
+/// is not decoration: the Vulkan backend prints one line per device there,
+/// naming fp16, the warp size and whether the card has matrix cores, and the
+/// flash-attention rung of the sanity probe is decided on it. It used to be
+/// read on the failure paths only and thrown away whenever the engine came up.
 fn spawn_engine_attempt(
     state: &AppState,
     binary: &Path,
@@ -2007,7 +2187,7 @@ fn spawn_engine_attempt(
     port: u16,
     ctx: Option<u32>,
     auto_layers: bool,
-) -> Result<(), StartFailure> {
+) -> Result<String, StartFailure> {
     // The one line a support log has to carry. Everything the start depends on
     // is in the argv: model path, context size, layer count, cache types,
     // thread count, mlock/mmap flags, the vision file and the port.
@@ -2104,7 +2284,9 @@ fn spawn_engine_attempt(
             }
         };
         if ours_alive {
-            return Ok(());
+            return Ok(diagnostics
+                .map(|(buf, _)| super::shell::captured_text(&buf))
+                .unwrap_or_default());
         }
         let why = diagnostics
             .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
@@ -3525,6 +3707,124 @@ mod tests {
             Some(0)
         );
         assert_eq!(gpu_layers_in(&["--port".to_string(), "8127".to_string()]), None);
+    }
+
+    // ── The sanity probe's half of the start path (bug a) ────────────────────
+
+    #[test]
+    fn a_healthy_start_answers_exactly_what_it_always_did() {
+        // The counter-check to the probe: on a machine whose engine reads
+        // fine, the object the frontend receives carries no new key at all, so
+        // nothing about a working install changes.
+        let answer = started_answer(8127, "/models/qwen.gguf", Some(8192));
+        assert_eq!(
+            answer,
+            serde_json::json!({
+                "status": "started",
+                "port": 8127,
+                "model_path": "/models/qwen.gguf",
+                "ctx": 8192,
+            })
+        );
+        assert!(answer.get("note").is_none());
+        assert!(answer.get("garbled").is_none());
+    }
+
+    #[test]
+    fn the_restart_after_unreadable_output_takes_the_card_out_and_changes_nothing_else() {
+        let asked_for = EngineTuning {
+            ctx: 4096,
+            flash_attn: "on".into(),
+            cache_type_k: "q8_0".into(),
+            threads: 6,
+            gpu_layers: -1,
+            mlock: true,
+            ..Default::default()
+        };
+        let kv = Some("/kv");
+        let vision = Some("/m.mmproj.gguf");
+        let on_the_card = build_server_args("/m.gguf", &asked_for, 8127, kv, vision, Some(12));
+        let on_the_cpu =
+            build_server_args("/m.gguf", &on_the_processor(&asked_for), 8127, kv, vision, None);
+        assert_eq!(gpu_layers_in(&on_the_card), Some(12));
+        assert_eq!(gpu_layers_in(&on_the_cpu), Some(0));
+        // Exactly ONE variable moved. Context, flash attention, cache type,
+        // threads, mlock, the KV slot folder and the vision file all survive.
+        assert_eq!(argv_without_gpu_layers(&on_the_card), argv_without_gpu_layers(&on_the_cpu));
+    }
+
+    #[test]
+    fn the_flash_attention_rung_moves_only_that_one_flag() {
+        // The first rung of the ladder. The card keeps every layer; the only
+        // difference in the argv is the `-fa` pair.
+        let auto = EngineTuning { ctx: 4096, threads: 6, ..Default::default() };
+        assert_eq!(auto.flash_attn, "auto");
+        let before = build_server_args("/m.gguf", &auto, 8127, None, None, Some(12));
+        let after =
+            build_server_args("/m.gguf", &without_flash_attention(&auto), 8127, None, None, Some(12));
+        assert!(!before.iter().any(|a| a == "-fa"), "auto is not forwarded: {before:?}");
+        assert_eq!(after.windows(2).find(|w| w[0] == "-fa").map(|w| w[1].as_str()), Some("off"));
+        assert_eq!(gpu_layers_in(&after), Some(12));
+        let stripped: Vec<String> =
+            after.iter().filter(|a| *a != "-fa" && *a != "off").cloned().collect();
+        assert_eq!(stripped, before);
+    }
+
+    #[test]
+    fn a_typed_layer_count_is_still_dropped_when_the_answer_is_unreadable() {
+        // An expert who typed 20 into Settings gets 20 on the first start
+        // (plan_offload is not even run for him), but a card that answers in
+        // question marks is not a settings question. The restart takes it out
+        // for him too, and the note says so.
+        let typed = EngineTuning { gpu_layers: 20, flash_attn: "off".into(), ..Default::default() };
+        let first = build_server_args("/m.gguf", &typed, 8127, None, None, None);
+        assert_eq!(gpu_layers_in(&first), Some(20));
+        assert_eq!(
+            engine_sanity::decide(
+                engine_sanity::judge("????????????????????????????????"),
+                &engine_sanity::EngineFacts {
+                    gpu_layers: gpu_layers_in(&first),
+                    flash_attention_on: typed.flash_attn != "off",
+                    every_device_without_matrix_cores: true,
+                }
+            ),
+            engine_sanity::AfterProbe::RestartOnCpu
+        );
+        assert_eq!(
+            gpu_layers_in(&build_server_args(
+                "/m.gguf",
+                &on_the_processor(&typed),
+                8127,
+                None,
+                None,
+                None
+            )),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn the_three_notes_are_english_and_say_different_things() {
+        // UI strings, and the only three sentences this fix ever puts on
+        // screen.
+        let notes = [
+            engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE,
+            engine_sanity::HEALED_ON_CPU_NOTE,
+            engine_sanity::GARBLED_ON_CPU_NOTE,
+        ];
+        for note in notes {
+            assert!(note.contains("Settings > Troubleshoot"), "{note}");
+            assert!(note.is_ascii(), "{note}");
+            assert!(!note.contains('-'), "no dashes in user-facing text: {note}");
+        }
+        assert!(engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE.contains("Flash Attention"));
+        assert!(engine_sanity::HEALED_ON_CPU_NOTE.contains("restarted on the CPU"));
+        assert!(engine_sanity::GARBLED_ON_CPU_NOTE.contains("on the CPU as well"));
+        assert_eq!(
+            notes.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            notes.len(),
+            "the three notes have to be distinguishable"
+        );
     }
 
     #[test]
