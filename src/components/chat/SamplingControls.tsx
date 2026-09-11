@@ -1,18 +1,45 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { DEFAULT_SETTINGS } from '../../lib/constants'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 
 /**
  * Sampling controls next to the composer.
  *
  * The values already existed in settings and already reached the request; they
  * were just buried in the settings page, where nobody adjusts them per
- * conversation. Collapsed by default so the composer stays quiet.
+ * conversation. Closed by default so the composer stays quiet.
  *
  * Every catalogue model accepts these parameters (measured 2026-09-10, no
  * request was rejected for one). Reasoning models accept them and react less,
  * which the help line says instead of hiding the control.
+ *
+ * ## Why this is a popup and not an inline panel
+ *
+ * David, 2026-09-11: "der sample anklickbar im prompt fenster muss ein pop up
+ * sein, und nicht das prompt fenster veraendern. mit einem sauberen x zum
+ * wegklicken und nicht einfach wieder auf den text klicken zum entfernen, soll
+ * windows mac und webapp ueberall gleich sein."
+ *
+ * The first version rendered the fields as a sibling below the trigger, inside
+ * the composer's flow. Opening them therefore grew the whole prompt window by
+ * the height of the panel and pushed the text field down under the cursor,
+ * which is the one thing the prompt window may not do. The panel is now taken
+ * out of the flow (absolute, anchored to the top edge of the trigger, the same
+ * placement the model picker next to it uses), so the row it hangs off keeps
+ * its size and position to the pixel.
+ *
+ * Three rules follow from the same sentence, and the web app implements them
+ * word for word:
+ *   - closing is the X, or Escape, or a press outside. SAMPLING_CLOSE_LABEL is
+ *     the accessible name of that button in BOTH apps.
+ *   - the trigger opens and only opens. A second click on it used to make the
+ *     panel vanish under the pointer, which is what "nicht einfach wieder auf
+ *     den text klicken zum entfernen" asks to stop.
+ *   - the keyboard goes into the popup when it opens and back to the trigger
+ *     when it closes.
  */
 const FIELDS = [
   { key: 'temperature', label: 'Temperature', min: 0, max: 2, step: 0.05 },
@@ -39,21 +66,81 @@ export function normalizeMaxTokens(raw: string): number {
   return Math.max(0, Math.trunc(Number(raw)) || 0)
 }
 
+/** The close button's accessible name. Word for word the same string as in the
+ *  web app (apps/web/lib/sampling.ts), which a parity test there re-reads from
+ *  this file: one close button on Windows, Mac and the web app. */
+export const SAMPLING_CLOSE_LABEL = 'Close sampling settings'
+
+/** What the popup is called for a screen reader. Same string in both apps. */
+export const SAMPLING_DIALOG_LABEL = 'Sampling settings'
+
+/** Panel width, in the same 248 px the web app gives it. */
+const PANEL_WIDTH = 248
+
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function SamplingControls() {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState<string | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const panelId = useId()
   const settings = useSettingsStore((s) => s.settings)
   const update = useSettingsStore((s) => s.updateSettings)
   const changed = FIELDS.some((f) => settings[f.key] !== DEFAULT_SETTINGS[f.key])
     || settings.maxTokens !== DEFAULT_SETTINGS.maxTokens
 
+  /** Give the keyboard back to the trigger, but only while it is still in the
+   *  popup: on an outside press the browser is already moving it somewhere the
+   *  user chose, and taking it back from them is worse than a lost menu. */
+  const close = useCallback(() => {
+    const panel = panelRef.current
+    if (panel && panel.contains(document.activeElement)) {
+      wrapRef.current?.querySelector('button')?.focus()
+    }
+    setOpen(false)
+  }, [])
+
+  const onEscape = useCallback(() => {
+    close()
+    wrapRef.current?.querySelector('button')?.focus()
+  }, [close])
+  useDismissOnEscape(open, onEscape)
+
+  // pointerdown, not mousedown or click: a touch screen never sends mousedown
+  // before the tap completes. The panel lives inside the wrapper, so one
+  // containment test covers the trigger and the popup together.
+  useEffect(() => {
+    if (!open) return
+    const aus = (e: Event) => {
+      const target = e.target as Node | null
+      if (!target) return
+      if (wrapRef.current?.contains(target)) return
+      close()
+    }
+    document.addEventListener('pointerdown', aus)
+    return () => document.removeEventListener('pointerdown', aus)
+  }, [open, close])
+
+  // The keyboard follows the popup. The X is the first control in it, which is
+  // where a dialog's focus conventionally lands and, more to the point, is the
+  // way out for someone who never reaches for Escape.
+  useEffect(() => {
+    if (!open) return
+    panelRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus()
+  }, [open])
+
   return (
-    <div className="text-xs" data-testid="sampling-controls">
+    <div className="relative text-xs" ref={wrapRef} data-testid="sampling-controls">
       <button
         type="button"
         className="text-gray-500 hover:text-gray-300"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-controls={panelId}
+        data-testid="sampling-trigger"
+        // Opens, never closes. A trigger that also closed made the panel
+        // disappear under the pointer on the second click.
+        onClick={() => setOpen(true)}
       >
         Sampling: {settings.temperature.toFixed(2)}
         {/* Ein geaenderter Regler ist kein Zwischenfall, also traegt der
@@ -62,13 +149,43 @@ export function SamplingControls() {
       </button>
 
       {open && (
-        <div className="mt-2 space-y-2 rounded border border-gray-700 p-2" data-testid="sampling-panel">
+        <div
+          ref={panelRef}
+          id={panelId}
+          role="dialog"
+          aria-label={SAMPLING_DIALOG_LABEL}
+          data-testid="sampling-panel"
+          // Placed with an inline style rather than utility classes, for the
+          // same reason the web app does: `position` is then a fact a test can
+          // read, instead of a class name a test would have to believe.
+          style={{
+            position: 'absolute',
+            right: 0,
+            bottom: '100%',
+            marginBottom: 6,
+            width: PANEL_WIDTH,
+          }}
+          className="z-50 space-y-2 rounded-lg p-2.5 lu-elevated"
+        >
+          <div className="flex justify-end">
+            <button
+              type="button"
+              aria-label={SAMPLING_CLOSE_LABEL}
+              title={SAMPLING_CLOSE_LABEL}
+              data-testid="sampling-close"
+              className="rounded p-0.5 text-gray-500 hover:text-gray-300"
+              onClick={close}
+            >
+              <X size={11} />
+            </button>
+          </div>
+
           {FIELDS.map((f) => (
             <label key={f.key} className="flex items-center gap-2">
-              <span className="w-20 text-gray-400">{f.label}</span>
+              <span className="w-20 shrink-0 text-gray-400">{f.label}</span>
               <input
                 type="range"
-                className="flex-1"
+                className="min-w-0 flex-1"
                 min={f.min}
                 max={f.max}
                 step={f.step}
@@ -76,15 +193,15 @@ export function SamplingControls() {
                 aria-label={f.label}
                 onChange={(e) => update({ [f.key]: Number(e.target.value) })}
               />
-              <span className="w-10 text-right tabular-nums text-gray-300">{settings[f.key]}</span>
+              <span className="w-10 shrink-0 text-right tabular-nums text-gray-300">{settings[f.key]}</span>
             </label>
           ))}
 
           <label className="flex items-center gap-2">
-            <span className="w-20 text-gray-400">Max tokens</span>
+            <span className="w-20 shrink-0 text-gray-400">Max tokens</span>
             <input
               type="number"
-              className="flex-1 rounded border border-gray-700 bg-transparent px-1 py-0.5"
+              className="min-w-0 flex-1 rounded border border-gray-700 bg-transparent px-1 py-0.5"
               min={0}
               step={128}
               value={draft ?? String(settings.maxTokens)}
@@ -97,7 +214,7 @@ export function SamplingControls() {
               }}
               onBlur={() => setDraft(null)}
             />
-            <span className="w-10 text-right text-gray-500">{settings.maxTokens === 0 ? 'auto' : ''}</span>
+            <span className="w-10 shrink-0 text-right text-gray-500">{settings.maxTokens === 0 ? 'auto' : ''}</span>
           </label>
 
           <div className="flex items-center justify-between pt-1">
