@@ -15,7 +15,7 @@
  * liegt, ohne den Schalter zu nennen, und sie nennt die beiden Grenzen, die
  * keine Einstellung verschiebt.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
 const html = readFileSync('docs/pricing/index.html', 'utf8')
@@ -132,5 +132,98 @@ it('never says how many tokens a euro or a pack buys', () => {
     if (tokenAmount.test(sentence) && money.test(sentence)) {
       throw new Error(`Money converted into tokens: ${sentence.trim()}`)
     }
+  }
+})
+
+// ── Waechter ueber ganz docs/, nicht nur ueber /pricing/ ──────────────
+//
+// docs/ IST locallyuncensored.com. Zwei Aussagen sind am 11.09.2026 aus dem
+// Ordner entfernt worden, beide standen jahrelang oeffentlich da, und keine
+// hatte einen Test hinter sich. Sie duerfen nicht zurueckkommen.
+
+const SITE: readonly (readonly [string, string])[] = readdirSync('docs', {
+  recursive: true, encoding: 'utf8',
+})
+  .filter((name) => name.endsWith('.html'))
+  .map((name) => [`docs/${name}`, readFileSync(`docs/${name}`, 'utf8')] as const)
+
+it('scans the whole site, not an empty list', () => {
+  // Ohne diesen Satz waere jeder Waechter darunter gruen, sobald die Suche
+  // nichts mehr findet.
+  expect(SITE.length).toBeGreaterThan(50)
+})
+
+it('never promises a Mac build of the desktop app', () => {
+  // In keinem der 19 GitHub-Releases lag je eine .dmg. Zwei alte
+  // Release-Artikel schickten den Leser trotzdem fuer eine zur
+  // Releases-Seite, und vier weitere Stellen zaehlten Mac in der
+  // Plattformliste der App mit. Richtig ist: Windows und Linux, und auf dem
+  // Mac laeuft das gehostete Studio im Browser.
+  const banned = [
+    '.dmg',
+    'Windows, Linux and macOS',
+    'Windows, Linux and Mac',
+    'Windows, Linux und Mac',
+    'Windows, Linux \u0438 Mac',
+    'Windows/macOS/Linux',
+    'macOS and Linux builds',
+  ]
+  for (const [path, html] of SITE) {
+    for (const phrase of banned) {
+      expect(html.includes(phrase), `${path} promises a Mac build: ${phrase}`).toBe(false)
+    }
+  }
+})
+
+it('points the two old release articles at the browser studio instead', () => {
+  for (const name of ['locally-uncensored-v1-5-release', 'locally-uncensored-v2-2-2-release']) {
+    const html = readFileSync(`docs/blog/${name}.html`, 'utf8')
+    expect(html, name).toMatch(/no Mac (build|download)|never shipped a Mac build/i)
+    expect(html, name).toContain('lu-labs.ai')
+    // Dieselben zwei Dateien sind beim Umschreiben von 90 Gedankenstrichen
+    // befreit worden.
+    expect(html, name).not.toMatch(/[\u2013\u2014]|&[mn]dash;/u)
+  }
+})
+
+it('never says how many tokens a euro or a pack buys, on any page', () => {
+  // Davids Ansage vom 10.09.2026, hier fuer die ganze Seite. Erlaubt bleibt
+  // die Rate: "0.085 credits per output token", "285,000 credits per million
+  // tokens". Verboten ist die Menge neben dem Geld: "a 5 EUR pack is 230,000
+  // tokens". Das Wort "per" im Treffer trennt die beiden Faelle, und der
+  // Abstand von 60 Zeichen haelt Tabellenzellen auseinander, die ohne Punkt
+  // aneinanderstossen.
+  const MONEY = /\bEUR\b|\beuros?\b|\u20ac|&euro;|\bpacks?\b/gi
+  const TOKENS = /\d[\d,.]*\s*(?:k|m|million|thousand)?\s+(?:\w+\s+){0,3}tokens?\b/gi
+  for (const [path, html] of SITE) {
+    const flat = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+    const money = [...flat.matchAll(MONEY)].map((m) => m.index)
+    for (const hit of flat.matchAll(TOKENS)) {
+      if (/\bper\b/i.test(hit[0])) continue
+      const from = hit.index, to = from + hit[0].length
+      if (money.some((i) => i > from - 60 && i < to + 60)) {
+        throw new Error(`${path} converts money into tokens: ${flat.slice(Math.max(0, from - 90), to + 60)}`)
+      }
+    }
+  }
+})
+
+it('the cloud page and the pricing page state the same catalogue size', () => {
+  // Beide Seiten nennen die Zahlen jetzt mit denselben Ankern. Gegen das
+  // Web-Repo haelt sie scripts/check-cloud-sales.mjs; hier wird nur
+  // bewiesen, dass die zwei Seiten einander nicht widersprechen.
+  const cloud = new DOMParser().parseFromString(readFileSync('docs/cloud/index.html', 'utf8'), 'text/html')
+  for (const anchor of ['catalogCount', 'measuredCount', 'unfilteredCount'] as const) {
+    const attr = anchor.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)
+    const here = page.querySelector<HTMLElement>(`[data-${attr}]`)
+    const there = cloud.querySelector<HTMLElement>(`[data-${attr}]`)
+    expect(here, `pricing page lost its ${attr}`).toBeTruthy()
+    expect(there, `cloud page lost its ${attr}`).toBeTruthy()
+    expect(there!.dataset[anchor]).toBe(here!.dataset[anchor])
+    expect(there!.textContent).toBe(here!.dataset[anchor])
   }
 })
