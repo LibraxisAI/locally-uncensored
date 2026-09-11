@@ -10,6 +10,40 @@
  * the machine busy forever. So the policy is bounded and lives in one place.
  */
 
+// ── Wer den Schuss haelt (Fund 1 der Kampagne 3.0.0, T3 auf der Box) ────────
+//
+// Der Wiederanlauf ist EIN Schuss je Anlass und nicht einer je Sitzung. Anlass
+// eins ist der Start der App: die llama-server-Kinder sterben mit ihr, und die
+// gespeicherte Wahl zeigt danach auf einen toten Port. Anlass zwei ist der
+// Rueckweg aus der Cloud, und der fehlte. Der Weg IN die Cloud haelt Motor und
+// Einbettung an (AppShell, `offload_local_models`), der Weg zurueck brachte nur
+// die Einbettung wieder, weil deren Wiederanlauf keinen Schuss verbraucht.
+// Gemessen am 11.09.2026 auf der Box: `the LU Engine was stopped port=8127` um
+// 16:41:34, die Einbettung auf 8128 von selbst zurueck um 16:47:27, der
+// Chatmotor blieb bis 17:58:59 zu, ohne einen Hinweis irgendwo.
+//
+// Der Schuss liegt deshalb hier und nicht mehr als Modulzustand im Hook: die
+// Stelle, die ihn faellig macht, ist der Cloud-Schalter, und die Stelle, die
+// ihn verbraucht, ist die Modelliste. Beide erreichen dieses Modul, ohne
+// einander zu kennen.
+let wiederanlaufOffen = true
+
+/** Steht ein Wiederanlauf der eigenen Engine noch aus. */
+export function engineResumeIsOwed(): boolean {
+  return wiederanlaufOffen
+}
+
+/** Verbraucht. Eine Antwort verbraucht den Schuss genau einmal, auch eine
+ *  Absage: dann gibt es keine Liste, aus der wiederbelebt werden koennte. */
+export function spendEngineResume(): void {
+  wiederanlaufOffen = false
+}
+
+/** Wieder faellig, weil die App den Motor gerade selbst angehalten hat. */
+export function oweEngineResume(): void {
+  wiederanlaufOffen = true
+}
+
 /** Total start attempts, the first one included. */
 export const RESUME_ATTEMPTS = 3
 
