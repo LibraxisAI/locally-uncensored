@@ -556,42 +556,65 @@ fn snapshot_dirs(repo: &str) -> Vec<PathBuf> {
     dirs
 }
 
-/// `variant="fp16"` for the load, but only when the repo really carries an
-/// fp16 file for every component that holds weights. This is the same trap
-/// that produced GitHub 127 from the other side: SDXL repos exist that ship an
-/// fp16 unet next to a full-precision text encoder, and asking diffusers for a
-/// variant one component does not have turns a complete install into a failed
-/// render.
+/// Does the load ask diffusers for `variant="fp16"`?
+///
+/// It has to be the same decision `plan_download` made, and that one is not
+/// all-or-nothing: `pick_weight_set` takes the fp16 family for every component
+/// that has one and the plain family for the rest, so a finished install of
+/// `UnfilteredAI/NSFW-gen-v2` holds fp16 weights in `unet/` and `vae/` and
+/// full-precision weights in both text encoders. diffusers resolves the
+/// variant per component, not per pipeline: `_identify_model_variants`
+/// (diffusers 0.38.0, `pipelines/pipeline_loading_utils.py`) collects only the
+/// subfolders that carry a matching file, and every other component is loaded
+/// with `variant=None`. Asking for fp16 on that mixed folder therefore works,
+/// while `variant=None` makes the loader look for the plain file in `unet/`
+/// and `vae/`, which is exactly the file the plan deliberately did not fetch,
+/// and `local_files_only` turns the miss into an abort instead of a download.
+/// The one snapshot that must not ask for fp16 is the one without a single
+/// fp16 file, because diffusers raises "no such modeling files are available"
+/// before it looks at any component.
 fn fp16_variant_usable(entry: &ImageCatalogEntry) -> bool {
     if !entry.fp16_variant {
         return false;
     }
     match snapshot_dirs(entry.repo).into_iter().next() {
-        Some(snap) => fp16_present_in_every_component(&snap),
+        Some(snap) => fp16_present_in_any_component(&snap),
         // Nothing on disk to judge by: the catalog flag stands.
         None => true,
     }
 }
 
-fn fp16_present_in_every_component(snap: &std::path::Path) -> bool {
+fn fp16_present_in_any_component(snap: &std::path::Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(snap.join("model_index.json")) else {
         return true;
     };
     let Ok(manifest) = crate::commands::mlx_snapshot::parse_model_index(&raw) else {
         return true;
     };
-    manifest.weights.iter().all(|component| {
+    manifest.weights.iter().any(|component| {
         std::fs::read_dir(snap.join(component))
             .into_iter()
             .flatten()
             .flatten()
             .filter_map(|f| f.file_name().to_str().map(str::to_string))
-            .any(|name| name.contains(".fp16."))
+            .any(|name| {
+                // The same splitter the plan uses, so a sharded
+                // `model.fp16-00001-of-00002.safetensors` counts too.
+                crate::commands::mlx_snapshot::weights_family(&name)
+                    .is_some_and(|(_, variant)| variant.as_deref() == Some("fp16"))
+            })
     })
 }
 
+/// What the download plan asks the hub for.
 fn prefer_variant(entry: &ImageCatalogEntry) -> Option<&'static str> {
     entry.fp16_variant.then_some("fp16")
+}
+
+/// What the load asks the sidecar for. The same answer as `prefer_variant`
+/// wherever the planned files actually landed.
+fn load_variant(entry: &ImageCatalogEntry) -> Option<&'static str> {
+    fp16_variant_usable(entry).then_some("fp16")
 }
 
 /// Audit every snapshot of the repo and keep the best answer. Offline on
@@ -1071,7 +1094,7 @@ pub async fn mlx_generate(_state: &AppState, args: &Value) -> CmdResult {
         "height": req.height.unwrap_or(entry.default_size),
         "model_repo": entry.repo,
         "dtype": entry.dtype,
-        "variant": if fp16_variant_usable(entry) { Some("fp16") } else { None::<&str> },
+        "variant": load_variant(entry),
         "guidance": entry.guidance,
         "cfg_param": entry.cfg_param,
         "disable_safety_checker": entry.disable_safety_checker,
@@ -1291,9 +1314,11 @@ mod tests {
         for d in ["unet", "vae", "text_encoder", "scheduler", "tokenizer"] {
             std::fs::create_dir_all(snap.join(d)).unwrap();
         }
-        // The stubs real manifests carry (live dump 2026-07-31): [null, null]
-        // components, scalar flags, plain null. None of them may be demanded
-        // as directories, or every complete install reads as missing.
+        // The stubs real manifests carry: [null, null] components and scalar
+        // flags. Neither may be demanded as a directory, or every complete
+        // install reads as missing. All seven catalog repos read from the hub
+        // on 2026-09-11: four spell the empty image_encoder [null, null],
+        // three leave the key out, none of them writes a plain null.
         std::fs::write(
             snap.join("model_index.json"),
             r#"{
@@ -1301,7 +1326,7 @@ mod tests {
               "feature_extractor": [null, null],
               "safety_checker": [null, null],
               "requires_safety_checker": true,
-              "image_encoder": null,
+              "image_encoder": [null, null],
               "scheduler": ["diffusers", "EulerDiscreteScheduler"],
               "text_encoder": ["transformers", "CLIPTextModel"],
               "tokenizer": ["transformers", "CLIPTokenizer"],
@@ -1327,15 +1352,121 @@ mod tests {
 
         std::fs::write(snap.join("unet/diffusion_pytorch_model.fp16.safetensors"), b"w").unwrap();
         assert!(audit_snapshot(snap, None, None).is_complete(), "all model components carrying weights count");
-        // Every component has an fp16 file, so the load may ask for that variant.
-        assert!(fp16_present_in_every_component(snap));
         std::fs::write(snap.join("text_encoder/model.safetensors"), b"w").unwrap();
         std::fs::remove_file(snap.join("text_encoder/model.fp16.safetensors")).unwrap();
         assert!(audit_snapshot(snap, None, None).is_complete(), "plain weights are weights");
+    }
+
+    /// An SDXL snapshot with the components `UnfilteredAI/NSFW-gen-v2` has.
+    /// Only the names matter here, so every listed file gets one byte.
+    fn sdxl_snapshot(files: &[&str]) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
+        std::fs::write(
+            snap.join("model_index.json"),
+            r#"{
+              "_class_name": "StableDiffusionXLPipeline",
+              "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+              "text_encoder": ["transformers", "CLIPTextModel"],
+              "text_encoder_2": ["transformers", "CLIPTextModelWithProjection"],
+              "tokenizer": ["transformers", "CLIPTokenizer"],
+              "tokenizer_2": ["transformers", "CLIPTokenizer"],
+              "unet": ["diffusers", "UNet2DConditionModel"],
+              "vae": ["diffusers", "AutoencoderKL"]
+            }"#,
+        )
+        .unwrap();
+        for file in files {
+            let path = snap.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"w").unwrap();
+        }
+        temp
+    }
+
+    /// Bauer M, 2026-09-11, on a full install of `UnfilteredAI/NSFW-gen-v2`:
+    /// the plan fetches `unet/diffusion_pytorch_model.fp16.safetensors` and
+    /// leaves the text encoders at full precision, because that repo has no
+    /// fp16 encoder. The load then asked for `variant=null`, which sent
+    /// diffusers looking for the one file the plan had deliberately skipped.
+    /// Measured in the app's own venv (diffusers 0.38.0) on a rebuilt
+    /// miniature of that folder: `variant="fp16"` loads it, `variant=None`
+    /// dies with "Error no file named diffusion_pytorch_model.safetensors
+    /// found in directory .../vae".
+    #[test]
+    fn a_mixed_snapshot_loads_with_the_fp16_variant() {
+        let snap = sdxl_snapshot(&[
+            "unet/diffusion_pytorch_model.fp16.safetensors",
+            "vae/diffusion_pytorch_model.fp16.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+        ]);
         assert!(
-            !fp16_present_in_every_component(snap),
-            "one component without an fp16 file has to drop the variant for the whole pipeline"
+            fp16_present_in_any_component(snap.path()),
+            "fp16 unet and vae beside full-precision text encoders is what the plan fetched"
         );
+    }
+
+    /// The plan wanted fp16 for the unet and that file is not on disk. The vae
+    /// still carries one, and diffusers picks the variant per component, so
+    /// the load keeps asking for fp16 and the unet comes from its plain file.
+    #[test]
+    fn a_snapshot_that_lost_one_planned_fp16_file_still_uses_the_others() {
+        let snap = sdxl_snapshot(&[
+            "unet/diffusion_pytorch_model.safetensors",
+            "vae/diffusion_pytorch_model.fp16.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+        ]);
+        assert!(fp16_present_in_any_component(snap.path()), "one landed fp16 file is enough");
+    }
+
+    /// Not one fp16 file anywhere. Asking for the variant now raises "You are
+    /// trying to load the model files of the `variant=fp16`, but no such
+    /// modeling files are available." before any component is looked at, so
+    /// this is the one snapshot that has to load without a variant.
+    #[test]
+    fn a_snapshot_without_any_fp16_file_loads_without_the_variant() {
+        let snap = sdxl_snapshot(&[
+            "unet/diffusion_pytorch_model.safetensors",
+            "vae/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+        ]);
+        assert!(
+            !fp16_present_in_any_component(snap.path()),
+            "a snapshot without a single fp16 file has to load without the variant"
+        );
+    }
+
+    /// Sharded weights spell the variant with a dash after it, and Qwen-Image
+    /// sized repos are the reason that matters.
+    #[test]
+    fn a_sharded_fp16_family_counts_as_the_variant() {
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
+        std::fs::write(
+            snap.join("model_index.json"),
+            r#"{
+              "_class_name": "StableDiffusionPipeline",
+              "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+              "unet": ["diffusers", "UNet2DConditionModel"]
+            }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(snap.join("unet")).unwrap();
+        std::fs::write(snap.join("unet/diffusion_pytorch_model.fp16-00001-of-00002.safetensors"), b"w")
+            .unwrap();
+        assert!(fp16_present_in_any_component(snap), "a shard carries the variant too");
+    }
+
+    /// A repo the catalog never marked as fp16 is not asked about the disk.
+    #[test]
+    fn a_repo_without_the_catalog_flag_never_asks_for_a_variant() {
+        let plain = image_catalog_lookup("z-image-turbo").expect("catalog entry");
+        assert!(!plain.fp16_variant);
+        assert_eq!(load_variant(plain), None);
+        assert_eq!(prefer_variant(plain), None);
     }
 
     /// GitHub 127, suyashnatural, 2026-09-09: the sentence he was shown named
