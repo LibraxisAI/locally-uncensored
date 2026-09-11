@@ -44,7 +44,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       '27 of the 46 cloud chat models we measured answer without refusing. We asked each of them, twice, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.',
       'Twelve of those models cost no credits at all in chat on a paid plan, up to 500,000 input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.',
       'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
-      'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so a finished image now has an Animate button that carries it straight over.',
+      'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.',
       'Sampling controls sit next to the prompt: temperature, top P, top K and answer length, collapsed until you want them. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
     ],
     details: [
@@ -54,7 +54,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'The 46 cloud chat models in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. 27 of them answer in full. DeepSeek V4.1 Flash joined after the run and carries no mark until it is measured. Four answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of.',
           'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
           'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number.',
-          'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
+          'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
         ],
       },
       {
