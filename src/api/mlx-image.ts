@@ -10,6 +10,7 @@
  * Hard rule: this is the Mac local image backend, NOT ComfyUI.
  */
 import { backendCall, isMacOS } from './backend'
+import { siGbToBytes } from '../lib/formatters'
 import type { ClassifiedModel } from './comfyui'
 
 /**
@@ -40,7 +41,12 @@ export interface MlxImageModel {
   id: string
   name: string
   repo: string
+  /** Wie der Katalog sie fuehrt: in Dezimal-GB. Fuer Text nie direkt nehmen. */
   sizeGB: number
+  /** Dieselbe Groesse in Bytes, am Rand aus `sizeGB` gerechnet. JEDE Anzeige
+   *  geht hierueber durch `formatBytes`, damit Karte und Downloads-Leiste fuer
+   *  dieselbe Datei denselben Text zeigen (Fund 5). */
+  sizeBytes: number
   minRamGB: number
   steps: number
   guidance: number
@@ -105,7 +111,12 @@ export async function mlxGenerate(args: MlxGenerateArgs): Promise<MlxGenerateRes
 }
 
 export async function listMlxImageModels(): Promise<MlxImageModel[]> {
-  return invokeMedia<MlxImageModel[]>('mlx_image_models')
+  const catalog = await invokeMedia<MlxImageModel[]>('mlx_image_models')
+  // Hier ist die Grenze zwischen den zwei Zaehlweisen, und hier wird gerechnet:
+  // der Katalog fuehrt Dezimal-GB (siehe `siGbToBytes`), die Oberflaeche zeigt
+  // Bytes durch `formatBytes`. Danach nennt jede Karte, jede Zeile und jede
+  // Leiste fuer dieselbe Datei denselben Text.
+  return catalog.map((m) => ({ ...m, sizeBytes: siGbToBytes(m.sizeGB) }))
 }
 
 export async function installMlxImageModel(

@@ -3,6 +3,7 @@ import { FileText, Download, Check, Copy } from 'lucide-react'
 import type { ChatArtifact } from '../../types/chat'
 import { isTauri, backendCall } from '../../api/backend'
 import { downloadFile } from '../../lib/chat-export'
+import { formatBytes } from '../../lib/formatters'
 
 /**
  * In-chat file artifact (David 2026-06-12). In PLAIN chat a "file write" never
@@ -25,10 +26,10 @@ export function ChatArtifactCard({ artifact }: { artifact: ChatArtifact }) {
   const lines = artifact.content.split('\n')
   const preview = lines.slice(0, PREVIEW_LINES).join('\n')
   const hiddenLines = lines.length - Math.min(lines.length, PREVIEW_LINES)
-  const sizeLabel =
-    artifact.content.length < 1024
-      ? `${artifact.content.length} B`
-      : `${(artifact.content.length / 1024).toFixed(1)} KB`
+  // Die dritte handgeschriebene Byte-Rechnung der Oberflaeche, mit eigenen
+  // Schwellen und eigenem Einheitennamen. Es gibt eine Regel dafuer, und sie
+  // steht in lib/formatters.ts (Fund 5).
+  const sizeLabel = formatBytes(artifact.content.length)
 
   const handleDownload = async () => {
     if (saveState === 'saving') return
