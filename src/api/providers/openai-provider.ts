@@ -34,7 +34,8 @@ import {
 } from './wire'
 import {
   serverRoot, v1Root, parseLlamaCppProps, parseModelsListContext,
-  parseKoboldMaxContext, parseLmStudioModel, parseGenericModelContext,
+  parseKoboldMaxContext, parseLmStudioModel, parseModelRowContext,
+  type ProbedContext,
 } from './context-probe'
 import type { ResolvedContextWindow } from '../../lib/context-source'
 import { contextWindowKey, storedWindow, capIsDerivable } from '../../lib/context-source'
@@ -129,7 +130,14 @@ interface OpenAIModelEntry {
   // display name, real context window, vision modality, think capability.
   // Absent everywhere else — the mapping below falls back to heuristics.
   name?: string
+  /** Das Fenster, mit dem diese Bereitstellung laeuft. */
   context_length?: number
+  /**
+   * Die trainierte Decke des Modells, falls der Server sie nennt. Getrennt
+   * gefuehrt, weil sie nur die Auswahlliste deckelt und nie der Wert ist, der
+   * angezeigt oder verrechnet wird.
+   */
+  trained_context_length?: number
   input_modalities?: string[]
   // LU Cloud /models declares per-model tool-calling support. Some cloud chat
   // models (Hermes 3, Euryale, MythoMax, Llama-4-Maverick, …) can't do function
@@ -155,6 +163,7 @@ interface OpenAIModelEntry {
  */
 function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
   const think = asString(m.think)
+  const ctx = parseModelRowContext(m)
   const levels = Array.isArray(m.reasoning_effort_levels)
     ? m.reasoning_effort_levels.filter((x): x is string => typeof x === 'string')
     : []
@@ -170,15 +179,17 @@ function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
     flash: m.flash,
     usage_class: m.usage_class,
     /*
-     * GH #129: dieselbe Zahl, wie der jeweilige Server sie nennt.
-     * vLLM schreibt `max_model_len` in jede Modellkarte, llama-server einen
-     * `meta`-Block mit `n_ctx_train`. Beides hier mitzulesen kostet keine
-     * einzige zusaetzliche Anfrage und erspart der Kaskade die meisten.
+     * GH #129: dieselbe Zahl, wie der jeweilige Server sie nennt, gelesen vom
+     * selben Leser wie die Kaskade (context-probe). Das kostet keine einzige
+     * zusaetzliche Anfrage und erspart der Kaskade die meisten.
+     *
+     * Hier stand `meta.n_ctx_train` als letzter Zweig DIESES Feldes, und damit
+     * legte die Liste eine trainierte Decke in den Katalog, aus dem Zaehler
+     * und `max_tokens` ihre Zahl ziehen. Gemessen auf der Box am 11.09.2026:
+     * llama-server mit `--ctx-size 16384` wurde als 40960 gefuehrt.
      */
-    context_length:
-      asNumber(m.context_length) ??
-      asNumber(m.max_model_len) ??
-      asNumber(prop(m.meta, 'n_ctx_train')),
+    context_length: ctx.window ?? undefined,
+    trained_context_length: ctx.trained ?? undefined,
     input_modalities: Array.isArray(m.input_modalities)
       ? m.input_modalities.filter((x): x is string => typeof x === 'string')
       : undefined,
@@ -268,6 +279,15 @@ function guessContextFromName(model: string): number {
 // applyMaxTokens and getContextLength read it through another.
 const catalogContext = new Map<string, number>()
 
+/**
+ * Die trainierte Decke aus demselben Katalog, getrennt gefuehrt.
+ *
+ * Sie deckelt die Auswahlliste im Waehler und beantwortet die Frage nach dem
+ * Fenster nur dann, wenn niemand ein laufendes genannt hat. In `catalogContext`
+ * gehoert sie nicht: was dort steht, wird angezeigt und verrechnet.
+ */
+const catalogTrained = new Map<string, number>()
+
 /** Ceiling for the optional metadata probes — see `probeInit`. */
 const CONTEXT_PROBE_TIMEOUT_MS = 2500
 
@@ -327,6 +347,7 @@ function measurePayload(value: unknown): { chars: number; images: number } {
 /** Test-only: reset the endpoint catalogue between test cases. */
 export function __clearContextCatalogForTests(): void {
   catalogContext.clear()
+  catalogTrained.clear()
 }
 
 // ── Provider Implementation ────────────────────────────────────
@@ -342,6 +363,20 @@ export class OpenAIProvider implements ProviderClient {
 
   private catalogKey(model: string): string {
     return `${this.baseUrl}|${model}`
+  }
+
+  /**
+   * Was die Modellliste ueber das Fenster gesagt hat, fuer applyMaxTokens und
+   * den Waehler. Fenster und Decke landen in getrennten Ablagen; beide Zweige
+   * von `listModels` schreiben durch DIESE eine Stelle, damit es nicht wieder
+   * zwei Schreibwege mit verschiedener Bedeutung gibt.
+   */
+  private rememberCatalog(m: OpenAIModelEntry): void {
+    const key = this.catalogKey(m.id)
+    if (m.context_length && m.context_length > 0) catalogContext.set(key, m.context_length)
+    if (m.trained_context_length && m.trained_context_length > 0) {
+      catalogTrained.set(key, m.trained_context_length)
+    }
   }
 
   private get baseUrl(): string {
@@ -1034,9 +1069,7 @@ export class OpenAIProvider implements ProviderClient {
         // model that always reasons), no vision flag and no effort ladder (so
         // the composer drew no effort control at all). Measured on the 2.6.8
         // Mac bundle, 2026-09-02.
-        if (m.context_length && m.context_length > 0) {
-          catalogContext.set(this.catalogKey(m.id), m.context_length)
-        }
+        this.rememberCatalog(m)
         return {
           id: m.id,
           name: m.name ?? m.id,
@@ -1069,11 +1102,9 @@ export class OpenAIProvider implements ProviderClient {
 
     return models.map(m => {
       // Remember the server-declared window for applyMaxTokens (see
-      // catalogContext). Server value beats every heuristic — it reflects
+      // catalogContext). Server value beats every heuristic, it reflects
       // what THIS deployment actually serves.
-      if (m.context_length && m.context_length > 0) {
-        catalogContext.set(this.catalogKey(m.id), m.context_length)
-      }
+      this.rememberCatalog(m)
       return {
         id: m.id,
         name: m.name ?? m.id,
@@ -1119,17 +1150,23 @@ export class OpenAIProvider implements ProviderClient {
    *   GET /api/v0/models/<id>  ->  { max_context_length, loaded_context_length, ... }
    * Generische OpenAI-compat Server (vLLM, llama.cpp server, Aphrodite, SGLang,
    * TabbyAPI, ...) liefern es oft im Standard-/v1/models/<id> response unter
-   * verschiedenen Keys: context_window | max_model_len | n_ctx_train | context_length.
+   * verschiedenen Keys: context_window | max_model_len | context_length, und
+   * daneben mit `n_ctx_train` die trainierte Decke.
    *
-   * Wir bevorzugen `max_context_length` (das echte Modell-Limit) ueber
-   * `loaded_context_length` (was der User gerade in LM Studio geladen hat).
-   * Sonst sieht der User "8K" weil er LM Studio mit 8K geladen hat — obwohl
-   * sein qwen2.5:32b in Wahrheit 32K+ kann. Genau das war der Reporter-Bug.
+   * Gefragt wird nach dem LAUFENDEN Fenster, nicht nach dem Koennen des
+   * Modells. Bug K liess es umgekehrt lesen (`max_context_length` vor
+   * `loaded_context_length`), damit im Modellwaehler nicht "8K" stand, wo ein
+   * 128k-Modell nur klein geladen war. Die Zahl aus dieser Kaskade ist aber
+   * auch die, aus der `applyMaxTokens` das Budget rechnet, und LM Studio
+   * schneidet jeden Prompt ueber dem geladenen Wert hart ab. Das Koennen des
+   * Modells steht seit dem 11.09.2026 daneben (`trained`) und deckelt die
+   * Auswahlliste im Waehler; angezeigt und verrechnet wird das Fenster.
    *
    * Returnt `null` wenn nichts gefunden, damit Callers cascaden koennen.
    */
   private async probeContextFromServer(model: string, signal?: AbortSignal): Promise<number | null> {
-    return (await this.probeWindow(model, signal))?.tokens ?? null
+    const probed = await this.probeWindow(model, signal)
+    return probed.window ?? probed.trained
   }
 
   /** Eine Metadaten-Abfrage, die nie wirft: ein toter Endpunkt ist eine
@@ -1149,14 +1186,22 @@ export class OpenAIProvider implements ProviderClient {
    *
    * Reihenfolge und Grund:
    *   1. LM Studio `/api/v0/models/<id>`  ist die genaueste Auskunft, die es
-   *      hier gibt, und Bug K will fuer die ANZEIGE das Koennen des Modells.
+   *      hier gibt: `loaded_context_length` ist das laufende Fenster.
    *   2. `/v1/models/<id>`                vLLM, Aphrodite, SGLang, TabbyAPI.
    *   3. `/props`                         llama.cpp. Die Zahl dort ist das
    *      WIRKLICH geladene Fenster; ein Prompt darueber stirbt serverseitig.
    *   4. `/v1/models` (Liste)             vLLM `max_model_len`, llama.cpp
-   *      `meta.n_ctx_train`. Ein Server mit genau einem Modell darf dabei
+   *      `meta.n_ctx`. Ein Server mit genau einem Modell darf dabei
    *      seinen eigenen Namen verwenden, siehe parseModelsListContext.
    *   5. `/api/extra/true_max_context_length`  KoboldCpp.
+   *
+   * Eine Stufe steigt NUR aus, wenn sie ein laufendes Fenster gefunden hat.
+   * Eine Decke (LM Studios `max_context_length`, llama.cpps `n_ctx_train`)
+   * beendet die Suche nicht, sie wird mitgenommen: gemessen auf der Box am
+   * 11.09.2026 hat ein llama-server auf `--ctx-size 16384` die Decke 40960
+   * gemeldet, und wer hier ausgestiegen waere, haette 40960 angezeigt und ein
+   * `max_tokens` von 32768 auf die Leitung gelegt, das Doppelte des ganzen
+   * Fensters.
    *
    * Alle Wege haengen an `serverRoot`, also funktionieren sie auch fuer eine
    * Basis-URL OHNE `/v1` (llama-server startet in seiner eigenen Anleitung auf
@@ -1164,11 +1209,8 @@ export class OpenAIProvider implements ProviderClient {
    * wurde. LAN-Regel unveraendert: ein fremder Host im Internet bekommt keine
    * einzige dieser Anfragen.
    */
-  private async probeWindow(
-    model: string,
-    signal?: AbortSignal,
-  ): Promise<{ tokens: number; modelMax: number } | null> {
-    if (!this.isLanBackend) return null
+  private async probeWindow(model: string, signal?: AbortSignal): Promise<ProbedContext> {
+    if (!this.isLanBackend) return { window: null, trained: null }
 
     // Probe cache (audit E5): applyMaxTokens calls getContextLength on EVERY
     // request, and a LAN backend without a catalog entry paid one or two HTTP
@@ -1179,40 +1221,44 @@ export class OpenAIProvider implements ProviderClient {
     const cacheKey = `${this.baseUrl}|${model}`
     const hit = OpenAIProvider.probeCache.get(cacheKey)
     if (hit && Date.now() - hit.at < 300_000) {
-      return hit.ctx ? { tokens: hit.ctx, modelMax: hit.max ?? 0 } : null
+      return { window: hit.ctx, trained: hit.max ?? null }
     }
-    const remember = (tokens: number | null, modelMax = 0) => {
-      OpenAIProvider.probeCache.set(cacheKey, { at: Date.now(), ctx: tokens, max: modelMax })
-      return tokens ? { tokens, modelMax } : null
+    const remember = (window: number | null, trained: number | null): ProbedContext => {
+      OpenAIProvider.probeCache.set(cacheKey, { at: Date.now(), ctx: window, max: trained })
+      return { window, trained }
     }
 
     const root = serverRoot(this.baseUrl)
     const v1 = v1Root(this.baseUrl)
     const id = encodeURIComponent(model)
+    /** Die hoechste Decke, die bis hierher jemand genannt hat. */
+    let ceiling: number | null = null
+    const under = (n: number | null) => Math.max(ceiling ?? 0, n ?? 0) || null
 
     const lms = parseLmStudioModel(await this.probeJson(`${root}/api/v0/models/${id}`, signal))
-    if (lms.max) return remember(lms.max, lms.max)
-    if (lms.loaded) return remember(lms.loaded, lms.loaded)
+    ceiling = under(lms.max)
+    if (lms.loaded) return remember(lms.loaded, ceiling)
 
-    const generic = parseGenericModelContext(await this.probeJson(`${v1}/models/${id}`, signal))
-    if (generic) return remember(generic, generic)
+    const generic = parseModelRowContext(await this.probeJson(`${v1}/models/${id}`, signal))
+    ceiling = under(generic.trained)
+    if (generic.window) return remember(generic.window, ceiling)
 
     const props = parseLlamaCppProps(await this.serverFact('props', `${root}/props`, signal))
-    if (props) return remember(props, props)
+    if (props) return remember(props, ceiling)
 
     const list = parseModelsListContext(
       await this.serverFact('models', `${v1}/models`, signal),
       model,
     )
-    if (list.window) return remember(list.window, list.trained ?? list.window)
-    if (list.trained) return remember(list.trained, list.trained)
+    ceiling = under(list.trained)
+    if (list.window) return remember(list.window, ceiling)
 
     const kobold = parseKoboldMaxContext(
       await this.serverFact('kobold', `${root}/api/extra/true_max_context_length`, signal),
     )
-    if (kobold) return remember(kobold, kobold)
+    if (kobold) return remember(kobold, ceiling)
 
-    return remember(null)
+    return remember(null, ceiling)
   }
 
   /**
@@ -1297,7 +1343,10 @@ export class OpenAIProvider implements ProviderClient {
   /** Probe results per endpoint+model (audit E5). Static, not an instance
    *  field: the lu-cloud provider builds a fresh delegate per call. `max` ist
    *  die trainierte Decke, wenn der Server sie mitgeliefert hat (GH #129). */
-  private static probeCache = new Map<string, { at: number; ctx: number | null; max?: number }>()
+  private static probeCache = new Map<
+    string,
+    { at: number; ctx: number | null; max?: number | null }
+  >()
 
   /**
    * How far the thinking knob had to be walked down for an endpoint and model,
@@ -1432,18 +1481,34 @@ export class OpenAIProvider implements ProviderClient {
    *      bestaetigt, also `guess`: sie kann veraltet sein, und aus ihr darf
    *      kein hartes Budget abgeleitet werden.
    *   4. Die Metadaten-Abfragen (probeWindow).
-   *   5. Die Namensheuristik, mit 8192 als letztem Boden. Geraten.
+   *   5. Die trainierte Decke, wenn niemand ein laufendes Fenster genannt hat.
+   *      Sie heisst dann auch so (`trained`) und traegt kein Budget: ein
+   *      Server darf jederzeit kleiner laufen, als das Modell koennte.
+   *   6. Die Namensheuristik, mit 8192 als letztem Boden. Geraten.
+   *
+   * Die Decke steht nie in Schritt 2. Bis zum 11.09.2026 legte `toModelEntry`
+   * das `n_ctx_train` der Liste in denselben Katalog wie ein echtes Fenster,
+   * womit Schritt 2 die Abfrage in Schritt 4 ueberholte und `/props` gar nicht
+   * mehr gelesen wurde.
    */
   async getContextWindow(model: string, signal?: AbortSignal): Promise<ResolvedContextWindow> {
     const chosen = this.userWindow(model)
     if (chosen > 0) return { tokens: chosen, source: 'user', modelMax: 0 }
-    const catalog = catalogContext.get(this.catalogKey(model))
-    if (catalog && catalog > 0) return { tokens: catalog, source: 'probe', modelMax: catalog }
+    const key = this.catalogKey(model)
+    const catalog = catalogContext.get(key) ?? 0
+    const declaredMax = catalogTrained.get(key) ?? 0
+    if (catalog > 0) {
+      return { tokens: catalog, source: 'probe', modelMax: Math.max(catalog, declaredMax) }
+    }
     if (KNOWN_CONTEXT[model]) {
       return { tokens: KNOWN_CONTEXT[model], source: 'guess', modelMax: 0, guessKind: 'table' }
     }
     const probed = await this.probeWindow(model, signal)
-    if (probed) return { tokens: probed.tokens, source: 'probe', modelMax: probed.modelMax }
+    const ceiling = Math.max(probed.trained ?? 0, declaredMax)
+    if (probed.window) {
+      return { tokens: probed.window, source: 'probe', modelMax: Math.max(ceiling, probed.window) }
+    }
+    if (ceiling > 0) return { tokens: ceiling, source: 'trained', modelMax: ceiling }
     return { tokens: guessContextFromName(model), source: 'guess', modelMax: 0, guessKind: 'name' }
   }
 

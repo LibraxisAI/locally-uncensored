@@ -66,11 +66,16 @@ describe('OpenAIProvider', () => {
     })
   })
 
-  // Bug K — LM Studio Enhanced API probing. Wenn baseUrl lokal ist, soll
-  // openai-provider /api/v0/models/<id> abfragen und max_context_length
-  // bevorzugen (das echte Modell-Limit), nicht loaded_context_length (was
-  // der User in LM Studio gerade geladen hat). Sonst zeigt LU 8K obwohl
-  // das Modell 128K kann.
+  // Bug K, LM Studio Enhanced API probing. Wenn baseUrl lokal ist, soll
+  // openai-provider /api/v0/models/<id> abfragen.
+  //
+  // Bis zum 11.09.2026 stand hier die umgekehrte Reihenfolge:
+  // max_context_length (das Koennen des Modells) vor loaded_context_length
+  // (was gerade allokiert ist), damit im Modellwaehler nicht 8K steht, wo ein
+  // 128k-Modell klein geladen ist. Dieselbe Zahl ist aber die Grundlage von
+  // applyMaxTokens, und LM Studio schneidet jeden Prompt ueber dem geladenen
+  // Wert hart ab. Seither gilt: geladen ist das Fenster, das Koennen ist die
+  // Decke (modelMax) und deckelt nur die Auswahlliste im Waehler.
   //
   // Test-Setup: backend.ts/isTauri() pruefr `window.__TAURI_INTERNALS__`.
   // In Node-Vitest gibt es kein `window` — wir mocken ein leeres Object,
@@ -85,7 +90,7 @@ describe('OpenAIProvider', () => {
       // Window leak ist OK fuer andere Tests — sie checken eh nicht window.
     })
 
-    it('uses LM Studio max_context_length from /api/v0/models/<id> for local URL', async () => {
+    it('uses LM Studio loaded_context_length as the window, max as the ceiling', async () => {
       const provider = new OpenAIProvider(makeConfig({
         baseUrl: 'http://localhost:1234/v1',
         isLocal: true,
@@ -104,8 +109,13 @@ describe('OpenAIProvider', () => {
         }
         return new Response('', { status: 404 })
       })
-      // Should return 131072 (max from probe), not 8192 (heuristic fallback)
-      expect(await provider.getContextLength('custom-undocumented-model')).toBe(131072)
+      // 8192 is what this server RUNS with, and 8192 is what a budget may use.
+      // Not the name heuristic either: that one would say 8192 for any name,
+      // so the modelMax below is what proves the probe ran.
+      const got = await provider.getContextWindow('custom-undocumented-model')
+      expect(got.tokens).toBe(8192)
+      expect(got.source).toBe('probe')
+      expect(got.modelMax).toBe(131072)
     })
 
     it('falls back to generic /v1/models/<id> if LM Studio endpoint 404s', async () => {
