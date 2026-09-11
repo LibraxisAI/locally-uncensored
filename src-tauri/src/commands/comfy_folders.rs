@@ -7,7 +7,7 @@
 //!
 //! Both halves of that sentence are the bug. LU decided where the file goes on
 //! its own: `<the folder we resolved>/models/<subfolder>`, built from a path we
-//! found by looking for `main.py`. The picker asks something else entirely —
+//! found by looking for `main.py`. The picker asks something else entirely,
 //! the RUNNING ComfyUI, through its `/object_info` enums. Two answers to one
 //! question, and they only agree while the ComfyUI we found is the ComfyUI that
 //! is running AND that ComfyUI keeps its models where we guessed.
@@ -17,7 +17,7 @@
 //!     models under a base directory the user picked at install time, and it
 //!     starts the server with `--base-directory`.
 //!   * `--base-directory` does the same for anybody starting ComfyUI by hand.
-//!   * An `extra_model_paths.yaml` adds roots that are nowhere near `main.py` —
+//!   * An `extra_model_paths.yaml` adds roots that are nowhere near `main.py`.
 //!     LU writes one itself for the Model Storage folder (see custom_models.rs).
 //!   * A second install on the box is the classic one (pnwpdr4519, 2026-07-27).
 //!
@@ -37,7 +37,7 @@
 //! because it comes from the process that builds the picker's enums.
 //!
 //! Everything here is best effort. A ComfyUI that is not running answers
-//! nothing, and a download must still work then — the caller falls back to the
+//! nothing, and a download must still work then: the caller falls back to the
 //! old rule, which is right whenever there is nothing better to know.
 
 use std::collections::HashMap;
@@ -160,7 +160,7 @@ impl ComfyFolders {
     /// subfolder we were asked about, and the first one otherwise. ComfyUI lists
     /// `diffusion_models` as `[models\unet, models\diffusion_models]`, and a
     /// file the catalog calls a `diffusion_models` file belongs in the folder of
-    /// that name — both are scanned, so this is about keeping the tree the way
+    /// that name. Both are scanned, so this is about keeping the tree the way
     /// the user (and our own delete) expects it, not about visibility.
     pub fn dir_for(&self, subfolder: &str) -> Option<PathBuf> {
         let key = subfolder.trim().to_ascii_lowercase();

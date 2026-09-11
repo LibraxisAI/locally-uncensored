@@ -29,9 +29,9 @@ import {
  *
  * A web-format file passes here and is stored as it came: the converter that
  * used to stand beside this went with the CivitAI workflow fetcher it was the
- * only caller of (3.0.0). Nothing in the app ever called it — the Import button
- * in WorkflowsModal hands this JSON straight to `parseImportedWorkflow` — so
- * removing it changed no behaviour, and the modal already says what to do:
+ * only caller of (3.0.0). Nothing in the app ever called it, because the Import
+ * button in WorkflowsModal hands this JSON straight to `parseImportedWorkflow`,
+ * so removing it changed no behaviour, and the modal already says what to do:
  * "Export it from ComfyUI using Save (API Format)".
  */
 export function validateWorkflowJson(json: unknown): json is ComfyApiGraph {

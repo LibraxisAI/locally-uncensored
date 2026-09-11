@@ -289,7 +289,7 @@ mod civitai_auth_tests {
     /// Built exactly the way `do_download` builds it and read back off the
     /// finished request, because the half that was missing in the report was
     /// never the store or the field: it was whether anything put the key on the
-    /// wire. No network — `build()` hands back the request without sending it.
+    /// wire. No network: `build()` hands back the request without sending it.
     #[test]
     fn the_key_is_on_the_wire_as_a_bearer_header_and_only_for_civitai() {
         use super::outgoing_token;
@@ -642,7 +642,7 @@ pub fn delete_comfy_model(
 /// `folders` is what the RUNNING ComfyUI says about its own model folders
 /// (see commands/comfy_folders.rs). It wins whenever it has an answer, because
 /// the picker is built from that same process: a file written anywhere else is
-/// a file no picker can ever offer (.__nothing_, 2026-09-02 — FramePack F1 and
+/// a file no picker can ever offer (.__nothing_, 2026-09-02: FramePack F1 and
 /// Wan 2.1 downloaded fine and showed up nowhere until he moved them into the
 /// other ComfyUI folder by hand).
 ///
@@ -1096,7 +1096,7 @@ pub(crate) fn is_huggingface_host(url: &str) -> bool {
 /// really holds the field. It did not: the key moved out of Model Storage into
 /// a section of its own (the A14 review found a tester saving a folder path as
 /// his API key, because the two fields sat under each other), and this text
-/// kept sending people to the folder settings — where the field they were
+/// kept sending people to the folder settings, where the field they were
 /// looking for is not. `src/components/settings/__tests__/
 /// die-meldung-zeigt-auf-den-abschnitt-den-es-gibt.test.ts` holds every
 /// `Settings > …` path in this file against the sections the app really has.
@@ -1154,7 +1154,7 @@ pub(crate) fn download_http_error(url: &str, status: u16, sent_token: bool, file
 /// documents as well: a key in the URL is written into the download meta the
 /// app persists, printed in every log line that quotes the address, and kept in
 /// the browser history of the web build. reqwest strips Authorization itself
-/// when a redirect leaves the host, which is exactly right here — CivitAI hands
+/// when a redirect leaves the host, which is exactly right here: CivitAI hands
 /// the file to a signed CDN URL that must not see the key.
 ///
 /// Host-gated both ways IN HERE, not only in the caller: the CivitAI key goes

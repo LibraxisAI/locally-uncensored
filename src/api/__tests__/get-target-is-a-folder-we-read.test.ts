@@ -54,7 +54,7 @@ import {
   modelsNotVisibleInComfy, type ModelBundle, type DiscoverModel,
 } from '../discover'
 
-/** ComfyUI's `supported_pt_extensions` (folder_paths.py). No `.gguf` — that is
+/** ComfyUI's `supported_pt_extensions` (folder_paths.py). No `.gguf`, which is
  *  the whole reason the GGUF pack registers a loader of its own. */
 const PT = new Set(['.ckpt', '.pt', '.pt2', '.bin', '.pth', '.safetensors', '.pkl', '.sft'])
 const extOf = (n: string) => n.slice(n.lastIndexOf('.')).toLowerCase()
@@ -173,7 +173,7 @@ describe('every folder the Get button writes into is one the app reads back', ()
   })
 
   // Negative control: a table that claims a folder ComfyUI does not have would
-  // be the same drift facing the other way — a reader asking a loader that
+  // be the same drift facing the other way: a reader asking a loader that
   // answers nothing, forever.
   it('and reads no folder ComfyUI does not have', () => {
     const known = new Set([...Object.keys(SCANS), 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'])

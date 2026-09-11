@@ -9,7 +9,7 @@
  * in one list, so the key got a section of its own.
  *
  * The message a refused CivitAI download prints did not move with it. It kept
- * saying "Settings > AI Backends > Model Storage" — the folder settings, where
+ * saying "Settings > AI Backends > Model Storage", the folder settings, where
  * the key field is not. The one sentence a user gets at the moment he needs the
  * field sent him to the wrong section, which is the same complaint as the
  * original report, one turn later.
@@ -55,8 +55,8 @@ function everySectionTitle(): Set<string> {
 }
 
 /** The `Settings > A > B` paths a message PRINTS. Comment lines are dropped
- *  first — a doc comment that talks about the rule is not a message — and only
- *  the leaf matters: that is the section the user goes looking for. */
+ *  first, because a doc comment that talks about the rule is not a message, and
+ *  only the leaf matters: that is the section the user goes looking for. */
 function settingsPathsIn(src: string): string[] {
   const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
   // A path ends where the sentence goes on: a full stop, a comma or the line.

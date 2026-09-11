@@ -305,8 +305,8 @@ describe('a file complete on disk waits out the ComfyUI scan before it is called
     // "is this folder in a list of folders ComfyUI could enumerate" but "did
     // the engine in front of us answer about it". The fixture's engine answers
     // about checkpoints and diffusion_models and nothing else, so an upscale
-    // model gets no verdict here — waiting on one would be certain failure on
-    // a click. (loras left this group on 2026-08-29: the LoRA folder IS
+    // model gets no verdict here, and waiting on one would be certain failure
+    // on a click. (loras left this group on 2026-08-29: the LoRA folder IS
     // enumerated, by LoraLoader, and the abnahme counter-check showed what not
     // asking it costs.)
     const rec = recordVerdicts()

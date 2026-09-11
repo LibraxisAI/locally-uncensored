@@ -749,8 +749,8 @@ export async function getCLIPModels(): Promise<string[]> {
 
 /**
  * F2 (cinemazverev GH#4): list LoRA files ComfyUI knows about. Pulls the same
- * enum LoraLoader's `lora_name` dropdown shows — anything the user dropped into
- * `<comfyui>/models/loras/`.
+ * enum LoraLoader's `lora_name` dropdown shows, which is anything the user
+ * dropped into `<comfyui>/models/loras/`.
  */
 export async function getLoraModels(): Promise<string[]> {
   return (await folderOptions('loras')) ?? []
@@ -1209,8 +1209,8 @@ export const ANIMATEDIFF_SUBFOLDER = 'custom_nodes/ComfyUI-AnimateDiff-Evolved/m
  * back were two hand-written lists in two files, and they had already drifted.
  *
  * Two Get targets were in no reader at all:
- *   * `clip_vision` — FramePack F1's 900 MB SigCLIP encoder.
- *   * `audio_encoders` — the Wav2Vec2 encoder both Talking Character bundles
+ *   * `clip_vision`, FramePack F1's 900 MB SigCLIP encoder.
+ *   * `audio_encoders`, the Wav2Vec2 encoder both Talking Character bundles
  *     need, added with the 2.5.8 lanes and never read back anywhere.
  * A file in either could not be confirmed after its download, and the bundle
  * card's fallback could never call those bundles installed, because it looked
@@ -1223,7 +1223,7 @@ export const ANIMATEDIFF_SUBFOLDER = 'custom_nodes/ComfyUI-AnimateDiff-Evolved/m
 export const COMFY_MODEL_FOLDERS: Array<{
   subfolder: string
   /** The files ComfyUI lists in that folder, or `null` when the loader that
-   *  lists it is not registered in this ComfyUI at all — see
+   *  lists it is not registered in this ComfyUI at all. See
    *  `nodeOptionsOrNull` for why the two are not the same answer. */
   read: () => Promise<string[] | null>
 }> = [
