@@ -166,7 +166,7 @@ export function LocalApiSettings() {
             onClick={() => kopiere('curl', curlBeispiel(base, token, 'ollama/smollm2:135m'))}
             className="t-micro text-blue-400 hover:text-blue-300"
           >
-            {kopiert === 'curl' ? 'Kopiert' : 'Beispielaufruf kopieren (curl)'}
+            {kopiert === 'curl' ? 'Copied' : 'Copy an example call (curl)'}
           </button>
         </div>
       )}

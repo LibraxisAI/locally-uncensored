@@ -95,7 +95,7 @@ export function RemoteAccessDocs() {
           <span className="text-[0.65rem] font-medium text-gray-400">What a paired device may do</span>
         </div>
         <p className="text-[0.55rem] text-gray-500 leading-relaxed">
-          Three permission switches (in the Remote Access panel above) gate what a remote device can
+          Four permission switches (in the Remote Access panel above) gate what a remote device can
           trigger on this machine. All are off until you turn them on:
         </p>
         <ul className="space-y-1.5">
@@ -117,6 +117,13 @@ export function RemoteAccessDocs() {
             <p className="text-[0.6rem] text-gray-700 dark:text-gray-300">Process Control</p>
             <p className="text-[0.55rem] text-gray-500">
               Allows starting and stopping local backends (ComfyUI, Ollama) from the remote device.
+            </p>
+          </li>
+          <li>
+            <p className="text-[0.6rem] text-gray-700 dark:text-gray-300">Shell &amp; Code Execution</p>
+            <p className="text-[0.55rem] text-gray-500">
+              Lets the remote device run shell commands and code on this machine. The riskiest of the
+              four; leave it off unless you trust every device on the network.
             </p>
           </li>
         </ul>
