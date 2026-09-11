@@ -31,12 +31,12 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  // ENTWURF. 3.0.0 ist nicht veroeffentlicht, package.json steht auf 2.6.9.
-  // Ein Eintrag fuer eine Version, die niemand ausfuehrt, zeigt kein Fenster:
-  // die Tabelle wird gegen die LAUFENDE Version gelesen. Der Eintrag steht
-  // trotzdem hier und nicht in einer Textdatei daneben, weil der Waechter in
-  // stores/__tests__/releaseNotesStore.test.ts nur hier prueft, ob eine
-  // Zusage im Text zur Wirklichkeit im Code passt.
+  // 3.0.0 ist gebaut, aber nicht veroeffentlicht: kein Tag, kein Release. Seit
+  // dem 11.09.2026 stehen alle fuenf Manifeste auf 3.0.0, also liest die
+  // Tabelle diesen Eintrag als den der LAUFENDEN Version, und der Waechter in
+  // stores/__tests__/releaseNotesStore.test.ts haelt ihn an die Version. Der
+  // Eintrag steht hier und nicht in einer Textdatei daneben, weil nur hier
+  // geprueft wird, ob eine Zusage im Text zur Wirklichkeit im Code passt.
   {
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
