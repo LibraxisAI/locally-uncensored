@@ -20,8 +20,28 @@ const FIELDS = [
   { key: 'topK', label: 'Top K', min: 0, max: 200, step: 1 },
 ] as const
 
+/**
+ * Why "Max tokens" carries a draft string instead of the plain number.
+ *
+ * React keeps a controlled `<input type="number">` in step with a LOOSE
+ * comparison (`node.value != value`). With a number on the prop side that
+ * comparison coerces, so "0512" and 512 count as equal and the DOM keeps the
+ * string it already had. Typing 512 into a field showing 0 therefore left
+ * `0512` on screen forever, and the field looked like it appended instead of
+ * replacing (measured on the box, T1 nebenfund 5). Handing React a STRING
+ * turns the same comparison into a string comparison, so the normalised text
+ * really lands in the DOM. The draft covers the other half: while the field is
+ * focused an empty box must stay empty, otherwise nobody can clear it to type
+ * a new number.
+ */
+export function normalizeMaxTokens(raw: string): number {
+  if (raw.trim() === '') return DEFAULT_SETTINGS.maxTokens
+  return Math.max(0, Math.trunc(Number(raw)) || 0)
+}
+
 export function SamplingControls() {
   const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<string | null>(null)
   const settings = useSettingsStore((s) => s.settings)
   const update = useSettingsStore((s) => s.updateSettings)
   const changed = FIELDS.some((f) => settings[f.key] !== DEFAULT_SETTINGS[f.key])
@@ -67,9 +87,15 @@ export function SamplingControls() {
               className="flex-1 rounded border border-gray-700 bg-transparent px-1 py-0.5"
               min={0}
               step={128}
-              value={settings.maxTokens}
+              value={draft ?? String(settings.maxTokens)}
               aria-label="Max tokens"
-              onChange={(e) => update({ maxTokens: Math.max(0, Number(e.target.value) || 0) })}
+              onChange={(e) => {
+                const raw = e.target.value
+                const next = normalizeMaxTokens(raw)
+                setDraft(raw.trim() === '' ? raw : String(next))
+                update({ maxTokens: next })
+              }}
+              onBlur={() => setDraft(null)}
             />
             <span className="w-10 text-right text-gray-500">{settings.maxTokens === 0 ? 'auto' : ''}</span>
           </label>
@@ -80,12 +106,15 @@ export function SamplingControls() {
               type="button"
               className="text-gray-400 underline disabled:opacity-40"
               disabled={!changed}
-              onClick={() => update({
-                temperature: DEFAULT_SETTINGS.temperature,
-                topP: DEFAULT_SETTINGS.topP,
-                topK: DEFAULT_SETTINGS.topK,
-                maxTokens: DEFAULT_SETTINGS.maxTokens,
-              })}
+              onClick={() => {
+                setDraft(null)
+                update({
+                  temperature: DEFAULT_SETTINGS.temperature,
+                  topP: DEFAULT_SETTINGS.topP,
+                  topK: DEFAULT_SETTINGS.topK,
+                  maxTokens: DEFAULT_SETTINGS.maxTokens,
+                })
+              }}
             >
               Reset
             </button>

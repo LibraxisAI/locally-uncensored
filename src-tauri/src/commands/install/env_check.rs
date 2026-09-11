@@ -1459,6 +1459,26 @@ pub(super) fn verify_and_heal_environment(
     verify_environment_really_starts(python_bin, comfy_dir, install_status, cancel)
 }
 
+/// Ein Ordner oder eine Datei unter `temp_dir()`, die kein zweiter Testlauf
+/// wegraeumen kann.
+///
+/// Die Proben legten ihre Attrappen unter FESTEN Namen ab (`lu-probe-hang`,
+/// `lu-fake-torch-import` und so weiter) und loeschen sie am Ende wieder.
+/// Laufen zwei `cargo test` gleichzeitig, und heute liefen mehrere Worktrees
+/// nebeneinander, raeumt der eine Lauf die Attrappe des anderen weg. Im
+/// Tor-Lauf auf 2ad64db1 fiel `a_probe_that_hangs_is_killed_at_the_deadline_
+/// and_never_passes` mit "ModuleNotFoundError: No module named
+/// 'lu_probe_hang'"; in der Wiederholung war derselbe Test gruen. Prozess-Id
+/// und eine laufende Nummer trennen die Laeufe voneinander, das Aufraeumen
+/// bleibt wie es war, und am Verhalten der App aendert sich nichts.
+#[cfg(test)]
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{name}-{}-{n}", std::process::id()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1662,6 +1682,22 @@ mod tests {
         );
     }
 
+    /// Zwei gleichzeitige `cargo test` duerfen sich die Attrappen nicht
+    /// wegraeumen. Siehe den Kopf von `fixture_path`.
+    #[test]
+    fn fixture_names_are_unique_per_process_and_per_call() {
+        let a = fixture_path("lu-probe-hang");
+        let b = fixture_path("lu-probe-hang");
+        assert_ne!(a, b, "zwei Aufrufe teilen sich einen Ordner");
+        let pid = std::process::id().to_string();
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with("lu-probe-hang-"), "{name}");
+            assert!(name.contains(&pid), "ein zweiter Prozess traefe denselben Namen: {name}");
+            assert_eq!(p.parent().unwrap(), std::env::temp_dir());
+        }
+    }
+
     #[test]
     fn a_requirements_file_that_will_not_open_says_so_and_checks_the_floor() {
         // The read error used to be swallowed by unwrap_or_default(), and the
@@ -1669,7 +1705,7 @@ mod tests {
         // No interpreter needed: the probe is handed a binary that cannot
         // start, and what is asserted is the two log lines written before it.
         let state = Arc::new(Mutex::new(InstallState::default()));
-        let gone = std::env::temp_dir().join("lu-no-such-requirements-abc123.txt");
+        let gone = fixture_path("lu-no-such-requirements-abc123.txt");
         let _ = std::fs::remove_file(&gone);
         let _ = verify_imports("lu-not-a-python-binary", &gone, &state, None);
         let logs = state.lock().unwrap().logs.join("\n");
@@ -1677,7 +1713,7 @@ mod tests {
         let count = format!("importing {} packages", probe_targets("").len());
         assert!(logs.contains(&count), "the check did not fall back on the floor: {logs}");
         // Negative control: a file that IS readable says nothing of the kind.
-        let there = std::env::temp_dir().join("lu-a-real-requirements-abc123.txt");
+        let there = fixture_path("lu-a-real-requirements-abc123.txt");
         std::fs::write(&there, "torch\n").expect("fixture");
         let second = Arc::new(Mutex::new(InstallState::default()));
         let _ = verify_imports("lu-not-a-python-binary", &there, &second, None);
@@ -2044,7 +2080,7 @@ mod tests {
             eprintln!("no usable Python on this box, skipping the live probe check");
             return;
         };
-        let dir = std::env::temp_dir().join("lu-probe-crash-noisy");
+        let dir = fixture_path("lu-probe-crash-noisy");
         let name = stage_probe_module(
             &dir,
             "lu_probe_boom_noisy",
@@ -2069,7 +2105,7 @@ mod tests {
             eprintln!("no usable Python on this box, skipping the live probe check");
             return;
         };
-        let dir = std::env::temp_dir().join("lu-probe-crash-named");
+        let dir = fixture_path("lu-probe-crash-named");
         let name = stage_probe_module(
             &dir,
             "lu_probe_boom_named",
@@ -2097,7 +2133,7 @@ mod tests {
             eprintln!("no usable Python on this box, skipping the live probe check");
             return;
         };
-        let dir = std::env::temp_dir().join("lu-probe-hang");
+        let dir = fixture_path("lu-probe-hang");
         let name = stage_probe_module(&dir, "lu_probe_hang", "import time\ntime.sleep(120)\n");
         let started = std::time::Instant::now();
         let report = run_import_probe_bounded(&python, &[&name], None, None, TEST_PROBE_DEADLINE)
@@ -2118,7 +2154,7 @@ mod tests {
             eprintln!("no usable Python on this box, skipping the live probe check");
             return;
         };
-        let dir = std::env::temp_dir().join("lu-probe-cancel");
+        let dir = fixture_path("lu-probe-cancel");
         let name = stage_probe_module(&dir, "lu_probe_cancel", "import time\ntime.sleep(120)\n");
         let flag = Arc::new(AtomicBool::new(false));
         let trip = flag.clone();
@@ -2154,7 +2190,7 @@ mod start_tests {
     /// real one would be. `cuda_call` is the body of the call that fails, or
     /// None for a torch that works.
     fn stage_fake_torch(tag: &str, available: bool, arch: &str, version: &str, cuda_call: Option<&str>) -> (std::path::PathBuf, String) {
-        let dir = std::env::temp_dir().join(format!("lu-fake-torch-{tag}"));
+        let dir = fixture_path(&format!("lu-fake-torch-{tag}"));
         std::fs::create_dir_all(&dir).expect("fake torch dir");
         let body = match cuda_call {
             Some(boom) => format!("    def cuda(self):\n        raise RuntimeError({boom})\n"),
@@ -2215,7 +2251,7 @@ mod start_tests {
             eprintln!("no usable Python on this box, skipping the live runtime probe");
             return;
         };
-        let dir = std::env::temp_dir().join("lu-fake-torch-import");
+        let dir = fixture_path("lu-fake-torch-import");
         std::fs::create_dir_all(&dir).expect("dir");
         std::fs::write(
             dir.join("torch.py"),
@@ -2323,7 +2359,7 @@ mod start_tests {
     // ── ComfyUI's own start ───────────────────────────────────────────────
 
     fn stage_fake_comfy(tag: &str, main_py: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lu-fake-comfy-{tag}"));
+        let dir = fixture_path(&format!("lu-fake-comfy-{tag}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("fake comfy dir");
         std::fs::write(dir.join("main.py"), main_py).expect("fake main.py");
@@ -2396,7 +2432,7 @@ mod start_tests {
 
     #[test]
     fn a_folder_without_a_main_py_says_that_and_starts_nothing() {
-        let dir = std::env::temp_dir().join("lu-fake-comfy-empty");
+        let dir = fixture_path("lu-fake-comfy-empty");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dir");
         let state = Arc::new(Mutex::new(InstallState::default()));

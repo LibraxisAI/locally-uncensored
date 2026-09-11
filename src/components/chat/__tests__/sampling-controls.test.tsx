@@ -50,6 +50,50 @@ describe('SamplingControls', () => {
     expect(settings().maxTokens).toBe(0)
   })
 
+  /**
+   * Max tokens used to APPEND what you typed instead of replacing it: the box
+   * showed 0, you typed 512, and `0512` stayed on screen (measured on the box,
+   * T1 nebenfund 5). React keeps a controlled number input in step with a
+   * loose comparison, so "0512" and the number 512 counted as equal and the
+   * DOM was never corrected. Typed here one keystroke at a time, each one
+   * appended to whatever the field really shows, because that is the gesture
+   * that produced the wrong number.
+   */
+  const maxTokens = () => screen.getByLabelText('Max tokens') as HTMLInputElement
+  const typeInto = (field: HTMLInputElement, chars: string) => {
+    for (const c of chars) fireEvent.change(field, { target: { value: field.value + c } })
+  }
+
+  it('replaces what stands in max tokens instead of appending to it', () => {
+    render(<SamplingControls />)
+    open()
+    const field = maxTokens()
+    expect(field.value).toBe('0')
+    typeInto(field, '512')
+    expect(field.value).toBe('512')
+    expect(settings().maxTokens).toBe(512)
+  })
+
+  it('falls back to the default when max tokens is cleared, and shows it again on blur', () => {
+    useSettingsStore.getState().updateSettings({ maxTokens: 512 })
+    render(<SamplingControls />)
+    open()
+    const field = maxTokens()
+    fireEvent.change(field, { target: { value: '' } })
+    expect(settings().maxTokens).toBe(DEFAULT_SETTINGS.maxTokens)
+    expect(field.value).toBe('')
+    fireEvent.blur(field)
+    expect(field.value).toBe(String(DEFAULT_SETTINGS.maxTokens))
+  })
+
+  it('keeps max tokens a whole number, because a fraction is not a token count', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.change(maxTokens(), { target: { value: '512.7' } })
+    expect(settings().maxTokens).toBe(512)
+    expect(Number.isInteger(settings().maxTokens)).toBe(true)
+  })
+
   it('marks a changed setup and resets every field at once', () => {
     useSettingsStore.getState().updateSettings({ temperature: 1.9, topK: 5 })
     render(<SamplingControls />)

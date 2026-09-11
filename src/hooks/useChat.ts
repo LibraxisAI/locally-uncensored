@@ -278,6 +278,16 @@ export function useChat() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [isLoadingModel, setIsLoadingModel] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  /**
+   * Welche Unterhaltung der Controller oben gehoert.
+   *
+   * `abortRef` ist EINER je Hook-Instanz, nicht je Unterhaltung. Stop nahm ihn
+   * bisher unbesehen und brach damit die Erzeugung der anderen Unterhaltung ab
+   * (T1 Punkt 4, auf der Box gemessen). Der Griff je Unterhaltung liegt im
+   * generationStore und macht die Arbeit; dieser Ref sagt nur noch, ob der
+   * Griff dieser Instanz ueberhaupt zur genannten Unterhaltung gehoert.
+   */
+  const abortConvRef = useRef<string | null>(null)
   const contentRef = useRef("")
   const thinkingRef = useRef("")
   const isThinkingRef = useRef(false)
@@ -332,6 +342,7 @@ export function useChat() {
 
     const abort = new AbortController()
     abortRef.current = abort
+    abortConvRef.current = convId
     useGenerationStore.getState().registerAborter(convId, () => abort.abort())
     setIsGenerating(true)
     useGenerationStore.getState().setGenerating(convId, true)
@@ -343,6 +354,7 @@ export function useChat() {
     } finally {
       useGenerationStore.getState().clearAborter(convId)
       abortRef.current = null
+      abortConvRef.current = null
       // The round is over, so it goes on disk BEFORE the app says so. Same
       // contract as the single-model turn below and as the Agent and Coding
       // runs — see stores/durability.ts for the measurement that made the
@@ -761,6 +773,7 @@ export function useChat() {
 
     const abort = new AbortController()
     abortRef.current = abort
+    abortConvRef.current = convId
     // Register so deleting/closing this chat aborts the in-flight stream (Bug C).
     // Also requestGenerationCancel so a running ComfyUI job is interrupted when
     // the chat goes away mid-generation (the _activeHandoffs gate makes it a
@@ -1149,6 +1162,7 @@ export function useChat() {
       setIsLoadingModel(false)
       useModelStore.getState().setIsModelLoading(false)
       abortRef.current = null
+      abortConvRef.current = null
 
       // The turn is done, so it goes on disk — and only then does the app say
       // it is done. Persistence is coalesced while tokens stream (2.6.3 — see
@@ -1228,9 +1242,17 @@ export function useChat() {
    *  - `abortRef`    der einfache Chat-Stream dieser Instanz.
    */
   const stopGeneration = useCallback(() => {
+    const convId = useChatStore.getState().activeConversationId
     stopAgent()
-    useGenerationStore.getState().abortConversation(useChatStore.getState().activeConversationId)
-    abortRef.current?.abort()
+    useGenerationStore.getState().abortConversation(convId)
+    // NUR wenn der Controller dieser Instanz auch zu DIESER Unterhaltung
+    // gehoert. Ohne die Bedingung brach Stop in Unterhaltung B die Erzeugung
+    // in A ab, weil `abortRef` den zuletzt gestarteten Lauf haelt, egal wo
+    // (T1 Punkt 4). Gehoert er woanders hin, hat `abortConversation` oben
+    // schon den richtigen Griff gezogen.
+    if (abortConvRef.current === convId) {
+      abortRef.current?.abort()
+    }
     // Also interrupt an in-flight ComfyUI image/video gen, not just the JS loop —
     // otherwise the main Stop button leaves ComfyUI burning (only the in-chat
     // tool Stop did this before; now both affordances agree).

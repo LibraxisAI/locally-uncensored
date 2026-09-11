@@ -8,7 +8,7 @@
  * lib/constants.ts:12-15, and `OpenAIChatRequest` in openai-provider.ts:86-100
  * has no member it could be assigned to), and temperature goes on the wire.
  * SamplingControls writes exactly four keys, all through one setter
- * (SamplingControls.tsx:57 for the three sliders, :72 for Max tokens), and
+ * (SamplingControls.tsx:77 for the three sliders, :96 for Max tokens), and
  * useChat.ts:825-828 hands the same four to the provider.
  *
  * The value that really has no effect in the cloud is TOP K, and that is not a
@@ -33,6 +33,7 @@ import type { OpenAIChatRequest } from '../providers/openai-provider'
 import type { ProviderConfig } from '../providers/types'
 import { sentJson } from './provider-test-support'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { normalizeMaxTokens } from '../../components/chat/SamplingControls'
 import { DEFAULT_SETTINGS } from '../../lib/constants'
 
 vi.mock('../cloud/supabase', () => ({ getAccessToken: async () => 'session-token-abc' }))
@@ -132,6 +133,17 @@ describe('what the sliders put on the wire', () => {
     // than present as a zero budget, which would answer nothing.
     expect(DEFAULT_SETTINGS.maxTokens).toBe(0)
     expect((await cloudBody()).max_tokens).toBeUndefined()
+  })
+
+  it('puts the NUMBER on the wire for the text the box used to keep', async () => {
+    // The field kept `0512` on screen while the store already held 512 (T1
+    // nebenfund 5), so the one thing worth proving on a real body is that what
+    // leaves the app is a number and not the text somebody typed. `0512` is
+    // the exact string the old field produced.
+    sliders({ maxTokens: normalizeMaxTokens('0512') })
+    const body = await cloudBody()
+    expect(body.max_tokens).toBe(512)
+    expect(typeof body.max_tokens).toBe('number')
   })
 })
 
