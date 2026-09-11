@@ -48,6 +48,15 @@ pub struct BundledEngine {
     /// request resolving to the same argv reuses the running process, any
     /// difference (model, ctx, tuning, port) triggers a stop→start.
     pub args: Vec<String>,
+    /// True when the layer count inside `args` was MEASURED against the card
+    /// (the "auto" default) rather than typed by the user.
+    ///
+    /// The idempotence key needs the difference. Two auto starts whose
+    /// measurements differ by a few hundred MiB of free memory are the same
+    /// REQUEST and must not tear down a healthy engine over it, while a switch
+    /// between auto and a typed number is a different request even on the days
+    /// the two numbers happen to agree.
+    pub auto_layers: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
