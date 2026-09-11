@@ -221,3 +221,84 @@ describe('the sampling popup', () => {
     expect(document.activeElement).toBe(trigger())
   })
 })
+
+/**
+ * Closing the popup drops the Max tokens draft, and it does so on purpose.
+ *
+ * The draft is a display string: every keystroke has already been written to
+ * the settings, so there is no unsaved value to lose. What CAN be left behind
+ * is an emptied box. Cleared, the field shows "" while the store already holds
+ * the default, and until 2026-09-11 the only thing that ever cleared that
+ * string again was the field's own onBlur.
+ *
+ * Which means the popup was correct by luck. A real user has the keyboard in
+ * the field while typing, close() moves that keyboard to the trigger before the
+ * panel unmounts, the blur fires, the draft goes. Take the focus out of the
+ * picture and the empty box came back on the next open, over a store holding 0.
+ * Measured that way before the fix: three of these five red.
+ *
+ * So the cases below drive the field WITHOUT focusing it, which is exactly what
+ * the old version got away with. They are not modelling a user; they are
+ * holding the line that close() clears the draft itself instead of hoping the
+ * focus rule keeps doing it.
+ */
+describe('the Max tokens draft does not outlive the popup', () => {
+  const feld = () => screen.getByLabelText('Max tokens') as HTMLInputElement
+  /** Deliberately no focus() first: that is the whole point of these cases. */
+  const leeren = () => {
+    fireEvent.change(feld(), { target: { value: '512' } })
+    fireEvent.change(feld(), { target: { value: '' } })
+  }
+
+  it('the X drops an emptied box', () => {
+    render(<SamplingControls />)
+    open()
+    leeren()
+    expect(feld().value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: SAMPLING_CLOSE_LABEL }))
+    open()
+    expect(feld().value).toBe(String(DEFAULT_SETTINGS.maxTokens))
+  })
+
+  it('Escape drops an emptied box', () => {
+    render(<SamplingControls />)
+    open()
+    leeren()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    open()
+    expect(feld().value).toBe(String(DEFAULT_SETTINGS.maxTokens))
+  })
+
+  it('a press outside drops an emptied box', () => {
+    render(<SamplingControls />)
+    open()
+    leeren()
+    fireEvent.pointerDown(document.body)
+    open()
+    expect(feld().value).toBe(String(DEFAULT_SETTINGS.maxTokens))
+  })
+
+  // The counterpart, so the fix cannot be "throw the number away as well":
+  // a value the user really typed is in the settings and comes back.
+  it('but a number that was typed comes back, because it was never a draft', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.change(feld(), { target: { value: '2048' } })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    open()
+    expect(feld().value).toBe('2048')
+    expect(settings().maxTokens).toBe(2048)
+  })
+
+  // And the half onBlur still owns: leaving the field while the popup stays
+  // open. Losing this would make the onBlur line dead, which it is not.
+  it('leaving the field with the popup still open normalises it too', () => {
+    render(<SamplingControls />)
+    open()
+    leeren()
+    expect(feld().value).toBe('')
+    fireEvent.blur(feld())
+    expect(feld().value).toBe(String(DEFAULT_SETTINGS.maxTokens))
+    expect(screen.queryByTestId('sampling-panel')).not.toBeNull()
+  })
+})
