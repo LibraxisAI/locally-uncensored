@@ -446,7 +446,7 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
         // reporters pressed Repair environment and nothing changed, because a
         // rebuild that trusts pip's exit code rebuilds the same hole.
         update("installing", "Step 4/4: Checking that the environment really starts...");
-        match verify_and_heal_environment(&venv_py, &reqs, &install_status, Some(&cancel_flag)) {
+        match verify_and_heal_environment(&venv_py, &comfy_dir, &reqs, &install_status, Some(&cancel_flag)) {
             Ok(()) => {}
             Err(e) if e == "cancelled" => {
                 update("cancelled", "Repair cancelled during the environment check.");
@@ -690,7 +690,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         // core moves on, one wheel does not land, and the update reports
         // finished over an environment that no longer imports.
         update("installing", "Step 3/3: Checking that the environment really starts...");
-        if let Err(e) = verify_and_heal_environment(&python_bin, &reqs, &install_status, Some(&cancel_flag)) {
+        if let Err(e) = verify_and_heal_environment(&python_bin, &comfy_dir, &reqs, &install_status, Some(&cancel_flag)) {
             if e == "cancelled" {
                 update("cancelled", "Update cancelled during the environment check.");
                 return;

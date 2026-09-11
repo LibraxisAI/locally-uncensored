@@ -32,27 +32,203 @@ use tauri::{
     image::Image,
 };
 
-/// Bug D (v2.4.5 — emilmjt Discord 2026-05-11): on Arch Linux + Wayland
-/// and on a handful of Mesa versions, Tauri 2's webkit2gtk-4.1 webview
-/// initialises with DMABUF buffer-sharing or DMA-compositing enabled
-/// and the GPU path silently fails — the window opens but the page
-/// never paints, so the user sees an empty rectangle. Disabling those
-/// two paths forces webkit back onto the slower-but-reliable software
-/// composite, which is the same workaround the GNOME, KDE, and Tauri
-/// upstream maintainers recommend (tauri-apps/tauri#9304, GNOME
-/// GitLab #1731). Only applied when the user hasn't already set the
-/// vars themselves — power users with a working DMABUF setup keep it.
+/// The switch that turns every workaround in this section off.
+pub(crate) const WAYLAND_OPT_OUT: &str = "LU_NO_WAYLAND_WORKAROUND";
+
+/// The four libraries an AppImage must not carry, and the one this code looks
+/// for. linuxdeploy bundles the build host's `libwayland-client.so.0` next to
+/// the app, the host's Mesa is then loaded against it, and on a Wayland session
+/// `eglGetDisplay` answers `EGL_BAD_PARAMETER`. The web process prints
+/// "Could not create default EGL display: EGL_BAD_PARAMETER. Aborting..." and
+/// dies, and the rest of the app keeps running with no window at all.
+/// tauri-apps/tauri#15665, reproduced on CachyOS in espressif/idf-im-ui#755,
+/// where deleting the bundled wayland libraries from the AppDir fixed the GUI.
+const BUNDLED_WAYLAND_CLIENT: &str = "usr/lib/libwayland-client.so.0";
+
+/// Where a distribution keeps the real one. The first that exists wins.
+const SYSTEM_WAYLAND_CLIENT: &[&str] = &[
+    "/usr/lib/x86_64-linux-gnu/libwayland-client.so.0",
+    "/usr/lib64/libwayland-client.so.0",
+    "/usr/lib/libwayland-client.so.0",
+];
+
+/// One environment variable the Linux webview needs set before it exists.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WebviewEnv {
+    pub(crate) key: &'static str,
+    pub(crate) value: String,
+    /// Logged next to the variable, so a support log says why it was set.
+    pub(crate) why: &'static str,
+}
+
+/// Everything the decision below is allowed to know. Read from the process in
+/// `linux_webview_env`, handed in by hand in the tests: the machine that
+/// reproduces this bug is not the machine the tests run on.
+#[derive(Debug, Default)]
+pub(crate) struct LinuxSession {
+    /// The SESSION is Wayland. Not the GDK backend: Tauri's AppImage already
+    /// forces `GDK_BACKEND=x11` through its linuxdeploy gtk hook, and that
+    /// moves GTK onto XWayland without moving the web process off the Wayland
+    /// EGL platform. The session is what the failing call sees.
+    pub(crate) wayland: bool,
+    pub(crate) opted_out: bool,
+    pub(crate) dmabuf_set: bool,
+    pub(crate) compositing_set: bool,
+    pub(crate) preload_set: bool,
+    /// The system `libwayland-client.so.0` that has to shadow the bundled one,
+    /// set only when this process really runs out of an AppImage that bundles
+    /// one and the system really has a copy.
+    pub(crate) shadow_bundled_wayland: Option<String>,
+}
+
+/// Bug D (v2.4.5, emilmjt Discord 2026-05-11) and Bug g (mallic Discord
+/// 2026-09-04): what to set before the webview exists.
 ///
-/// Extracted to a module-level function (not `#[cfg(target_os = "linux")]`)
-/// so the no-overwrite logic is unit-testable cross-platform — see
-/// `tests::webkit_workaround_*` below.
-fn apply_linux_webkit_workarounds() {
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+/// Bug D was a window that opened and never painted, on Arch and Wayland, and
+/// the two WEBKIT_ variables below are its fix (tauri-apps/tauri#9304, WebKit
+/// bug 291332, which is still open at WebKitGTK 2.48.1 with an AMD card).
+/// Since 2.4.5 they were set on EVERY Linux session. They are now set on
+/// Wayland only, and X11 is left alone: the DMA-BUF renderer webkitgtk 2.42
+/// introduced is the thing being disabled, disabling it costs everyone the
+/// fast buffer-sharing path, and Tauri's own page says not to ship it
+/// unconditionally (https://v2.tauri.app/develop/debug/linux-graphics/).
+///
+/// Bug g is the harder one and the reason the third variable is here. mallic
+/// ran 2.6.7, which already set both WEBKIT_ variables, and still got no
+/// window at all under Wayland on CachyOS. "No window" is a different symptom
+/// from "a window that will not paint", and it has a different known cause:
+/// the bundled libwayland above.
+///
+/// Pure, and module-level rather than `#[cfg(target_os = "linux")]`, so every
+/// branch is testable on a Mac. See `tests::wayland_*`.
+pub(crate) fn linux_webview_env(session: &LinuxSession) -> Vec<WebviewEnv> {
+    if session.opted_out || !session.wayland {
+        return Vec::new();
     }
-    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    let mut out = Vec::new();
+    if !session.dmabuf_set {
+        out.push(WebviewEnv {
+            key: "WEBKIT_DISABLE_DMABUF_RENDERER",
+            value: "1".to_string(),
+            why: "webkitgtk's DMA-BUF renderer leaves the page blank on several Mesa versions",
+        });
     }
+    if !session.compositing_set {
+        out.push(WebviewEnv {
+            key: "WEBKIT_DISABLE_COMPOSITING_MODE",
+            value: "1".to_string(),
+            why: "accelerated compositing is the second half of the same blank-page fault",
+        });
+    }
+    if let (Some(path), false) = (&session.shadow_bundled_wayland, session.preload_set) {
+        out.push(WebviewEnv {
+            key: "LD_PRELOAD",
+            value: path.clone(),
+            why: "this AppImage bundles its own libwayland-client, and the host Mesa loaded \
+                  against it cannot create an EGL display, so the web process dies before a \
+                  window exists (tauri-apps/tauri#15665)",
+        });
+    }
+    out
+}
+
+/// Is this a Wayland session? Pure over the two variables that say so.
+pub(crate) fn is_wayland_session(session_type: Option<&str>, wayland_display: Option<&str>) -> bool {
+    session_type.is_some_and(|t| t.eq_ignore_ascii_case("wayland"))
+        || wayland_display.is_some_and(|d| !d.is_empty())
+}
+
+/// Does this process run out of an AppImage that bundles the library, and does
+/// the system have one to put in front of it?
+///
+/// `exists` is injected for the same reason everything else here is pure.
+pub(crate) fn shadow_bundled_wayland(
+    appdir: Option<&str>,
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let appdir = appdir.filter(|d| !d.is_empty())?;
+    let bundled = format!("{}/{BUNDLED_WAYLAND_CLIENT}", appdir.trim_end_matches('/'));
+    if !exists(&bundled) {
+        return None;
+    }
+    SYSTEM_WAYLAND_CLIENT
+        .iter()
+        .find(|p| exists(p))
+        .map(|p| p.to_string())
+}
+
+/// Read the session, decide, set, and say so. Never overwrites a variable the
+/// user set: a power user with a working setup keeps it.
+fn apply_linux_webview_env() {
+    let var = |k: &str| std::env::var(k).ok();
+    let session = LinuxSession {
+        wayland: is_wayland_session(
+            var("XDG_SESSION_TYPE").as_deref(),
+            var("WAYLAND_DISPLAY").as_deref(),
+        ),
+        opted_out: std::env::var_os(WAYLAND_OPT_OUT).is_some_and(|v| v != "0"),
+        dmabuf_set: std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some(),
+        compositing_set: std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_some(),
+        preload_set: std::env::var_os("LD_PRELOAD").is_some(),
+        shadow_bundled_wayland: shadow_bundled_wayland(var("APPDIR").as_deref(), |p| {
+            std::path::Path::new(p).exists()
+        }),
+    };
+    for e in linux_webview_env(&session) {
+        // println! as well as tracing: the tracing writer is not up yet when
+        // this runs, and this has to be visible to a user who started the
+        // AppImage from a terminal because the window never came.
+        println!(
+            "[Linux] Wayland session: setting {}={} because {}. Set {WAYLAND_OPT_OUT}=1 to turn this off.",
+            e.key, e.value, e.why
+        );
+        std::env::set_var(e.key, &e.value);
+    }
+}
+
+/// Bug g, the other half: what the console says when the window never came.
+///
+/// The force-show fallback in `onboarding_window` fires when the frontend
+/// never asked for its window, which on Linux is the same event mallic
+/// reported: the process is up, the taskbar has an entry, there is nothing on
+/// screen. 2.6.7 said nothing at all in that moment. The reporter's own
+/// workaround is in here, plus the one thing that separates the two known
+/// causes, so the next person gets an answer from the app instead of from a
+/// three-day Discord thread.
+///
+/// None off Linux: this text is about a Linux graphics stack and would be
+/// nonsense anywhere else.
+pub(crate) fn linux_no_window_hint(linux: bool, wayland: bool, in_appimage: bool) -> Option<String> {
+    if !linux {
+        return None;
+    }
+    let mut msg = String::from(
+        "[Linux] The window never asked to be shown. If nothing is on screen, the webview \
+         did not start.",
+    );
+    if wayland {
+        msg.push_str(
+            "\n[Linux] This is a Wayland session. Start LU from a terminal and read the first \
+             error line:\n\
+             [Linux]   \"Could not create default EGL display: EGL_BAD_PARAMETER\" means the \
+             bundled wayland library is the cause.\n\
+             [Linux]   \"AcceleratedSurfaceDMABuf was unable to construct a complete \
+             framebuffer\" means the webkit DMA-BUF renderer is.",
+        );
+    }
+    if in_appimage {
+        msg.push_str(
+            "\n[Linux] Two things to try, each on its own:\n\
+             [Linux]   LD_PRELOAD=/usr/lib/libwayland-client.so.0 ./LU.AppImage\n\
+             [Linux]   GDK_BACKEND=x11 ./LU.AppImage",
+        );
+    } else {
+        msg.push_str("\n[Linux] Try: GDK_BACKEND=x11 before starting LU.");
+    }
+    msg.push_str(&format!(
+        "\n[Linux] To start with none of LU's own workarounds: {WAYLAND_OPT_OUT}=1"
+    ));
+    Some(msg)
 }
 
 /// How long the app waits after the window went to the tray before it releases
@@ -231,7 +407,7 @@ fn main() {
     // by rustc's reckoning, for a function whose whole point is being reachable
     // from the tests.
     if cfg!(target_os = "linux") {
-        apply_linux_webkit_workarounds();
+        apply_linux_webview_env();
     }
     // Before anything can spawn a child: an AppImage exports PYTHONHOME and
     // PYTHONPATH into its own mount, and every python3 we start inherits them
@@ -667,86 +843,143 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
-    // env vars are process-global; serialize these tests so they don't
-    // stomp each other when cargo runs them in parallel.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    use super::{is_wayland_session, linux_no_window_hint, linux_webview_env, shadow_bundled_wayland, LinuxSession, WAYLAND_OPT_OUT};
 
     const DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
     const COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 
-    fn cleanup() {
-        std::env::remove_var(DMABUF);
-        std::env::remove_var(COMPOSITING);
+    /// A Wayland session with nothing set and no AppImage under it.
+    fn wayland() -> LinuxSession {
+        LinuxSession { wayland: true, ..Default::default() }
+    }
+
+    fn keys(session: &LinuxSession) -> Vec<&'static str> {
+        linux_webview_env(session).into_iter().map(|e| e.key).collect()
+    }
+
+    // ── Bug g: the session decides, and only the session ──────────────────
+
+    #[test]
+    fn wayland_with_nothing_set_gets_both_webkit_switches() {
+        let plan = linux_webview_env(&wayland());
+        assert_eq!(keys(&wayland()), vec![DMABUF, COMPOSITING]);
+        assert!(plan.iter().all(|e| e.value == "1"), "{plan:?}");
+        assert!(plan.iter().all(|e| !e.why.is_empty()), "every switch says why");
     }
 
     #[test]
-    fn webkit_workaround_sets_both_vars_when_unset() {
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        cleanup();
-        super::apply_linux_webkit_workarounds();
-        assert_eq!(std::env::var(DMABUF).ok().as_deref(), Some("1"));
-        assert_eq!(std::env::var(COMPOSITING).ok().as_deref(), Some("1"));
-        cleanup();
+    fn x11_is_left_completely_alone() {
+        // The change from 2.4.5, and the reason it is a change: the DMA-BUF
+        // renderer being disabled here is webkitgtk's fast path, and X11 never
+        // reported the fault it works around.
+        let session = LinuxSession { wayland: false, ..Default::default() };
+        assert!(linux_webview_env(&session).is_empty());
+        // Not even with an AppImage that bundles the library: the EGL fault
+        // that needs the preload is a Wayland one.
+        let session = LinuxSession {
+            wayland: false,
+            shadow_bundled_wayland: Some("/usr/lib/libwayland-client.so.0".to_string()),
+            ..Default::default()
+        };
+        assert!(linux_webview_env(&session).is_empty());
     }
 
     #[test]
-    fn webkit_workaround_preserves_user_dmabuf_override() {
-        // User explicitly disabled the workaround — e.g. their Mesa is fine
-        // and they want full GPU compositing. We must NOT clobber.
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        cleanup();
-        std::env::set_var(DMABUF, "0");
-        super::apply_linux_webkit_workarounds();
-        assert_eq!(std::env::var(DMABUF).ok().as_deref(), Some("0"), "user-set DMABUF should be preserved");
-        assert_eq!(std::env::var(COMPOSITING).ok().as_deref(), Some("1"), "unset COMPOSITING should still be applied");
-        cleanup();
+    fn a_variable_the_user_set_is_never_overwritten() {
+        let session = LinuxSession { dmabuf_set: true, ..wayland() };
+        assert_eq!(keys(&session), vec![COMPOSITING]);
+        let session = LinuxSession { compositing_set: true, ..wayland() };
+        assert_eq!(keys(&session), vec![DMABUF]);
+        let session = LinuxSession { dmabuf_set: true, compositing_set: true, ..wayland() };
+        assert!(linux_webview_env(&session).is_empty());
     }
 
     #[test]
-    fn webkit_workaround_preserves_user_compositing_override() {
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        cleanup();
-        std::env::set_var(COMPOSITING, "custom-value");
-        super::apply_linux_webkit_workarounds();
-        assert_eq!(std::env::var(DMABUF).ok().as_deref(), Some("1"), "unset DMABUF should still be applied");
-        assert_eq!(std::env::var(COMPOSITING).ok().as_deref(), Some("custom-value"), "user-set COMPOSITING should be preserved");
-        cleanup();
+    fn the_escape_hatch_turns_everything_off() {
+        // mallic ran 2.6.7, which already set both WEBKIT_ variables, and had
+        // no window. Without a way to start WITHOUT them, nobody can tell
+        // whether LU's own workaround is the thing in the way.
+        let session = LinuxSession {
+            opted_out: true,
+            shadow_bundled_wayland: Some("/usr/lib/libwayland-client.so.0".to_string()),
+            ..wayland()
+        };
+        assert!(linux_webview_env(&session).is_empty());
     }
 
     #[test]
-    fn webkit_workaround_preserves_empty_string_as_explicit_unset() {
-        // Edge case: empty value still counts as "set" via var_os().is_some(),
-        // so we don't overwrite. Some shells/wrappers use "" to mean "unset
-        // me explicitly" — respect that intent.
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        cleanup();
-        std::env::set_var(DMABUF, "");
-        std::env::set_var(COMPOSITING, "");
-        super::apply_linux_webkit_workarounds();
-        assert_eq!(std::env::var(DMABUF).ok().as_deref(), Some(""));
-        assert_eq!(std::env::var(COMPOSITING).ok().as_deref(), Some(""));
-        cleanup();
+    fn an_appimage_that_bundles_wayland_gets_the_system_library_in_front() {
+        let session = LinuxSession {
+            shadow_bundled_wayland: Some("/usr/lib64/libwayland-client.so.0".to_string()),
+            ..wayland()
+        };
+        let plan = linux_webview_env(&session);
+        let preload = plan.iter().find(|e| e.key == "LD_PRELOAD").expect("{plan:?}");
+        assert_eq!(preload.value, "/usr/lib64/libwayland-client.so.0");
+        // A preload the user set is their business.
+        let session = LinuxSession { preload_set: true, ..session };
+        assert!(!keys(&session).contains(&"LD_PRELOAD"));
     }
 
     #[test]
-    fn webkit_workaround_is_idempotent() {
-        // Calling twice should not change anything after the first call.
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        cleanup();
-        super::apply_linux_webkit_workarounds();
-        let after_first = (
-            std::env::var(DMABUF).ok(),
-            std::env::var(COMPOSITING).ok(),
+    fn the_session_is_read_from_either_variable() {
+        assert!(is_wayland_session(Some("wayland"), None));
+        assert!(is_wayland_session(Some("Wayland"), None));
+        assert!(is_wayland_session(None, Some("wayland-0")));
+        assert!(!is_wayland_session(Some("x11"), None));
+        assert!(!is_wayland_session(None, None));
+        // An empty WAYLAND_DISPLAY is not a Wayland session.
+        assert!(!is_wayland_session(Some("tty"), Some("")));
+    }
+
+    #[test]
+    fn the_preload_needs_a_bundled_copy_and_a_system_copy() {
+        let bundled = "/tmp/appdir/usr/lib/libwayland-client.so.0";
+        let system = "/usr/lib/x86_64-linux-gnu/libwayland-client.so.0";
+        // Both there: the system one is named.
+        assert_eq!(
+            shadow_bundled_wayland(Some("/tmp/appdir"), |p| p == bundled || p == system),
+            Some(system.to_string())
         );
-        super::apply_linux_webkit_workarounds();
-        let after_second = (
-            std::env::var(DMABUF).ok(),
-            std::env::var(COMPOSITING).ok(),
+        // A trailing slash on APPDIR must not produce a double slash.
+        assert_eq!(
+            shadow_bundled_wayland(Some("/tmp/appdir/"), |p| p == bundled || p == system),
+            Some(system.to_string())
         );
-        assert_eq!(after_first, after_second, "second call should be a no-op");
-        cleanup();
+        // No AppImage at all, or one that bundles nothing: nothing to shadow.
+        assert_eq!(shadow_bundled_wayland(None, |_| true), None);
+        assert_eq!(shadow_bundled_wayland(Some(""), |_| true), None);
+        assert_eq!(shadow_bundled_wayland(Some("/tmp/appdir"), |p| p == system), None);
+        // Bundled, but this distribution keeps its libraries somewhere else:
+        // an LD_PRELOAD pointing at nothing is worse than none.
+        assert_eq!(shadow_bundled_wayland(Some("/tmp/appdir"), |p| p == bundled), None);
+    }
+
+    // ── Bug g: what the console says when no window came ──────────────────
+
+    #[test]
+    fn the_no_window_hint_is_linux_only() {
+        assert!(linux_no_window_hint(false, true, true).is_none());
+    }
+
+    #[test]
+    fn the_no_window_hint_names_the_two_causes_and_the_way_out() {
+        let hint = linux_no_window_hint(true, true, true).expect("linux");
+        assert!(hint.contains("EGL_BAD_PARAMETER"), "{hint}");
+        assert!(hint.contains("AcceleratedSurfaceDMABuf"), "{hint}");
+        assert!(hint.contains("LD_PRELOAD=/usr/lib/libwayland-client.so.0"), "{hint}");
+        assert!(hint.contains("GDK_BACKEND=x11"), "{hint}");
+        assert!(hint.contains(WAYLAND_OPT_OUT), "{hint}");
+        // Every line is English and carries the tag, so a user can paste it.
+        assert!(hint.lines().all(|l| l.starts_with("[Linux]")), "{hint}");
+    }
+
+    #[test]
+    fn an_x11_session_gets_the_short_hint_without_the_wayland_causes() {
+        let hint = linux_no_window_hint(true, false, false).expect("linux");
+        assert!(!hint.contains("EGL_BAD_PARAMETER"), "{hint}");
+        assert!(!hint.contains("LD_PRELOAD"), "{hint}");
+        assert!(hint.contains("GDK_BACKEND=x11"), "{hint}");
     }
 
     // ─── Close-to-tray releases the GPU (Gegenprobe 2026-08-30) ───
