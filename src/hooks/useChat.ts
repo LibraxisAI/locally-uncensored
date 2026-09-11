@@ -290,7 +290,8 @@ export function useChat() {
   // nicht nennen konnte. Der einzige Teil davon, den `sendMessage` braucht, ist
   // `sendAgentMessage`, und das ist ein useCallback mit leerer Dep-Liste, also
   // ueber die Lebensdauer des Hooks stabil.
-  const { sendAgentMessage } = agentChat
+  // Dasselbe gilt fuer `stopAgent`, das `stopGeneration` unten immer ruft.
+  const { sendAgentMessage, stopAgent } = agentChat
   const { extractAndSave } = useMemory()
 
 
@@ -313,12 +314,6 @@ export function useChat() {
 
   const storeGenerating = useGenerationStore((s) => !!s.generating[activeConversationId ?? ''])
   const orphanRun = isOrphanRun(storeGenerating, isGenerating, agentChat.isAgentRunning)
-
-  /** End a run this instance does not own: the aborter the run registered is
-   *  a closure over its own controller, so it still reaches it. */
-  const stopOrphanRun = useCallback(() => {
-    useGenerationStore.getState().abortConversation(useChatStore.getState().activeConversationId)
-  }, [])
 
   /** One group round: the user's line goes in once, then every group model
    *  answers in turn on the shared, attribution-tagged history. One abort
@@ -1198,13 +1193,47 @@ export function useChat() {
     // damit ueber die gesamte Hook-Lebensdauer dieselbe Identitaet wie vorher.
   }, [extractAndSave, runGroupRound, sendAgentMessage])
 
+  /**
+   * EIN Stop, der alles beendet, was dieses Gespraech Geld kosten kann.
+   *
+   * ── WARUM ES NUR NOCH EINEN GIBT (Fehler s der 3.0.0-Liste) ───────────────
+   *
+   * Hier standen drei Stops, und der Rueckgabewert waehlte per Bedingung einen
+   * davon aus: `stopAgent`, wenn DIESE Hook-Instanz gerade einen Agentenlauf
+   * fuehrt, sonst ein Abbruch ueber den Speicher fuer einen verwaisten Lauf,
+   * sonst der blosse Stream-Abbruch. Nur der erste kannte die Schleife.
+   *
+   * Das traf genau den Zustand ZWISCHEN zwei /loop-Paessen: es generiert
+   * nichts, die Instanz fuehrt nichts, also landete der Knopf auf dem dritten
+   * Stop. Der brach einen AbortController ab, den es nicht gab, und der
+   * Zeitgeber des naechsten Passes lief unberuehrt weiter. Der Nutzer sah die
+   * Schleifenleiste mit ihrem Stopp-Knopf, drueckte ihn, und der naechste Pass
+   * ging trotzdem in die Wolke — jedes Mal, beliebig lange. helpslowlydying am
+   * 03.09.2026: "i stopped it but that boy is still working and ready for the
+   * next prompt", "its not even doing anything jus eating away".
+   *
+   * Eine Auswahl zwischen drei Stops ist dasselbe Muster wie zwei Pfade und
+   * einer gepflegt, nur in der Stelle, an der es am teuersten ist. Also gibt es
+   * keine Auswahl mehr: jeder Griff wird gerufen, jeder ist fuer sich
+   * wirkungslos, wenn es nichts zu beenden gibt.
+   *
+   *  - `stopAgent`   Agentenlauf, wartender /loop-Pass, Freigaben, ComfyUI.
+   *                  Setzt den Stop-Merker des Gespraechs (lib/run-stop), an
+   *                  dem auch der Schleifentreiber und das Aufwecken haengen.
+   *  - `abortConversation` erreicht einen Lauf, den eine FRUEHERE Instanz
+   *                  gestartet hat: der Abbruchgriff im Speicher ist ein
+   *                  Abschluss ueber dessen eigenen Controller (G29).
+   *  - `abortRef`    der einfache Chat-Stream dieser Instanz.
+   */
   const stopGeneration = useCallback(() => {
+    stopAgent()
+    useGenerationStore.getState().abortConversation(useChatStore.getState().activeConversationId)
     abortRef.current?.abort()
     // Also interrupt an in-flight ComfyUI image/video gen, not just the JS loop —
     // otherwise the main Stop button leaves ComfyUI burning (only the in-chat
     // tool Stop did this before; now both affordances agree).
     requestGenerationCancel()
-  }, [])
+  }, [stopAgent])
 
   /**
    * Regenerate and Edit both replace the turn: the question leaves the thread
@@ -1234,9 +1263,7 @@ export function useChat() {
 
   return {
     sendMessage,
-    stopGeneration: agentChat.isAgentRunning
-      ? agentChat.stopAgent
-      : orphanRun ? stopOrphanRun : stopGeneration,
+    stopGeneration,
     isGenerating: isGenerating || agentChat.isAgentRunning || orphanRun,
     isLoadingModel,
     regenerateMessage,

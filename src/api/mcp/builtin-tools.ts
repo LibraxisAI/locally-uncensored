@@ -6,6 +6,7 @@ import type {
   WebSearchResult, WebFetchResult, ProcessListResult, ScreenshotResult, CurrentTimeResult,
 } from '../../types/bridge'
 import type { ToolRegistry } from './tool-registry'
+import { v4 as uuid } from 'uuid'
 import { backendCall, fetchExternal } from '../backend'
 import { getActiveChatId, getActiveConversationId, getActiveWorkspace, isChatArtifactMode, captureChatArtifact, isReadOnlyShellTurn } from '../agent-context'
 import type { AgentRunContext } from '../agent-context'
@@ -750,16 +751,12 @@ async function executeShellExecute(
   run?: AgentRunContext,
   signal?: AbortSignal,
 ): Promise<string> {
-  // Stop reaches the terminal tool now (audit M1). What it can guarantee
-  // depends on the phase:
+  // Stop reaches the terminal tool in every phase now (audit M1, plus the
+  // foreground half that was still open until the 3.0.0 round):
   //   - not started yet  → refused here, nothing runs;
-  //   - background task  → really killed, via shell_task_kill;
-  //   - foreground, already spawned → the bridge has NO cancel for it. Rust
-  //     `shell_execute` takes no run id and there is no shell_execute_cancel,
-  //     so the child keeps running to its own timeout. The executor stops
-  //     WAITING on it (tool-executor raceAbort), which ends the run and the
-  //     UI, but the process survives. Closing that hole needs a bridge command
-  //     — noted in the audit report, deliberately not faked here.
+  //   - background task  → killed via shell_task_kill;
+  //   - foreground, already spawned → killed via shell_execute_cancel, see
+  //     `invokeShell`. Der Prozessbaum faellt, nicht nur das Warten darauf.
   const abort = signal ?? run?.abortSignal
   if (abort?.aborted) return 'Cancelled: the user stopped the run before this command started.'
   // Background-task actions: the three shell_task_* tools folded in (2.6.6).
@@ -816,7 +813,7 @@ async function executeShellExecute(
   // An explicit timeout wins; otherwise a recognised test run keeps the old
   // run_tests budget (300 s) instead of the shell default.
   const timeout = argNumber(args, 'timeout') || commandTimeoutMs(command, 120000)
-  const data = await backendCall<ShellExecResult>('shell_execute', {
+  const data = await invokeShell({
     command,
     args: args.args || null,
     cwd: args.cwd || null,
@@ -824,9 +821,12 @@ async function executeShellExecute(
     shell: args.shell || null,
     stdin: argOptString(args, 'stdin') ?? null,
     ...chatCtx(run),
-  })
+  }, abort)
   const output = data.stdout || ''
   const err = data.stderr || ''
+  // Vor `timedOut` geprueft: der Abbruch ist die genauere Auskunft, und ein
+  // Befehl, den Stop gefaellt hat, ist nicht in eine Zeitgrenze gelaufen.
+  if (data.cancelled) return 'Cancelled: the user stopped the run.'
   if (data.timedOut) return `Timed out.\n${err}`
 
   const kind = commandKind(command)
@@ -881,20 +881,65 @@ async function executeCodeExecute(
   return output || (err ? `stderr: ${err}` : 'Done.')
 }
 
+/**
+ * `shell_execute`, mit einem Griff, den Stop erreicht.
+ *
+ * ── DAS LOCH, DAS DAS HIER STOPFT (Fehler s der 3.0.0-Liste) ───────────────
+ *
+ * An dieser Stelle stand bis heute ein Absatz, der das Problem offen zugab:
+ * die Bruecke hatte keinen Abbruch fuer einen schon gestarteten Befehl, weil
+ * `shell_execute` keine Kennung nahm und es kein `shell_execute_cancel` gab.
+ * Der Ausfuehrer hoerte auf zu WARTEN (tool-executor raceAbort), damit endeten
+ * Lauf und Oberflaeche, und der Prozess lief weiter bis zu seiner eigenen
+ * Zeitgrenze: bis zu zwei Minuten Build, Testlauf oder Skript, nachdem der
+ * Mensch Stop gedrueckt hat, auf seiner Maschine, ohne Anzeige.
+ *
+ * Jetzt traegt jeder Lauf eine Kennung, und das Abbruchsignal ruft damit
+ * `shell_execute_cancel`. Die Rust-Seite faellt den ganzen Prozessbaum mit
+ * derselben `kill_tree`, die auch die Zeitgrenze benutzt; der Wettlauf
+ * "Abbruch schneller als der Start" ist dort mitgedacht und getestet.
+ *
+ * Ohne Signal bleibt alles, wie es war: keine Kennung, kein Eintrag, kein
+ * Abbruch. Eine Kennung, die niemand ruft, waere nur Buchhaltung.
+ */
+async function invokeShell(
+  payload: Record<string, unknown>,
+  abort?: AbortSignal,
+): Promise<ShellExecResult> {
+  if (!abort) return backendCall<ShellExecResult>('shell_execute', payload)
+  const callId = uuid()
+  const cancel = () => {
+    void backendCall('shell_execute_cancel', { callId }).catch(() => {
+      // Ein fehlgeschlagener Abbruch darf den Lauf nicht auch noch mit einem
+      // Fehler beenden. Der Befehl faellt dann auf seine Zeitgrenze zurueck,
+      // also auf genau das Verhalten von vorher.
+    })
+  }
+  abort.addEventListener('abort', cancel, { once: true })
+  try {
+    return await backendCall<ShellExecResult>('shell_execute', { ...payload, callId })
+  } finally {
+    // Der Eintrag auf der Rust-Seite haengt am Leben DIESES Aufrufs. Bliebe
+    // der Horcher stehen, riefe ein spaeterer Stop denselben Abbruch auf eine
+    // Kennung, hinter der laengst kein Prozess mehr steht.
+    abort.removeEventListener('abort', cancel)
+  }
+}
+
 async function runShell(
   command: string,
   cwd: string | undefined,
   timeout = 60000,
   run?: AgentRunContext,
 ): Promise<ShellExecResult> {
-  return backendCall<ShellExecResult>('shell_execute', {
+  return invokeShell({
     command,
     args: null,
     cwd: cwd || null,
     timeout,
     shell: null,
     ...chatCtx(run),
-  })
+  }, run?.abortSignal)
 }
 
 async function executeShellExecuteBg(
@@ -1129,7 +1174,7 @@ async function executeGhPrCreate(args: ToolArgs, run?: AgentRunContext): Promise
   return urlMatch ? `Opened PR: ${urlMatch[0]}\n${output}` : output
 }
 
-async function executeRunTests(args: ToolArgs, run?: AgentRunContext): Promise<string> {
+async function executeRunTests(args: ToolArgs, run?: AgentRunContext, signal?: AbortSignal): Promise<string> {
   const { commandForRunner, detectRunnerFromFiles, parseForRunner, renderResult } =
     await import('../agents/test-runner')
 
@@ -1171,7 +1216,10 @@ async function executeRunTests(args: ToolArgs, run?: AgentRunContext): Promise<s
     shell: null,
     ...chatCtx(run),
   }
-  const data = await backendCall<ShellExecResult>('shell_execute', shellArgs)
+  // Der laengste Befehl im Haus (300 s Vorgabe) und damit der, bei dem ein
+  // Stop, der den Prozess nicht erreicht, am laengsten weiterlaeuft.
+  const data = await invokeShell(shellArgs, signal ?? run?.abortSignal)
+  if (data.cancelled) return 'Cancelled: the user stopped the run.'
   if (data.timedOut) {
     return `Test run timed out after ${shellArgs.timeout / 1000}s. Partial output:\n${(data.stdout || '').slice(-2000)}`
   }

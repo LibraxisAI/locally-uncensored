@@ -928,7 +928,12 @@ async fn handle_agent_tool(
                 let timeout = body.args.get("timeout").and_then(|v| v.as_u64());
                 let shell = body.args.get("shell").and_then(|v| v.as_str()).map(String::from);
                 let stdin = body.args.get("stdin").and_then(|v| v.as_str()).map(String::from);
-                crate::commands::shell::shell_execute(command, None, cwd, timeout, shell, stdin, chat_id.clone(), None).await
+                // `call_id` ist None: die Fernbruecke hat keinen Kanal, ueber
+                // den ein Abbruch zurueckkaeme. Ohne Kennung ist der Befehl
+                // nicht abbrechbar, und das ist ehrlicher als eine Kennung, die
+                // niemand je ruft. Der Weg dahin ist derselbe wie im Fenster:
+                // ein `shell_execute_cancel` in der Fernliste.
+                crate::commands::shell::shell_execute(command, None, cwd, timeout, shell, stdin, chat_id.clone(), None, None).await
             }
         }
         "system_info" => crate::commands::system::system_info(),

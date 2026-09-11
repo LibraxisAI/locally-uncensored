@@ -37,6 +37,7 @@ const aufgabe = (over: Partial<AgentTask> = {}): AgentTask => ({
 const basis = {
   conversationId: 'conv-1',
   isRunning: false,
+  isStopped: false,
   activeModel: 'llama3:8b',
 }
 
@@ -99,6 +100,25 @@ describe('shouldWakeParent — wann ein fertiger Agent den Hauptagenten zurueckh
       .toEqual({ wake: false, reason: 'no-conversation' })
   })
 
+  it('weckt NICHT, wenn der Mensch Stop gedrueckt hat', () => {
+    // Fehler s der 3.0.0-Liste, und der teuerste von allen. Der
+    // Hintergrundagent laeuft nach Stop absichtlich weiter, sein Ergebnis holte
+    // danach aber den Hauptagenten zurueck: ein voller Agentenzug in die Wolke,
+    // eine Sekunde nach Stop, ohne dass jemand etwas geschrieben hat. Am Hook
+    // nachgemessen: ein Modellaufruf bis zum Stop, zweihundert danach.
+    expect(shouldWakeParent({ ...basis, isStopped: true, tasks: [aufgabe()] }))
+      .toEqual({ wake: false, reason: 'user-stopped' })
+  })
+
+  it('der Stop schlaegt jeden anderen Grund', () => {
+    // Auch wenn sonst alles fuer ein Wecken spraeche. Der Merker in run-stop.ts
+    // ist klebrig bis zur naechsten getippten Anweisung, und genau so lange
+    // soll hier Ruhe sein.
+    expect(shouldWakeParent({
+      ...basis, isStopped: true, isRunning: false, activeModel: 'llama3:8b', tasks: [aufgabe()],
+    }).reason).toBe('user-stopped')
+  })
+
   it('prueft die teuren Gruende ZUERST', () => {
     // Laeuft ein Zug UND fehlt das Modell, ist "run-active" die Antwort —
     // nicht, weil es wichtiger waere, sondern weil die Reihenfolge festliegen
@@ -106,6 +126,10 @@ describe('shouldWakeParent — wann ein fertiger Agent den Hauptagenten zurueckh
     expect(shouldWakeParent({
       ...basis, isRunning: true, activeModel: null, tasks: [aufgabe()],
     }).reason).toBe('run-active')
+    // Und der Stop steht vor beiden.
+    expect(shouldWakeParent({
+      ...basis, isStopped: true, isRunning: true, activeModel: null, tasks: [aufgabe()],
+    }).reason).toBe('user-stopped')
   })
 })
 
@@ -148,10 +172,11 @@ describe('WAKE_PROMPT — was der Weckzug mitbringt', () => {
 
 describe('createWakeWatcher — ein Weckzug, nicht fuenf', () => {
   /** Ein Pruefstand mit steuerbarer Zeit und zaehlbarem Sendeweg. */
-  function stand(over: Partial<{ tasks: AgentTask[]; running: boolean; model: string | null }> = {}) {
+  function stand(over: Partial<{ tasks: AgentTask[]; running: boolean; stopped: boolean; model: string | null }> = {}) {
     const zustand = {
       tasks: over.tasks ?? [] as AgentTask[],
       running: over.running ?? false,
+      stopped: over.stopped ?? false,
       model: over.model === undefined ? 'llama3:8b' : over.model,
       convId: 'conv-1' as string | null,
     }
@@ -164,6 +189,7 @@ describe('createWakeWatcher — ein Weckzug, nicht fuenf', () => {
       conversationId: () => zustand.convId,
       tasks: () => zustand.tasks,
       isRunning: () => zustand.running,
+      isStopped: () => zustand.stopped,
       activeModel: () => zustand.model,
       send: (t) => {
         gesendet.push(t)
@@ -223,6 +249,26 @@ describe('createWakeWatcher — ein Weckzug, nicht fuenf', () => {
     const p = stand({ tasks: [aufgabe()], running: true })
     p.watcher.check()
     expect(p.offeneZeitgeber()).toBe(0)
+    expect(p.gesendet).toHaveLength(0)
+  })
+
+  it('weckt gar nicht erst, wenn schon gestoppt wurde', () => {
+    const p = stand({ tasks: [aufgabe()], stopped: true })
+    p.watcher.check()
+    expect(p.offeneZeitgeber()).toBe(0)
+    p.fristAblaufen()
+    expect(p.gesendet).toHaveLength(0)
+  })
+
+  it('bricht ab, wenn der Mensch WAEHREND der Frist Stop drueckt', () => {
+    // Die Sammelfrist ist eine volle Sekunde. In der ist der Weckzug schon
+    // beschlossen und noch nicht abgeschickt, und ein Zug, der eine Sekunde
+    // NACH Stop losgeht, ist genau der, den niemand bestellt hat.
+    const p = stand({ tasks: [aufgabe()] })
+    p.watcher.check()
+    expect(p.offeneZeitgeber()).toBe(1)
+    p.zustand.stopped = true
+    p.fristAblaufen()
     expect(p.gesendet).toHaveLength(0)
   })
 
@@ -286,6 +332,7 @@ describe('createWakeWatcher — ein Weckzug, nicht fuenf', () => {
       conversationId: () => 'conv-1',
       tasks: () => [aufgabe()],
       isRunning: () => false,
+      isStopped: () => false,
       activeModel: () => 'llama3:8b',
       send: (t) => { gesendet.push(t); return Promise.reject(new Error('kein Netz')) },
       setTimer: (fn) => { zeit.push(fn); return zeit.length },
@@ -367,6 +414,16 @@ describe('Der Weckhaken haengt an beiden Sendewegen', () => {
     const t = lies('components/chat/CodexView.tsx')
     expect(t).toContain('useBackgroundAgentWake(')
     expect(t).toContain('sendInstruction')
+  })
+
+  it('fragt den Stop-Merker aus lib/run-stop, nicht einen eigenen', () => {
+    // Der Merker muss DER des Gespraechs sein, sonst faellt die Sperre auf die
+    // Seite des Wunsches: ein zweiter, hier gefuehrter Zustand waere nach
+    // einem Ansichtswechsel leer, und genau dann weckte es wieder. Dieselbe
+    // Begruendung wie im Kopf von lib/run-stop.ts.
+    const t = lies('hooks/useBackgroundAgentWake.ts')
+    expect(t).toContain("import { isRunStopped } from '../lib/run-stop'")
+    expect(t).toMatch(/isStopped:\s*\(id\)\s*=>\s*isRunStopped\(id\)/)
   })
 
   it('horcht auf BEIDE Quellen — Aufgaben UND das Ende eines Laufs', () => {
