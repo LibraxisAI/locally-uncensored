@@ -20,6 +20,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import type { CloudModel } from '../types/models'
 import type { BuiltinEngineTuning } from '../types/settings'
 import { LU_ENGINE_NAME } from '../lib/engine-name'
+import { announceEngineCpuFallback } from '../lib/engine-offload'
 
 /** The user's Built-in Engine expert tuning (settings-backed). Injected into
  * every start/swap below, so Onboarding, Discover, the model picker and the
@@ -69,6 +70,13 @@ export interface EngineStatus {
   /** Context size the chat engine was started with (null when not running or
    * for the embed server). The TRUE token-counter denominator. */
   ctx?: number | null
+  /** The engine is on the processor because a start WITH the graphics card
+   * died first (3.0.0, ccdc2d14). Not the same as a GPU Layers of 0 typed
+   * into Settings, which is an answer rather than an accident. */
+  cpuOnly?: boolean
+  /** The `-ngl` the running process carries, null when it asked for every
+   * layer. See lib/engine-offload. */
+  gpuLayers?: number | null
 }
 
 /** Loopback base URL of the managed embeddings server (P5). Mirrors the Rust
@@ -154,6 +162,11 @@ export async function bundledEngineStatus() {
   // without the reset a one-off collision would keep the app on 8129 for good
   // and the Settings test would read "failed" on a free 8127 (review S5).
   syncBuiltinEnginePort(status?.running ? status.port : ENGINE_PORT)
+  // An engine the app pushed onto the processor by itself says so, once per
+  // engine. This is the poll behind Settings and the models view; the chat's
+  // own pre-send probe says it from builtin-ensure, because the chat does not
+  // poll and this note would otherwise never reach the screen it hangs over.
+  announceEngineCpuFallback(status)
   return status
 }
 

@@ -32,6 +32,9 @@ import type { ProviderModel } from './providers/types'
 import { PROVIDER_PRESETS } from './providers/types'
 import { slotTakeoverUpdate } from '../lib/openai-slot-handover'
 import { LU_ENGINE_NAME } from '../lib/engine-name'
+// Dieselbe Liste beantwortet die Frage auf dem Statusweg, der diese Datei
+// nicht importieren kann, ohne einen Kreis zu schliessen (lib/engine-offload).
+import { VIEWS_WITH_THE_ENGINE_NOTE } from '../lib/engine-offload'
 import { displayModelName } from './providers'
 
 /** What the user is told when the pick moved his chat backend. */
@@ -314,9 +317,6 @@ function haltenBis(pruefung: () => boolean, frist = CHAT_PROVIDER_SWITCH_HOLD_MS
   return () => Date.now() < ende && pruefung()
 }
 
-/** Die Seiten, auf denen `LuEngineSwitchBar` wirklich haengt. */
-const SEITEN_MIT_ZEILE: ReadonlySet<string> = new Set(['chat', 'models'])
-
 /**
  * Wie lange eine Zeile auf ihren Leser wartet.
  *
@@ -339,7 +339,7 @@ export const UNSEEN_NOTE_HOLD_MS = 5 * 60_000
  */
 function bisJemandHinsehenKann(): () => boolean {
   return haltenBis(
-    () => !SEITEN_MIT_ZEILE.has(useUIStore.getState().currentView),
+    () => !VIEWS_WITH_THE_ENGINE_NOTE.has(useUIStore.getState().currentView),
     UNSEEN_NOTE_HOLD_MS,
   )
 }

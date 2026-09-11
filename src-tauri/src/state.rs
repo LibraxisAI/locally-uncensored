@@ -57,6 +57,15 @@ pub struct BundledEngine {
     /// between auto and a typed number is a different request even on the days
     /// the two numbers happen to agree.
     pub auto_layers: bool,
+    /// True when THIS process is the retry that dropped GPU offload after a
+    /// first attempt died (`engine.rs`, SecondAttempt::CpuOnly).
+    ///
+    /// NOT the same question as "does argv say `-ngl 0`". A user who typed 0
+    /// into Settings got exactly what he asked for and has nothing to be told
+    /// about; this flag marks the case where the app took the card away by
+    /// itself, which is the one the user never chose and until now could only
+    /// find in the log file.
+    pub cpu_fallback: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
