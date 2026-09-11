@@ -116,38 +116,39 @@
 
 <h2 id="glossary">Glossary</h2>
 
-<dl>
-<dt>Agent</dt><dd>A chat in which the model can call tools (files, shell, web, screenshots, image and video) and works towards a task step by step. Chapter 5.</dd>
-<dt>Backend, provider, engine</dt><dd>The program that runs a model and answers the app's requests. The LU Engine is the built in one; Ollama, LM Studio and the others in the Providers list are alternatives; the cloud providers are remote services with your own key; LU Cloud is the hosted twin.</dd>
-<dt>Checkpoint</dt><dd>A complete image model file, such as the Juggernaut XL starter checkpoint. ComfyUI loads one per render.</dd>
-<dt>ComfyUI</dt><dd>The open source program that renders images, video and audio locally. The app installs, starts, repairs and updates it and builds its node graphs for you. Chapter 7.</dd>
-<dt>Context window</dt><dd>How much text the model holds at once, in tokens. Chapter 4 explains the dropdown, the three labels and the memory cost.</dd>
-<dt>Content policy</dt><dd>The Strict, Standard or Off setting for hosted images and video. It never applies to text or to anything local. Chapter 8.</dd>
-<dt>Credits</dt><dd>The unit LU Cloud meters in. One shared wallet pays for chat, images and clips at each model's rate. Plans refill it monthly; packs add to it once and never expire.</dd>
-<dt>CUDA, ROCm, Vulkan</dt><dd>Three ways software drives a graphics card. CUDA is NVIDIA's; ROCm is AMD's; Vulkan is a standard every vendor supports. The LU Engine uses Vulkan. ComfyUI's PyTorch uses CUDA on NVIDIA and ROCm on AMD where a build exists.</dd>
-<dt>Embedding model</dt><dd>A small model that turns text into numbers so matching passages can be found. Document chat needs one (nomic-embed-text). It never writes an answer.</dd>
-<dt>Flash</dt><dd>A class of hosted chat models that answer without credits on a paid plan, inside the apps, up to a published daily token ceiling, one request at a time. Chapter 8.</dd>
-<dt>GGUF</dt><dd>The file format of the models the LU Engine, Ollama and LM Studio run. A GGUF file carries the model and its metadata in one file. A GGUF that does not start with the GGUF marker is a broken download.</dd>
-<dt>GPU layers, offload</dt><dd>A model is a stack of layers. The engine puts as many as fit on the card ("offload") and the rest on the processor. "GPU layers" under LU Engine (expert) overrides the choice: -1 all, 0 none, N a number.</dd>
-<dt>KV cache</dt><dd>The memory where the model keeps the conversation while it works. It grows with the context length, which is why a large context needs a large card.</dd>
-<dt>LoRA</dt><dd>A small add-on file that teaches an image model one thing, such as a character or a style, without replacing the model. Goes into ComfyUI's <code>models/loras</code> folder. The Character Studio trains one.</dd>
-<dt>LU Cloud</dt><dd>The hosted twin of the app: the same window with the work on rented GPUs, paid in credits, also usable in a browser at lu-labs.ai. Chapter 8.</dd>
-<dt>LU Engine</dt><dd>The built in llama.cpp server the app ships, listening on 127.0.0.1:8127 (embeddings on 8128). It runs GGUF models.</dd>
-<dt>MCP</dt><dd>A standard for plugging an outside tool server into the agent. Settings, Agent, MCP Servers; the app starts them only through npx or uvx.</dd>
-<dt>Memory</dt><dd>A small store of facts about you that the app injects into every prompt. The Memory toggle above the message box shows it.</dd>
-<dt>Persona</dt><dd>A named system prompt. The default is "No Filter"; 25 are built in and you can add your own.</dd>
-<dt>Quantisation (Q4_K_M, IQ2_M, fp8)</dt><dd>Shrinking a model's numbers to fewer bits so the file is smaller and fits a smaller card, at a small cost in quality. Q4_K_M is the usual choice for chat models; fp8 appears on image and video models.</dd>
-<dt>RAG, document chat</dt><dd>Splitting your documents into pieces, finding the pieces that match a question with the embedding model, and handing them to the chat model. Chapter 4.</dd>
-<dt>Sampling: Temperature, Top P, Top K, Max tokens</dt><dd>The four dials that shape how the model picks each word. Chapter 4 has the table.</dd>
-<dt>Sandbox, workspace, path jail</dt><dd>The folder an agent may work in. The sandbox is a fresh folder under <code>~/agent-workspace</code>; a workspace is a project folder you picked. The path jail refuses file access outside it. Chapter 5.</dd>
-<dt>Seed</dt><dd>The number that starts a render's randomness. The same prompt, settings and seed give the same picture; -1 means a random seed each time.</dd>
-<dt>Steps, CFG, sampler</dt><dd>Render controls: how many refinement passes, how strongly the prompt steers, and which algorithm. The Quality presets set them; the advanced settings expose them.</dd>
-<dt>Sub-agent</dt><dd>An agent started by the agent for a part of a task, bounded by the caps under Settings, Agent, Sub-agents.</dd>
-<dt>Thinking, effort</dt><dd>A hidden draft a reasoning model writes before it answers, and the Low to Max control for how much of it. Chapter 4.</dd>
-<dt>Token</dt><dd>The unit models read and write in, roughly three quarters of an English word. Context windows, the Flash allowance and credit rates are counted in tokens.</dd>
-<dt>Trigger word</dt><dd>The word that summons a trained character in a prompt. It is also the character's file name.</dd>
-<dt>VRAM</dt><dd>The memory on the graphics card. The thing that decides which models run fully on the card.</dd>
-</dl>
+<table>
+<tr><th>Term</th><th>Meaning</th></tr>
+<tr><td>Agent</td><td>A chat in which the model can call tools (files, shell, web, screenshots, image and video) and works towards a task step by step. Chapter 5.</td></tr>
+<tr><td>Backend, provider, engine</td><td>The program that runs a model and answers the app's requests. The LU Engine is the built in one; Ollama, LM Studio and the others in the Providers list are alternatives; the cloud providers are remote services with your own key; LU Cloud is the hosted twin.</td></tr>
+<tr><td>Checkpoint</td><td>A complete image model file, such as the Juggernaut XL starter checkpoint. ComfyUI loads one per render.</td></tr>
+<tr><td>ComfyUI</td><td>The open source program that renders images, video and audio locally. The app installs, starts, repairs and updates it and builds its node graphs for you. Chapter 7.</td></tr>
+<tr><td>Context window</td><td>How much text the model holds at once, in tokens. Chapter 4 explains the dropdown, the three labels and the memory cost.</td></tr>
+<tr><td>Content policy</td><td>The Strict, Standard or Off setting for hosted images and video. It never applies to text or to anything local. Chapter 8.</td></tr>
+<tr><td>Credits</td><td>The unit LU Cloud meters in. One shared wallet pays for chat, images and clips at each model's rate. Plans refill it monthly; packs add to it once and never expire.</td></tr>
+<tr><td>CUDA, ROCm, Vulkan</td><td>Three ways software drives a graphics card. CUDA is NVIDIA's; ROCm is AMD's; Vulkan is a standard every vendor supports. The LU Engine uses Vulkan. ComfyUI's PyTorch uses CUDA on NVIDIA and ROCm on AMD where a build exists.</td></tr>
+<tr><td>Embedding model</td><td>A small model that turns text into numbers so matching passages can be found. Document chat needs one (nomic-embed-text). It never writes an answer.</td></tr>
+<tr><td>Flash</td><td>A class of hosted chat models that answer without credits on a paid plan, inside the apps, up to a published daily token ceiling, one request at a time. Chapter 8.</td></tr>
+<tr><td>GGUF</td><td>The file format of the models the LU Engine, Ollama and LM Studio run. A GGUF file carries the model and its metadata in one file. A GGUF that does not start with the GGUF marker is a broken download.</td></tr>
+<tr><td>GPU layers, offload</td><td>A model is a stack of layers. The engine puts as many as fit on the card ("offload") and the rest on the processor. "GPU layers" under LU Engine (expert) overrides the choice: -1 all, 0 none, N a number.</td></tr>
+<tr><td>KV cache</td><td>The memory where the model keeps the conversation while it works. It grows with the context length, which is why a large context needs a large card.</td></tr>
+<tr><td>LoRA</td><td>A small add-on file that teaches an image model one thing, such as a character or a style, without replacing the model. Goes into ComfyUI's <code>models/loras</code> folder. The Character Studio trains one.</td></tr>
+<tr><td>LU Cloud</td><td>The hosted twin of the app: the same window with the work on rented GPUs, paid in credits, also usable in a browser at lu-labs.ai. Chapter 8.</td></tr>
+<tr><td>LU Engine</td><td>The built in llama.cpp server the app ships, listening on 127.0.0.1:8127 (embeddings on 8128). It runs GGUF models.</td></tr>
+<tr><td>MCP</td><td>A standard for plugging an outside tool server into the agent. Settings, Agent, MCP Servers; the app starts them only through npx or uvx.</td></tr>
+<tr><td>Memory</td><td>A small store of facts about you that the app injects into every prompt. The Memory toggle above the message box shows it.</td></tr>
+<tr><td>Persona</td><td>A named system prompt. The default is "No Filter"; 25 are built in and you can add your own.</td></tr>
+<tr><td>Quantisation (Q4_K_M, IQ2_M, fp8)</td><td>Shrinking a model's numbers to fewer bits so the file is smaller and fits a smaller card, at a small cost in quality. Q4_K_M is the usual choice for chat models; fp8 appears on image and video models.</td></tr>
+<tr><td>RAG, document chat</td><td>Splitting your documents into pieces, finding the pieces that match a question with the embedding model, and handing them to the chat model. Chapter 4.</td></tr>
+<tr><td>Sampling: Temperature, Top P, Top K, Max tokens</td><td>The four dials that shape how the model picks each word. Chapter 4 has the table.</td></tr>
+<tr><td>Sandbox, workspace, path jail</td><td>The folder an agent may work in. The sandbox is a fresh folder under <code>~/agent-workspace</code>; a workspace is a project folder you picked. The path jail refuses file access outside it. Chapter 5.</td></tr>
+<tr><td>Seed</td><td>The number that starts a render's randomness. The same prompt, settings and seed give the same picture; -1 means a random seed each time.</td></tr>
+<tr><td>Steps, CFG, sampler</td><td>Render controls: how many refinement passes, how strongly the prompt steers, and which algorithm. The Quality presets set them; the advanced settings expose them.</td></tr>
+<tr><td>Sub-agent</td><td>An agent started by the agent for a part of a task, bounded by the caps under Settings, Agent, Sub-agents.</td></tr>
+<tr><td>Thinking, effort</td><td>A hidden draft a reasoning model writes before it answers, and the Low to Max control for how much of it. Chapter 4.</td></tr>
+<tr><td>Token</td><td>The unit models read and write in, roughly three quarters of an English word. Context windows, the Flash allowance and credit rates are counted in tokens.</td></tr>
+<tr><td>Trigger word</td><td>The word that summons a trained character in a prompt. It is also the character's file name.</td></tr>
+<tr><td>VRAM</td><td>The memory on the graphics card. The thing that decides which models run fully on the card.</td></tr>
+</table>
 
 <hr>
 <p class="small">Previous chapter: <a href="/guide/settings-and-troubleshooting/">Settings and troubleshooting</a>. Back to the <a href="/guide/">handbook overview</a>.</p>
