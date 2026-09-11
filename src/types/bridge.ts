@@ -21,6 +21,14 @@ export interface ShellExecResult {
   /** `status.code()`, or -1 when the child was killed or timed out. */
   exitCode: number
   timedOut: boolean
+  /**
+   * Der Mensch hat Stop gedrueckt, und `shell_execute_cancel` hat den
+   * Prozessbaum gefaellt. Eigenes Feld neben `timedOut`, weil eine Zeitgrenze
+   * etwas ist, das dem Befehl passiert ist, und ein Abbruch etwas, das der
+   * Nutzer getan hat: das Modell soll den Unterschied lesen koennen.
+   * Fehlt bei jedem Lauf, der ohne Abbruchkennung gestartet wurde.
+   */
+  cancelled?: boolean
 }
 
 /** `fs_read` — commands/filesystem.rs. Binary files carry `bytes`, no `content`. */

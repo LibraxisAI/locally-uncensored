@@ -1201,6 +1201,10 @@ mod foreground_parity_tests {
             None,
             None,
             None,
+            // Keine Abbruchkennung: dieser Vergleich prueft die AUSGABE der
+            // beiden Wege, nicht den Stop. Der hat seine eigenen Tests in
+            // commands/shell.rs.
+            None,
         )
         .await
         .expect("the foreground shell tool ran");

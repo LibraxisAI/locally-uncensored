@@ -337,6 +337,7 @@ fn main() {
             commands::agent::list_agent_workspaces,
             // Shell
             commands::shell::shell_execute,
+            commands::shell::shell_execute_cancel,
             // Filesystem
             commands::filesystem::fs_read,
             commands::filesystem::fs_read_bytes,
