@@ -831,11 +831,14 @@ mod tests {
        "lfs":{"oid":"e8aef7b00195ec3fa8caaa3434e7516eff7d658e1d30eafc9ad6b0e66e9e827e","size":334643268}}
     ]"#;
 
+    /// The manifest shape of the SDXL repos in the catalog, read from the hub
+    /// on 2026-09-11: an empty component is a `[null, null]` pair, never a
+    /// plain null.
     const SDXL_MANIFEST: &str = r#"{
       "_class_name": "StableDiffusionXLPipeline",
       "feature_extractor": [null, null],
       "requires_safety_checker": true,
-      "image_encoder": null,
+      "image_encoder": [null, null],
       "scheduler": ["diffusers", "EulerDiscreteScheduler"],
       "text_encoder": ["transformers", "CLIPTextModel"],
       "text_encoder_2": ["transformers", "CLIPTextModelWithProjection"],
@@ -967,6 +970,35 @@ mod tests {
         // Without a preference the plain family wins outright.
         assert_eq!(pick_weight_set(&files, "unet", None).unwrap().bytes, 10270077736);
         assert!(pick_weight_set(&files, "scheduler", Some("fp16")).is_none());
+    }
+
+    /// Only a `[library, class]` pair is a component. Everything else in a
+    /// manifest has to be skipped instead of becoming a folder the audit then
+    /// reports as missing: the `[null, null]` stub the four SDXL and SD1.5
+    /// repos of the catalog use for an empty component, a scalar flag, and a
+    /// plain null, which no catalog repo carries (hub, 2026-09-11) but which
+    /// is legal JSON a custom repo may still hand us.
+    #[test]
+    fn only_library_class_pairs_become_components() {
+        let manifest = parse_model_index(
+            r#"{
+              "_class_name": "StableDiffusionPipeline",
+              "_diffusers_version": "0.38.0",
+              "feature_extractor": [null, null],
+              "image_encoder": [null, null],
+              "requires_safety_checker": true,
+              "safety_checker": null,
+              "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+              "text_encoder": ["transformers", "CLIPTextModel"],
+              "tokenizer": ["transformers", "CLIPTokenizer"],
+              "unet": ["diffusers", "UNet2DConditionModel"],
+              "vae": ["diffusers", "AutoencoderKL"]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.weights, ["text_encoder", "unet", "vae"]);
+        assert_eq!(manifest.tokenizers, ["tokenizer"]);
+        assert_eq!(manifest.configs, ["scheduler"]);
     }
 
     #[test]

@@ -1314,9 +1314,11 @@ mod tests {
         for d in ["unet", "vae", "text_encoder", "scheduler", "tokenizer"] {
             std::fs::create_dir_all(snap.join(d)).unwrap();
         }
-        // The stubs real manifests carry (live dump 2026-07-31): [null, null]
-        // components, scalar flags, plain null. None of them may be demanded
-        // as directories, or every complete install reads as missing.
+        // The stubs real manifests carry: [null, null] components and scalar
+        // flags. Neither may be demanded as a directory, or every complete
+        // install reads as missing. All seven catalog repos read from the hub
+        // on 2026-09-11: four spell the empty image_encoder [null, null],
+        // three leave the key out, none of them writes a plain null.
         std::fs::write(
             snap.join("model_index.json"),
             r#"{
@@ -1324,7 +1326,7 @@ mod tests {
               "feature_extractor": [null, null],
               "safety_checker": [null, null],
               "requires_safety_checker": true,
-              "image_encoder": null,
+              "image_encoder": [null, null],
               "scheduler": ["diffusers", "EulerDiscreteScheduler"],
               "text_encoder": ["transformers", "CLIPTextModel"],
               "tokenizer": ["transformers", "CLIPTokenizer"],
