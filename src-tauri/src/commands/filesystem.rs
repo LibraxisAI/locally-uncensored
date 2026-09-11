@@ -481,6 +481,32 @@ pub(crate) fn validate_workspace_root(root: &Path) -> Result<(), String> {
     check_workspace_root(root)
 }
 
+/// Darf dieser GEMERKTE Ordner ein Arbeitsordner sein? Fragen, ohne etwas zu
+/// tun.
+///
+/// Die Oberflaeche merkt sich Ordner an zwei Stellen, die keinen Dialog
+/// aufmachen: den Knopf "Use last folder" und den Vorgabeordner aus den
+/// Einstellungen, der ueber den Speicher des Browsers einen Neustart
+/// ueberlebt. Beide setzten ihren Pfad bisher einfach, und wenn die
+/// Erlaubnisliste ihn nicht kennt (frische Installation, geleerte Daten, ein
+/// Ordner direkt unter `$HOME`), landete der Nutzer in genau der Sackgasse,
+/// die Fehler D fuer den Dialog geschlossen hat: der Ordner steht in der
+/// Kopfzeile, und jede Dateioperation darunter antwortet mit einem Satz, den
+/// er nicht befolgen kann. Ohne Dialog, also ohne Weg heraus.
+///
+/// Es sind dieselben zwei Tore wie im Dialogweg, nur ohne Gedaechtnis:
+/// `may_be_a_picked_root` (dasselbe Tor, das `remember_picked_root` fragt,
+/// nicht eine zweite Abschrift davon) und danach die Erlaubnisliste. NICHTS
+/// wird aufgenommen, auch nicht still nachgezogen. Eine Fassung, die den alten
+/// Pfad beim Pruefen in die Liste schreibt, waere genau das Loch, das die
+/// Liste zuhaelt: die Oberflaeche darf ihre eigenen Wurzeln nicht erlauben,
+/// sonst reicht ein Skript im Renderer, um sich einen Ordner freizugeben.
+/// `a_folder_nobody_picked_still_gets_the_english_refusal` haelt das fest.
+#[tauri::command]
+pub fn validate_workspace_folder(path: String) -> Result<(), String> {
+    check_workspace_root(Path::new(&path))
+}
+
 /// Resolve + CONTAIN a tool-call path. A relative path resolves against the
 /// workspace root (folder workspace #62, else the per-chat sandbox); an
 /// absolute path is accepted only when it falls inside that root.
@@ -1717,6 +1743,53 @@ mod bug_d_the_picked_folder_tests {
             );
             assert!(err.contains("Not an allowed workspace folder"), "got: {err}");
         }
+    }
+
+    /// Der gemerkte Ordner wird gefragt, bevor er gesetzt wird.
+    ///
+    /// "Use last folder" und der Vorgabeordner aus den Einstellungen setzten
+    /// ihren Pfad ohne jede Frage. Kennt die Erlaubnisliste ihn nicht, steht
+    /// er danach in der Kopfzeile und jede Dateioperation antwortet mit einem
+    /// Satz, den der Nutzer nicht befolgen kann, ohne dass je ein Dialog
+    /// aufgegangen waere.
+    #[test]
+    fn a_picked_folder_validates_without_being_picked_again() {
+        let dir = unique("validate-ok");
+        let project = dir.join("code");
+        fs::create_dir_all(&project).unwrap();
+        allow_root_for_test(&project);
+        validate_workspace_folder(project.to_string_lossy().to_string())
+            .expect("a folder the user picked must validate");
+        // Unterordner des Projekts sind derselbe Arbeitsordner.
+        validate_workspace_folder(project.join("src").to_string_lossy().to_string())
+            .expect("a subfolder of the picked project must validate");
+    }
+
+    /// Die zwei Faelle, die der Melder beschreibt, und die Zusicherung, dass
+    /// das Fragen selbst nichts erlaubt.
+    #[test]
+    fn home_and_a_never_picked_folder_do_not_validate() {
+        let home = dirs::home_dir().unwrap_or_default();
+        let structural = validate_workspace_folder(home.to_string_lossy().to_string())
+            .expect_err("$HOME passed as a workspace");
+        assert!(structural.contains("Not an allowed workspace folder"), "got: {structural}");
+        // $HOME kann kein Dialog erlauben, also darf der Satz auch nicht danach
+        // verlangen. Dieselbe Reihenfolge wie im Dialogweg.
+        assert!(!structural.contains("pick it again"), "got: {structural}");
+
+        let dir = unique("validate-foreign");
+        let foreign = dir.join("not-picked");
+        fs::create_dir_all(&foreign).unwrap();
+        let s = foreign.to_string_lossy().to_string();
+        let refused = validate_workspace_folder(s.clone())
+            .expect_err("a folder nobody picked passed as a workspace");
+        assert!(refused.contains("Not an allowed workspace folder"), "got: {refused}");
+
+        // Und das Fragen hat nichts aufgenommen: derselbe Ordner wird beim
+        // zweiten Mal genauso abgelehnt. Ein Befehl, der beim Pruefen still
+        // nachzieht, waere das Loch, das die Erlaubnisliste zuhaelt.
+        assert!(validate_workspace_folder(s).is_err(), "the check recorded the folder it refused");
+        assert!(check_workspace_root(&foreign).is_err(), "the check recorded the folder it refused");
     }
 
     /// `D:\code` in every spelling that reaches these functions on Windows.

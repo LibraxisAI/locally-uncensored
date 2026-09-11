@@ -4,6 +4,7 @@ import { Modal } from '../ui/Modal'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { backendCall } from '../../api/backend'
+import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import type { AgentWorkspace } from '../../types/agent-workspace'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 
@@ -21,6 +22,13 @@ interface Props {
    * a folder there commits immediately (no second confirmation step).
    */
   initialWorkspace?: AgentWorkspace | null
+  /**
+   * Warum dieser Dialog ueberhaupt aufgeht. Gesetzt, wenn der gemerkte
+   * Vorgabeordner die Pruefung der Rust-Seite nicht bestanden hat: dann wird
+   * er NICHT gesetzt, und der Nutzer soll den Grund lesen, statt vor einem
+   * Dialog zu stehen, der ohne Anlass erscheint.
+   */
+  initialError?: string | null
 }
 
 /**
@@ -41,10 +49,11 @@ export function AgentWorkspaceDialog({
   onChoose,
   onClose,
   initialWorkspace,
+  initialError,
 }: Props) {
   const lastFolder = useAgentModeStore((s) => s.lastFolder)
   const [picking, setPicking] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(initialError ?? null)
   // Re-opened on an existing folder chat → jump straight to the extras
   // manager. Fresh activation → null → kind picker (folder pick commits).
   const [draft, setDraft] = useState<AgentWorkspace | null>(
@@ -61,9 +70,22 @@ export function AgentWorkspaceDialog({
     onChoose({ kind: 'sandbox' })
   }
 
-  const handleUseLast = () => {
+  const handleUseLast = async () => {
     if (!lastFolder) return
     setError(null)
+    // Der gemerkte Ordner wird GEFRAGT, nicht geglaubt. Dieser Knopf ist kein
+    // Dialog: kommt der Pfad aus einer frischen Installation, aus geleerten
+    // Daten oder liegt er direkt unter $HOME, kennt die Erlaubnisliste ihn
+    // nicht, und gesetzt wuerde er jede spaetere Dateioperation mit einem Satz
+    // beantworten, den hier niemand befolgen kann. Abgelehnt heisst: nicht
+    // gesetzt, Grund sichtbar, und der Weg heraus ist der Dialog darunter.
+    setPicking(true)
+    const refusal = await rememberedFolderRefusal(lastFolder)
+    setPicking(false)
+    if (refusal) {
+      setError(refusal)
+      return
+    }
     // Selecting a folder IS the decision — commit + close (parity with Sandbox).
     onChoose({ kind: 'folder', path: lastFolder, extraPaths: [] })
   }
