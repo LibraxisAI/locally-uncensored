@@ -27,7 +27,8 @@ import { withInstallerOutput, withDetail } from '../../lib/error-text'
 import { ICON_LG } from '../ui/icon-size'
 import { Hinweis } from '../ui/Hinweis'
 import { ProgressBar } from '../ui/ProgressBar'
-import { backendCall, isMacOS } from '../../api/backend'
+import { backendCall, isMacOS, isWindows } from '../../api/backend'
+import { comfyPathPlaceholder } from '../../lib/comfy-path-placeholder'
 import { formatBytes } from '../../lib/formatters'
 import { isRunning, formatElapsed, lastLog, type InstallerStatusResponse } from './installer-state'
 import type { Step } from './wizard-steps'
@@ -407,8 +408,6 @@ export function ComfyStep({ skin, fleet, step, setStep }: ComfyStepProps) {
           </button>
           <button
             onClick={() => {
-              const input = document.createElement('input')
-              input.type = 'text'
               // Show path input inline
               setComfyPathInput('')
               setComfyFound({ found: false })
@@ -434,7 +433,7 @@ export function ComfyStep({ skin, fleet, step, setStep }: ComfyStepProps) {
                 type="text"
                 value={comfyPathInput}
                 onChange={e => setComfyPathInput(e.target.value)}
-                placeholder="C:\ComfyUI"
+                placeholder={comfyPathPlaceholder(isWindows())}
                 className={`flex-1 px-2 py-1.5 rounded-lg border text-[0.65rem] font-mono ${
                   isDark ? 'bg-black border-white/10 text-white' : 'bg-white border-gray-300 text-gray-900'
                 }`}

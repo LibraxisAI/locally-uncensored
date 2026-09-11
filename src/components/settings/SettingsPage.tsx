@@ -47,7 +47,8 @@ import { MCPServerSettings } from './MCPServerSettings'
 import { WorkflowList } from '../agents/WorkflowList'
 import { WorkflowBuilder } from '../agents/WorkflowBuilder'
 import { useUpdateStore, isNewerVersion } from '../../stores/updateStore'
-import { backendCall, isTauri, isMacOS, openExternal } from '../../api/backend'
+import { backendCall, isTauri, isMacOS, isWindows, openExternal } from '../../api/backend'
+import { comfyPathPlaceholder } from '../../lib/comfy-path-placeholder'
 import { troubleshootHinweis, type TroubleshootHinweis } from './troubleshoot-message'
 import { isMlxImageHost } from '../../api/mlx-image'
 import { ArrowUpCircle, KeyRound, RefreshCw } from 'lucide-react'
@@ -1046,7 +1047,7 @@ export function ComfyUISettings() {
             type="text"
             value={customPath || status?.path || ''}
             onChange={e => { setCustomPath(e.target.value); setPathError(''); setPathSuccess(false) }}
-            placeholder="C:\ComfyUI"
+            placeholder={comfyPathPlaceholder(isWindows())}
             className="flex-1 px-2 py-1 rounded-lg border text-[0.6rem] font-mono bg-transparent border-white/10 text-gray-300 focus:outline-none focus:border-white/25"
           />
           <button
