@@ -371,6 +371,20 @@ pub fn force_show_after(app: AppHandle, delay: Duration) {
                     "[Window] Force-show fallback fired for '{}' (frontend never called show_window)",
                     window.label()
                 );
+                // Bug g (mallic, 2026-09-04): on Linux this moment IS the "no
+                // window" report, and 2.6.7 spent it in silence. `show()` below
+                // cannot help when the web process is already dead, so the
+                // console gets the two commands that tell the causes apart.
+                if let Some(hint) = crate::linux_no_window_hint(
+                    cfg!(target_os = "linux"),
+                    crate::is_wayland_session(
+                        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+                        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+                    ),
+                    std::env::var_os("APPDIR").is_some(),
+                ) {
+                    println!("{hint}");
+                }
                 reveal(&window);
             }
         }
