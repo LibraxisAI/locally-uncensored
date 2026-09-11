@@ -179,6 +179,32 @@ async fn read_head(stream: &mut tokio::net::TcpStream) -> String {
 const CALLBACK_BODY: &str ="<!doctype html><html><body style=\"font-family:-apple-system,system-ui,sans-serif;background:#161616;color:#e5e5e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><p>Signed in — you can close this tab and return to LU.</p></body></html>";
 const DENIED_BODY: &str = "<!doctype html><html><body style=\"font-family:-apple-system,system-ui,sans-serif;background:#161616;color:#e5e5e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><p>Sign-in didn't complete — you can close this tab and try again in LU.</p></body></html>";
 
+/// The body of the 404 every request that is NOT the callback gets.
+///
+/// It used to be `Content-Length: 0`, and that cost us a bug report we could
+/// not answer. A reporter wrote "GitHub does not connect, error 404"
+/// (aldrich_ironhart, Discord 2026-09-08, bug D symptom 1): the desktop app has
+/// no GitHub repository integration at all, so the only 404 it can produce is
+/// THIS one, in the tab the sign-in opened, and an empty 404 renders as the
+/// browser's own error page, which names no product, no port and no flow. The
+/// user cannot tell LU's 404 from the web app's, and neither could we.
+///
+/// A body does not change the decision: the request is still refused, the
+/// listener stays armed for the real redirect, and a cross-origin page that
+/// triggered it cannot read what it got back. It only makes the refusal
+/// legible to the person looking at it.
+const STRAY_BODY: &str = "<!doctype html><html><body style=\"font-family:-apple-system,system-ui,sans-serif;background:#161616;color:#e5e5e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><p>LU is waiting for a sign-in here, and this request was not it. Close this tab and start the sign-in again from LU.</p></body></html>";
+
+/// One HTTP response, headers and body, ready to write.
+fn http_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        body.len(),
+        body,
+    )
+}
+
 /// Bind the first free ladder port and arm an accept loop that serves exactly
 /// one callback (strays get a 404). Returns the port so the frontend can build
 /// the redirect URI before opening the browser.
@@ -213,9 +239,7 @@ pub async fn oauth_start(state: tauri::State<'_, OauthPending>) -> Result<u16, S
                 let req = read_head(&mut stream).await;
                 let Verdict::Callback(query) = classify(&req, port) else {
                     let _ = stream
-                        .write_all(
-                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        )
+                        .write_all(http_response("404 Not Found", STRAY_BODY).as_bytes())
                         .await;
                     let _ = stream.shutdown().await;
                     continue;
@@ -227,12 +251,7 @@ pub async fn oauth_start(state: tauri::State<'_, OauthPending>) -> Result<u16, S
                 } else {
                     CALLBACK_BODY
                 };
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.write_all(http_response("200 OK", body).as_bytes()).await;
                 let _ = stream.shutdown().await;
                 let _ = tx.send(query);
                 return;
@@ -293,7 +312,7 @@ pub async fn oauth_wait(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, Verdict};
+    use super::{classify, http_response, Verdict, CALLBACK_BODY, STRAY_BODY};
 
     const PORT: u16 = 17872;
 
@@ -466,6 +485,31 @@ mod tests {
         // `?decode=1` used to satisfy the old "contains code=" test.
         let req = format!("GET /callback?decode=1 HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n\r\n");
         assert_eq!(classify(&req, PORT), Verdict::Reject);
+    }
+
+    /// Bug D symptom 1: the only 404 the desktop app can produce is this one,
+    /// and it used to carry nothing, so the browser drew its own error page.
+    /// "GitHub does not connect, error 404" was then a report about a surface
+    /// nobody could name.
+    #[test]
+    fn the_stray_404_says_which_product_refused_and_why() {
+        let resp = http_response("404 Not Found", STRAY_BODY);
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found\r\n"), "{resp}");
+        assert!(resp.contains("Content-Type: text/html"), "{resp}");
+        assert!(resp.contains(&format!("Content-Length: {}", STRAY_BODY.len())), "{resp}");
+        assert!(resp.ends_with(STRAY_BODY), "the body never reaches the tab");
+        assert!(STRAY_BODY.contains("LU"), "the 404 still names no product");
+        assert!(STRAY_BODY.contains("sign-in"), "the 404 still names no flow");
+    }
+
+    /// Both answers go through the same builder now, so neither can lose its
+    /// Content-Length or its type while the other keeps them.
+    #[test]
+    fn the_callback_answer_is_built_the_same_way() {
+        let resp = http_response("200 OK", CALLBACK_BODY);
+        assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"), "{resp}");
+        assert!(resp.contains(&format!("Content-Length: {}", CALLBACK_BODY.len())), "{resp}");
+        assert!(resp.ends_with(CALLBACK_BODY));
     }
 
     #[test]
