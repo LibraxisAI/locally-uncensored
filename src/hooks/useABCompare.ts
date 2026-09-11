@@ -1,5 +1,5 @@
 /**
- * A/B Compare Hook — sends the same prompt to two models in parallel.
+ * A/B Compare Hook: sends the same prompt to two models in parallel.
  */
 
 import { useCallback, useRef } from 'react'
@@ -9,6 +9,7 @@ import { getProviderForModel, getProviderIdFromModel } from '../api/providers'
 import { getModelMaxTokens } from '../lib/context-compaction'
 import { applySendBudget, chatBudgetApplies, sharedChatSendBudget } from '../lib/chat-send-budget'
 import { sendsToALanBackend } from '../lib/lan-openai-slot'
+import { buildChatSystemPrompt } from '../lib/system-prompt'
 import { v4 as uuid } from 'uuid'
 import type { ChatMessage } from '../api/providers/types'
 import type { Message } from '../types/chat'
@@ -36,14 +37,27 @@ export function useABCompare() {
     store.startRound(userMessage)
 
     // Build messages for the providers
-    const persona = useSettingsStore.getState().getActivePersona()
-    const chatMessages: ChatMessage[] = []
+    //
     // `Persona` carries `systemPrompt`, never `prompt`: the old read was
     // always undefined, so a comparison ran with no persona at all while the
     // rest of the app (chat, Codex) sent one.
-    if (persona?.systemPrompt) {
-      chatMessages.push({ role: 'system', content: persona.systemPrompt })
-    }
+    //
+    // Und danach blieb der Vergleich die einzige Oberflaeche ohne Grundtext:
+    // er schickte NUR die Person, mit ausgeschalteter Person also gar nichts.
+    // Genau der leere Systemtext kostet laut Messung vom 10.09.2026 sechs
+    // Katalogmodelle die Antwort, und ein Vergleich, dessen beide Seiten aus
+    // der Anbieterhaltung antworten, vergleicht nicht LU. Jetzt baut er den
+    // Systemtext wie der Chat.
+    const persona = useSettingsStore.getState().getActivePersona()
+    const personasOn = useSettingsStore.getState().settings.personasEnabled !== false
+    const chatMessages: ChatMessage[] = []
+    chatMessages.push({
+      role: 'system',
+      content: buildChatSystemPrompt({
+        systemPrompt: persona?.systemPrompt,
+        personaEnabled: personasOn && Boolean(persona?.systemPrompt?.trim()),
+      }),
+    })
 
     // Include previous messages for context
     const prevMessages = useCompareStore.getState().messagesA.slice(0, -1) // exclude the empty assistant msg
@@ -83,7 +97,7 @@ export function useABCompare() {
       topP: settings.topP,
       topK: settings.topK,
       maxTokens: settings.maxTokens || undefined,
-      // Bug AA v2.5.0 — forward num_ctx override to both A/B sides.
+      // Bug AA v2.5.0: forward num_ctx override to both A/B sides.
       contextWindow: settings.contextWindowOverride || undefined,
     }
     // 2.6.7 Denk-Audit, Loch 6: this hook sent no thinking signal at all and

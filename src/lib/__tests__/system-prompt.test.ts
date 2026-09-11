@@ -13,12 +13,22 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  CHAT_BASE_ROLE,
   CHAT_BASE_SYSTEM_PROMPT,
   HOUSE_CONDUCT,
+  HOUSE_RULES,
+  HOUSE_SCOPE,
   buildChatSystemPrompt,
   withHouseConduct,
 } from '../system-prompt'
 import { BUILT_IN_PERSONAS } from '../constants'
+import { groupSystemPrompt } from '../group-chat'
+import { buildHermesToolPrompt } from '../../api/hermes-tool-calling'
+import {
+  buildAgentSystemPrompt,
+  buildAgentSystemPromptLean,
+  buildChatToolsSystemPrompt,
+} from '../../hooks/useAgentChat'
 
 const SRC = resolve(__dirname, '../..')
 const read = (rel: string) => readFileSync(resolve(SRC, rel), 'utf8')
@@ -46,21 +56,22 @@ describe('system prompt', () => {
       .toBe(CHAT_BASE_SYSTEM_PROMPT)
   })
 
-  it('lets an enabled persona carry the role and only appends the conduct line', () => {
+  it('lets an enabled persona carry the role and only appends the house part', () => {
     const devil = BUILT_IN_PERSONAS.find((p) => p.id === 'devil')!
     const built = buildChatSystemPrompt({ personaEnabled: true, systemPrompt: devil.systemPrompt })
-    expect(built).toBe(`${devil.systemPrompt}\n\n${HOUSE_CONDUCT}`)
+    expect(built).toBe(`${devil.systemPrompt}\n\n${HOUSE_RULES}`)
     expect(built).not.toContain("You are the user's own model")
   })
 
   it('states no content rule, neither permitting nor forbidding', () => {
     expect(CHAT_BASE_SYSTEM_PROMPT).not.toMatch(POLICY)
     expect(HOUSE_CONDUCT).not.toMatch(POLICY)
+    expect(HOUSE_SCOPE).not.toMatch(POLICY)
     // Und keine Assistenten-Floskel, die die antrainierte Vorsicht anzieht.
     expect(CHAT_BASE_SYSTEM_PROMPT).not.toMatch(/\bhelpful\b|\bharmless\b|\bassistant\b/i)
   })
 
-  it('appends the conduct line to a surface prompt exactly once', () => {
+  it('appends the house part to a surface prompt exactly once', () => {
     const surface = 'You are the Coding Agent inside LU.'
     const once = withHouseConduct(surface)
     expect(once).toContain(HOUSE_CONDUCT)
@@ -81,5 +92,119 @@ describe('system prompt', () => {
 
   it('carries the conduct line on the coding surface too', () => {
     expect(read('hooks/useCodex.ts')).toContain('withHouseConduct(')
+  })
+})
+
+/**
+ * Die Reichweitenzeile (HOUSE_SCOPE, Davids Auftrag vom 11.09.2026).
+ *
+ * Gemessen wird der Text, der am Ende im Nachrichtenarray steht, nicht die
+ * Konstante: jede Oberflaeche setzt ihn anders zusammen, und genau dabei ist
+ * er vorher verlorengegangen (der Vergleich schickte nur die Person).
+ *
+ * "Genau einmal" ist die zweite Haelfte des Beweises. Ein Satz, der zweimal im
+ * selben Systemtext steht, ist kein doppelter Nachdruck, sondern ein Zeichen,
+ * dass zwei Stellen ihn anhaengen und die naechste Aenderung nur eine davon
+ * trifft.
+ */
+describe('die Reichweitenzeile haengt an jeder Oberflaeche mit einem Menschen davor', () => {
+  const zaehle = (heuhaufen: string, nadel: string) => heuhaufen.split(nadel).length - 1
+  const HERMES_TOOLS = [{ name: 'file_read', description: 'read a file', parameters: {} }]
+
+  /** Rolle, Verhaltenszeile und Reichweitenzeile, jede genau einmal. */
+  const traegtDenHausteil = (text: string, mitRolle = true) => {
+    expect(zaehle(text, HOUSE_SCOPE)).toBe(1)
+    expect(zaehle(text, HOUSE_CONDUCT)).toBe(1)
+    if (mitRolle) expect(zaehle(text, CHAT_BASE_ROLE)).toBe(1)
+  }
+
+  it('Chat ohne Person', () => {
+    traegtDenHausteil(buildChatSystemPrompt({}))
+  })
+
+  it('Chat mit Person: Person, Verhaltenszeile, Reichweitenzeile, keine Grundrolle', () => {
+    const mit = buildChatSystemPrompt({ personaEnabled: true, systemPrompt: 'You are a pirate.' })
+    traegtDenHausteil(mit, false)
+    expect(zaehle(mit, 'You are a pirate.')).toBe(1)
+    expect(mit).not.toContain(CHAT_BASE_ROLE)
+  })
+
+  it('Agent, alle vier Zweige des Hooks', () => {
+    const basis = buildChatSystemPrompt({})
+    traegtDenHausteil(buildAgentSystemPrompt(basis, 'file_read, file_write'))
+    traegtDenHausteil(buildAgentSystemPromptLean(basis, 'file_read'))
+    traegtDenHausteil(buildChatToolsSystemPrompt(basis))
+    traegtDenHausteil(`${buildHermesToolPrompt(HERMES_TOOLS)}\n\n${basis}`)
+  })
+
+  it('Code, mit und ohne Hermes-Werkzeugtext', () => {
+    const code = withHouseConduct('You are the Coding Agent inside LU.')
+    traegtDenHausteil(code, false)
+    const unterHermes = `${buildHermesToolPrompt(HERMES_TOOLS)}\n\n${code}`
+    traegtDenHausteil(unterHermes, false)
+    // Der Werkzeugvertrag verdraengt den Grundtext nicht, beide stehen da.
+    expect(unterHermes).toContain('<tool_call>')
+    expect(unterHermes).toContain('You are the Coding Agent inside LU.')
+  })
+
+  it('Gruppenchat: jedes Mitglied traegt ihn einmal', () => {
+    const personaPrompt = buildChatSystemPrompt({})
+    for (const m of ['modell-a', 'modell-b', 'modell-c']) {
+      traegtDenHausteil(groupSystemPrompt(m, ['modell-a', 'modell-b', 'modell-c'], personaPrompt))
+    }
+  })
+
+  it('A/B-Vergleich: ohne Person der Grundtext, mit Person die Person', () => {
+    traegtDenHausteil(
+      buildChatSystemPrompt({ systemPrompt: undefined, personaEnabled: false }),
+    )
+    traegtDenHausteil(
+      buildChatSystemPrompt({ systemPrompt: 'You are a pirate.', personaEnabled: true }),
+      false,
+    )
+  })
+
+  /**
+   * Der Vergleich schickte bis zum 11.09.2026 `persona.systemPrompt` roh und
+   * mit ausgeschalteter Person gar keinen Systemtext. Diese Zeile darf nicht
+   * zurueckkommen.
+   */
+  it('der Vergleich baut den Systemtext und schickt nicht mehr die nackte Person', () => {
+    const quelle = read('hooks/useABCompare.ts')
+    expect(quelle).toContain('buildChatSystemPrompt(')
+    expect(quelle).not.toMatch(/content: persona\.systemPrompt/)
+  })
+
+  /**
+   * Die Gegenseite des Auftrags: in einen Hilfsaufruf mit Formatvertrag gehoert
+   * der Satz NICHT. Dort konkurriert er mit dem Vertrag (JSON, Werkzeugaufruf)
+   * und kann die Ausgabe zerlegen, ohne dass es jemand merkt.
+   */
+  it('bleibt aus den Hilfsaufrufen mit Formatvertrag heraus', () => {
+    for (const datei of [
+      'lib/memory-extraction.ts',
+      'lib/context-compaction.ts',
+      'lib/compact-summary.ts',
+      'lib/workflow-engine.ts',
+      'api/agents/architect.ts',
+      'api/agents/sub-agent.ts',
+      'api/hermes-tool-calling.ts',
+    ]) {
+      expect(read(datei)).not.toMatch(/from '[^']*system-prompt'/)
+      expect(read(datei)).not.toContain('HOUSE_')
+    }
+  })
+
+  /**
+   * Der Satz nennt keine Kategorie, und er nennt auch das Wort nicht, das auf
+   * lu-labs.ai nicht stehen darf: die Webfassung dieser Datei landet im
+   * Buendel, das ein Browser von dieser Domain laedt.
+   */
+  it('nennt keine Kategorie und kein Vokabular der Zahlungsbeziehung', () => {
+    expect(HOUSE_SCOPE).not.toMatch(POLICY)
+    expect(HOUSE_SCOPE).not.toMatch(
+      /uncensored|unrestricted|unfiltered|no filter|content filter|nsfw|nudity|porn|sexual|adult/i,
+    )
+    expect(HOUSE_RULES).toBe(`${HOUSE_CONDUCT} ${HOUSE_SCOPE}`)
   })
 })

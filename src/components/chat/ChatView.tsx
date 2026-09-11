@@ -17,6 +17,7 @@ import { useDocsAvailability } from '../../hooks/useDocsAvailability'
 import { AgentModeToggle } from './AgentModeToggle'
 import { AgentWorkspaceBadge } from './AgentWorkspaceBadge'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
+import { CHAT_BASE_SYSTEM_PROMPT } from '../../lib/system-prompt'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import { ChevronDown, Download, Wrench, Radio, RefreshCw, X } from 'lucide-react'
@@ -201,7 +202,10 @@ export function ChatView() {
       .find((c) => c.id === activeConversationId)
     if (!activeConv) return
     try {
-      await remoteRestart(activeConv.model, activeConv.systemPrompt)
+      // Der Grundtext, nie die Person: ein Neustart darf nicht heimlich
+      // dispatchen, was der Dispatch selbst bewusst weglaesst. Siehe
+      // Sidebar.tsx, handleDispatch.
+      await remoteRestart(activeConv.model, CHAT_BASE_SYSTEM_PROMPT)
       useRemoteStore.setState({ dispatchedConversationId: activeConversationId })
     } catch {
       // #29: restart now rethrows. The store's `error` already holds the

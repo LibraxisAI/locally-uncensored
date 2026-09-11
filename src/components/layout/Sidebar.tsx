@@ -9,6 +9,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useCodexStore } from '../../stores/codexStore'
 import { useRemoteStore, REMOTE_DEV_MODE_ERROR } from '../../stores/remoteStore'
 import { workspaceRejectedMessage } from '../../lib/workspace-rejected'
+import { CHAT_BASE_SYSTEM_PROMPT } from '../../lib/system-prompt'
 import { backendCall, isTauri } from '../../api/backend'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import {
@@ -252,12 +253,17 @@ export function Sidebar() {
       } catch { /* no-op */ }
     }
 
-    // Remote dispatch — same default-OFF rule. The conv stores the global
+    // Remote dispatch: same default-OFF rule. The conv stores the global
     // persona prompt for later opt-in via the toggle, but it is NOT sent
-    // to the mobile server as the dispatched system prompt. Mobile starts
-    // clean (autonomy contract or codex prompt only). Without this, a
+    // to the mobile server as the dispatched system prompt. Without this, a
     // global "Devil's Advocate" persona silently hijacked every remote
     // session through `dispatchedSystemPrompt` on the mobile side.
+    //
+    // Was hier bis zum 11.09.2026 rausging, war der LEERE String, und damit
+    // war das Handy die einzige Oberflaeche ohne Grundtext: es antwortete aus
+    // der Anbieterhaltung, die laut Messung vom 10.09.2026 sechs
+    // Katalogmodelle die Antwort kostet. Jetzt geht der Grundtext raus, also
+    // Rolle, Verhaltens- und Reichweitenzeile, und weiterhin NIE die Person.
     const persona = personasEnabled ? getActivePersona() : null
     const convId = createConversation(activeModel, persona?.systemPrompt || '', 'remote')
     setView('chat')
@@ -267,7 +273,7 @@ export function Sidebar() {
     // immediately (no tunnel to wait for).
     useRemoteStore.setState({ awaitingTunnel: mode === 'internet' })
     try {
-      await dispatch(convId, activeModel, '')
+      await dispatch(convId, activeModel, CHAT_BASE_SYSTEM_PROMPT)
     } catch {
       // #29: server failed to start (port in use, firewall, etc.). The
       // store has the user-facing reason in `error` — drop the orphan
@@ -702,7 +708,7 @@ export function Sidebar() {
                       // row paints, not the model/system prompt.
                       const conv = useChatStore.getState().conversations
                         .find((c) => c.id === dispatchedConversationId)
-                      restart(conv?.model, conv?.systemPrompt)
+                      restart(conv?.model, CHAT_BASE_SYSTEM_PROMPT)
                     }}
                     disabled={remoteLoading}
                     title="Restart server (keeps this chat, issues a new passcode)"
