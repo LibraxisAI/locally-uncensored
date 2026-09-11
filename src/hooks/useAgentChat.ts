@@ -98,6 +98,10 @@ import { explainSendRefusal } from '../lib/template-refusal'
 import { httpStatusOf, isTerminalModelError, retryDelayMs } from '../lib/http-status'
 import { shouldDowngradeThinking, engineDeniedThinking } from './codex/thinking-downgrade'
 import { capHiddenToolHistory } from './codex/hidden-history'
+// Derselbe Satz wie im Code Reiter, aus derselben Datei: der Fall ist
+// derselbe, und zwei Wortlaute fuer einen abgeschnittenen Zug waeren zwei
+// Stellen, von denen eine gepflegt wird.
+import { codexCutoffNote } from './codex/turn-cutoff'
 import { asString, errorText, prop } from '../types/json-guards'
 import type { ToolArgs } from '../api/mcp/types'
 import { CREDITS_EXHAUSTED_MESSAGE } from '../lib/credits-exhausted'
@@ -911,6 +915,11 @@ export function useAgentChat() {
         let toolCalls: ToolCall[] = []
         let turnContent = ''
         let turnThinking = ''
+        // Warum DIESER Zug endete. Nur `length` wird ausgewertet, und nur ganz
+        // unten in der Weiche ohne Werkzeugaufruf: ein abgeschnittener Zug sah
+        // dort genauso aus wie ein fertiges Modell (Fehler D, Symptom 2, im
+        // Code Reiter am 11.09.2026 geschlossen, hier stand es noch offen).
+        let turnFinishReason: string | undefined
 
         // Plain-text-planner escape: Gemma 3/4 with think=false drops
         // into structured plain-text planning (Plan: / Constraint
@@ -1105,7 +1114,13 @@ export function useAgentChat() {
             useSendSizeStore.getState().reportTools(convId, estimateTokens(JSON.stringify(tools)))
           }
 
-          let turn!: { content: string; toolCalls: ToolCall[]; thinking?: string; promptEvalCount?: number; evalCount?: number }
+          // Aus den beiden Transporten abgeleitet statt abgeschrieben. Die
+          // abgeschriebene Fassung kannte `doneReason` nicht, und ein Feld, das
+          // ein Transport liefert und diese Zeile verschweigt, ist genau die
+          // Sorte Drift, die den abgeschnittenen Zug lange unsichtbar hielt.
+          let turn!:
+            | Awaited<ReturnType<typeof streamOllamaChatWithTools>>
+            | Awaited<ReturnType<typeof streamProviderTurn>>
 
           // Token counter (David 2026-06-12): reflect the REAL prompt size — system
           // prompt + tool defs + history — immediately, not a char/4 guess of just
@@ -1145,10 +1160,15 @@ export function useAgentChat() {
             // (seen on gemma4 after its image). Retry transient errors a couple
             // times before surfacing. The inner branch still handles the
             // does-not-support-thinking downgrade.
+            // Der Zug dieses Zweiges, mit dem Typ SEINES Transports. Die
+            // Schleife darunter wirft und faengt, und ein `turn` der beiden
+            // Transporte zusammen waere danach wieder die weite Fassung, in der
+            // `doneReason` nicht mehr sichtbar ist.
+            let ollamaTurn!: Awaited<ReturnType<typeof streamOllamaChatWithTools>>
             let connRetries = 0
             for (;;) {
               try {
-                turn = await streamOllamaChatWithTools(
+                ollamaTurn = await streamOllamaChatWithTools(
                   modelToUse,
                   sendMessages,
                   tools,
@@ -1203,7 +1223,7 @@ export function useAgentChat() {
                   // sie bei JEDER weiteren Nachricht wieder eine verlorene
                   // Anfrage (Testlauf 03.09.2026).
                   if (engineDeniedThinking(thinkErr)) markCannotThink(modelToUse)
-                  turn = await streamOllamaChatWithTools(
+                  ollamaTurn = await streamOllamaChatWithTools(
                     modelToUse,
                     sendMessages,
                     tools,
@@ -1239,6 +1259,10 @@ export function useAgentChat() {
               }
             }
             dropThinkingBlock()
+            turn = ollamaTurn
+            // Ollama nennt den Grund `done_reason`; `lib/ollama-stream-tools.ts`
+            // reicht ihn seit Fehler D durch.
+            turnFinishReason = ollamaTurn.doneReason
           } else {
             // ── Streaming path for openai-compat / Anthropic / LU Cloud ──
             // Parity with the Ollama branch above: chatStream carries the
@@ -1274,10 +1298,12 @@ export function useAgentChat() {
               }
             }
             const streamOpts = { ...chatOptions, tools }
+            // Dasselbe wie im Ollama-Zweig, aus demselben Grund.
+            let providerTurn!: Awaited<ReturnType<typeof streamProviderTurn>>
             let connRetries = 0
             for (;;) {
               try {
-                turn = await streamProviderTurn(provider, modelToUse, sendMessages, streamOpts, onLiveContent, onLiveThinking)
+                providerTurn = await streamProviderTurn(provider, modelToUse, sendMessages, streamOpts, onLiveContent, onLiveThinking)
                 break
               } catch (thinkErr) {
                 // G22 parity with the Ollama branch: heal a wrong vision
@@ -1296,7 +1322,7 @@ export function useAgentChat() {
                 // number used to be in useChat.ts only, so this branch ended
                 // the whole run where plain chat just retried.
                 if (shouldDowngradeThinking(streamOpts.thinking, thinkErr)) {
-                  turn = await streamProviderTurn(provider, modelToUse, sendMessages, { ...streamOpts, thinking: undefined as unknown as boolean }, onLiveContent, () => {})
+                  providerTurn = await streamProviderTurn(provider, modelToUse, sendMessages, { ...streamOpts, thinking: undefined as unknown as boolean }, onLiveContent, () => {})
                   break
                 }
                 const transient = asString(prop(thinkErr, 'name')) !== 'AbortError' && !isTerminalModelError(thinkErr)
@@ -1312,6 +1338,9 @@ export function useAgentChat() {
               }
             }
             dropThinkingBlock()
+            turn = providerTurn
+            // Und jeder andere Transport nennt ihn `finish_reason`.
+            turnFinishReason = providerTurn.finishReason
           }
 
           toolCalls = turn.toolCalls
@@ -1417,6 +1446,10 @@ export function useAgentChat() {
           }
           feedUI(splitter.feed(display.flush()))
           feedUI(splitter.flush())
+          // Derselbe Transport wie im Zweig darueber, also derselbe Grund. Ein
+          // Prompt-Transport kann den Zug genauso mitten im `<tool_call>`
+          // abschneiden, und dann steht hier ebenfalls kein Werkzeugaufruf.
+          turnFinishReason = hermesTurn.finishReason
           if (hermesTurn.thinking) {
             turnThinking = turnThinking
               ? `${turnThinking}\n\n${hermesTurn.thinking}`
@@ -1718,6 +1751,29 @@ export function useAgentChat() {
             useChatStore.getState().updateMessageThinking(convId!, assistantMessage.id, '')
           } else {
             thinkingRef.current = turnThinking
+          }
+          // Fehler D, Symptom 2, jetzt fuer den Agenten Reiter. Bis hierher war
+          // ein Zug, den das Modell nie zu Ende schreiben konnte, von einem
+          // fertigen Modell nicht zu unterscheiden: derselbe leere
+          // Werkzeugsatz, derselbe wortlose Schluss, und der Plan blieb auf
+          // seinem offenen Schritt stehen. Der Grund lag die ganze Zeit auf der
+          // Leitung (`done_reason` bei Ollama, `finish_reason` bei den
+          // uebrigen), nur las ihn hier niemand aus. Sichtbar an ZWEI Stellen,
+          // wie im Code Reiter: an der Antwort und als Block im Faden, sonst
+          // kann die beiden Faelle spaeter niemand auseinanderhalten.
+          const cutoff = codexCutoffNote(
+            turnFinishReason,
+            convId ? openPlanGap(useTodoStore.getState().getTodos(convId)) : null,
+          )
+          if (cutoff && convId) {
+            contentRef.current =
+              (contentRef.current ? contentRef.current + '\n\n' : '') + `_(${cutoff})_`
+            addBlock(convId, assistantMessage.id, {
+              id: uuid(),
+              phase: 'reflection',
+              content: `\u26d4 ${cutoff}`,
+              timestamp: Date.now(),
+            })
           }
           scheduleUIUpdate()
           break
