@@ -76,6 +76,7 @@ import { toolCallCapMs, raceWithToolTimeout, SHELL_EXECUTE_DEFAULT_TIMEOUT_MS } 
 import { getModelMaxTokens, estimateTokens } from '../lib/context-compaction'
 import { buildRequestMessages, trimWorkingHistory, decayRestoredToolResult, isToolResult } from '../lib/context-decay'
 import { effectiveSendWindow } from '../lib/send-window'
+import { sendsToALanBackend } from '../lib/lan-openai-slot'
 import { useSendSizeStore } from '../stores/sendSizeStore'
 import { resolveAgentNumCtx } from '../lib/agent-num-ctx'
 import { platformPromptLine, hostClockLine } from '../lib/host-platform'
@@ -1121,6 +1122,7 @@ export function useCodex() {
           sendWindowTokens: settings.codexSendWindowTokens,
           capEnabled: decayOn,
           smallModelMode: settings.smallModelMode,
+          localBackend: sendsToALanBackend(providerId),
         })
         let sendMessages: ChatMessage[] = messages.slice()
         let trimmedReadKeys: ReadonlySet<string> = NO_TRIMMED_KEYS

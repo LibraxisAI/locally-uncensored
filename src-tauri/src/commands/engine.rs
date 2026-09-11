@@ -238,7 +238,12 @@ const KV_BYTES_PER_LAYER_PER_1K_CTX: u64 = 4 * MIB;
 const ASSUMED_BLOCK_COUNT: u32 = 16;
 
 /// What `-ngl` carries when every layer is wanted.
-const ALL_LAYERS: &str = "999";
+///
+/// A number rather than a string, because two questions are asked of it: what
+/// to write into argv, and whether a layer count read back OUT of argv is this
+/// sentinel or a real measurement. A surface that printed "999" at a user
+/// would be printing the sentinel.
+const ALL_LAYERS: u32 = 999;
 
 /// The numbers an offload decision is made from. Plain values, so the
 /// arithmetic can be checked without a graphics card in the machine.
@@ -345,6 +350,17 @@ pub(crate) fn gpu_layers_in(args: &[String]) -> Option<u32> {
     args.windows(2).find(|w| w[0] == "-ngl").and_then(|w| w[1].parse().ok())
 }
 
+/// The layer count a surface may show the user, `None` when the start asked
+/// for every layer.
+///
+/// `None` is what nearly every machine gets: a card with room, and a card
+/// nothing could measure, both send the sentinel. A number here means the app
+/// decided against the card (or the user typed one), which is the only case
+/// worth a line on screen.
+pub(crate) fn gpu_layers_reported(args: &[String]) -> Option<u32> {
+    gpu_layers_in(args).filter(|n| *n != ALL_LAYERS)
+}
+
 /// The argv with the `-ngl <n>` pair removed, for the idempotence check.
 pub(crate) fn argv_without_gpu_layers(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
@@ -388,7 +404,7 @@ pub(crate) fn build_server_args(model_path: &str, tuning: &EngineTuning, port: u
         effective_ctx(tuning).to_string(),
         "-ngl".into(),
         if tuning.gpu_layers < 0 {
-            auto_ngl.map(|n| n.to_string()).unwrap_or_else(|| ALL_LAYERS.to_string())
+            auto_ngl.unwrap_or(ALL_LAYERS).to_string()
         } else {
             tuning.gpu_layers.to_string()
         },
@@ -1674,6 +1690,7 @@ fn start_bundled_engine_blocking(
             model_path: e.model_path.clone(),
             args: e.args.clone(),
             auto_layers: e.auto_layers,
+            cpu_fallback: e.cpu_fallback,
             port: e.port,
             ctx: e.ctx,
         })
@@ -1704,6 +1721,10 @@ struct PreviousEngine {
     /// process is the same kind of start it was, and the idempotence check
     /// keeps answering the same way about it afterwards.
     auto_layers: bool,
+    /// Whether that engine was already the CPU retry. Carried for the same
+    /// reason: a restore brings the process back as it was, and a status read
+    /// afterwards must not claim the card back for it.
+    cpu_fallback: bool,
 }
 
 /// Der Satz, der an die Fehlermeldung geht, wenn das alte Modell wieder laeuft.
@@ -1728,6 +1749,7 @@ fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> b
         vorher.port,
         vorher.ctx,
         vorher.auto_layers,
+        vorher.cpu_fallback,
     )
     .is_ok();
     if !ok {
@@ -1875,7 +1897,7 @@ fn start_after_stop(
             vram_source = card.as_ref().map(|c| c.source).unwrap_or("none"),
             block_count = header.block_count.map(|b| b.to_string()).unwrap_or_else(|| "unknown".into()),
             ctx = ctx_size,
-            ngl = plan.layers.map(|l| l.to_string()).unwrap_or_else(|| ALL_LAYERS.to_string()),
+            ngl = plan.layers.unwrap_or(ALL_LAYERS).to_string(),
             "{}",
             plan.why
         );
@@ -1888,7 +1910,7 @@ fn start_after_stop(
 
     let deadline = health_timeout_for(model_path);
     let ctx = Some(ctx_size);
-    let first = spawn_engine_attempt(state, &binary, &desired_args, model_path, port, ctx, auto_layers);
+    let first = spawn_engine_attempt(state, &binary, &desired_args, model_path, port, ctx, auto_layers, false);
     let failure = match first {
         Ok(()) => {
             tracing::info!(target: "engine", port, attempt = 1, "the LU Engine is serving");
@@ -1959,7 +1981,7 @@ fn start_after_stop(
     // next start with the same settings has to be allowed to try the card
     // again.
     let retry_auto = auto_layers && !offload_was_tried;
-    match spawn_engine_attempt(state, &binary, &retry_args, model_path, retry_port, ctx, retry_auto) {
+    match spawn_engine_attempt(state, &binary, &retry_args, model_path, retry_port, ctx, retry_auto, offload_was_tried) {
         Ok(()) => {
             if offload_was_tried {
                 tracing::warn!(
@@ -2007,6 +2029,7 @@ fn spawn_engine_attempt(
     port: u16,
     ctx: Option<u32>,
     auto_layers: bool,
+    cpu_fallback: bool,
 ) -> Result<(), StartFailure> {
     // The one line a support log has to carry. Everything the start depends on
     // is in the argv: model path, context size, layer count, cache types,
@@ -2067,6 +2090,7 @@ fn spawn_engine_attempt(
         ctx,
         args: args.to_vec(),
         auto_layers,
+        cpu_fallback,
     });
 
     let outcome = wait_for_health_or_exit(state, port, health_timeout_for(model_path));
@@ -2155,16 +2179,26 @@ pub async fn bundled_engine_status(app: AppHandle) -> Result<serde_json::Value, 
             live_sidecar(&mut guard)
         };
         match probe {
-            Some((port, model_path, ctx)) => serde_json::json!({
+            Some(live) => serde_json::json!({
                 "running": true,
-                "healthy": engine_healthy(port),
-                "port": port,
+                "healthy": engine_healthy(live.port),
+                "port": live.port,
                 // Model file size feeds the handoff's fits/doesn't-fit call
                 // (GH #85): a GGUF's on-disk size is a close proxy for its
                 // VRAM footprint at full offload.
-                "modelBytes": std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0),
-                "model_path": model_path,
-                "ctx": ctx,
+                "modelBytes": std::fs::metadata(&live.model_path).map(|m| m.len()).unwrap_or(0),
+                "model_path": live.model_path,
+                "ctx": live.ctx,
+                // Where this engine computes, and how much of the model the
+                // card really took (3.0.0 leftover). `start_bundled_engine`
+                // answered `cpuOnly` once, in the return value of the call
+                // that started it, and nothing kept it: the fallback was a
+                // fact about the running process that no surface could ask
+                // about afterwards, and a user who came back to the window
+                // five minutes later found an engine that looked ordinary and
+                // ran at a tenth of the speed.
+                "cpuOnly": live.cpu_fallback,
+                "gpuLayers": live.gpu_layers,
             }),
             None => serde_json::json!({
                 "running": false,
@@ -2172,6 +2206,8 @@ pub async fn bundled_engine_status(app: AppHandle) -> Result<serde_json::Value, 
                 "port": DEFAULT_ENGINE_PORT,
                 "model_path": null,
                 "ctx": null,
+                "cpuOnly": false,
+                "gpuLayers": null,
             }),
         }
     })
@@ -2710,9 +2746,32 @@ pub(crate) fn reap_dead_engine(slot: &mut Option<BundledEngine>) -> bool {
 /// not, so an embed sidecar killed from outside kept answering "running" on
 /// 8128 exactly the way the chat engine used to on 8127. Both status commands
 /// go through this one function now, so the two cannot drift apart again.
-pub(crate) fn live_sidecar(slot: &mut Option<BundledEngine>) -> Option<(u16, String, Option<u32>)> {
+/// What a live sidecar is, in the words its status answers need.
+///
+/// A tuple until the CPU fallback had to be reported. Five values read as
+/// `(p, _, _, _, _)` at a call site, which is a shape nobody can check against
+/// the thing it describes, so they have names.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LiveSidecar {
+    pub port: u16,
+    pub model_path: String,
+    pub ctx: Option<u32>,
+    /// The app took the graphics card away by itself after a start died.
+    pub cpu_fallback: bool,
+    /// The `-ngl` the process really carries, `None` when it asked for all of
+    /// them (`gpu_layers_reported`).
+    pub gpu_layers: Option<u32>,
+}
+
+pub(crate) fn live_sidecar(slot: &mut Option<BundledEngine>) -> Option<LiveSidecar> {
     reap_dead_engine(slot);
-    slot.as_ref().map(|e| (e.port, e.model_path.clone(), e.ctx))
+    slot.as_ref().map(|e| LiveSidecar {
+        port: e.port,
+        model_path: e.model_path.clone(),
+        ctx: e.ctx,
+        cpu_fallback: e.cpu_fallback,
+        gpu_layers: gpu_layers_reported(&e.args),
+    })
 }
 
 // ── The watch that tells the UI a sidecar died ───────────────────────────────
@@ -2903,8 +2962,9 @@ fn start_bundled_embed_blocking(
         args: embed_args,
         // The embeddings server sends a fixed `-ngl 999` and nothing measures
         // anything for it: these models are a few hundred MiB and fit on
-        // whatever is there.
+        // whatever is there, so there is also no GPU start for it to lose.
         auto_layers: false,
+        cpu_fallback: false,
     });
 
     if let Err(e) = wait_for_health(port, health_timeout_for(&model_path)) {
@@ -2973,11 +3033,11 @@ pub async fn bundled_embed_status(app: AppHandle) -> Result<serde_json::Value, S
             live_sidecar(&mut guard)
         };
         match probe {
-            Some((port, model_path, _ctx)) => serde_json::json!({
+            Some(live) => serde_json::json!({
                 "running": true,
-                "healthy": engine_healthy(port),
-                "port": port,
-                "model_path": model_path,
+                "healthy": engine_healthy(live.port),
+                "port": live.port,
+                "model_path": live.model_path,
             }),
             None => serde_json::json!({
                 "running": false,
@@ -3453,6 +3513,25 @@ mod tests {
         let cpu = EngineTuning { gpu_layers: 0, ..Default::default() };
         assert_eq!(
             gpu_layers_in(&build_server_args("/m.gguf", &cpu, 8127, None, None, Some(3))),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn the_status_shows_a_layer_count_but_never_the_sentinel() {
+        // What a surface may print. 999 is llama.cpp's way of saying "all of
+        // them", so printing it would put a magic number in front of a user
+        // who owns a card with 32 layers.
+        let auto = EngineTuning::default();
+        let all = build_server_args("/m.gguf", &auto, 8127, None, None, None);
+        assert_eq!(gpu_layers_reported(&all), None, "the sentinel reached a surface");
+        let some = build_server_args("/m.gguf", &auto, 8127, None, None, Some(18));
+        assert_eq!(gpu_layers_reported(&some), Some(18));
+        // A start that ended on the processor names the zero rather than
+        // hiding it: nought layers on the card is the whole story.
+        let cpu = EngineTuning { gpu_layers: 0, ..Default::default() };
+        assert_eq!(
+            gpu_layers_reported(&build_server_args("/m.gguf", &cpu, 8127, None, None, None)),
             Some(0)
         );
     }
@@ -4144,6 +4223,7 @@ mod tests {
             ctx: Some(8192),
             args: Vec::new(),
             auto_layers: false,
+            cpu_fallback: false,
         });
     }
 
@@ -4226,6 +4306,7 @@ mod tests {
             model_path: "/tmp/hermes.gguf".into(),
             args: vec!["-c".into(), "sleep 30".into()],
             auto_layers: false,
+            cpu_fallback: false,
             port,
             ctx: Some(8192),
         };
@@ -4268,6 +4349,7 @@ mod tests {
             model_path: "/tmp/hermes.gguf".into(),
             args: vec!["-c".into(), "exit 1".into()],
             auto_layers: false,
+            cpu_fallback: false,
             port: DEAD_PORT,
             ctx: Some(8192),
         };
@@ -4372,7 +4454,76 @@ mod tests {
             ctx: Some(8192),
             args: Vec::new(),
             auto_layers: false,
+            cpu_fallback: false,
         })
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
+    fn a_status_read_says_that_the_engine_ended_up_on_the_processor() {
+        // The fallback was answered ONCE, in the return value of the start
+        // call, and then forgotten. A status read a minute later described an
+        // engine that ran at a tenth of its speed as an ordinary one.
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a long lived child");
+        let mut slot = engine_around(child, DEFAULT_ENGINE_PORT);
+        {
+            let e = slot.as_mut().unwrap();
+            e.cpu_fallback = true;
+            e.args = build_server_args(
+                "/m.gguf",
+                &EngineTuning { gpu_layers: 0, ..Default::default() },
+                DEFAULT_ENGINE_PORT,
+                None,
+                None,
+                None,
+            );
+        }
+
+        let seen = live_sidecar(&mut slot).expect("the engine is running");
+        assert!(seen.cpu_fallback, "the fallback did not survive the status read");
+        assert_eq!(seen.gpu_layers, Some(0));
+
+        let mut engine = slot.take().unwrap();
+        let _ = engine.child.kill();
+        let _ = engine.child.wait();
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
+    fn a_typed_cpu_setting_is_not_reported_as_a_failed_start() {
+        // The counter-check to the test above. Someone who wrote 0 into GPU
+        // Layers got what he asked for, and telling him the graphics card
+        // failed would be an invention.
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a long lived child");
+        let mut slot = engine_around(child, DEFAULT_ENGINE_PORT);
+        slot.as_mut().unwrap().args = build_server_args(
+            "/m.gguf",
+            &EngineTuning { gpu_layers: 0, ..Default::default() },
+            DEFAULT_ENGINE_PORT,
+            None,
+            None,
+            None,
+        );
+
+        let seen = live_sidecar(&mut slot).expect("the engine is running");
+        assert!(!seen.cpu_fallback, "a typed setting was reported as a fallback");
+        assert_eq!(seen.gpu_layers, Some(0));
+
+        let mut engine = slot.take().unwrap();
+        let _ = engine.child.kill();
+        let _ = engine.child.wait();
     }
 
     #[test]
@@ -4456,7 +4607,7 @@ mod tests {
         let mut slot = engine_around(child, DEFAULT_EMBED_PORT);
 
         let seen = live_sidecar(&mut slot);
-        assert_eq!(seen.as_ref().map(|(p, _, _)| *p), Some(DEFAULT_EMBED_PORT));
+        assert_eq!(seen.as_ref().map(|s| s.port), Some(DEFAULT_EMBED_PORT));
         assert!(slot.is_some());
 
         let mut engine = slot.take().unwrap();

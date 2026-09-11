@@ -11,8 +11,9 @@ import { safeJSONStorage } from '../lib/storage-quota'
  *   - Header Lichtschalter — knows without a load attempt that the model is stale
  *   - DiscoverModels — shows "Needs Refresh" badge instead of green "Installed"
  *
- * `dismissed` is session-only so the banner reappears next launch if stale
- * models remain. `lastScanTime` is persisted so we can skip re-scan for a
+ * `dismissed` is PERSISTED, as of 2.5.9 (a3b05a44): see the note on
+ * `partialize` below for why, and `setStaleModels` for the one thing that
+ * clears it again. `lastScanTime` is persisted so we can skip re-scan for a
  * cool-down window on app restart.
  */
 

@@ -33,7 +33,7 @@ describe('useModelHealthStore', () => {
     expect(useModelHealthStore.getState().staleModels).toEqual(['phi4:14b'])
   })
 
-  it('dismiss hides the banner for this session without clearing stale models', () => {
+  it('dismiss hides the banner without clearing stale models', () => {
     useModelHealthStore.setState({ staleModels: ['phi4:14b'] })
     useModelHealthStore.getState().dismiss()
     const s = useModelHealthStore.getState()

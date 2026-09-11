@@ -14,6 +14,7 @@ import { retrieveContext } from "../api/rag"
 import { buildRagSuffix, RETRIEVAL_FAILED_MESSAGE } from "../lib/rag-prompt"
 import { getModelMaxTokens, capMessageCount } from "../lib/context-compaction"
 import { applyChatSendBudget, chatBudgetApplies } from "../lib/chat-send-budget"
+import { sendsToALanBackend } from "../lib/lan-openai-slot"
 import { isTooManyMessagesError, halveHistory, TOO_MANY_MESSAGES_MAX_HALVINGS } from "../lib/too-many-messages"
 import { getModelContextCached } from "../api/ollama"
 import { requestGenerationCancel } from "../api/vram-handoff"
@@ -121,6 +122,7 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
         : 0,
       sendWindowTokens: settings.codexSendWindowTokens,
       contextDecay: settings.contextDecay,
+      localBackend: sendsToALanBackend(providerId),
     },
   ).messages
 

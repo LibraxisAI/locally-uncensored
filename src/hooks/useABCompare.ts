@@ -8,6 +8,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { getProviderForModel, getProviderIdFromModel } from '../api/providers'
 import { getModelMaxTokens } from '../lib/context-compaction'
 import { applySendBudget, chatBudgetApplies, sharedChatSendBudget } from '../lib/chat-send-budget'
+import { sendsToALanBackend } from '../lib/lan-openai-slot'
 import { v4 as uuid } from 'uuid'
 import type { ChatMessage } from '../api/providers/types'
 import type { Message } from '../types/chat'
@@ -70,6 +71,7 @@ export function useABCompare() {
               : 0,
             sendWindowTokens: settings.codexSendWindowTokens,
             contextDecay: settings.contextDecay,
+            localBackend: sendsToALanBackend(providerId),
           }
         }),
       ),

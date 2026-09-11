@@ -11,11 +11,10 @@ import { isManagedBuiltinSlot } from '../api/builtin-ensure'
 import { ENGINE_DEFAULT_CTX } from '../lib/builtin-ctx'
 import { bundledEngineStatus, bundledCtxTrain } from '../api/engine'
 import { getProviderForModel } from '../api/providers'
-import { isPrivateOrLanHost, hostnameOf } from '../api/backend'
-import { useProviderStore } from '../stores/providerStore'
 import type { ContextSource } from '../lib/context-source'
 import type { ProviderClient } from '../api/providers/types'
 import { resolveActiveWindow } from '../lib/context-source'
+import { isLanOpenAiBackend, sendsToALanBackend } from '../lib/lan-openai-slot'
 
 /** `custom` ist jeder andere OpenAI-kompatible Server auf diesem Rechner oder
  *  im LAN: llama.cpp, vLLM, KoboldCpp, text-generation-webui (GH #129). */
@@ -58,23 +57,6 @@ export interface ActiveContext {
 const NO_CONTEXT: ActiveContext = {
   provider: 'unknown', contextWindow: 0, modelMax: 0, sendWindow: 0, isTrue: false,
   adjustable: false, source: 'guess', windowKey: '',
-}
-
-/**
- * Laeuft der eingestellte OpenAI-Slot auf diesem Rechner oder im LAN?
- *
- * Dieselbe Frage, die `isLanBackend` im Provider stellt, und bewusst dieselbe
- * Antwortquelle: die Voreinstellung des Slots ODER der Hostname. Ein fremder
- * Host im Internet bekommt weder Metadaten-Abfragen noch einen Fensterwaehler.
- */
-function isLanOpenAiBackend(): boolean {
-  try {
-    const cfg = useProviderStore.getState().providers.openai
-    if (!cfg) return false
-    return cfg.isLocal === true || isPrivateOrLanHost(hostnameOf(cfg.baseUrl))
-  } catch {
-    return false
-  }
 }
 
 /** Der Client zu einem Modellnamen, ohne zu werfen, wenn der Slot fehlt. */
@@ -277,6 +259,10 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
           modelWindow: max,
           sendWindowTokens,
           capEnabled,
+          // Der Zweig oben kehrt nur um, wenn der eigene Server ein Fenster
+          // GENANNT hat. Sagt er keins, faellt er bis hierher durch, und ohne
+          // diese Zeile bekaeme er dann doch den bezahlten Deckel.
+          localBackend: sendsToALanBackend(providerId),
         }),
         isTrue: false,
         // Aus der Ferne ist das Fenster keine Sache des Nutzers: es gehoert
