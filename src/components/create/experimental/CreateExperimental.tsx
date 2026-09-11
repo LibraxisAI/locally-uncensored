@@ -17,6 +17,7 @@ import { Lightbox } from './Lightbox'
 import { AdvancedDrawer } from './AdvancedDrawer'
 import { WorkflowsModal } from '../WorkflowsModal'
 import { Hinweis } from '../../ui/Hinweis'
+import { BannerText } from './BannerText'
 import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
 import { INTENT_MAP, isIntentAvailable } from './intents'
@@ -244,7 +245,7 @@ function CreateExperimentalInner() {
               onDismiss={error ? () => setError(null) : undefined}
               className="px-4 py-2"
             >
-              <span className="block truncate">{banner}</span>
+              <BannerText text={banner} />
             </Hinweis>
           </motion.div>
         )}
