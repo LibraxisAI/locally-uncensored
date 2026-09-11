@@ -97,6 +97,20 @@ fn is_within(root: &Path, cand: &Path) -> bool {
     }
 }
 
+/// Zwei Schreibweisen desselben Ordners, nach genau der Regel, mit der
+/// `is_within` die Mitgliedschaft misst: gegenseitige Enthaltung IST
+/// Gleichheit. Auf Windows heisst das ohne Ruecksicht auf Gross- und
+/// Kleinschreibung, auf die Richtung der Schraegstriche und auf den `\\?\`
+/// Prefix.
+///
+/// Eine Funktion und keine Kopie an jeder Fundstelle: dieselbe Gleichheit wird
+/// an zwei Stellen gebraucht, in `may_be_a_picked_root` und beim Aufnehmen in
+/// die Erlaubnisliste, und als die zweite davon `PathBuf`-Gleichheit nahm,
+/// standen `D:\code` und `d:\CODE` beide in der Liste.
+fn same_root(a: &Path, b: &Path) -> bool {
+    is_within(a, b) && is_within(b, a)
+}
+
 /// The Windows containment rule, on nothing but the two comparison keys.
 ///
 /// Windows paths are case-insensitive; both sides go through the SAME key
@@ -266,9 +280,28 @@ pub(crate) fn allow_root_for_test(root: &Path) {
     let norm = lexical_normalize(root);
     may_be_a_picked_root(&norm).expect("a test root must be a folder a pick could produce");
     let mut roots = PICKED_ROOTS.lock().expect("allowlist");
-    if !roots.iter().any(|r| r == &norm) {
-        roots.push(norm);
+    add_root_unless_known(&mut roots, norm, same_root);
+}
+
+/// Eine Wurzel in die Erlaubnisliste aufnehmen, wenn keine SCHREIBWEISE von
+/// ihr schon drinsteht. Gibt `true` zurueck, wenn die Liste sich geaendert hat.
+///
+/// Die Vergleichsregel kommt von aussen herein, aus demselben Grund, aus dem
+/// `win_is_within` getrennt liegt: die Produktion gibt `same_root` hinein, ein
+/// Test auf einem Nicht-Windows-Rechner die Windows-Haelfte davon. Sonst misst
+/// der Lauf etwas anderes als der ausgelieferte Build, und genau dort sitzt
+/// dieser Fehler: `Path::components` liest `D:\code` nur unter Windows als
+/// Laufwerkspfad.
+fn add_root_unless_known(
+    roots: &mut Vec<PathBuf>,
+    norm: PathBuf,
+    same: impl Fn(&Path, &Path) -> bool,
+) -> bool {
+    if roots.iter().any(|r| same(r, &norm)) {
+        return false;
     }
+    roots.push(norm);
+    true
 }
 
 /// Record a folder the USER chose in a native dialog as a legitimate workspace
@@ -286,8 +319,7 @@ pub(crate) fn remember_picked_root(root: &Path) -> Result<(), String> {
     let norm = lexical_normalize(root);
     may_be_a_picked_root(&norm)?;
     if let Ok(mut roots) = PICKED_ROOTS.lock() {
-        if !roots.iter().any(|r| r == &norm) {
-            roots.push(norm);
+        if add_root_unless_known(&mut roots, norm, same_root) {
             save_picked_roots(&roots);
         }
     }
@@ -390,10 +422,10 @@ fn may_be_a_picked_root(norm: &Path) -> Result<(), String> {
         return refuse("a drive or filesystem root is not a workspace");
     }
     // Mutual containment == equality, and it stays case-insensitive on Windows
-    // the way every other comparison in this file is.
-    let same = |a: &Path, b: &Path| is_within(a, b) && is_within(b, a);
+    // the way every other comparison in this file is. `same_root` is that rule,
+    // and the allowlist's own duplicate check uses the same one.
     for bad in forbidden_exact_roots() {
-        if same(&lexical_normalize(&bad), norm) {
+        if same_root(&lexical_normalize(&bad), norm) {
             return refuse("a home or mount container is not a workspace");
         }
     }
@@ -1745,6 +1777,36 @@ mod bug_d_the_picked_folder_tests {
         }
     }
 
+    /// `D:\code` in every spelling that reaches these functions on Windows.
+    /// Runs on any host: `win_is_within` is pure string work.
+    #[test]
+    fn every_windows_spelling_of_the_reported_folder_is_the_same_root() {
+        let picked = Path::new(r"D:\code");
+        for spelling in [
+            r"D:\code",        // what the frontend persisted
+            r"D:/code",         // forward slashes, as some callers hand it over
+            r"d:\CODE",        // Windows folds case
+            "D:\\code\\",      // a trailing separator
+            r"\\?\D:\code",    // extended-length, as the dialog can return it
+        ] {
+            assert!(
+                win_is_within(picked, Path::new(spelling)),
+                "{spelling} was not recognised as the picked folder",
+            );
+            assert!(
+                win_is_within(Path::new(spelling), picked),
+                "the picked folder was not recognised as {spelling}",
+            );
+        }
+        // Inside the project is inside the workspace ...
+        assert!(win_is_within(picked, Path::new(r"D:\code\src\main.rs")));
+        // ... and the component boundary still holds.
+        assert!(!win_is_within(picked, Path::new(r"D:\code-backup\id_rsa")));
+        assert!(!win_is_within(picked, Path::new(r"C:\code")));
+        // A UNC share, verbatim or plain, is one path.
+        assert!(win_is_within(Path::new(r"\\srv\share\proj"), Path::new(r"\\?\UNC\srv\share\proj\src")));
+    }
+
     /// Der gemerkte Ordner wird gefragt, bevor er gesetzt wird.
     ///
     /// "Use last folder" und der Vorgabeordner aus den Einstellungen setzten
@@ -1792,34 +1854,33 @@ mod bug_d_the_picked_folder_tests {
         assert!(check_workspace_root(&foreign).is_err(), "the check recorded the folder it refused");
     }
 
-    /// `D:\code` in every spelling that reaches these functions on Windows.
-    /// Runs on any host: `win_is_within` is pure string work.
+    /// Derselbe Ordner, zweimal gewaehlt, in zwei Schreibweisen.
+    ///
+    /// Die Mitgliedschaft misst mit `win_is_within`, die Dopplungsprobe beim
+    /// Aufnehmen mass mit `PathBuf`-Gleichheit. Auf Windows sind das zwei
+    /// verschiedene Regeln, und die Liste nahm `D:\code` und `d:/CODE/` als
+    /// zwei Wurzeln auf, obwohl jede Pruefung danach sie als eine liest.
+    ///
+    /// Laeuft auf jedem Rechner: die Windows-Haelfte von `same_root` ist reine
+    /// Zeichenarbeit, und `Path::components` liest `D:\code` nur unter Windows
+    /// als Laufwerkspfad.
     #[test]
-    fn every_windows_spelling_of_the_reported_folder_is_the_same_root() {
-        let picked = Path::new(r"D:\code");
-        for spelling in [
-            r"D:\code",        // what the frontend persisted
-            r"D:/code",         // forward slashes, as some callers hand it over
-            r"d:\CODE",        // Windows folds case
-            "D:\\code\\",      // a trailing separator
-            r"\\?\D:\code",    // extended-length, as the dialog can return it
-        ] {
-            assert!(
-                win_is_within(picked, Path::new(spelling)),
-                "{spelling} was not recognised as the picked folder",
-            );
-            assert!(
-                win_is_within(Path::new(spelling), picked),
-                "the picked folder was not recognised as {spelling}",
-            );
-        }
-        // Inside the project is inside the workspace ...
-        assert!(win_is_within(picked, Path::new(r"D:\code\src\main.rs")));
-        // ... and the component boundary still holds.
-        assert!(!win_is_within(picked, Path::new(r"D:\code-backup\id_rsa")));
-        assert!(!win_is_within(picked, Path::new(r"C:\code")));
-        // A UNC share, verbatim or plain, is one path.
-        assert!(win_is_within(Path::new(r"\\srv\share\proj"), Path::new(r"\\?\UNC\srv\share\proj\src")));
+    fn two_spellings_of_one_picked_folder_stay_one_root() {
+        let win_same = |a: &Path, b: &Path| win_is_within(a, b) && win_is_within(b, a);
+        let mut roots: Vec<PathBuf> = Vec::new();
+        assert!(
+            add_root_unless_known(&mut roots, lexical_normalize(Path::new(r"D:\code")), win_same),
+            "the first pick was not recorded at all",
+        );
+        assert!(
+            !add_root_unless_known(&mut roots, lexical_normalize(Path::new(r"d:/CODE/")), win_same),
+            "the second spelling was treated as a new folder",
+        );
+        assert_eq!(
+            roots.len(),
+            1,
+            "one folder stands twice in the allowlist: {roots:?}",
+        );
     }
 }
 
