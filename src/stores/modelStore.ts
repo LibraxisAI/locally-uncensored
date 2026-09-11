@@ -47,10 +47,21 @@ interface ModelState {
    * Cloud den Wolkennamen, der lokale Name war damit weg, und die Ersatzregel
    * in lib/active-model-mode darf von sich aus nur Modelle ab 7B waehlen. Das
    * Modell der Box hat 3B, also blieb nichts uebrig. Hier steht, was der
-   * Nutzer zuletzt lokal gewaehlt hatte; gelesen wird es NUR auf dem Rueckweg
-   * aus der Cloud.
+   * Nutzer zuletzt lokal gewaehlt hatte; gelesen wird es NUR beim Moduswechsel.
    */
   lastLocalModel: string | null
+  /**
+   * Dasselbe fuer die Wolke, damit der Hinweg nicht von selbst umschaltet.
+   *
+   * T1, Nebenfund 7 (Box, 11.09.2026, 15:23 bis 17:12 Boxzeit): "Der
+   * Cloud-Modus schaltet das Modell selbstaendig um. Beim Eintritt stand
+   * zweimal `Llama 3.1 8B Turbo` da, ohne dass ich es gewaehlt hatte." Das war
+   * der Kopf des Katalogs, der einsprang,
+   * weil die vorherige Wolkenwahl beim Rueckweg von der lokalen ueberschrieben
+   * worden war. Zwei Erinnerungen, eine je Modus, und keiner ueberschreibt die
+   * des anderen.
+   */
+  lastCloudModel: string | null
   activePulls: Record<string, PullState>
   isModelLoading: boolean
   categoryFilter: ModelCategory
@@ -148,6 +159,7 @@ export const useModelStore = create<ModelState>()(
       models: [],
       activeModel: null,
       lastLocalModel: null,
+      lastCloudModel: null,
       activePulls: {},
       isModelLoading: false,
       categoryFilter: 'all',
@@ -209,16 +221,20 @@ export const useModelStore = create<ModelState>()(
       setActiveModel: (name) => {
         const prev = get().activeModel
         const prevModel = prev ? get().models.find((m) => m.name === prev) : undefined
-        // Dieselbe Tuer, durch die JEDE Wahl geht, merkt sich die lokale davon.
-        // Ein Wolkenmodell und eine Zeile, die gar keine Chatzeile ist, sind
-        // keine lokale Wahl; eine geraeumte Wahl (null) loescht die Erinnerung
-        // NICHT, denn sie wird nur gegen die lebende Liste gelesen, und was
-        // dort fehlt, kommt ueber sie auch nicht zurueck.
+        // Dieselbe Tuer, durch die JEDE Wahl geht, legt sie in die Erinnerung
+        // IHRES Modus. Eine Zeile, die gar keine Chatzeile ist, gehoert in
+        // keine von beiden; eine geraeumte Wahl (null) loescht keine, denn
+        // gelesen werden sie nur gegen die lebende Liste, und was dort fehlt,
+        // kommt ueber sie auch nicht zurueck.
         const neueZeile = name ? get().models.find((m) => m.name === name) : undefined
-        const istLokaleChatwahl =
-          !!neueZeile && neueZeile.provider !== 'lu-cloud' &&
-          neueZeile.type !== 'image' && neueZeile.type !== 'video'
-        set(istLokaleChatwahl ? { activeModel: name, lastLocalModel: name } : { activeModel: name })
+        const istChatzeile =
+          !!neueZeile && neueZeile.type !== 'image' && neueZeile.type !== 'video'
+        const merken = !istChatzeile
+          ? {}
+          : neueZeile.provider === 'lu-cloud'
+            ? { lastCloudModel: name }
+            : { lastLocalModel: name }
+        set({ activeModel: name, ...merken })
         // Befund 4 of the abnahme counter-check (2026-08-29): the open chat
         // kept the model it was created with while the wire of that same turn
         // already carried the new one. Every path that changes the selection
@@ -434,12 +450,13 @@ export const useModelStore = create<ModelState>()(
     {
       name: 'chat-models',
       storage: safeJSONStorage(),
-      // `lastLocalModel` liegt mit im Speicher, weil der Ausflug in die Cloud
-      // einen App-Neustart ueberdauern kann: wer die App in der Cloud schliesst
-      // und am naechsten Tag lokal weiterarbeitet, bekommt dieselbe Wahl zurueck.
+      // Beide Erinnerungen liegen mit im Speicher, weil ein Ausflug einen
+      // App-Neustart ueberdauern kann: wer die App in der Cloud schliesst und
+      // am naechsten Tag lokal weiterarbeitet, bekommt dieselbe Wahl zurueck.
       partialize: (state) => ({
         activeModel: state.activeModel,
         lastLocalModel: state.lastLocalModel,
+        lastCloudModel: state.lastCloudModel,
         categoryFilter: state.categoryFilter,
       }),
     }

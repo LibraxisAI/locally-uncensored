@@ -85,11 +85,12 @@ describe('the pick is written to disk in the first place', () => {
     expect(storeSrc).toMatch(/partialize:[\s\S]*?activeModel: state\.activeModel/)
   })
 
-  it('die lokale Wahl von vor der Cloud liegt mit im Speicher', () => {
+  it('die Wahl je Modus liegt mit im Speicher', () => {
     // Fund 1 der Kampagne 3.0.0: wer die App in der Cloud schliesst und am
     // naechsten Tag lokal weiterarbeitet, bekommt sonst denselben leeren
     // Waehler wie nach dem blossen Umschalten.
     expect(storeSrc).toMatch(/partialize:[\s\S]*?lastLocalModel: state\.lastLocalModel/)
+    expect(storeSrc).toMatch(/partialize:[\s\S]*?lastCloudModel: state\.lastCloudModel/)
   })
 
   it('the mode reselect no longer decides anything by hand', () => {
@@ -97,9 +98,11 @@ describe('the pick is written to disk in the first place', () => {
     // inline version is what cleared the pick on mount.
     // The fourth argument is the model the user named on the way into cloud
     // mode by clicking its row in the picker (Nebenbefund 1, R10 re-measure),
-    // das fuenfte die lokale Wahl von vor dem Ausflug (Fund 1, T3 auf der Box).
-    // The call is still the rule, not a hand-rolled decision.
-    expect(shellSrc).toContain('pickForMode(activeModel, allModels, appMode, pendingCloudModel, lastLocalModel)')
+    // das fuenfte die Wahl, die jeder Modus zuletzt hatte (Fund 1, T3 und T1
+    // auf der Box). The call is still the rule, not a hand-rolled decision.
+    expect(shellSrc).toMatch(
+      /pickForMode\(activeModel, allModels, appMode, pendingCloudModel, \{\s*\n\s*local: lastLocalModel,\s*\n\s*cloud: lastCloudModel,\s*\n\s*\}\)/,
+    )
     expect(shellSrc).not.toMatch(/const inMode = \(name: string \| null\)/)
   })
 })

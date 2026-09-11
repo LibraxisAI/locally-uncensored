@@ -200,7 +200,7 @@ export function AppShell() {
     // An empty list is not evidence that a model is gone; it is the absence
     // of evidence, and this effect only ever runs again the moment the real
     // list arrives.
-    const { activeModel, setActiveModel, lastLocalModel } = useModelStore.getState()
+    const { activeModel, setActiveModel, lastLocalModel, lastCloudModel } = useModelStore.getState()
     // The rule itself lives in lib/active-model-mode.ts, where it can be
     // tested. It keeps chat models only (a ComfyUI checkpoint shares this
     // list and routes to Ollama as a chat model, where every send fails), it
@@ -216,12 +216,17 @@ export function AppShell() {
     // on Kimi K3 (Nebenbefund 1, R10 re-measure 2026-08-30). The request is
     // dropped the moment it is answered, so it never steers a later flip.
     //
-    // Das fuenfte ist die Gegenrichtung: die lokale Wahl von vor dem Ausflug in
-    // die Cloud. Ohne sie stand der Waehler nach Cloud an und wieder aus auf
-    // `Select a chat model`, weil der Ersatz mindestens 7B haben muss und das
-    // Modell der Box 3B hat (Fund 1, T3 auf der Box, 11.09.2026).
+    // Das fuenfte ist die Wahl, die jeder der beiden Modi zuletzt hatte. Ohne
+    // sie stand der Waehler nach Cloud an und wieder aus auf `Select a chat
+    // model`, weil der Ersatz mindestens 7B haben muss und das Modell der Box
+    // 3B hat (Fund 1, T3, 11.09.2026), und auf dem Hinweg sprang der Kopf des
+    // Katalogs ein, `Llama 3.1 8B Turbo`, den niemand gewaehlt hatte (T1,
+    // Nebenfunde 7 und 3, 11.09.2026).
     const { pendingCloudModel, setPendingCloudModel } = useUIStore.getState()
-    const pick = pickForMode(activeModel, allModels, appMode, pendingCloudModel, lastLocalModel)
+    const pick = pickForMode(activeModel, allModels, appMode, pendingCloudModel, {
+      local: lastLocalModel,
+      cloud: lastCloudModel,
+    })
     // Und wenn dieser Griff die Wahl des Nutzers ersetzt, sagt die App es.
     // Gegenprobe G1, 04.09.2026: Provider LM Studio wieder herausgenommen, das
     // gewaehlte Modell ging mit, und die Regel nahm den ersten Eintrag der

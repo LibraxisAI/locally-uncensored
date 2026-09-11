@@ -76,64 +76,116 @@ vi.mock('../../api/engine', async () => {
 // ── Teil 1: die Wahl ueberlebt den Ausflug ──────────────────────────────────
 
 const zeile = (name: string, provider: string) => ({ name, model: name, type: 'text', provider })
-const LISTE = [
+const KIMI = 'lu-cloud::llama-3.1-8b-turbo'
+const FLASH = 'lu-cloud::deepseek-v4.1-flash-70b'
+const KATALOG = [
   zeile(HERMES_ROW, 'openai'),
-  zeile('lu-cloud::qwen3.8-27b', 'lu-cloud'),
+  zeile(KIMI, 'lu-cloud'),
+  zeile(FLASH, 'lu-cloud'),
 ]
+const nichts = { local: null, cloud: null }
 
-describe('die lokale Wahl ueberlebt den Ausflug in die Cloud', () => {
-  it('Cloud an: die Wolke uebernimmt, der lokale Name ist aus activeModel raus', () => {
-    const hin = pickForMode(HERMES_ROW, LISTE, 'cloud', null, HERMES_ROW)
+describe('jeder Modus behaelt seine eigene Wahl', () => {
+  it('Cloud an ohne Vorgeschichte: der Kopf des Katalogs, wie bisher', () => {
+    // T1, Nebenfund 7: genau das stand da, `Llama 3.1 8B Turbo`, ohne dass der
+    // Tester es gewaehlt hatte. Beim ERSTEN Eintritt ist das richtig, es gibt
+    // nichts anderes; der Befund ist, dass es beim zweiten genauso war.
+    const hin = pickForMode(HERMES_ROW, KATALOG, 'cloud', null, { local: HERMES_ROW, cloud: null })
     expect(hin.change).toBe(true)
-    expect(hin.next).toBe('lu-cloud::qwen3.8-27b')
+    expect(hin.next).toBe(KIMI)
+  })
+
+  it('THE FIX, Cloud an mit Vorgeschichte: die letzte Wolkenwahl, nicht der Kopf', () => {
+    const hin = pickForMode(HERMES_ROW, KATALOG, 'cloud', null, { local: HERMES_ROW, cloud: FLASH })
+    expect(hin.next).toBe(FLASH)
+  })
+
+  it('DIE ROTE ZAHL des Hinwegs: ohne die Wolken-Erinnerung springt der Kopf ein', () => {
+    const hin = pickForMode(HERMES_ROW, KATALOG, 'cloud', null, { local: HERMES_ROW, cloud: null })
+    expect(hin.next).toBe(KIMI)
+    expect(hin.next).not.toBe(FLASH)
   })
 
   it('THE FIX, Cloud aus: der Waehler steht wieder auf dem Modell von vorher', () => {
-    const zurueck = pickForMode('lu-cloud::qwen3.8-27b', LISTE, 'local', null, HERMES_ROW)
+    const zurueck = pickForMode(FLASH, KATALOG, 'local', null, { local: HERMES_ROW, cloud: FLASH })
     expect(zurueck.next).toBe(HERMES_ROW)
     expect(zurueck.change).toBe(true)
   })
 
-  it('DIE ROTE ZAHL: ohne Erinnerung bleibt genau das stehen, was T3 gesehen hat', () => {
-    // `Select a chat model` ist der Waehlertext zu `next: null`. Die Liste ist
-    // dieselbe wie oben, das Modell ist dasselbe 3B-Modell, und weil es unter
-    // der 7B-Grenze liegt, springt von selbst nichts ein.
-    const ohne = pickForMode('lu-cloud::qwen3.8-27b', LISTE, 'local', null, null)
+  it('DIE ROTE ZAHL des Rueckwegs: ohne Erinnerung genau das, was T3 gesehen hat', () => {
+    // `Select a chat model` ist der Waehlertext zu `next: null`. Das einzige
+    // lokale Modell der Box hat 3B und liegt unter der 7B-Grenze, also springt
+    // von selbst nichts ein.
+    const ohne = pickForMode(FLASH, KATALOG, 'local', null, nichts)
     expect(ohne.next).toBeNull()
   })
 
+  it('hin und zurueck und wieder hin: keine Erinnerung ueberschreibt die andere', () => {
+    const erinnert = { local: HERMES_ROW, cloud: FLASH }
+    expect(pickForMode(HERMES_ROW, KATALOG, 'cloud', null, erinnert).next).toBe(FLASH)
+    expect(pickForMode(FLASH, KATALOG, 'local', null, erinnert).next).toBe(HERMES_ROW)
+    expect(pickForMode(HERMES_ROW, KATALOG, 'cloud', null, erinnert).next).toBe(FLASH)
+  })
+
+  it('der Auftrag des Nutzers schlaegt die Erinnerung', () => {
+    // Die angeklickte Zeile im lokalen LU-Cloud-Streifen nennt ihr Modell. Sie
+    // bleibt der staerkste Wunsch, sonst waere Nebenbefund 1 der R10-Messung
+    // wieder da.
+    const hin = pickForMode(HERMES_ROW, KATALOG, 'cloud', KIMI, { local: HERMES_ROW, cloud: FLASH })
+    expect(hin.next).toBe(KIMI)
+    expect(hin.usedRequest).toBe(true)
+  })
+
   it('GEGENPFAD: war vor dem Ausflug nichts gewaehlt, kommt auch nichts zurueck', () => {
-    const ohneWahl = pickForMode(null, LISTE, 'local', null, null)
+    const ohneWahl = pickForMode(null, KATALOG, 'local', null, nichts)
     expect(ohneWahl.next).toBeNull()
     expect(ohneWahl.change).toBe(false)
   })
 
-  it('GEGENPFAD: die Erinnerung redet in eine lebende lokale Wahl nicht hinein', () => {
-    // Kein Rueckweg aus der Cloud: `activeModel` ist selbst schon lokal. Eine
-    // Erinnerung an ein anderes Modell darf sie nicht verdraengen.
-    const liste = [...LISTE, zeile('openai::Qwen3-14B-Q4_K_M', 'openai')]
-    const laufend = pickForMode('openai::Qwen3-14B-Q4_K_M', liste, 'local', null, HERMES_ROW)
+  it('GEGENPFAD: die Erinnerung redet in eine lebende Wahl desselben Modus nicht hinein', () => {
+    const liste = [...KATALOG, zeile('openai::Qwen3-14B-Q4_K_M', 'openai')]
+    const laufend = pickForMode('openai::Qwen3-14B-Q4_K_M', liste, 'local', null, { local: HERMES_ROW, cloud: FLASH })
     expect(laufend.change).toBe(false)
     expect(laufend.next).toBe('openai::Qwen3-14B-Q4_K_M')
   })
 
   it('GEGENPFAD: ein Modell, das es nicht mehr gibt, kommt nicht zurueck', () => {
-    const weg = pickForMode('lu-cloud::qwen3.8-27b', LISTE, 'local', null, 'openai::geloescht.gguf')
+    const weg = pickForMode(FLASH, KATALOG, 'local', null, { local: 'openai::geloescht.gguf', cloud: FLASH })
     expect(weg.next).toBeNull()
+  })
+
+  it('GEGENPFAD: die leere Liste beweist nichts und aendert nichts', () => {
+    const leer = pickForMode(FLASH, [], 'local', null, { local: HERMES_ROW, cloud: FLASH })
+    expect(leer.change).toBe(false)
+    expect(leer.next).toBe(FLASH)
   })
 })
 
-describe('die Tuer zur Wahl merkt sich die lokale davon', () => {
+describe('die Tuer zur Wahl legt sie in die Erinnerung ihres Modus', () => {
   beforeEach(() => { vi.resetModules() })
 
-  it('eine lokale Zeile wird aufgehoben, eine Wolkenzeile ueberschreibt sie nicht', async () => {
+  it('lokal schreibt lokal, Wolke schreibt Wolke, und keine loescht die andere', async () => {
     const { useModelStore } = await import('../../stores/modelStore')
-    useModelStore.setState({ models: LISTE as never, activeModel: null, lastLocalModel: null })
+    useModelStore.setState({ models: KATALOG as never, activeModel: null, lastLocalModel: null, lastCloudModel: null })
     useModelStore.getState().setActiveModel(HERMES_ROW)
     expect(useModelStore.getState().lastLocalModel).toBe(HERMES_ROW)
-    useModelStore.getState().setActiveModel('lu-cloud::qwen3.8-27b')
-    expect(useModelStore.getState().activeModel).toBe('lu-cloud::qwen3.8-27b')
+    expect(useModelStore.getState().lastCloudModel).toBeNull()
+    useModelStore.getState().setActiveModel(FLASH)
+    expect(useModelStore.getState().activeModel).toBe(FLASH)
+    expect(useModelStore.getState().lastCloudModel).toBe(FLASH)
     expect(useModelStore.getState().lastLocalModel, 'die Wolke ist keine lokale Wahl').toBe(HERMES_ROW)
+  })
+
+  it('GEGENPFAD: eine Bilddatei ist in keinem Modus eine Chatwahl', async () => {
+    const { useModelStore } = await import('../../stores/modelStore')
+    const bild = { name: 'sd_turbo.safetensors', model: 'sd_turbo.safetensors', type: 'image', provider: 'comfyui' }
+    useModelStore.setState({
+      models: [...KATALOG, bild] as never,
+      activeModel: null, lastLocalModel: HERMES_ROW, lastCloudModel: FLASH,
+    })
+    useModelStore.getState().setActiveModel('sd_turbo.safetensors')
+    expect(useModelStore.getState().lastLocalModel).toBe(HERMES_ROW)
+    expect(useModelStore.getState().lastCloudModel).toBe(FLASH)
   })
 })
 
