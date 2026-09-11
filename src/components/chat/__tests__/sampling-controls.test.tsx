@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { DEFAULT_SETTINGS } from '../../../lib/constants'
-import { SamplingControls } from '../SamplingControls'
+import { SAMPLING_CLOSE_LABEL, SAMPLING_DIALOG_LABEL, SamplingControls } from '../SamplingControls'
 
 const settings = () => useSettingsStore.getState().settings
-const open = () => fireEvent.click(screen.getByRole('button', { name: /Sampling/ }))
+const trigger = () => screen.getByTestId('sampling-trigger')
+const open = () => fireEvent.click(trigger())
 
 beforeEach(() => {
   cleanup()
@@ -71,5 +72,108 @@ describe('SamplingControls', () => {
     render(<SamplingControls />)
     open()
     expect(screen.getByText(/Reasoning models accept these/)).toBeTruthy()
+  })
+})
+
+/**
+ * David, 2026-09-11: "der sample anklickbar im prompt fenster muss ein pop up
+ * sein, und nicht das prompt fenster veraendern. mit einem sauberen x zum
+ * wegklicken und nicht einfach wieder auf den text klicken zum entfernen, soll
+ * windows mac und webapp ueberall gleich sein."
+ *
+ * The old panel was a sibling in the composer's flow, so opening it grew the
+ * prompt window and pushed the text field down. jsdom has no layout at all
+ * (every box measures 0), so a height comparison here would pass whatever the
+ * component did. What jsdom CAN answer is the fact the layout follows from:
+ * whether the panel is in the flow. The pixels are measured for real in
+ * e2e/sampling-popup.spec.ts, against the bounding box of the composer row.
+ */
+describe('the sampling popup', () => {
+  it('is a popup over the row, not a panel inside it', () => {
+    render(<SamplingControls />)
+    open()
+    const panel = screen.getByTestId('sampling-panel')
+    // Out of the flow: nothing around it can be moved by its height.
+    expect(panel.style.position).toBe('absolute')
+    // Anchored to the top edge of the trigger, so it opens upward over the
+    // transcript and never downward into the send row.
+    expect(panel.style.bottom).toBe('100%')
+    expect(panel.getAttribute('role')).toBe('dialog')
+    expect(panel.getAttribute('aria-label')).toBe(SAMPLING_DIALOG_LABEL)
+  })
+
+  it('says on the trigger whether it is open, and which panel it owns', () => {
+    render(<SamplingControls />)
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
+    open()
+    expect(trigger().getAttribute('aria-expanded')).toBe('true')
+    expect(trigger().getAttribute('aria-controls')).toBe(screen.getByTestId('sampling-panel').id)
+  })
+
+  it('closes on the X, which is what the X is for', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.click(screen.getByRole('button', { name: SAMPLING_CLOSE_LABEL }))
+    expect(screen.queryByTestId('sampling-panel')).toBeNull()
+  })
+
+  it('closes on Escape', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByTestId('sampling-panel')).toBeNull()
+  })
+
+  it('closes on a press outside, the way a phone sends it', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByTestId('sampling-panel')).toBeNull()
+  })
+
+  it('stays open when its own contents are pressed', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.pointerDown(screen.getByTestId('sampling-panel'))
+    expect(screen.queryByTestId('sampling-panel')).not.toBeNull()
+  })
+
+  // The half of David's sentence that is easiest to lose again: a trigger that
+  // toggles makes the popup vanish under the pointer on the second press.
+  it('does NOT close when the trigger is pressed a second time', () => {
+    render(<SamplingControls />)
+    open()
+    open()
+    expect(screen.getByTestId('sampling-panel')).toBeTruthy()
+    expect(trigger().getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('still holds the values after closing and opening again', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.45' } })
+    fireEvent.change(screen.getByLabelText('Max tokens'), { target: { value: '2048' } })
+    fireEvent.click(screen.getByRole('button', { name: SAMPLING_CLOSE_LABEL }))
+    open()
+    expect((screen.getByLabelText('Temperature') as HTMLInputElement).value).toBe('1.45')
+    expect((screen.getByLabelText('Max tokens') as HTMLInputElement).value).toBe('2048')
+    expect(settings().temperature).toBe(1.45)
+    expect(settings().maxTokens).toBe(2048)
+  })
+
+  it('takes the keyboard into the popup and hands it back to the trigger', () => {
+    render(<SamplingControls />)
+    open()
+    const x = screen.getByRole('button', { name: SAMPLING_CLOSE_LABEL })
+    expect(document.activeElement).toBe(x)
+    fireEvent.click(x)
+    expect(document.activeElement).toBe(trigger())
+  })
+
+  it('hands the keyboard back on Escape too', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.activeElement).toBe(trigger())
   })
 })
