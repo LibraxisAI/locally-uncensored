@@ -1,8 +1,6 @@
-import JSZip from 'jszip'
 import type { ModelType } from './comfyui'
 import type { GenerateParams, VideoParams } from './comfyui'
 import { findMatchingVAE, findMatchingCLIP } from './comfyui'
-import { fetchExternal, fetchExternalBytes } from './backend'
 import { log } from '../lib/logger'
 import { resolveRunSeed } from '../lib/run-seed'
 import type {
@@ -13,14 +11,11 @@ import type {
 } from '../types/workflows'
 import type {
   ComfyApiGraph, ComfyApiNode, ComfyInputValue, ComfyNodeInputs,
-  ComfyWebGraph, ComfyWebNode,
 } from '../types/comfy-graph'
 import {
-  apiNodes, isComfyApiGraph, isComfyWebGraph, isComfyWebNode,
+  apiNodes, isComfyApiGraph, isComfyWebGraph,
   inputNumber, linkTarget,
 } from '../types/comfy-graph'
-import { prop } from '../types/json-guards'
-import { formatCount } from '../lib/formatters'
 
 // ─── Validation ───
 //
@@ -30,8 +25,14 @@ import { formatCount } from '../lib/formatters'
 
 /**
  * Accepts either ComfyUI graph format. Kept as a predicate over the API shape
- * because that is what every caller goes on to build; a web-format file passes
- * here and is converted by `resolveWorkflowJson` before it is used.
+ * because that is what every caller goes on to build.
+ *
+ * A web-format file passes here and is stored as it came: the converter that
+ * used to stand beside this went with the CivitAI workflow fetcher it was the
+ * only caller of (3.0.0). Nothing in the app ever called it — the Import button
+ * in WorkflowsModal hands this JSON straight to `parseImportedWorkflow` — so
+ * removing it changed no behaviour, and the modal already says what to do:
+ * "Export it from ComfyUI using Save (API Format)".
  */
 export function validateWorkflowJson(json: unknown): json is ComfyApiGraph {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return false
@@ -39,154 +40,6 @@ export function validateWorkflowJson(json: unknown): json is ComfyApiGraph {
   if (isComfyApiGraph(json)) return true
   // Web/UI format: { nodes: [...], links: [...] }
   return isComfyWebGraph(json)
-}
-
-// Convert ComfyUI web/UI format to API format
-function convertWebToApiFormat(webWorkflow: ComfyWebGraph): ComfyApiGraph {
-  const links: unknown[] = Array.isArray(webWorkflow.links) ? webWorkflow.links : []
-  const apiWorkflow: ComfyApiGraph = {}
-
-  // Build link lookup: linkId -> { sourceNodeId, sourceSlot }
-  const linkMap: Record<number, { sourceNodeId: number; sourceSlot: number }> = {}
-  for (const link of links) {
-    // link format: [linkId, sourceNodeId, sourceSlot, targetNodeId, targetSlot, type]
-    if (Array.isArray(link) && link.length >= 4) {
-      const [id, sourceNodeId, sourceSlot] = link
-      if (typeof id === 'number' && typeof sourceNodeId === 'number' && typeof sourceSlot === 'number') {
-        linkMap[id] = { sourceNodeId, sourceSlot }
-      }
-    }
-  }
-
-  for (const raw of webWorkflow.nodes) {
-    // A canvas graph can hold a malformed entry; the rest still converts.
-    if (!isComfyWebNode(raw) || !raw.type) continue
-    const node: ComfyWebNode = raw
-    const inputs: Record<string, ComfyInputValue> = {}
-
-    // Process connected inputs (from links - these are reliable)
-    if (Array.isArray(node.inputs)) {
-      for (const input of node.inputs) {
-        if (!input || typeof input.name !== 'string') continue
-        const linkId = input.link
-        if (linkId != null && linkMap[linkId]) {
-          const { sourceNodeId, sourceSlot } = linkMap[linkId]
-          inputs[input.name] = [String(sourceNodeId), sourceSlot]
-        }
-      }
-    }
-
-    // Map widget_values using ComfyUI's object_info-based approach:
-    // We map ONLY for node types we understand well. For unknown nodes,
-    // we skip widget values and let injectParameters handle the important ones.
-    const ct = node.type
-    const widgetValues = Array.isArray(node.widgets_values) ? node.widgets_values : []
-    mapWidgetValues(ct, widgetValues, inputs, node)
-
-    apiWorkflow[String(node.id)] = {
-      class_type: ct,
-      inputs,
-    }
-  }
-
-  return apiWorkflow
-}
-
-// Map widget_values to named inputs. Conservative: only map what we're sure about.
-// injectParameters will override model/prompt/seed/steps/cfg/etc. anyway.
-function mapWidgetValues(
-  classType: string,
-  values: ComfyInputValue[],
-  inputs: Record<string, ComfyInputValue>,
-  node?: ComfyWebNode,
-) {
-  if (!values || values.length === 0) return
-
-  // For nodes where widget order is well-known and stable:
-  switch (classType) {
-    case 'CheckpointLoaderSimple':
-      if (values[0] != null) inputs.ckpt_name = values[0]
-      break
-    case 'UNETLoader':
-      if (values[0] != null) inputs.unet_name = values[0]
-      if (values[1] != null) inputs.weight_dtype = values[1]
-      break
-    case 'CLIPLoader':
-      if (values[0] != null) inputs.clip_name = values[0]
-      if (values[1] != null) inputs.type = values[1]
-      if (values[2] != null) inputs.device = values[2]
-      break
-    case 'VAELoader':
-      if (values[0] != null) inputs.vae_name = values[0]
-      break
-    case 'CLIPTextEncode':
-      if (values[0] != null) inputs.text = values[0]
-      break
-    case 'KSampler':
-      // Widget order: seed, control_after_generate, steps, cfg, sampler_name, scheduler, denoise
-      if (values[0] != null) inputs.seed = values[0]
-      // values[1] = control_after_generate (skip - not an API input)
-      if (values[2] != null) inputs.steps = values[2]
-      if (values[3] != null) inputs.cfg = values[3]
-      if (values[4] != null) inputs.sampler_name = values[4]
-      if (values[5] != null) inputs.scheduler = values[5]
-      if (values[6] != null) inputs.denoise = values[6]
-      break
-    case 'KSamplerAdvanced':
-      // add_noise, noise_seed, control_after_generate, steps, cfg, sampler_name, scheduler, start_at_step, end_at_step, return_with_leftover_noise
-      if (values[0] != null) inputs.add_noise = values[0]
-      if (values[1] != null) inputs.noise_seed = values[1]
-      if (values[3] != null) inputs.steps = values[3]
-      if (values[4] != null) inputs.cfg = values[4]
-      if (values[5] != null) inputs.sampler_name = values[5]
-      if (values[6] != null) inputs.scheduler = values[6]
-      if (values[7] != null) inputs.start_at_step = values[7]
-      if (values[8] != null) inputs.end_at_step = values[8]
-      if (values[9] != null) inputs.return_with_leftover_noise = values[9]
-      break
-    case 'EmptyLatentImage':
-    case 'EmptySD3LatentImage':
-      if (values[0] != null) inputs.width = values[0]
-      if (values[1] != null) inputs.height = values[1]
-      if (values[2] != null) inputs.batch_size = values[2]
-      break
-    case 'EmptyHunyuanLatentVideo':
-      if (values[0] != null) inputs.width = values[0]
-      if (values[1] != null) inputs.height = values[1]
-      if (values[2] != null) inputs.length = values[2]
-      if (values[3] != null) inputs.batch_size = values[3]
-      break
-    case 'SaveImage':
-      if (values[0] != null) inputs.filename_prefix = values[0]
-      break
-    case 'SaveAnimatedWEBP':
-      if (values[0] != null) inputs.filename_prefix = values[0]
-      if (values[1] != null) inputs.fps = values[1]
-      if (values[2] != null) inputs.lossless = values[2]
-      if (values[3] != null) inputs.quality = values[3]
-      if (values[4] != null) inputs.method = values[4]
-      break
-    case 'VHS_VideoCombine':
-      if (values[0] != null) inputs.frame_rate = values[0]
-      if (values[1] != null) inputs.loop_count = values[1]
-      if (values[2] != null) inputs.filename_prefix = values[2]
-      if (values[3] != null) inputs.format = values[3]
-      break
-    default:
-      // For unknown node types: try to use node.widgets if available
-      // to map by name, otherwise skip widget values entirely.
-      // injectParameters handles the critical params.
-      if (Array.isArray(node?.widgets)) {
-        for (let i = 0; i < Math.min(values.length, node.widgets.length); i++) {
-          const widgetName = node.widgets[i]?.name
-          const value = values[i]
-          if (widgetName && value != null) {
-            inputs[widgetName] = value
-          }
-        }
-      }
-      break
-  }
 }
 
 // ─── Smart Search Terms ───
@@ -510,98 +363,6 @@ function detectModelTypes(workflow: ComfyApiGraph): ModelType[] {
   return types.length > 0 ? types : ['unknown']
 }
 
-// ─── Fetch workflow from URL (supports JSON and ZIP) ───
-
-export async function fetchWorkflowFromUrl(url: string, apiKey?: string): Promise<ComfyApiGraph> {
-  // Append CivitAI API key if provided and URL is from CivitAI (any host —
-  // civitai.com or a mirror like civitai.red, GitHub #53).
-  let finalUrl = url
-  if (apiKey && /civitai\.(com|red)/i.test(url)) {
-    const sep = url.includes('?') ? '&' : '?'
-    finalUrl = `${url}${sep}token=${apiKey}`
-  }
-  // Route through backend proxy (works in both Tauri and dev mode)
-  let buffer: ArrayBuffer
-  try {
-    buffer = await fetchExternalBytes(finalUrl)
-  } catch (err) {
-    throw new Error(`Failed to fetch workflow: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  // Detect content type from URL or try parsing
-  const isLikelyZip = url.endsWith('.zip') || finalUrl.includes('/download/')
-
-  // Handle ZIP archives (CivitAI downloads workflows as .zip)
-  if (isLikelyZip) {
-    try {
-      const zip = await JSZip.loadAsync(buffer)
-      // Try all files in the ZIP that could contain workflow JSON
-      const jsonFiles = Object.entries(zip.files).filter(([name, f]) => !f.dir && (name.endsWith('.json') || name.endsWith('.txt')))
-      // Sort: prefer .json files first
-      jsonFiles.sort(([a], [b]) => (a.endsWith('.json') ? -1 : 1) - (b.endsWith('.json') ? -1 : 1))
-
-      for (const [, file] of jsonFiles) {
-        try {
-          const text = await file.async('text')
-          const json = JSON.parse(text)
-          const resolved = resolveWorkflowJson(json)
-          if (resolved) return resolved
-        } catch { /* skip unparseable files */ }
-      }
-      // List files in ZIP for debugging
-      const fileList = Object.keys(zip.files).join(', ')
-      throw new Error(`No valid workflow found in ZIP. Files: ${fileList}`)
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('No valid workflow')) throw err
-      // Not actually a ZIP — try parsing as JSON
-      const text = new TextDecoder().decode(buffer)
-      try {
-        const json = JSON.parse(text)
-        const resolved = resolveWorkflowJson(json)
-        if (resolved) return resolved
-      } catch { /* not JSON either */ }
-      throw new Error('Could not parse downloaded file as workflow.')
-    }
-  }
-
-  // Try parsing as JSON
-  try {
-    const text = new TextDecoder().decode(buffer)
-    const json = JSON.parse(text)
-    const resolved = resolveWorkflowJson(json)
-    if (resolved) return resolved
-  } catch { /* not JSON */ }
-
-  throw new Error('Invalid workflow format. Expected ComfyUI API or web format.')
-}
-
-/**
- * Try to extract a valid API-format workflow from the various JSON structures
- * a downloaded or exported ComfyUI file can be wrapped in. `json` is whatever
- * `JSON.parse` produced, so every branch narrows before it reads.
- */
-function resolveWorkflowJson(json: unknown): ComfyApiGraph | null {
-  if (!json || typeof json !== 'object' || Array.isArray(json)) return null
-
-  // Direct API format
-  if (isComfyApiGraph(json)) return json
-
-  // Web/UI format → convert
-  if (isComfyWebGraph(json)) return convertWebToApiFormat(json)
-
-  // Wrapped in "prompt" / "workflow" / "output". The ComfyUI export wrapper
-  // `{ extra: {...}, prompt: {...} }` is the same 'prompt' branch — it used to
-  // have its own line that additionally demanded `extra`, i.e. a strict subset.
-  for (const key of ['prompt', 'workflow', 'output']) {
-    const inner = prop(json, key)
-    if (!inner) continue
-    if (isComfyApiGraph(inner)) return inner
-    if (isComfyWebGraph(inner)) return convertWebToApiFormat(inner)
-  }
-
-  return null
-}
-
 // ─── Parse imported workflow into a template ───
 
 export function parseImportedWorkflow(
@@ -686,99 +447,4 @@ export function getBuiltinTemplates(): WorkflowSearchResult[] {
       },
     },
   ]
-}
-
-// ─── CivitAI Search ───
-
-interface CivitAIModel {
-  id: number
-  name: string
-  description?: string
-  type: string
-  stats?: { downloadCount?: number; thumbsUpCount?: number; thumbsDownCount?: number }
-  creator?: { username?: string }
-  tags?: string[]
-  modelVersions?: Array<{
-    id: number
-    name: string
-    description?: string
-    downloadUrl?: string
-    images?: Array<{ url: string }>
-    files?: Array<{ name: string; downloadUrl: string; type: string }>
-  }>
-}
-
-export async function searchCivitai(query: string, host: string = 'civitai.com'): Promise<WorkflowSearchResult[]> {
-  try {
-    const params = new URLSearchParams({
-      query,
-      types: 'Workflows',
-      limit: '20',
-      sort: 'Most Downloaded',
-    })
-    const text = await fetchExternal(`https://${host}/api/v1/models?${params}`)
-    const data = JSON.parse(text)
-    if (!data.items) {
-      log.warn('[workflows] CivitAI returned no items')
-      return []
-    }
-    const items: CivitAIModel[] = data.items ?? []
-
-    return items.map((item) => {
-      const version = item.modelVersions?.[0]
-      const thumb = version?.images?.[0]?.url
-      // Prefer the version downloadUrl, fall back to first file. Rewrite the
-      // host so a mirror (civitai.red) serves the actual file too (#53).
-      const rawDownloadUrl = version?.downloadUrl ?? version?.files?.[0]?.downloadUrl
-      const downloadUrl = host === 'civitai.com'
-        ? rawDownloadUrl
-        : rawDownloadUrl?.replace(/^(https?:\/\/)civitai\.com/i, `$1${host}`)
-
-      // Build description with stats
-      const descParts: string[] = []
-      const rawDesc = (item.description ?? '').replace(/<[^>]*>/g, '').trim()
-      if (rawDesc) descParts.push(rawDesc.slice(0, 150))
-      if (item.stats) {
-        const stats: string[] = []
-        if (item.stats.downloadCount) stats.push(`${formatCount(item.stats.downloadCount)} Downloads`)
-        if (item.stats.thumbsUpCount) stats.push(`${formatCount(item.stats.thumbsUpCount)} Likes`)
-        if (stats.length > 0) descParts.push(stats.join(' | '))
-      }
-      if (item.creator?.username) descParts.push(`by ${item.creator.username}`)
-
-      return {
-        name: item.name || `CivitAI #${item.id}`,
-        description: descParts.join(', '),
-        source: 'civitai' as const,
-        sourceUrl: `https://${host}/models/${item.id}`,
-        thumbnailUrl: thumb,
-        modelTypes: ['unknown'] as ModelType[],
-        mode: 'image' as const,
-        downloadUrl,
-      }
-    })
-  } catch (err) {
-    log.warn('[workflows] CivitAI search failed', { err })
-    return []
-  }
-}
-
-// ─── Unified Search ───
-
-export async function searchWorkflows(
-  query: string,
-  source: 'civitai' | 'templates',
-  host: string = 'civitai.com'
-): Promise<WorkflowSearchResult[]> {
-  if (source === 'templates') {
-    const templates = getBuiltinTemplates()
-    if (!query.trim()) return templates
-    const lower = query.toLowerCase()
-    return templates.filter(t =>
-      t.name.toLowerCase().includes(lower) ||
-      t.description.toLowerCase().includes(lower) ||
-      t.modelTypes.some(mt => mt.includes(lower))
-    )
-  }
-  return searchCivitai(query, host)
 }

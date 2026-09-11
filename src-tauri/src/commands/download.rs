@@ -284,6 +284,65 @@ mod civitai_auth_tests {
         );
     }
 
+    /// The request as it goes out, not as we hope it goes out.
+    ///
+    /// Built exactly the way `do_download` builds it and read back off the
+    /// finished request, because the half that was missing in the report was
+    /// never the store or the field: it was whether anything put the key on the
+    /// wire. No network — `build()` hands back the request without sending it.
+    #[test]
+    fn the_key_is_on_the_wire_as_a_bearer_header_and_only_for_civitai() {
+        use super::outgoing_token;
+        const KEY: &str = "civitai-key-abcdef";
+        let build = |url: &str, key: Option<&str>| {
+            let client = reqwest::Client::new();
+            let mut req = client.get(url);
+            if let Some(t) = outgoing_token(url, key, None) {
+                req = req.bearer_auth(t);
+            }
+            req.build().unwrap()
+        };
+
+        let civitai = build("https://civitai.com/api/download/models/128713", Some(KEY));
+        assert_eq!(
+            civitai.headers().get("authorization").map(|v| v.to_str().unwrap()),
+            Some(format!("Bearer {KEY}").as_str()),
+        );
+        // The key is on the header and NOT in the address: the address is what
+        // a log line and an error message quote.
+        assert!(!civitai.url().as_str().contains(KEY), "{}", civitai.url());
+        assert!(!civitai.url().as_str().contains("token="), "{}", civitai.url());
+
+        // No key stored: the same download goes out anonymous, as it always did.
+        let anonymous = build("https://civitai.com/api/download/models/128713", None);
+        assert!(anonymous.headers().get("authorization").is_none());
+        let blank = build("https://civitai.com/api/download/models/128713", Some("   "));
+        assert!(blank.headers().get("authorization").is_none());
+
+        // Negative control: every other catalog address carries nothing, even
+        // with a key stored. This is the rule the whole host gate exists for.
+        let hf = build("https://huggingface.co/TheDrummer/Cydonia/resolve/main/m.gguf", Some(KEY));
+        assert!(hf.headers().get("authorization").is_none());
+        let smuggled = build("https://evil.test\\.civitai.com/x", Some(KEY));
+        assert!(smuggled.headers().get("authorization").is_none());
+    }
+
+    /// The hub token takes the same route to its own host and to no other.
+    #[test]
+    fn the_hub_token_is_host_gated_the_same_way() {
+        use super::outgoing_token;
+        assert_eq!(
+            outgoing_token("https://huggingface.co/a/b/resolve/main/m.gguf", None, Some("hf_x")),
+            Some("hf_x".to_string()),
+        );
+        // A CivitAI URL never carries the hub token, even when one is stored.
+        assert_eq!(
+            outgoing_token("https://civitai.com/api/download/models/1", None, Some("hf_x")),
+            None,
+        );
+        assert_eq!(outgoing_token("https://example.test/m.gguf", Some("k"), Some("hf_x")), None);
+    }
+
     #[test]
     fn a_refused_civitai_download_names_the_field_instead_of_a_bare_number() {
         // goonerforporn, 2026-08-28: the download died on a bare HTTP 400 and
@@ -297,7 +356,7 @@ mod civitai_auth_tests {
             );
             assert!(msg.contains(&format!("HTTP {status}")), "{msg}");
             assert!(msg.contains("API key"), "{msg}");
-            assert!(msg.contains("Settings > AI Backends > Model Storage"), "{msg}");
+            assert!(msg.contains("Settings > AI Backends > CivitAI API key"), "{msg}");
             // A key the user can go and add is not a dead address: the
             // `(HTTP nnn)` shape would hide the Retry button he needs.
             assert!(!msg.contains(&format!("(HTTP {status})")), "{msg}");
@@ -370,7 +429,7 @@ mod civitai_auth_tests {
             let msg = download_http_error(url, status, sent, "m.gguf");
             assert_eq!(msg, http_error_message(status, "m.gguf"), "{msg}");
             assert!(!msg.contains("API key"), "{msg}");
-            assert!(!msg.contains("Model Storage"), "{msg}");
+            assert!(!msg.contains("Settings >"), "{msg}");
         }
     }
 }
@@ -1032,7 +1091,15 @@ pub(crate) fn is_huggingface_host(url: &str) -> bool {
 /// A refusal from CivitAI names the field and the way to it. Everything else
 /// goes to `http_error_message`: inventing a CivitAI hint for a dead
 /// HuggingFace link would send people to the wrong setting.
-
+///
+/// The section name is part of the message and it has to be the section that
+/// really holds the field. It did not: the key moved out of Model Storage into
+/// a section of its own (the A14 review found a tester saving a folder path as
+/// his API key, because the two fields sat under each other), and this text
+/// kept sending people to the folder settings — where the field they were
+/// looking for is not. `src/components/settings/__tests__/
+/// die-meldung-zeigt-auf-den-abschnitt-den-es-gibt.test.ts` holds every
+/// `Settings > …` path in this file against the sections the app really has.
 ///
 /// The CivitAI text carries its status WITHOUT the `(HTTP nnn)` brackets on
 /// purpose. That shape is the contract `isPermanentDownloadError` reads in
@@ -1064,17 +1131,45 @@ pub(crate) fn download_http_error(url: &str, status: u16, sent_token: bool, file
         return if sent_token {
             format!(
                 "CivitAI refused this download with HTTP {status}. Your CivitAI API key was sent and rejected. \
-                 Check it under Settings > AI Backends > Model Storage, and check that your CivitAI account \
+                 Check it under Settings > AI Backends > CivitAI API key, and check that your CivitAI account \
                  is allowed to download this model."
             )
         } else {
             format!(
                 "CivitAI refused this download with HTTP {status}. Most CivitAI downloads need an API key. \
-                 Add one under Settings > AI Backends > Model Storage, then start this download again."
+                 Add one under Settings > AI Backends > CivitAI API key, then start this download again."
             )
         };
     }
     http_error_message(status, filename)
+}
+
+/// Which credential, if any, rides on this request.
+///
+/// goonerforporn, Discord #bug-reports 2026-08-28: CivitAI downloads died in
+/// 400s because they went out anonymous. The key was in the store, read by the
+/// search and by nothing on the download path.
+///
+/// A Bearer header rather than a `?token=` query parameter, which CivitAI
+/// documents as well: a key in the URL is written into the download meta the
+/// app persists, printed in every log line that quotes the address, and kept in
+/// the browser history of the web build. reqwest strips Authorization itself
+/// when a redirect leaves the host, which is exactly right here — CivitAI hands
+/// the file to a signed CDN URL that must not see the key.
+///
+/// Host-gated both ways IN HERE, not only in the caller: the CivitAI key goes
+/// to CivitAI, the Hugging Face token to the hub, and a URL that is neither
+/// carries nothing. A blank key is no key. The caller still decides whether to
+/// read the hub token out of the vault at all, which is a different question
+/// from whether it may be sent.
+fn outgoing_token(url: &str, civitai_key: Option<&str>, hf_token: Option<&str>) -> Option<String> {
+    let civitai = civitai_key
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && is_civitai_host(url));
+    let hub = hf_token
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && is_huggingface_host(url));
+    civitai.or(hub).map(|t| t.to_string())
 }
 
 /// One reqwest client, built the same way for every request this module makes.
@@ -1205,24 +1300,15 @@ async fn do_download(
 
     let mut request = client.get(url);
 
-    // The CivitAI API key, as a Bearer header rather than a `?token=` query
-    // parameter: a key in the URL is written into the download meta the app
-    // persists, printed in the log line above and kept in the browser history
-    // of the web build. Only for a CivitAI host, so an HF or catalog URL never
-    // carries it. reqwest strips Authorization itself when a redirect leaves
-    // the host, which is exactly right: CivitAI hands the file to a signed CDN
-    // URL that must not see the key.
-    let civitai = is_civitai_host(url);
-    let civitai_key = auth_token.as_deref().filter(|t| !t.trim().is_empty() && civitai);
     // The Hugging Face token from Settings goes to the hub and to no other
     // host: gated repos answer 401 without it, and anonymous hub traffic is
-    // throttled. Same redirect rule as above, the signed CDN URL never sees it.
+    // throttled.
     let hf_token = if is_huggingface_host(url) { crate::commands::mlx::hf_token() } else { None };
     // Kept as a value: weiter unten fragt die Fehlermeldung noch einmal, ob
     // ein Schluessel mitgegangen ist.
-    let sent_token: Option<String> = civitai_key.map(|t| t.trim().to_string()).or(hf_token);
+    let sent_token: Option<String> = outgoing_token(url, auth_token.as_deref(), hf_token.as_deref());
     if let Some(t) = sent_token.as_deref() {
-        request = request.bearer_auth(t.trim());
+        request = request.bearer_auth(t);
     }
 
     // Resume support: request only remaining bytes
