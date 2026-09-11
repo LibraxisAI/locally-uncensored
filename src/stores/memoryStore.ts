@@ -353,7 +353,7 @@ interface MemoryState {
   // Settings
   updateMemorySettings: (updates: Partial<MemorySettings>) => void
 
-  // Export / Import — importers report what they did with every usable entry
+  // Export / Import: importers report what they did with every usable entry
   // of the file so the UI can give feedback (konata-session 2026-06-07: silent
   // 0-import; box test T5 2026-09-11: re-import doubled the collection).
   exportAsMarkdown: () => string
