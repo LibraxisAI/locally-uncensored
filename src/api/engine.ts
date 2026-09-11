@@ -89,6 +89,10 @@ export interface EngineStatus {
   /** The `-ngl` the running process carries, null when it asked for every
    * layer. See lib/engine-offload. */
   gpuLayers?: number | null
+  /** Bug a: what the start-time sanity probe worked around for this process,
+   * as the sentence the user is shown (engine_sanity.rs). Null on every
+   * ordinary start. Outlives the start call on purpose, see lib/engine-offload. */
+  sanityNote?: string | null
 }
 
 /** Loopback base URL of the managed embeddings server (P5). Mirrors the Rust

@@ -66,6 +66,15 @@ pub struct BundledEngine {
     /// itself, which is the one the user never chose and until now could only
     /// find in the log file.
     pub cpu_fallback: bool,
+    /// What the start-time sanity probe (bug a, `engine_sanity.rs`) had to
+    /// work around for THIS process, as the one English sentence the user is
+    /// shown: restarted without Flash Attention, restarted on the processor,
+    /// or unreadable on the processor too. `None` on every ordinary start.
+    ///
+    /// Kept here for the same reason as `cpu_fallback`: the start call
+    /// answers it once, and a user who reads the window a minute later must
+    /// still be able to learn why the engine is not on the card.
+    pub sanity_note: Option<&'static str>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]

@@ -44,6 +44,12 @@ export interface EngineOffloadStatus {
    *  them. Rust withholds the 999 sentinel rather than making every surface
    *  know what it means (`gpu_layers_reported`). */
   gpuLayers?: number | null
+  /** Bug a: the sentence the start-time sanity probe left on this process
+   *  (restarted without Flash Attention, restarted on the processor, or
+   *  unreadable on the processor too). Written in Rust, shown as it is. The
+   *  flash attention rung keeps the card, so this can be set with `cpuOnly`
+   *  false and a real layer count. */
+  sanityNote?: string | null
 }
 
 /** The sentence the standing line carries after a fallback. */
@@ -61,8 +67,12 @@ export const ENGINE_CPU_ONLY_NOTE =
 export function engineOffloadLine(status: EngineOffloadStatus | null | undefined): string | null {
   if (!status?.running) return null
   // A zero the app chose is not the same sentence as a zero the user typed, so
-  // the fallback is named before the number is.
-  if (status.cpuOnly) return 'GPU layers: 0, the GPU start failed'
+  // the fallback is named before the number is. Two ways the app chooses it:
+  // the first start died with layers on the card, or the card came up and
+  // answered the sanity probe in question marks (bug a).
+  if (status.cpuOnly) {
+    return status.sanityNote ? 'GPU layers: 0, the GPU answered unreadably' : 'GPU layers: 0, the GPU start failed'
+  }
   const layers = status.gpuLayers
   if (typeof layers !== 'number' || !Number.isInteger(layers) || layers < 0) return null
   return `GPU layers: ${layers}`
@@ -76,8 +86,19 @@ export function engineOffloadLine(status: EngineOffloadStatus | null | undefined
  * polled every three seconds is not.
  */
 export function engineCpuFallbackKey(status: EngineOffloadStatus | null | undefined): string | null {
-  if (!status?.running || !status.cpuOnly) return null
-  return `${status.port ?? '?'}|${status.model_path ?? '?'}`
+  if (!status?.running) return null
+  if (!status.cpuOnly && !status.sanityNote) return null
+  // The sentence is part of the key: an engine that was first healed without
+  // Flash Attention and then, on the next pass, moved to the processor has
+  // something new to say about the same port and model.
+  return `${status.port ?? '?'}|${status.model_path ?? '?'}|${status.sanityNote ?? ''}`
+}
+
+/** The sentence the standing line carries for this status. */
+export function engineStandingNote(status: EngineOffloadStatus): string {
+  // Rust wrote the sanity sentence with the cause in it, so it wins over the
+  // generic fallback line whenever it is there.
+  return status.sanityNote || ENGINE_CPU_ONLY_NOTE
 }
 
 /**
@@ -126,7 +147,7 @@ export function announceEngineCpuFallback(status: EngineOffloadStatus | null | u
   angesagt = key
   const ende = Date.now() + ENGINE_NOTE_UNSEEN_HOLD_MS
   useLuEngineSwitchStore.getState().announce(
-    ENGINE_CPU_ONLY_NOTE,
+    engineStandingNote(status as EngineOffloadStatus),
     'info',
     () => Date.now() < ende && !VIEWS_WITH_THE_ENGINE_NOTE.has(useUIStore.getState().currentView),
   )

@@ -53,6 +53,20 @@ const AUF_DER_KARTE = {
 /** The same engine after the GPU attempt died and the retry took the card out. */
 const AUF_DEM_PROZESSOR = { ...AUF_DER_KARTE, cpuOnly: true, gpuLayers: 0 }
 
+/** Bug a: the card came up, answered the sanity probe in question marks, and
+ *  the ladder moved the engine to the processor. Sentence as Rust writes it. */
+const SALAT_AUF_DEM_PROZESSOR = {
+  ...AUF_DEM_PROZESSOR,
+  sanityNote: 'The GPU produced unreadable output, the engine was restarted on the CPU. Please send the log file from Settings > Troubleshoot.',
+}
+
+/** Bug a, first rung: the same card kept its layers and lost Flash Attention. */
+const OHNE_FLASH_ATTENTION = {
+  ...AUF_DER_KARTE,
+  gpuLayers: 18,
+  sanityNote: 'The GPU produced unreadable output, the engine was restarted with Flash Attention switched off and reads correctly now. Please send the log file from Settings > Troubleshoot.',
+}
+
 beforeEach(() => {
   backendCall.mockReset()
   backendCall.mockResolvedValue({})
@@ -105,6 +119,16 @@ describe('the line itself', () => {
   it('does not call a typed zero a failed start', () => {
     expect(engineOffloadLine({ running: true, cpuOnly: false, gpuLayers: 0 })).toBe('GPU layers: 0')
   })
+
+  // Bug a: a card that came up and then wrote question marks did not fail to
+  // start. Saying so would send the user looking for the wrong error.
+  it('tells a garbled card apart from a dead start', () => {
+    expect(engineOffloadLine(SALAT_AUF_DEM_PROZESSOR)).toBe('GPU layers: 0, the GPU answered unreadably')
+  })
+
+  it('keeps the layer count of an engine that only lost Flash Attention', () => {
+    expect(engineOffloadLine(OHNE_FLASH_ATTENTION)).toBe('GPU layers: 18')
+  })
 })
 
 describe('Built-in Engine (expert) shows the layer count', () => {
@@ -132,6 +156,30 @@ describe('the standing line above the composer', () => {
 
   it('says nothing about an engine that got the card it wanted', async () => {
     expect(await standingLine(AUF_DER_KARTE)).toBeNull()
+  })
+
+  // Bug a. The sentence Rust wrote names the cause (unreadable output) and the
+  // repair (CPU, or Flash Attention off); the generic fallback line would
+  // claim a start that failed, which is not what happened.
+  it('carries the sanity probe sentence instead of the generic fallback line', async () => {
+    const line = await standingLine(SALAT_AUF_DEM_PROZESSOR)
+    expect(line?.textContent).toContain(SALAT_AUF_DEM_PROZESSOR.sanityNote)
+    expect(line?.textContent).not.toContain(ENGINE_CPU_ONLY_NOTE)
+    expect(line?.getAttribute('data-tone')).toBe('info')
+  })
+
+  it('speaks for the flash attention rung, which keeps the card', async () => {
+    const line = await standingLine(OHNE_FLASH_ATTENTION)
+    expect(line?.textContent).toContain(OHNE_FLASH_ATTENTION.sanityNote)
+  })
+
+  it('speaks again when the same engine moves from one rung to the next', async () => {
+    await standingLine(OHNE_FLASH_ATTENTION)
+    useLuEngineSwitchStore.getState().dismiss()
+    backendCall.mockImplementation(async (cmd: string) =>
+      cmd === 'bundled_engine_status' ? SALAT_AUF_DEM_PROZESSOR : {})
+    await act(async () => { await bundledEngineStatus() })
+    expect(useLuEngineSwitchStore.getState().note).toBe(SALAT_AUF_DEM_PROZESSOR.sanityNote)
   })
 
   it('says it once per engine, not once per poll', async () => {

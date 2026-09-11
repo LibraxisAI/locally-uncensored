@@ -2118,6 +2118,7 @@ fn serve_or_heal_garbled(
                 );
                 answer["garbled"] = serde_json::json!(true);
                 answer["note"] = serde_json::json!(engine_sanity::GARBLED_ON_CPU_NOTE);
+                remember_sanity_note(state, engine_sanity::GARBLED_ON_CPU_NOTE);
                 return answer;
             }
             engine_sanity::AfterProbe::RestartWithoutFlashAttention => {
@@ -2163,6 +2164,7 @@ fn serve_or_heal_garbled(
             let _ = spawn_engine_attempt(state, binary, args, model_path, port, ctx, auto_layers, false);
             answer["garbled"] = serde_json::json!(true);
             answer["note"] = serde_json::json!(engine_sanity::GARBLED_ON_CPU_NOTE);
+            remember_sanity_note(state, engine_sanity::GARBLED_ON_CPU_NOTE);
             return answer;
         }
         answer["retried"] = serde_json::json!(true);
@@ -2172,15 +2174,27 @@ fn serve_or_heal_garbled(
         // judged the new engine. Until then it says what was done, and the pass
         // that finds the answer readable returns it; a pass that does not
         // overwrites it.
-        answer["note"] = serde_json::json!(if next.gpu_layers == 0 {
+        let healed = if cpu_rung {
             engine_sanity::HEALED_ON_CPU_NOTE
         } else {
             engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE
-        });
+        };
+        answer["note"] = serde_json::json!(healed);
+        remember_sanity_note(state, healed);
         serving = next;
         serving_args = next_args;
     }
     answer
+}
+
+/// Pin the sanity probe's sentence to the process it is about, so a status
+/// read after the start call has returned can still say it. A slot that is
+/// empty here means the engine died between the probe and now, and there is
+/// nothing left to annotate.
+fn remember_sanity_note(state: &AppState, note: &'static str) {
+    if let Some(live) = state.bundled_engine.lock().unwrap().as_mut() {
+        live.sanity_note = Some(note);
+    }
 }
 
 /// What one spawn-and-wait produced when it did not come up.
@@ -2274,6 +2288,7 @@ fn spawn_engine_attempt(
         args: args.to_vec(),
         auto_layers,
         cpu_fallback,
+        sanity_note: None,
     });
 
     let outcome = wait_for_health_or_exit(state, port, health_timeout_for(model_path));
@@ -2384,6 +2399,11 @@ pub async fn bundled_engine_status(app: AppHandle) -> Result<serde_json::Value, 
                 // ran at a tenth of the speed.
                 "cpuOnly": live.cpu_fallback,
                 "gpuLayers": live.gpu_layers,
+                // The sanity probe's verdict about THIS process (bug a). The
+                // start call answered it once; the status keeps it, so the
+                // standing line can say why the card was taken away, and
+                // why an engine that kept its layers restarted at all.
+                "sanityNote": live.sanity_note,
             }),
             None => serde_json::json!({
                 "running": false,
@@ -2393,6 +2413,7 @@ pub async fn bundled_engine_status(app: AppHandle) -> Result<serde_json::Value, 
                 "ctx": null,
                 "cpuOnly": false,
                 "gpuLayers": null,
+                "sanityNote": null,
             }),
         }
     })
@@ -2946,6 +2967,8 @@ pub(crate) struct LiveSidecar {
     /// The `-ngl` the process really carries, `None` when it asked for all of
     /// them (`gpu_layers_reported`).
     pub gpu_layers: Option<u32>,
+    /// The sentence the sanity probe left behind (`BundledEngine::sanity_note`).
+    pub sanity_note: Option<&'static str>,
 }
 
 pub(crate) fn live_sidecar(slot: &mut Option<BundledEngine>) -> Option<LiveSidecar> {
@@ -2956,6 +2979,7 @@ pub(crate) fn live_sidecar(slot: &mut Option<BundledEngine>) -> Option<LiveSidec
         ctx: e.ctx,
         cpu_fallback: e.cpu_fallback,
         gpu_layers: gpu_layers_reported(&e.args),
+        sanity_note: e.sanity_note,
     })
 }
 
@@ -3150,6 +3174,7 @@ fn start_bundled_embed_blocking(
         // whatever is there, so there is also no GPU start for it to lose.
         auto_layers: false,
         cpu_fallback: false,
+        sanity_note: None,
     });
 
     if let Err(e) = wait_for_health(port, health_timeout_for(&model_path)) {
@@ -4527,6 +4552,7 @@ mod tests {
             args: Vec::new(),
             auto_layers: false,
             cpu_fallback: false,
+            sanity_note: None,
         });
     }
 
@@ -4758,6 +4784,7 @@ mod tests {
             args: Vec::new(),
             auto_layers: false,
             cpu_fallback: false,
+            sanity_note: None,
         })
     }
 
@@ -4791,6 +4818,32 @@ mod tests {
         let seen = live_sidecar(&mut slot).expect("the engine is running");
         assert!(seen.cpu_fallback, "the fallback did not survive the status read");
         assert_eq!(seen.gpu_layers, Some(0));
+
+        let mut engine = slot.take().unwrap();
+        let _ = engine.child.kill();
+        let _ = engine.child.wait();
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
+    fn a_status_read_carries_what_the_sanity_probe_worked_around() {
+        // Bug a: the ladder answered its sentence ONCE, in the return value of
+        // the start call, and nobody reads that object past `.port`. The
+        // status is what every surface polls, so the sentence lives there.
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a long lived child");
+        let mut slot = engine_around(child, DEFAULT_ENGINE_PORT);
+        slot.as_mut().unwrap().sanity_note = Some(engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE);
+
+        let seen = live_sidecar(&mut slot).expect("the engine is running");
+        assert_eq!(seen.sanity_note, Some(engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE));
+        // The flash attention rung keeps the card, so it is NOT a CPU fallback.
+        assert!(!seen.cpu_fallback);
 
         let mut engine = slot.take().unwrap();
         let _ = engine.child.kill();
