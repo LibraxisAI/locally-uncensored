@@ -2433,6 +2433,8 @@ pub fn set_comfyui_path(path: String, state: State<'_, AppState>) -> Result<serd
         let mut p = state.comfy_path.lock().unwrap();
         *p = Some(path.clone());
     }
+    // A different install answers differently about its model folders.
+    crate::commands::comfy_folders::forget();
 
     // Persist to config file
     {
@@ -2498,6 +2500,8 @@ pub fn set_comfyui_host(host: String, state: State<'_, AppState>) -> Result<serd
         let mut p = state.comfy_port.lock().unwrap();
         *p = port;
     }
+    // Another engine, another set of model folders.
+    crate::commands::comfy_folders::forget();
 
     // Persist to config file
     {
@@ -2536,6 +2540,7 @@ pub fn set_comfyui_port(port: u16, state: State<'_, AppState>) -> Result<serde_j
         let mut p = state.comfy_port.lock().unwrap();
         *p = port;
     }
+    crate::commands::comfy_folders::forget();
 
     // Persist to config file
     {

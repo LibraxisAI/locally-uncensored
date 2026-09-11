@@ -1,5 +1,5 @@
 import { backendCall, fetchExternal } from "./backend"
-import { getCheckpoints, getDiffusionModels, getVAEModels, getCLIPModels, getGgufUnetModels, getAnimateDiffModels, getLoraModels, filterPartialFiles, refreshComfyModels } from "./comfyui"
+import { readComfyFolderLists, filterPartialFiles, refreshComfyModels } from "./comfyui"
 import { clearNodeCache } from "./comfyui-nodes"
 import { restartComfyForNewNodes } from "./comfy-restart"
 import type { ProviderId } from "./providers/types"
@@ -25,6 +25,11 @@ export {
   getImageBundles, getImageModelsDiscover, getVideoBundles,
   getAudioBundles, getLipsyncBundles, getMotionBundles,
 } from './model-bundles'
+
+// Welche Ordner der Katalog beschreibt und wer sie zurueckliest, steht als EINE
+// Tabelle neben den Lesern (comfyui.ts). Re-Export, damit bestehende
+// Importpfade unveraendert bleiben.
+export { ANIMATEDIFF_SUBFOLDER, ENUM_SUBFOLDERS } from './comfyui'
 
 // Die Fortschrittsform lebt in types/downloads.ts, damit lib/bundle-install.ts
 // sie lesen kann, ohne dieses Modul zu importieren. Re-Export, damit bestehende
@@ -316,42 +321,19 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
   // file check_model_sizes confirms is partial before matching.
   let comfyLists: Record<string, string[]> | null = null
   try {
-    // getGgufUnetModels for the same reason the Create probe needs it
-    // (b8531b6): UNETLoader only enumerates .safetensors and .sft, and GGUF
-    // quants are listed by ComfyUI-GGUF's own loader. Both Unfiltered video
-    // bundles are GGUF, so without it this cannot see the one file that makes
-    // them what they are, and the fuzzy fallback below can never confirm them.
-    // getAnimateDiffModels for the same reason getGgufUnetModels is here: the
-    // motion modules of both AnimateDiff bundles live under custom_nodes and
-    // none of the four ComfyUI\models loaders can see them. Without it the
-    // gate below skipped those files and the card trusted the disk alone,
-    // which is how two cards read Installed over a rail counter that knew
-    // neither of them.
-    // getLoraModels for the same reason, found one round later (abnahme
-    // counter-check 2026-08-29): the LoRA folder is enumerated by LoraLoader
-    // and nothing here asked it, so a LoRA bundle's card was decided on the
-    // disk alone while no counter and no list knew the file existed.
-    const [rawCheckpoints, rawDiffModels, rawGgufUnets, rawVaes, rawClips, rawMotion, rawLoras] = await Promise.all([
-      getCheckpoints(), getDiffusionModels(), getGgufUnetModels(), getVAEModels(), getCLIPModels(),
-      getAnimateDiffModels(), getLoraModels(),
-    ])
-    const [checkpoints, diffModels, ggufUnets, vaes, clips, motion, loras] = await Promise.all([
-      filterPartialFiles(rawCheckpoints).then(s => Array.from(s)),
-      filterPartialFiles(rawDiffModels).then(s => Array.from(s)),
-      filterPartialFiles(rawGgufUnets).then(s => Array.from(s)),
-      filterPartialFiles(rawVaes).then(s => Array.from(s)),
-      filterPartialFiles(rawClips).then(s => Array.from(s)),
-      filterPartialFiles(rawMotion).then(s => Array.from(s)),
-      filterPartialFiles(rawLoras).then(s => Array.from(s)),
-    ])
-    comfyLists = {
-      checkpoints,
-      diffusion_models: [...diffModels, ...ggufUnets],
-      vae: vaes,
-      text_encoders: clips,
-      loras,
-      [ANIMATEDIFF_SUBFOLDER]: motion,
-    }
+    // Every folder of COMFY_MODEL_FOLDERS, keyed by the same subfolder name the
+    // catalog files carry, so the fallback further down can look a file up by
+    // the folder it was downloaded into. The list this used to name by hand had
+    // grown one loader at a time, each time after a bundle card said Installed
+    // over a picker that had nothing: the GGUF quants (b8531b6), the motion
+    // modules under custom_nodes and the LoRA folder (2026-08-29). The table is
+    // what stops the next one.
+    const raw = await readComfyFolderLists()
+    const filtered = await Promise.all(
+      Object.entries(raw).map(async ([subfolder, names]) =>
+        [subfolder, Array.from(await filterPartialFiles(names))] as const),
+    )
+    comfyLists = Object.fromEntries(filtered)
   } catch {
     comfyLists = null // ComfyUI not reachable · size-check verdicts stand
   }
@@ -379,7 +361,10 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
     for (const arr of Object.values(comfyLists)) for (const n of arr) visible.add(normalizeModelBase(n))
     for (const bundle of bundles) {
       if (!result[bundle.name]) continue
-      const enumFiles = bundle.files.filter(f => f.filename && f.subfolder && ENUM_SUBFOLDERS.has(f.subfolder))
+      // The folders THIS ComfyUI enumerates, not the folders a ComfyUI could:
+      // a loader that is not installed here has said nothing about its folder,
+      // and its silence must not send a finished bundle back to the button.
+      const enumFiles = bundle.files.filter(f => f.filename && f.subfolder && f.subfolder in comfyLists!)
       if (enumFiles.length === 0) continue
       const unseen = enumFiles.filter(f => !visible.has(normalizeModelBase(f.filename!)))
       if (unseen.length > 0) {
@@ -412,26 +397,6 @@ export async function checkBundlesInstalled(bundles: ModelBundle[]): Promise<Rec
   return result
 }
 
-/** Where the AnimateDiff-Evolved pack keeps its motion modules. Not under
- *  ComfyUI\models at all, which is exactly why the counter and the Installed
- *  list used to miss a fully installed AnimateDiff bundle while its card said
- *  Installed (counter-check on the Windows box, 2026-08-29). */
-export const ANIMATEDIFF_SUBFOLDER = 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
-
-/** Subfolders whose contents ComfyUI enumerates via object_info — the only
- *  ones the visibility check can reason about (upscale models and the GGUF
- *  text downloads stay on the pure size check). The AnimateDiff one is
- *  enumerated by the pack's own ADE_LoadAnimateDiffModel node, so it belongs
- *  here even though it sits under custom_nodes: a motion module the running
- *  ComfyUI cannot list is exactly as useless as an invisible checkpoint.
- *
- *  loras joined on 2026-08-29, with readComfyModelNames below. LoraLoader has
- *  always enumerated that folder; nothing here ever asked it, so a LoRA was
- *  the one installed file the app could not reason about anywhere: its card
- *  trusted the disk alone, the counter and the list never saw it, and a
- *  finished LoRA download was skipped by the visibility wait as unjudgeable. */
-export const ENUM_SUBFOLDERS = new Set(['checkpoints', 'diffusion_models', 'vae', 'text_encoders', 'loras', ANIMATEDIFF_SUBFOLDER])
-
 /** Base identity of a model file: basename only (ComfyUI enums can carry
  *  nested-subdir prefixes), lowercase, extension and common quant suffixes
  *  stripped. Shared by the installed-detection visibility check and the fuzzy
@@ -446,30 +411,27 @@ export function normalizeModelBase(name: string): string {
  *
  *  ONE reader, because "can ComfyUI see this file" is asked from three places
  *  and every place that asked its own way ended up asking a different question.
- *  UNETLoader enumerates only .safetensors and .sft; every GGUF quant is listed
- *  by ComfyUI-GGUF's own loader instead. checkBundlesInstalled was taught that
- *  fifth loader in 2.6.6 (6abf570) and the Create probe in 2.6.5 (b8531b6),
- *  while the Model Manager's install click kept asking four. Both Unfiltered
- *  video bundles are GGUF, so on that path a perfectly listed model came back
- *  "not listed" and the user was told LU and ComfyUI use different model
- *  folders, which was never true. Nothing here may go back to a subset. */
+ *  The loaders it asks are COMFY_MODEL_FOLDERS, the same table the catalog's
+ *  write targets are checked against, so a folder can no longer be written into
+ *  and then not read back. Every widening this reader has needed was a folder
+ *  someone had added to the catalog and to nothing else: the GGUF loader in
+ *  2.6.6 (6abf570) for the Unfiltered video bundles, the LoRA and AnimateDiff
+ *  loaders on 2026-08-29, clip_vision and audio_encoders here. */
 export async function readComfyModelNames(): Promise<string[]> {
-  const lists = await Promise.all([
-    getCheckpoints(), getDiffusionModels(), getVAEModels(), getCLIPModels(), getGgufUnetModels(),
-    // Seventh loader, added 2026-08-29 after the abnahme counter-check: the
-    // LoRA folder. Two installed addon bundles (Pixel Art XL, SDXL VAE) read
-    // Installed on their cards while no list and no counter knew them, and
-    // the LoRA half of that could not even be judged, because this reader
-    // never asked LoraLoader.
-    getLoraModels(),
-    // Sixth loader, added 2026-08-29 after the counter-check: the AnimateDiff
-    // pack enumerates its motion modules itself, from a folder under
-    // custom_nodes. Without it a finished AnimateDiff download could never be
-    // confirmed, so the download store spent its full budget and then told the
-    // user LU and ComfyUI use different model folders, which was not true.
-    getAnimateDiffModels(),
-  ])
-  return lists.flat()
+  return Object.values(await readComfyFolderLists()).flat()
+}
+
+/** The folders this ComfyUI really enumerates right now. ENUM_SUBFOLDERS asks
+ *  the same question of the catalog ("could this folder be judged at all");
+ *  this one asks the engine in front of us ("can it, here"). A bundle must
+ *  never be sent back to the download button over a loader that is simply not
+ *  installed on the box. */
+export async function judgeableFolders(): Promise<Set<string>> {
+  try {
+    return new Set(Object.keys(await readComfyFolderLists()))
+  } catch {
+    return new Set()
+  }
 }
 
 /** Which of `wanted` the RUNNING ComfyUI does not list yet.
@@ -480,12 +442,6 @@ export async function readComfyModelNames(): Promise<string[]> {
  *  second with a single fetch, so the same slow directory scan that froze
  *  Voxyl AI's card on 2026-08-13 simply left a model out of the Installed tab
  *  instead. Two probes would have been two chances to drift.
- *
- *  getGgufUnetModels belongs here for the same reason getImageModels needs it
- *  (comfyui.ts:658): UNETLoader only enumerates .safetensors and .sft, GGUF
- *  quants are listed by ComfyUI-GGUF's own loader. The default Talking
- *  Character bundle IS a .gguf in diffusion_models, so without it the probe
- *  can never succeed for that bundle.
  *
  *  An engine it cannot reach reports everything as missing: an answer we could
  *  not get is not a file we have seen. */
@@ -752,6 +708,10 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
     return left.length === 0
   }
 
+  // Which folders this engine can be asked about at all. Read once for the
+  // whole bundle, and lazily: a bundle whose files are all fresh never needs it.
+  const judgeable = judgeableFolders()
+
   // ONE space check for the whole bundle, before the first byte moves.
   //
   // Every file starts its own transfer and every transfer checked the free
@@ -771,7 +731,7 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
   for (const file of bundle.files) {
     if (!file.downloadUrl || !file.filename || !file.subfolder) continue
     if (installedFiles.has(file.filename)) {
-      const visible = ENUM_SUBFOLDERS.has(file.subfolder) ? await comfyCanSee(file.filename) : null
+      const visible = (await judgeable).has(file.subfolder) ? await comfyCanSee(file.filename) : null
       // The file is on disk at its full size. That much is certain right now,
       // so it is what the card is told, and an engine that has not caught up
       // yet is not turned into an accusation the user cannot act on.
