@@ -12,7 +12,8 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
-import { RELEASE_NOTES, releaseNoteFor } from '../../lib/release-notes'
+import { RELEASE_NOTES, releaseNoteFor, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
+import { CLOUD_PITCH } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
@@ -181,30 +182,91 @@ describe('the notes table', () => {
     }
   })
 
-  it('the 3.0.0 entry names the measurement, the free Flash chat, the policy, the six fixes and the open card', () => {
-    // Same blind spot, next release. The measurement says which 46 were asked
-    // and that the 47th carries no mark yet; Flash chat names its ceiling and
-    // that keys keep paying; the policy names the age step; and the six fixes
-    // merged on 11.09. (trainer, engine log and layers, Stop, Code tab,
-    // custom backend context, GitHub 129) each get an anchor, plus the one
-    // report that stays open because nobody here owns the card.
+  it('the 3.0.0 entry names the measurement, the free Flash chat, the policy, the fixes and the open card', () => {
+    // Same blind spot, next release. The measurement says how many models
+    // carry the mark and that the newest one does not yet; Flash chat names
+    // its ceiling and that keys keep paying; the policy names the age step;
+    // and every fix merged on 11.09. (trainer, engine log and layers, the way
+    // back out of the cloud, Stop, Stop per chat, Code tab, the max tokens
+    // field, custom backend context and its running window, download
+    // progress) gets an anchor, plus the one report that stays open because
+    // nobody here owns the card.
     const shipping = JSON.parse(
       readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
     ).version as string
     expect(shipping).toBe('3.0.0')
     const prose = proseOf(shipping)
     for (const anchor of [
-      'without refusing', 'we measured', 'no mark until it is measured',
+      'without refusing', 'we asked them', 'carries no mark yet',
       'no credits', '500,000', 'api keys always pay',
       'content policy', '18 or older', 'animate button', 'sampling controls',
       'libuv', 'exit code', 'runs on the cpu', 'stop means stop',
       'why a folder was refused', 'cut off at the token limit',
       'real context window', 'no guessed budget', '2 gb card',
+      // Welle 6, gemessen und gebaut am 11.09.: jeder Nachtrag im Fixes-Block
+      // bekommt seinen eigenen Anker, sonst faellt einer bei der naechsten
+      // Ueberarbeitung still heraus.
+      'small window above the prompt row', 'an x closes the window',
+      'forgets the remembered default', '~/agent-workspace',
+      'switching cloud off starts the lu engine again',
+      'stop in one chat no longer stops',
+      'another chat is still answering',
+      'replaces what is in it', '0512',
+      'the running one wins', 'shared chunk cache',
     ]) {
       expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
     }
     // The old suffix must not be sold as a feature again.
     expect(prose).not.toContain('(unrestricted)" mark')
+    // Kritiker 2, Rang A: drei Saetze des Blatts waren am Auslieferungskopf
+    // gemessen falsch. Jeder einzelne wird hier namentlich ferngehalten, denn
+    // ein Satz, der einmal zurueckkommt, kommt beim naechsten Zusammenfuehren
+    // wieder mit.
+    for (const wrong of [
+      // Bauer U: die Regler klappen nicht mehr auf, sie sind ein Fenster mit X.
+      'collapsed until you want them',
+      'sit next to the model picker, collapsed',
+      // T4 Punkt 5: der Arbeitsordner-Dialog hat drei Eintraege, keinen zum
+      // Vergessen. Vergessen wird ueber das x an der Pille.
+      'forgotten in the workspace dialog',
+      // Der Messer hat V4.1 Flash gemessen.
+      'no mark until it is measured',
+    ]) {
+      expect(prose, `${shipping}: still says "${wrong}"`).not.toContain(wrong)
+    }
+  })
+
+  it('the model numbers on the 3.0.0 sheet are read from the catalogue, never typed', () => {
+    // Der Fund, der diesen Waechter erzwungen hat: das Blatt sagte "27 of the
+    // 46", waehrend das Freigabe-Tor auf DEMSELBEN Commit "27/47 chat"
+    // ausgab. Eine Zahl in der Prosa kann nicht laut falsch sein, sie sitzt
+    // einfach da, nachdem der Katalog weitergezogen ist.
+    //
+    // Darum zwei Haelften. Erstens: die Saetze werden aus den Konstanten
+    // gebaut, ein falsch getippter Nenner faellt hier auf. Zweitens: der
+    // Quelltext darf die Form "N of the N" gar nicht mehr enthalten, sonst
+    // liesse sich auch die HEUTE richtige Zahl wieder eintippen und bliebe
+    // stehen, wenn der Katalog sich bewegt.
+    const prose = proseOf('3.0.0')
+    expect(SHEET_CHAT_MODELS, 'sheet count is not the catalogue count')
+      .toBe(CLOUD_PITCH.chatModels)
+    expect(SHEET_MARKED_MODELS, 'sheet mark count is not the measured one')
+      .toBe(CLOUD_PITCH.unfilteredChatModels)
+
+    const phrase = `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS}`
+    expect(prose, 'the summary line does not quote the catalogue numbers')
+      .toContain(`${phrase.toLowerCase()} cloud chat models`)
+    expect(prose, 'the detail line does not quote the catalogue numbers')
+      .toContain(`${phrase.toLowerCase()} answer in full`)
+
+    const src = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../lib/release-notes.ts'), 'utf8',
+    )
+    const typed = [...src.matchAll(/\d+ of the \d+/g)].map((m) => m[0])
+    expect(typed, 'a model count typed into the sheet instead of read from CLOUD_PITCH')
+      .toEqual([])
+    const interpolations = src.split('${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS}').length - 1
+    expect(interpolations, 'both mentions have to come from the constants').toBe(2)
   })
 
   it('says nothing in the shipping note twice, word for word', () => {

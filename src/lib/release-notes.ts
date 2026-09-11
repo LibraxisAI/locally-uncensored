@@ -14,6 +14,30 @@
  * changes expander, grouped into sections (Local, Cloud), and may be long.
  */
 
+import { CLOUD_PITCH } from './cloud-pitch'
+
+/**
+ * The two model numbers the 3.0.0 sheet quotes, in one place and read, never
+ * typed.
+ *
+ * The catalogue itself lives in the web repository, in
+ * `apps/web/lib/chat/tier-models.ts`; this app reads it from the server at run
+ * time and ships no copy of it. `src/lib/cloud-pitch.ts` is where the counts
+ * that have to exist before anyone signs in are written down, and
+ * `scripts/check-cloud-sales.mjs` pins every one of them to that file in the
+ * web repository. Taking the sheet's two numbers from there is what makes them
+ * move with the catalogue: mark one model more, or one fewer, and the release
+ * guard fails until both sides agree again.
+ *
+ * This is not decoration. The sheet quoted a denominator of 46 while the guard
+ * on the same commit printed "27/47 chat", because one number was prose and the
+ * other was read from its source. Prose cannot be wrong out loud, which is also
+ * why the test forbids the typed form outright instead of only checking that
+ * today's digits happen to be right.
+ */
+export const SHEET_CHAT_MODELS = CLOUD_PITCH.chatModels
+export const SHEET_MARKED_MODELS = CLOUD_PITCH.unfilteredChatModels
+
 export interface ReleaseNoteSection {
   title: string
   items: string[]
@@ -41,17 +65,17 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
     lines: [
-      '27 of the 46 cloud chat models we measured answer without refusing. We asked each of them, twice, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.',
+      `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models answer without refusing. We asked them, twice each, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.`,
       'Twelve of those models cost no credits at all in chat on a paid plan, up to 500,000 input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.',
       'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
       'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.',
-      'Sampling controls sit next to the prompt: temperature, top P, top K and answer length, collapsed until you want them. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
+      'Sampling controls sit next to the prompt: temperature, top P, top K and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
     ],
     details: [
       {
         title: 'Models and marks',
         items: [
-          'The 46 cloud chat models in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. 27 of them answer in full. DeepSeek V4.1 Flash joined after the run and carries no mark until it is measured. Four answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of.',
+          `The cloud chat models in the catalogue were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} answer in full. Four answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet. We have measured it since.`,
           'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
           'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number.',
           'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
@@ -78,7 +102,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         title: 'Prompt and sampling',
         items: [
-          'Temperature, top P, top K and maximum answer length sit next to the model picker, collapsed, with the current temperature visible and one reset for all of them. Reasoning models accept these and react less to them, which the help line says instead of hiding the control.',
+          'Temperature, top P, top K and maximum answer length sit next to the model picker, with the current temperature visible and one reset for all of them. The controls open over the prompt row instead of pushing it down. An x closes the window, and so do Escape and a click outside. Clicking the trigger a second time no longer does, because it used to close the panel under your own pointer. Reasoning models accept these and react less to them, which the help line says instead of hiding the control.',
           'The default persona had an empty system prompt. An empty prompt is not neutral: the model falls back to whatever its provider trained it to be, and that is where the refusals come from. It now states the role and nothing else, no content rule in either direction.',
           'Chat, Agent and Coding all send that baseline now. The persona switch decides which PERSONA applies, not whether anything is sent at all.',
         ],
@@ -86,13 +110,18 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         title: 'Fixes',
         items: [
-          'The agent can leave a workspace folder. There is an x on the folder pill, and the remembered default folder can be forgotten in the workspace dialog, which is what made changing the folder feel useless.',
+          'The agent can leave a workspace folder. The x on the folder pill drops it and forgets the remembered default with it, in new chats and in old ones, and the agent falls back to ~/agent-workspace until you pick a new one. A folder that kept coming back is what made changing it feel useless.',
           'Models under 7B carry a plain warning in the catalogue and are no longer offered as a starting pick for chat.',
           'Training a character LoRA no longer dies with the libuv error on Windows. The trainer started a distributed launcher that switched to multi GPU mode on machines with two cards; it now runs the training script directly, on one card, and the error text of a failed run is readable and can be copied.',
           'When the LU Engine exits before it serves, the log file now says why: the full command line, the exit code, the memory the card reported and the number of layers it was given. A card that is too small for the model gets a measured layer count instead of all of them, and if the first start still fails the second runs on the CPU and says so.',
+          'Switching Cloud off starts the LU Engine again and puts your last local model back in the picker. Each mode keeps its own pick now, so the trip into the cloud and back no longer leaves you on "Select a chat model". If the engine fails to come up, the reason stands above the prompt instead of only in the log file.',
           'Stop means stop. A finished background agent no longer wakes the main agent into a hidden turn, a stop between two loop passes ends the loop, and a shell command the agent started is killed with it.',
+          'Stop in one chat no longer stops the answer running in another. The app still answers one chat at a time, so a second chat keeps its Send button where it is, disabled, and says that another chat is still answering, instead of turning into a Stop button for the run in that other chat.',
           'The Code tab tells you why a folder was refused instead of accepting it and then failing on every file. A turn cut off at the token limit now says so in the answer, with the plan step it stopped on, instead of ending without a word.',
+          'The maximum answer length field replaces what is in it instead of growing in front of it. Typing 512 into a field holding 0 used to leave 0512 on the screen: the number that got sent was the one you meant all along, the line you were reading was not.',
           'A custom OpenAI compatible backend is asked for its real context window. llama.cpp, vLLM and KoboldCpp answer directly, the number carries a label saying where it came from, the context picker is available for your own backend, and no guessed budget is sent as max tokens any more.',
+          'When that backend reports both a running window and a training limit, the running one wins. A server started with 16K no longer reads as 40K, and the context picker stops at what the server really has. A limit with nothing running behind it is labelled as the training limit, and no budget is derived from it.',
+          'A large model download no longer looks frozen at zero. The bar was watching the model folder while the downloader filled a shared chunk cache beside it, so the bytes that really arrived were never counted. It counts that cache as well now, from the moment the download starts. On Windows it also counts the transfer figure a network read is booked under, which is the half we have not yet watched on a real download.',
           'A 2 GB card can still turn a 3B model into garbage. The layer count is now measured against the card, which should help, but we have not seen that card in the house, so the report stays open.',
         ],
       },
