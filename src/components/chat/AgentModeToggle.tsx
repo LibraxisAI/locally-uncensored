@@ -9,6 +9,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { canUseTools } from '../../lib/tool-support'
 import { FEATURE_FLAGS } from '../../lib/constants'
 import { AgentWorkspaceDialog } from './AgentWorkspaceDialog'
+import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import type { AgentWorkspace } from '../../types/agent-workspace'
 import { MOTION_S } from '../ui/motion'
 
@@ -21,6 +22,9 @@ export function AgentModeToggle() {
   // power users can point the agent at a real folder up front.
   const [showWorkspaceDialog, setShowWorkspaceDialog] = useState(false)
   const [workspaceDialogConvId, setWorkspaceDialogConvId] = useState<string | null>(null)
+  // Der Grund, warum der gemerkte Vorgabeordner nicht genommen wurde. Steht im
+  // Dialog, sonst geht er ohne erkennbaren Anlass auf.
+  const [workspaceDialogError, setWorkspaceDialogError] = useState<string | null>(null)
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const conversations = useChatStore((s) => s.conversations)
   const createConversation = useChatStore((s) => s.createConversation)
@@ -63,12 +67,30 @@ export function AgentModeToggle() {
    * workspace yet, open AgentWorkspaceDialog so the user can choose
    * between sandbox and a real folder. Skipped when a workspace is
    * already set (toggling back on after a deactivate) or when the user
-   * has a `settings.defaultWorkspace` configured.
+   * has a `settings.defaultWorkspace` the backend still accepts.
+   *
+   * Der Vorgabeordner ueberlebt im Speicher des Browsers, die Erlaubnisliste
+   * der Rust-Seite liegt daneben in einer Datei, und die beiden koennen
+   * auseinanderlaufen: frische Installation, geleerte Daten, oder ein Ordner
+   * direkt unter $HOME, den eine aeltere Fassung noch gesetzt hat. Uebersprang
+   * dieser Dialog die Frage trotzdem, arbeitete der Agent still in einem
+   * Ordner, den jede Dateioperation mit "pick it again to allow it"
+   * beantwortet, und es ging kein Dialog auf, in dem man genau das haette tun
+   * koennen. Ein abgelehnter Vorgabeordner oeffnet die Frage jetzt MIT dem
+   * Grund; gemerkt wird dabei nichts, auf die Erlaubnisliste kommt ein Ordner
+   * weiterhin nur ueber den nativen Dialog.
    */
-  const maybeOpenWorkspaceDialog = (convId: string) => {
+  const maybeOpenWorkspaceDialog = async (convId: string) => {
     const hasPerChat = !!useAgentModeStore.getState().workspaces[convId]
-    const hasDefault = !!useSettingsStore.getState().settings.defaultWorkspace
-    if (hasPerChat || hasDefault) return
+    if (hasPerChat) return
+    const fallback = useSettingsStore.getState().settings.defaultWorkspace
+    let refusal: string | null = null
+    if (fallback) {
+      if (fallback.kind !== 'folder' || !fallback.path) return
+      refusal = await rememberedFolderRefusal(fallback.path)
+      if (!refusal) return
+    }
+    setWorkspaceDialogError(refusal)
     setWorkspaceDialogConvId(convId)
     setShowWorkspaceDialog(true)
   }
@@ -78,7 +100,7 @@ export function AgentModeToggle() {
     const persona = useSettingsStore.getState().getActivePersona()
     const newId = createConversation(activeModel, persona?.systemPrompt || '')
     useAgentModeStore.getState().toggleAgentMode(newId)
-    maybeOpenWorkspaceDialog(newId)
+    void maybeOpenWorkspaceDialog(newId)
   }
 
   const handleToggle = () => {
@@ -100,7 +122,7 @@ export function AgentModeToggle() {
     toggleAgentMode(activeConversationId)
     // If the user just turned agent ON (was inactive, now active) and
     // hasn't picked a workspace for this conversation, prompt for one.
-    if (!isActive) maybeOpenWorkspaceDialog(activeConversationId)
+    if (!isActive) void maybeOpenWorkspaceDialog(activeConversationId)
   }
 
   const handleNewAgentChat = () => {
@@ -118,12 +140,23 @@ export function AgentModeToggle() {
     }
     setShowWorkspaceDialog(false)
     setWorkspaceDialogConvId(null)
+    setWorkspaceDialogError(null)
   }
 
   const handleWorkspaceClose = () => {
     // Cancel just dismisses — bridge will fall back to per-chat sandbox.
+    //
+    // Diese Zusage stimmt nur, solange kein Vorgabeordner gemerkt ist: sonst
+    // gewinnt er in `resolveWorkspace` ueber das leere Feld, und ein
+    // abgelehnter Vorgabeordner haette den Nutzer nach dem Wegklicken in genau
+    // die Sackgasse geschickt, aus der dieser Dialog ihn holen sollte. Wurde er
+    // abgelehnt, wird der Sandkasten hier also wirklich festgehalten.
+    if (workspaceDialogError && workspaceDialogConvId) {
+      useAgentModeStore.getState().setWorkspace(workspaceDialogConvId, { kind: 'sandbox' })
+    }
     setShowWorkspaceDialog(false)
     setWorkspaceDialogConvId(null)
+    setWorkspaceDialogError(null)
   }
 
   return (
@@ -211,6 +244,7 @@ export function AgentModeToggle() {
           conversationId={workspaceDialogConvId}
           onChoose={handleWorkspaceChoose}
           onClose={handleWorkspaceClose}
+          initialError={workspaceDialogError}
         />
       )}
     </>

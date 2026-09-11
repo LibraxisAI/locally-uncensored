@@ -137,10 +137,28 @@ describe('the header shows the folder, so it also gives it back', () => {
     await show()
     const button = removeButton() as HTMLButtonElement
     expect(button.disabled).toBe(true)
-    expect(button.getAttribute('title')).toContain('Wait for the current run to finish')
+    expect(button.getAttribute('title')).toContain('Wait for it to finish or press Stop')
 
     fireEvent.click(button)
     expect(useCodexStore.getState().workingDirectory).toBe(WINDOWS_PATH)
+  })
+
+  it('and lets go again once the run is no longer alive', async () => {
+    // Ein Faden bleibt auf 'running' stehen, bis der Lauf sich abgewickelt
+    // hat. Haengt der Schwanz des Laufs, sperrte er diesen Knopf bis zum
+    // Neustart der App, und der Grund hing als `title` an einem `disabled`
+    // Knopf, der ihn nie zeigt.
+    act(() => {
+      useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
+      useCodexStore.getState().initThread('conv-1', WINDOWS_PATH)
+      useCodexStore.getState().setThreadStatus('conv-1', 'running')
+    })
+    useGenerationStore.setState({ generating: {} })
+    await show()
+    const button = removeButton() as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+    fireEvent.click(button)
+    expect(useCodexStore.getState().workingDirectory).toBe('')
   })
 
   it('is locked between two loop passes as well', async () => {

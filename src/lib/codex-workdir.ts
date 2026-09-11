@@ -6,6 +6,7 @@
  * chain nobody could test, and "is a run in flight" was a different expression
  * on every surface. They are pure functions here, with the tests next to them.
  */
+import { isActiveCodexStatus, type CodexThreadStatus } from '../types/codex'
 
 export interface CodexWorkDirInput {
   /** The folder pinned on this conversation's thread. */
@@ -68,7 +69,12 @@ export interface CodexBusyInput {
    */
   sendsInFlight: number
   /** codexStore.threads, for a turn that is past those awaits. */
-  threads: Record<string, { status: string }>
+  threads: Record<string, { status: CodexThreadStatus }>
+  /**
+   * generationStore.generating, as the PROOF that a thread's status is about a
+   * run that is still alive. See below.
+   */
+  generating: Record<string, boolean>
   /** agentLoopStore.loop, or null when no /loop is standing. */
   loop: unknown | null
 }
@@ -77,16 +83,48 @@ export interface CodexBusyInput {
  * Only Coding Agent signals count. The first cut read every conversation's
  * generating flag, so a streaming Chat tab in another conversation locked the
  * folder picker on Code for no reason at all.
+ *
+ * ── WARUM DIE FAHNE DAZUGEHOERT ──────────────────────────────────────────
+ * Ein Faden bleibt auf 'running' stehen, bis der Lauf sich abgewickelt hat.
+ * `stopCodex` raeumt die Erzeugungsfahne SOFORT (`abortConversation`), der
+ * Status kommt erst im `finally` des Laufs zurueck auf 'idle', und ein
+ * Shell-Befehl, der das Signal nicht beachtet, dehnt dieses Fenster beliebig
+ * weit. Solange es offen stand, waren beide Ordnerknoepfe tot, und der Grund
+ * hing als `title` an einem `disabled` Knopf, der keine Mauszeiger-Ereignisse
+ * annimmt, also nie erschienen ist. Fuer den Nutzer war der Ordner damit ohne
+ * Vorwarnung und ohne Ausweg gesperrt.
+ *
+ * Der Status allein ist also kein Beweis, dass etwas laeuft, und genau das ist
+ * der Fehler, gegen den `lib/run-idle.ts` fuer die ganze App geschrieben
+ * wurde: zwei Quellen, und keine von beiden ist fuer sich die Wahrheit. Hier
+ * ist es dieselbe Versoehnung, nur pro Gespraech und ohne Speicherzugriff, weil
+ * diese Funktion rein bleibt und ihre Aufrufer beide Karten ohnehin
+ * abonnieren.
+ *
+ * `isActiveCodexStatus` statt `=== 'running'`: die Wartefreigabe und das
+ * Schreiben der abgelegten Aenderungen sind genauso laufende Arbeit, und der
+ * Vergleich von Hand war der stille `else`, den AS-08 beschreibt.
+ *
+ * Gesperrt bleibt damit genau ein Lauf, der wirklich noch laeuft. Der Weg
+ * heraus ist der Stopp-Knopf, den der Lauf ohnehin hat: er raeumt die Fahne,
+ * und der Ordner ist im selben Augenblick wieder frei.
  */
-export function codexBusyReason({ sendsInFlight, threads, loop }: CodexBusyInput): CodexBusyReason | null {
+export function codexBusyReason({ sendsInFlight, threads, generating, loop }: CodexBusyInput): CodexBusyReason | null {
   if (sendsInFlight > 0) return 'run'
-  if (Object.values(threads).some((t) => t.status === 'running')) return 'run'
+  const alive = Object.entries(threads).some(
+    ([convId, t]) => isActiveCodexStatus(t.status) && generating[convId] === true,
+  )
+  if (alive) return 'run'
   if (loop) return 'loop'
   return null
 }
 
-/** One sentence per reason, so the two buttons cannot drift apart. */
+/**
+ * One sentence per reason, so the two buttons cannot drift apart. Both name a
+ * way out: a disabled button cannot be waited out blindly, and a run whose
+ * tail hangs would otherwise hold the folder for the rest of the session.
+ */
 export const CODEX_WORKDIR_LOCK_TITLE: Record<CodexBusyReason, string> = {
-  run: 'Wait for the current run to finish, then you can change the folder.',
+  run: 'A coding run is in flight. Wait for it to finish or press Stop, then you can change the folder.',
   loop: 'A loop is still running. Stop it first, then you can change the folder.',
 }

@@ -40,6 +40,7 @@ import {
 } from 'lucide-react'
 import { useCodexStore } from '../../stores/codexStore'
 import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useGenerationStore } from '../../stores/generationStore'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -89,10 +90,16 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   //
   // Only Coding Agent signals count. Reading every conversation's generating
   // flag locked this column whenever any Chat tab was streaming (review S3).
+  //
+  // Der Status eines Fadens allein ist kein Beweis, dass noch etwas laeuft:
+  // Stop raeumt die Erzeugungsfahne sofort, der Status kommt erst zurueck,
+  // wenn der Lauf sich abgewickelt hat. Beide Karten kommen deshalb herein und
+  // werden in `codexBusyReason` versoehnt.
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
+  const generating = useGenerationStore((s) => s.generating)
   const loop = useAgentLoopStore((s) => s.loop)
-  const lockReason = codexBusyReason({ sendsInFlight, threads, loop })
+  const lockReason = codexBusyReason({ sendsInFlight, threads, generating, loop })
   const lockTitle = lockReason ? CODEX_WORKDIR_LOCK_TITLE[lockReason] : null
 
   // Read up here because the workspace fallback below needs it too. The plan
@@ -335,6 +342,21 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
           <PanelRightClose size={12} />
         </button>
       </div>
+
+      {/* Warum die beiden Knoepfe darueber tot sind, in Worten.
+          Der Grund hing bisher nur als `title` an ihnen, und ein `disabled`
+          Knopf nimmt keine Mauszeiger-Ereignisse an: der Hinweis ist also nie
+          erschienen. Uebrig blieben zwei graue Knoepfe ohne Erklaerung. Ruhiger
+          Ton, keine Warnfarbe: gesperrt ist kein Fehler, sondern ein Zustand,
+          der von selbst endet (`lib/hinweis.ts`). */}
+      {lockTitle && (
+        <p
+          data-testid="explorer-workdir-lock"
+          className={`px-1.5 py-1 text-[0.45rem] leading-relaxed border-b border-gray-200 dark:border-white/[0.04] ${HINWEIS_TEXT.ruhig}`}
+        >
+          {lockTitle}
+        </p>
+      )}
 
       <div className={`overflow-y-auto scrollbar-thin p-1 ${selected ? 'max-h-[45%] shrink-0' : 'flex-1 min-h-0'}`}>
         {!root ? (

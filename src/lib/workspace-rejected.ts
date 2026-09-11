@@ -56,3 +56,28 @@ export function workspacePickRefusedMessage(fehler: unknown): string {
     + `Pick a project folder, not a drive root, a home directory or a system folder.`
   )
 }
+
+/**
+ * Derselbe Fall ohne jeden Dialog: ein Ordner, den die Oberflaeche sich
+ * GEMERKT hat, wird gesetzt, und die Rust-Seite nimmt ihn nicht an.
+ *
+ * Zwei Wege tun das: der Knopf "Use last folder" und der Vorgabeordner aus den
+ * Einstellungen, der ueber den Speicher des Browsers einen Neustart ueberlebt.
+ * Eine frische Installation, geleerte Daten oder ein Ordner direkt unter
+ * `$HOME` fuehren dort in dieselbe Sackgasse wie Fehler D, nur ohne Dialog,
+ * also ohne Weg heraus.
+ *
+ * Der Pfad steht hier DRIN, anders als bei `workspacePickRefusedMessage`: der
+ * Nutzer hat ihn nicht gerade ausgesucht, er liegt Wochen zurueck, und ohne
+ * den Namen weiss niemand, welcher Ordner gemeint ist. Der Grund kommt roh von
+ * der Rust-Seite und sagt je nach Fall selbst, ob ein neuer Griff zum Dialog
+ * helfen kann; dieser Satz haengt nichts an, was dem widersprechen koennte, er
+ * nennt nur den Knopf, der den Dialog oeffnet.
+ */
+export function rememberedWorkspaceRefusedMessage(pfad: string, fehler: unknown): string {
+  return (
+    `Cannot use "${pfad}" as the workspace: ${grundText(fehler)}. `
+    + `The folder was not taken. `
+    + `Choose one with "Pick a folder…" instead.`
+  )
+}
