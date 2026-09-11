@@ -197,7 +197,20 @@ pub(crate) fn process_read_bytes(pid: u32) -> Option<u64> {
         let mut counters = std::mem::zeroed::<IoCounters>();
         let ok = GetProcessIoCounters(handle, &mut counters);
         CloseHandle(handle);
-        (ok != 0).then_some(counters.read_bytes)
+        // `other_bytes` and not just `read_bytes`. Windows books a socket read
+        // as OtherTransferCount, because a socket is reached through
+        // DeviceIoControl on AFD and not through ReadFile. pip downloads over
+        // HTTPS, so on Windows ReadTransferCount barely moves while a wheel
+        // comes down the line, and the header stood at "(0 B of 1.9 GB)" for
+        // the whole 1990.6 MB of torch (T3 nebenfund, box, 11.09.2026). The
+        // Linux arm reads `rchar`, which counts every read() including
+        // sockets, which is why the same feature worked there and only there.
+        //
+        // The sum overstates a little: other I/O is not only the network. It
+        // is measured against a baseline taken at the start of this run and
+        // clamped to the announced total by the caller, so the bar can move
+        // too fast but never past the end and never backwards.
+        (ok != 0).then_some(counters.read_bytes.saturating_add(counters.other_bytes))
     }
 }
 
@@ -815,6 +828,37 @@ mod tests {
     use super::super::comfy_job::requirements_fallback_log;
 
     // ── Download-Anzeige am Rebuilding-Spinner (#162) ───────────────────
+
+    /// Der Fortschrittsbalken der ComfyUI-Reparatur stand auf Windows still.
+    ///
+    /// T3 auf der Box, 11.09.2026: waehrend der ganzen 1990,6 MB des
+    /// Torch-Downloads stand in der Kopfzeile "Rebuilding the ComfyUI
+    /// environment... (0 B of 1.9 GB)". Die Gesamtzahl stimmte, der Zaehler
+    /// bewegte sich nicht. Grund: Windows bucht einen Socket-Lesevorgang als
+    /// OtherTransferCount und nicht als ReadTransferCount, weil ein Socket
+    /// ueber DeviceIoControl auf AFD erreicht wird. Der Linux-Zweig liest
+    /// `rchar`, das jeden read() einschliesslich Sockets zaehlt, und
+    /// funktionierte deshalb.
+    ///
+    /// Auf dieser Maschine ist der Windows-Zweig nicht uebersetzt, also wird
+    /// hier der Quelltext gelesen. Am laufenden Balken nachzumessen ist Sache
+    /// eines Testers auf der Box.
+    #[test]
+    fn the_windows_byte_counter_includes_socket_traffic() {
+        let src = include_str!("pip.rs");
+        let win = src
+            .split("#[cfg(target_os = \"windows\")]")
+            .nth(1)
+            .expect("der Windows-Zweig von process_read_bytes");
+        let win = &win[..win.find("#[cfg(target_os = \"linux\")]").unwrap_or(win.len())];
+        assert!(
+            win.contains("counters.read_bytes.saturating_add(counters.other_bytes)"),
+            "der Windows-Zaehler laesst den Netzverkehr wieder liegen"
+        );
+        // Gegenprobe: der Linux-Zweig bleibt bei rchar, das den Socket schon
+        // mitzaehlt; dort waere eine Summe eine Doppelzaehlung.
+        assert!(src.contains("strip_prefix(\"rchar:\")"));
+    }
 
     #[test]
     fn pip_download_size_parses_decimal_units() {

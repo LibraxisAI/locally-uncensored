@@ -84,6 +84,12 @@ impl InstallSlot {
     }
 }
 
+/// What THIS run added to a shared cache. Never negative: a cache that is
+/// pruned mid-download must not make the bar walk backwards.
+fn downloaded_into_shared(shared: Option<&std::path::Path>, base: u64) -> u64 {
+    shared.map(|p| dir_size(p).saturating_sub(base)).unwrap_or(0)
+}
+
 fn dir_size(path: &std::path::Path) -> u64 {
     let Ok(read) = std::fs::read_dir(path) else {
         return 0;
@@ -102,11 +108,30 @@ fn dir_size(path: &std::path::Path) -> u64 {
 /// to `huggingface_hub.snapshot_download`, which reports nothing machine-
 /// readable on stdout; the growing target directory is the one progress
 /// signal that exists on every platform.
-pub fn watch_dir_size(slot: InstallSlot, dir: std::path::PathBuf, total_bytes: u64) {
+///
+/// `shared` is a cache directory that the SAME download also writes into but
+/// that other downloads share. Only its GROWTH during this run counts, because
+/// whatever lay there when we started belongs to somebody else's model.
+///
+/// Why the second directory exists at all: since huggingface_hub 1.x the
+/// default transport is Xet, and Xet does not stream into
+/// `<repo>/blobs/<sha>.incomplete` the way the plain HTTP path does. It fills
+/// its own chunk cache at `$HF_HOME/xet`, a SIBLING of the repo folder we
+/// watch. So the watched folder stayed near empty while the line was busy, and
+/// the downloads bar read "1.7 MB / 8.0 GB 0%" after four and a half minutes
+/// of real traffic (bauer-m on the Mac, 11.09.2026, N1). The bytes were never
+/// missing, they were being counted in the wrong place.
+pub fn watch_dir_size(
+    slot: InstallSlot,
+    dir: std::path::PathBuf,
+    shared: Option<std::path::PathBuf>,
+    total_bytes: u64,
+) {
     std::thread::spawn(move || {
         let mut last: Option<(std::time::Instant, u64)> = None;
+        let shared_base = shared.as_deref().map(dir_size).unwrap_or(0);
         while slot.is_running() {
-            let size = dir_size(&dir);
+            let size = dir_size(&dir) + downloaded_into_shared(shared.as_deref(), shared_base);
             let speed = match last {
                 Some((t, prev)) if size > prev => {
                     ((size - prev) as f64 / t.elapsed().as_secs_f64().max(0.001)) as u64
@@ -138,6 +163,38 @@ mod tests {
         // No known total: pass the raw byte count through.
         slot.set_download(1500, 0, 0);
         assert_eq!(slot.snapshot().download_progress, 1500);
+    }
+
+    /// Der Stillstand der Anzeige, als Rechnung.
+    ///
+    /// bauer-m auf dem Mac, 11.09.2026 (N1): nach viereinhalb Minuten stand
+    /// "1.7 MB / 8.0 GB 0%" in der Leiste, waehrend die Leitung arbeitete. Die
+    /// Bytes lagen im Xet-Zwischenspeicher, einem GESCHWISTER des beobachteten
+    /// Repo-Ordners, und wurden deshalb nicht gezaehlt.
+    #[test]
+    fn the_shared_cache_counts_what_this_run_added_to_it() {
+        let root = std::env::temp_dir().join(format!("lu-shared-{}", std::process::id()));
+        let xet = root.join("xet");
+        std::fs::create_dir_all(&xet).unwrap();
+        // Was beim Start schon dalag, gehoert einem anderen Modell.
+        std::fs::write(xet.join("alt.bin"), vec![0u8; 2_000]).unwrap();
+        let base = dir_size(&xet);
+        assert_eq!(base, 2_000);
+        assert_eq!(downloaded_into_shared(Some(&xet), base), 0, "fremde Bytes zaehlen nicht mit");
+
+        // Und was dieser Lauf dazulegt, zaehlt sofort.
+        std::fs::write(xet.join("neu.bin"), vec![0u8; 500]).unwrap();
+        assert_eq!(downloaded_into_shared(Some(&xet), base), 500);
+
+        // Ein geleerter Zwischenspeicher laesst den Balken nicht rueckwaerts laufen.
+        std::fs::remove_file(xet.join("alt.bin")).unwrap();
+        assert_eq!(downloaded_into_shared(Some(&xet), base), 0);
+
+        // Gegenprobe: ohne zweiten Ordner bleibt es bei null, also genau beim
+        // Verhalten von vorher.
+        assert_eq!(downloaded_into_shared(None, 0), 0);
+        assert_eq!(downloaded_into_shared(Some(&root.join("gibt-es-nicht")), 0), 0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -266,7 +266,8 @@ fn install_mlx_steps(slot: &crate::install_state::InstallSlot) -> Result<(), Str
     let mut prefetch_cmd = Command::new(venv_python());
     prefetch_cmd
         .args(["-c", prefetch])
-        .env("HF_HOME", mlx_root().join("cache"));
+        .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_XET_CACHE", hf_xet_cache_dir());
     apply_hf_token(&mut prefetch_cmd);
     let out = prefetch_cmd
         .output()
@@ -534,6 +535,22 @@ fn image_model_cache_dir(repo: &str) -> PathBuf {
         .join(format!("models--{}", repo.replace('/', "--")))
 }
 
+/// The Xet chunk cache inside our HF_HOME (`cache/xet`).
+///
+/// huggingface_hub 1.x downloads over Xet by default, and Xet does not fill
+/// `<repo>/blobs/<sha>.incomplete` the way the plain HTTP path does: the bytes
+/// land here first, in a folder that sits NEXT TO the repo folder rather than
+/// inside it. The progress watcher therefore has to look at both, or it reads
+/// near zero for minutes while the line is busy (bauer-m, Mac, 11.09.2026, N1:
+/// "1.7 MB / 8.0 GB 0%" after four and a half minutes, with 2.1 MB sitting
+/// right here). Shared by every repo, so only its growth counts.
+///
+/// Pinned through `HF_XET_CACHE` on every command that downloads, so this path
+/// is what the library really uses and not what it happens to default to.
+fn hf_xet_cache_dir() -> PathBuf {
+    mlx_root().join("cache").join("xet")
+}
+
 /// The snapshot directories of one repo, the revision `refs/main` points at
 /// first. A cache can hold more than one revision; the one the hub currently
 /// serves is the one an install has just written.
@@ -797,7 +814,7 @@ fn refetch_file(
         v = revision,
     );
     let mut cmd = Command::new(python);
-    cmd.args(["-c", &script]).env("HF_HOME", &cache);
+    cmd.args(["-c", &script]).env("HF_HOME", &cache).env("HF_XET_CACHE", hf_xet_cache_dir());
     apply_hf_token(&mut cmd);
     crate::commands::video::run_streamed(slot, &mut cmd)
         .map_err(|e| format!("re-fetching {}: {e}", repair.path))?;
@@ -943,6 +960,7 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
         crate::install_state::watch_dir_size(
             slot2.clone(),
             image_model_cache_dir(entry2.repo),
+            Some(hf_xet_cache_dir()),
             total,
         );
 
@@ -960,7 +978,8 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
         );
         let mut cmd = Command::new(&python);
         cmd.args(["-c", &script])
-            .env("HF_HOME", mlx_root().join("cache"));
+            .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_XET_CACHE", hf_xet_cache_dir());
         apply_hf_token(&mut cmd);
         if let Err(e) = crate::commands::video::run_streamed(&slot2, &mut cmd) {
             slot2.fail(e);
@@ -1196,6 +1215,7 @@ pub fn mlx_start(_state: &AppState, _args: &Value) -> CmdResult {
         .arg(&server)
         .env("LU_MLX_PORT", MLX_PORT.to_string())
         .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_XET_CACHE", hf_xet_cache_dir())
         .stdout(stdout)
         .stderr(stderr);
     apply_hf_token(&mut server_cmd);

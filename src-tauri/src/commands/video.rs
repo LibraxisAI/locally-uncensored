@@ -461,9 +461,15 @@ pub fn video_install_model(state: &AppState, args: &Value) -> CmdResult {
         std::fs::create_dir_all(parent).map_err(|e| internal(os_error::english(&e)))?;
     }
     slot.start();
+    // Kein geteilter Zwischenspeicher: dieser Weg laedt mit `local_dir`, und
+    // huggingface_hub legt den Zwischenstand dann unter `<local_dir>/.cache`
+    // ab, also INNERHALB des Ordners, der hier gemessen wird. Der Xet-Cache
+    // liegt fuer diesen Weg trotzdem daneben (HF_HOME wird hier nicht gesetzt,
+    // also im Standardordner des Nutzers); siehe Bericht bauer-t, Fund 3.
     crate::install_state::watch_dir_size(
         slot.clone(),
         model_dir(entry.id),
+        None,
         (entry.size_gb as f64 * 1e9) as u64,
     );
     let slot2 = slot.clone();
