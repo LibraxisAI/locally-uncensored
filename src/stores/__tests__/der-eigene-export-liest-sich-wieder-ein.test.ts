@@ -40,7 +40,7 @@ function rundlauf(eintraege: MemoryFile[]): MemoryFile[] {
   leerenUndSetzen(eintraege)
   const md = useMemoryStore.getState().exportAsMarkdown()
   leerenUndSetzen([])
-  const zahl = useMemoryStore.getState().importFromMarkdown(md)
+  const zahl = useMemoryStore.getState().importFromMarkdown(md).added
   expect(zahl).toBe(eintraege.length)
   return useMemoryStore.getState().entries
 }
@@ -110,7 +110,7 @@ describe('der eigene Markdown-Export laesst sich wieder einlesen', () => {
     ].join('\n')
 
     leerenUndSetzen([])
-    expect(useMemoryStore.getState().importFromMarkdown(alt)).toBe(1)
+    expect(useMemoryStore.getState().importFromMarkdown(alt).added).toBe(1)
     const [zurueck] = useMemoryStore.getState().entries
     expect(zurueck.title).toBe('Arbeitet auf Deutsch')
     expect(zurueck.content).toBe(EINTRAG.content)
@@ -120,7 +120,7 @@ describe('der eigene Markdown-Export laesst sich wieder einlesen', () => {
 
   it('POSITIVKONTROLLE: der schlichte Strichpunkt ohne Auszeichnung geht auch ein', () => {
     leerenUndSetzen([])
-    expect(useMemoryStore.getState().importFromMarkdown('## User\n\n- Ein blanker Satz ohne alles\n')).toBe(1)
+    expect(useMemoryStore.getState().importFromMarkdown('## User\n\n- Ein blanker Satz ohne alles\n').added).toBe(1)
     expect(useMemoryStore.getState().entries[0].content).toBe('Ein blanker Satz ohne alles')
   })
 })

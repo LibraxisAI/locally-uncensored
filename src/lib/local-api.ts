@@ -104,7 +104,7 @@ export function clientFelder(base: string, token: string): Array<{ feld: string;
  */
 export function reichweiteText(lan: boolean): string {
   return lan
-    ? 'Any device on your network can reach the API — guests on the same Wi-Fi included. The token is then the only boundary.'
+    ? 'Any device on your network can reach the API, guests on the same Wi-Fi included. The token is then the only boundary.'
     : 'Only programs on this machine reach the API. Other devices on the network do not.'
 }
 
@@ -161,7 +161,7 @@ export function parseCorsOrigins(text: string): string[] {
  */
 export function corsText(origins: string[]): string {
   if (origins.length === 0) {
-    return 'Closed. No web page may read this API — command-line tools and apps are unaffected.'
+    return 'Closed. No web page may read this API. Command-line tools and apps are unaffected.'
   }
   return origins.length === 1
     ? `Open to ${origins[0]} only.`

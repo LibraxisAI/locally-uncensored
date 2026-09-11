@@ -25,7 +25,7 @@ it('preserves sensitivity through JSON export/import and omits it from Markdown'
   const json = useMemoryStore.getState().exportAsJSON()
   expect(useMemoryStore.getState().exportAsMarkdown()).not.toContain('Synthetic private')
   useMemoryStore.getState().clearAll()
-  expect(useMemoryStore.getState().importFromJSON(json)).toBe(1)
+  expect(useMemoryStore.getState().importFromJSON(json).added).toBe(1)
   expect(useMemoryStore.getState().entries[0].sensitive).toBe(true)
   expect(useMemoryStore.getState().getMemoriesForPrompt('private', 8192)).toBe('')
 })

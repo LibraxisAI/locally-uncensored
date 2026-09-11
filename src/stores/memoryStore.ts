@@ -66,6 +66,52 @@ export function memoryMatchesScope(memory: Pick<MemoryFile, 'scope'>, scope?: st
   return memory.scope === undefined ||
     (typeof memory.scope === 'string' && memory.scope.trim().length > 0 && memory.scope === scope)
 }
+
+/**
+ * Same memory inside one collection: same content, same type, same scope.
+ * addMemory has always refused a second record on this rule; the importers
+ * reuse it, so reading the app's own export back in cannot double a collection
+ * (box test T5 punkt 4, 11.09.2026: import of a 4-entry export gave 8 entries).
+ */
+export function isSameMemory(
+  a: Pick<MemoryFile, 'content' | 'type' | 'scope'>,
+  b: Pick<MemoryFile, 'content' | 'type' | 'scope'>,
+): boolean {
+  return a.content === b.content && a.type === b.type && a.scope === b.scope
+}
+
+/**
+ * Everything an import did. Every usable entry of the file lands in exactly one
+ * counter, so the UI can name the numbers instead of claiming a flat import.
+ */
+export interface MemoryImportResult {
+  /** Written as new records. */
+  added: number
+  /** Known records (same id) refreshed from the file because fields changed. */
+  updated: number
+  /** Already in this collection, left untouched. */
+  alreadyPresent: number
+}
+
+/** Everything that decides whether a known record still matches the file. */
+function importDigest(m: MemoryFile): string {
+  return JSON.stringify([m.type, m.title, m.description, m.content, [...m.tags].sort(), m.source,
+    m.sourceKind ?? null, m.confirmedAt ?? null, m.sensitive === true, m.scope ?? null,
+    m.stale === true, m.validFrom ?? null, m.supersededBy ?? null, m.supersedesId ?? null])
+}
+
+/** The sentence the settings page shows after an import. Desktop and web share the wording. */
+export function describeMemoryImport(result: MemoryImportResult): string {
+  const noun = (n: number) => (n === 1 ? 'memory' : 'memories')
+  if (result.updated === 0 && result.alreadyPresent === 0) {
+    return `Imported ${result.added} ${noun(result.added)}.`
+  }
+  const parts = [`Imported ${result.added} new ${noun(result.added)}`]
+  if (result.updated > 0) parts.push(`${result.updated} updated`)
+  if (result.alreadyPresent > 0) parts.push(`${result.alreadyPresent} already present`)
+  return `${parts.join(', ')}.`
+}
+
 function hashContent(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i)
@@ -307,12 +353,13 @@ interface MemoryState {
   // Settings
   updateMemorySettings: (updates: Partial<MemorySettings>) => void
 
-  // Export / Import — importers return the number of entries actually added
-  // so the UI can give feedback (konata-session 2026-06-07: silent 0-import).
+  // Export / Import — importers report what they did with every usable entry
+  // of the file so the UI can give feedback (konata-session 2026-06-07: silent
+  // 0-import; box test T5 2026-09-11: re-import doubled the collection).
   exportAsMarkdown: () => string
-  importFromMarkdown: (markdown: string) => number
+  importFromMarkdown: (markdown: string) => MemoryImportResult
   exportAsJSON: () => string
-  importFromJSON: (json: string) => number
+  importFromJSON: (json: string) => MemoryImportResult
 
   // Legacy compat (used by old code paths during transition)
   addEntry: (category: MemoryCategory, content: string, source?: string) => void
@@ -577,9 +624,9 @@ export const useMemoryStore = create<MemoryState>()(
         const trimmedContent = memory.content.trim()
         if (!trimmedContent) return ''
 
-        // Deduplicate: don't add if exact same content + type exists
-        const existing = get().entries
-        if (existing.some(e => e.content === trimmedContent && e.type === memory.type && e.scope === memory.scope)) return ''
+        // Deduplicate: don't add if the same memory is already in the collection
+        const candidate = { content: trimmedContent, type: memory.type, scope: memory.scope }
+        if (get().entries.some(e => isSameMemory(e, candidate))) return ''
 
         const id = uuid()
         set((state) => ({
@@ -914,7 +961,9 @@ export const useMemoryStore = create<MemoryState>()(
 
       importFromMarkdown: (markdown) => {
         const lines = markdown.split('\n')
+        const pool: MemoryFile[] = [...get().entries]
         const newEntries: MemoryFile[] = []
+        let alreadyPresent = 0
         let currentType: MemoryType = 'user'
 
         const typeMap: Record<string, MemoryType> = {
@@ -940,7 +989,7 @@ export const useMemoryStore = create<MemoryState>()(
             const stand = isoBack(itemMatch[5]) ?? Date.now()
 
             if (content) {
-              newEntries.push({
+              const entry: MemoryFile = {
                 id: uuid(),
                 type: currentType,
                 title: title.substring(0, 60),
@@ -950,7 +999,12 @@ export const useMemoryStore = create<MemoryState>()(
                 createdAt: stand,
                 updatedAt: stand,
                 source,
-              })
+              }
+              // A markdown export carries no id, so the collection itself
+              // decides what is already known.
+              if (pool.some((known) => isSameMemory(known, entry))) { alreadyPresent++; continue }
+              pool.push(entry)
+              newEntries.push(entry)
             }
           }
         }
@@ -961,7 +1015,7 @@ export const useMemoryStore = create<MemoryState>()(
             lastSynced: Date.now(),
           }))
         }
-        return newEntries.length
+        return { added: newEntries.length, updated: 0, alreadyPresent }
       },
 
       exportAsJSON: () => {
@@ -975,7 +1029,7 @@ export const useMemoryStore = create<MemoryState>()(
           raw = JSON.parse(json)
         } catch {
           log.error('Failed to parse memory JSON import')
-          return 0
+          return { added: 0, updated: 0, alreadyPresent: 0 }
         }
         // Tolerant shape handling: accept LU's own {entries:[...]} export, a
         // bare [...] array, or {memories:[...]} (konata-session 2026-06-07 —
@@ -987,9 +1041,15 @@ export const useMemoryStore = create<MemoryState>()(
           : Array.isArray(memoriesField) ? memoriesField
           : []
         const now = Date.now()
-        const newEntries: MemoryFile[] = []
+        // The collection as it stands, grown while the file is read, so a file
+        // that carries the same memory twice cannot land twice either.
+        const pool: MemoryFile[] = [...get().entries]
         const importedIds = new Map<string, string | null>()
-        const history: Array<{ supersededBy?: string; supersedesId?: string }> = []
+        const landed: Array<{
+          entry: MemoryFile
+          links: { supersededBy?: string; supersedesId?: string }
+          known?: MemoryFile
+        }> = []
         for (const e of arr) {
           const scope = prop(e, 'scope')
           if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) continue
@@ -1001,21 +1061,14 @@ export const useMemoryStore = create<MemoryState>()(
           const type = MEMORY_TYPES.find((t) => t === prop(e, 'type')) ?? 'user'
           const sourceKind = prop(e, 'sourceKind')
           const confirmedAt = prop(e, 'confirmedAt')
-          const id = uuid()
           const originalId = asString(prop(e, 'id'))
-          if (originalId) importedIds.set(originalId, importedIds.has(originalId) ? null : id)
           const supersededBy = asString(prop(e, 'supersededBy'))
-          history.push({ supersededBy, supersedesId: asString(prop(e, 'supersedesId')) })
-          newEntries.push({
-            // Always mint a fresh id so a re-imported export can never collide
-            // with an existing entry's id (which broke edit/remove-by-id).
-            id,
+          const draft: Omit<MemoryFile, 'id' | 'createdAt'> = {
             type,
             title: (asString(prop(e, 'title')) ?? content).slice(0, 60).replace(/\n/g, ' '),
             description: (asString(prop(e, 'description')) ?? content).slice(0, 120),
             content,
             tags: asStringArray(prop(e, 'tags')),
-            createdAt: asNumber(prop(e, 'createdAt')) ?? now,
             updatedAt: now,
             source: asString(prop(e, 'source')) ?? 'import',
             sourceKind: sourceKind === 'chat' || sourceKind === 'voice' || sourceKind === 'screen' ? sourceKind : undefined,
@@ -1025,22 +1078,55 @@ export const useMemoryStore = create<MemoryState>()(
             // A missing replacement must not reactivate an outdated fact.
             stale: prop(e, 'stale') === true || supersededBy !== undefined,
             validFrom: asNumber(prop(e, 'validFrom')),
-          })
+          }
+          // The app's own export carries the record id, so the same file read
+          // twice meets its own entries again. A file without ids still meets
+          // them through content, type and scope.
+          const known = (originalId ? pool.find((p) => p.id === originalId) : undefined)
+            ?? pool.find((p) => isSameMemory(p, draft))
+          // A known record keeps its id and its birthday; only a genuinely new
+          // one gets a fresh id, which is why no import can collide with an
+          // existing entry's id (that once broke edit/remove-by-id).
+          const entry: MemoryFile = {
+            ...draft,
+            id: known?.id ?? uuid(),
+            createdAt: known?.createdAt ?? asNumber(prop(e, 'createdAt')) ?? now,
+          }
+          if (originalId) importedIds.set(originalId, importedIds.has(originalId) ? null : entry.id)
+          landed.push({ entry, links: { supersededBy, supersedesId: asString(prop(e, 'supersedesId')) }, known })
+          const at = known ? pool.indexOf(known) : -1
+          if (at >= 0) pool[at] = entry
+          else pool.push(entry)
         }
-        // References may only bind to unique IDs in this imported batch,
-        // never to existing local entries or an ambiguous duplicate ID.
-        newEntries.forEach((entry, index) => {
-          const links = history[index]
+        // References may only bind to unique IDs of this file, never to an
+        // unrelated local entry or an ambiguous duplicate ID. An ID the file
+        // shares with a record already here names that record, because it is
+        // the same memory.
+        for (const { entry, links } of landed) {
           entry.supersededBy = links.supersededBy ? importedIds.get(links.supersededBy) ?? undefined : undefined
           entry.supersedesId = links.supersedesId ? importedIds.get(links.supersedesId) ?? undefined : undefined
-        })
-        if (newEntries.length > 0) {
+        }
+        const newEntries: MemoryFile[] = []
+        const updates = new Map<string, MemoryFile>()
+        let alreadyPresent = 0
+        for (const { entry, known } of landed) {
+          if (!known) newEntries.push(entry)
+          else if (importDigest(known) === importDigest(entry)) alreadyPresent++
+          else updates.set(entry.id, entry)
+        }
+        if (newEntries.length > 0 || updates.size > 0) {
           set((state) => ({
-            entries: [...state.entries, ...newEntries],
+            entries: [...state.entries.map((e) => updates.get(e.id) ?? e), ...newEntries],
             lastSynced: now,
           }))
         }
-        return newEntries.length
+        // A refreshed record keeps its id, so its stored vector still carries
+        // the old text until it is re-embedded.
+        for (const entry of updates.values()) {
+          if (entry.sensitive) void deleteVector(entry.id)
+          else void enqueueEmbedding(entry)
+        }
+        return { added: newEntries.length, updated: updates.size, alreadyPresent }
       },
 
       // ── Legacy Compat ───────────────────────────────────────
