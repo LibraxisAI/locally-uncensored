@@ -36,6 +36,9 @@ export interface ChatSendBudgetInput {
   sendWindowTokens?: number
   /** settings.contextDecay. The notaus switches the whole cap off. */
   contextDecay?: boolean
+  /** Whether this payload goes to a machine on this network. See
+   *  lib/lan-openai-slot; a LAN server in the `openai` slot is not a bill. */
+  localBackend?: boolean
 }
 
 /**
@@ -111,6 +114,7 @@ export function chatSendBudget(input: ChatSendBudgetInput): number | null {
     modelWindow: input.modelWindow,
     sendWindowTokens: input.sendWindowTokens,
     capEnabled: true,
+    localBackend: input.localBackend,
   })
   return window > 0 ? window : null
 }

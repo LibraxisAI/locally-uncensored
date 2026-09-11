@@ -43,6 +43,7 @@ import { buildVisionFeedback } from '../api/vision-feedback'
 import { getModelMaxTokens, estimateTokens } from '../lib/context-compaction'
 import { buildRequestMessages, trimWorkingHistory } from '../lib/context-decay'
 import { effectiveSendWindow } from '../lib/send-window'
+import { sendsToALanBackend } from '../lib/lan-openai-slot'
 import { useSendSizeStore } from '../stores/sendSizeStore'
 import { resolveAgentNumCtx } from '../lib/agent-num-ctx'
 import { ensureBuiltinAgentCtx } from '../api/builtin-ensure'
@@ -988,6 +989,7 @@ export function useAgentChat() {
           sendWindowTokens: settings.codexSendWindowTokens,
           capEnabled: decayOn,
           smallModelMode: settings.smallModelMode,
+          localBackend: sendsToALanBackend(providerId),
         })
         let sendMessages: ChatMessage[] = agentMessages.slice()
         let trimmedReadKeys: ReadonlySet<string> = NO_TRIMMED_KEYS

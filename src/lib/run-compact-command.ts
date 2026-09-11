@@ -39,6 +39,7 @@ import { estimateTokens } from './context-compaction'
 import { computeContextFill, type FillMessage } from './token-usage'
 import { shouldAutoCompact, MIN_MESSAGES_SINCE_COMPACT } from './compact-trigger'
 import { effectiveSendWindow } from './send-window'
+import { sendsToALanBackend } from './lan-openai-slot'
 import { useSendSizeStore } from '../stores/sendSizeStore'
 import type { CompactionRecord, Message } from '../types/chat'
 import { formatCount } from './formatters'
@@ -311,12 +312,14 @@ export async function maybeAutoCompact(opts: {
     // mit `modelWindowTokens`), hat seinen Nenner schon gewaehlt, und die
     // Nutzlast des einfachen Chats kennt diese Kappe nicht.
     const st = useSettingsStore.getState().settings
+    const anbieter = getProviderIdFromModel(opts.activeModel)
     const gekappt = effectiveSendWindow({
-      providerId: getProviderIdFromModel(opts.activeModel),
+      providerId: anbieter,
       modelWindow: window,
       sendWindowTokens: st.codexSendWindowTokens,
       capEnabled: st.contextDecay !== false,
       smallModelMode: st.smallModelMode,
+      localBackend: sendsToALanBackend(anbieter),
     })
     if (gekappt > 0) window = gekappt
   }
