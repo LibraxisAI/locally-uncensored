@@ -3,6 +3,7 @@ import { useAgentTaskStore } from '../stores/agentTaskStore'
 import { useGenerationStore } from '../stores/generationStore'
 import { useModelStore } from '../stores/modelStore'
 import { createWakeWatcher } from '../lib/agent-wake'
+import { isRunStopped } from '../lib/run-stop'
 
 /**
  * Holt den Hauptagenten zurueck, wenn ein Hintergrundagent fertig ist.
@@ -52,6 +53,12 @@ export function useBackgroundAgentWake(
       conversationId: () => convRef.current,
       tasks: (id) => useAgentTaskStore.getState().forConv(id),
       isRunning: (id) => !!useGenerationStore.getState().generating[id],
+      // Stop heisst Stop, auch fuer einen Zug, den nicht der Mensch, sondern
+      // ein fertiger Hintergrundagent ausloest. `lib/run-stop.ts` fuehrt die
+      // Tatsache je Gespraech und ueberlebt das Ab- und Anmelden dieser
+      // Ansicht; geloescht wird sie von `beginRun`, also von der naechsten
+      // selbst getippten Anweisung.
+      isStopped: (id) => isRunStopped(id),
       activeModel: () => useModelStore.getState().activeModel,
       // `hiddenUser`: der Satz erreicht das Modell, nicht das Auge. Sichtbar
       // stuende im Verlauf eine Nutzernachricht, die der Mensch nie
