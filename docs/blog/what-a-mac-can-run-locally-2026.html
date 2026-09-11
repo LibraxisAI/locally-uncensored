@@ -107,7 +107,7 @@
 
     <p>Diffusion is compute bound rather than bandwidth bound, and it is the workload NVIDIA hardware was tuned for over a decade. The Mac tooling also lags: most new samplers, ControlNets and video pipelines land on CUDA first and arrive on Apple Silicon months later, if at all. In practice a single high resolution image that finishes in seconds on rented hardware can take minutes on a laptop with the fans at full tilt, and a video clip is worse by an order of magnitude. If you want the local diffusion route anyway, our <a href="how-to-run-flux-locally.html">Flux local guide</a> covers what it costs in hardware.</p>
 
-    <p>This is where the cloud earns its keep, and we would rather say that plainly than sell a Mac workflow that does not exist. The hosted lanes at <a href="https://lu-labs.ai/pricing" target="_blank" rel="noopener">LU Labs</a> run on managed NVIDIA H100, A100 and B200 class GPUs, with 10 image models, editing and upscale, and 5 video models producing 5 or 8 second clips. The hardware is shared, so at busy hours there is a short queue.</p>
+    <p>This is where the cloud earns its keep, and we would rather say that plainly than sell a Mac workflow that does not exist. The hosted lanes at <a href="https://lu-labs.ai/pricing" target="_blank" rel="noopener">LU Labs</a> run on managed NVIDIA H100, A100 and B200 class GPUs, with 10 image models, editing and upscale, and 11 video models producing 5 or 8 second clips. The hardware is shared, so at busy hours there is a short queue.</p>
 
     <h2>Where the Line Falls in Practice</h2>
 
