@@ -40,6 +40,7 @@ import { hfUrlToOllamaRef, hfUrlToLmStudioSubdir } from '../../lib/hf-to-provide
 import { pullModelTauri, checkConnection as checkOllama } from '../../api/ollama'
 import { activateBuiltinModel } from '../../api/engine'
 import { builtinModelNameFromPath } from '../../lib/builtin-model-identity'
+import { mayEnableFromWizard } from '../../lib/onboarding-provider-gate'
 import { bundledPickerIdForFile } from '../../lib/bundled-download-activation'
 import { backendCall } from '../../api/backend'
 import { getSystemVRAM } from '../../api/comfyui'
@@ -271,8 +272,17 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
   // Unterschied zwischen „wir wissen, dass er welche hat" und „er kann eins
   // davon waehlen": ohne sie liesse sich der Schritt gar nicht zeigen.
   const [installedModels, setInstalledModels] = useState<string[] | null>(null)
+  // Die Liste ist eine OLLAMA-Liste (`/api/tags`), und deshalb haengt sie an
+  // Ollamas Schalter. Wer den Anbieter in Settings ausgeschaltet hat, bekommt
+  // hier nichts angeboten, was der Assistent nicht einschalten darf: sonst
+  // waehlt ein Klick ein Modell, dessen Maschine dunkel bleibt. Erstlauf und
+  // frische Ablage tragen die Marke nicht, dort bleibt alles wie vorher.
+  const ollamaOffenbarUnerwuenscht = !mayEnableFromWizard(
+    useProviderStore(s => s.providers.ollama),
+  )
   useEffect(() => {
     if (step !== 'models') return
+    if (ollamaOffenbarUnerwuenscht) { setInstalledModels([]); return }
     let cancelled = false
     import('../../api/ollama').then(({ listModels }) =>
       listModels()
@@ -286,7 +296,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
         .catch(() => { if (!cancelled) setInstalledModels([]) })
     )
     return () => { cancelled = true }
-  }, [step])
+  }, [step, ollamaOffenbarUnerwuenscht])
 
   // EINE Quelle, zwei Leser: die Zahl ist die Laenge der Liste. Vorher waren
   // es zwei Groessen aus derselben Abfrage, und genau so faengt „zwei Pfade,
@@ -346,6 +356,10 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
    * dort die PRIMAERE Maschine bestimmt wird, hier ein einzelnes Modell).
    */
   const waehleInstalliertes = (name: string) => {
+    // Der Guertel zum Hosentraeger oben: einschalten nur, wenn der Nutzer den
+    // Anbieter nicht selbst ausgeschaltet hat. Beides zusammen ist EINE Regel,
+    // gefragt an der Stelle, die anbietet, und an der, die schreibt.
+    if (!mayEnableFromWizard(useProviderStore.getState().providers.ollama)) return
     setProviderConfig('ollama', { enabled: true })
     setActiveModel(name)
   }

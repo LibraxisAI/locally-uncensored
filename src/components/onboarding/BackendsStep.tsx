@@ -20,6 +20,7 @@
  */
 import { Loader2, Check, Download, RefreshCw, ArrowRight, ChevronRight, ExternalLink, Cpu } from 'lucide-react'
 import { withInstallerOutput, withDetail } from '../../lib/error-text'
+import { PROBE_TARGETS } from '../../lib/backend-detector'
 import { useProviderStore } from '../../stores/providerStore'
 import { BUILTIN_BACKEND_ID } from '../../lib/onboarding-backend'
 import { ProgressBar } from '../ui/ProgressBar'
@@ -68,7 +69,7 @@ export function BackendsStep({ skin, scan, fleet, setStep, nextStepAfterBackends
   const { isDark, cardClass, primaryBtn, secondaryBtn } = skin
   const {
     detectedBackends, detecting, selectedBackend, setSelectedBackend,
-    lmstudioOfflineDetected, lmstudioModelCount, runDetection,
+    lmstudioOfflineDetected, lmstudioModelCount, runDetection, stopDetection,
   } = scan
   const { ollama, ollamaDo, lmstudio, lmstudioDo, secondsOf } = fleet
   const { setProviderConfig } = useProviderStore()
@@ -80,8 +81,18 @@ export function BackendsStep({ skin, scan, fleet, setStep, nextStepAfterBackends
           <Loader2 size={18} className="mx-auto animate-spin text-gray-400" />
           <h2 className="text-base font-semibold">Scanning for local backends...</h2>
           <p className={`text-[0.7rem] ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-            Checking {LOCAL_BACKENDS.length} backends on their default ports.
+            Checking {PROBE_TARGETS.length} backends on their default ports.
           </p>
+          {/* Dieser Bildschirm war der EINZIGE des Assistenten ohne einen
+              einzigen Knopf: T2 hat auf der Box `document.querySelectorAll
+              ('button')` gezaehlt und null bekommen, waehrend der Scan
+              haengenblieb. Der Deckel in `use-backend-scan.ts` macht das
+              Warten endlich; dieser Knopf macht es abbrechbar, und beides
+              zusammen heisst, dass der Schritt nie mehr eine Sackgasse ist.
+              Sekundaer, weil Warten die Vorgabe bleibt. */}
+          <button onClick={stopDetection} className={secondaryBtn}>
+            Continue without scanning <ArrowRight size={14} />
+          </button>
         </>
       ) : (
         <>
