@@ -118,6 +118,15 @@ assert.equal(claimed.textContent, String(unfilteredFull))
 const claimedTotal = pricing.querySelector('[data-catalog-count]')
 assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, 'catalog size drift')
 assert.equal(claimedTotal.textContent, String(catalogSize))
+// Gemessen wurde am 10.09.2026; ein Modell kam danach in den Katalog. Die
+// Seite darf "27 von N" nur mit dem N sagen, das der Messlauf wirklich hatte,
+// und das steht in der Messtabelle: die Zeilen VOR der Zaehlzeile.
+const factsTable = readWeb('apps/web/lib/chat/model-facts.md').split('\nCounts:')[0]
+const measuredSize = factsTable.split('\n').filter((line) => /^\|\s*\S+\/\S+\s*\|\s*(full|partial|none|unknown)\s*\|/.test(line)).length
+assert.ok(measuredSize > 40 && measuredSize <= catalogSize, `measured set ${measuredSize} out of range`)
+const claimedMeasured = pricing.querySelector('[data-measured-count]')
+assert.equal(Number(claimedMeasured.dataset.measuredCount), measuredSize, 'measured size drift')
+assert.equal(claimedMeasured.textContent, String(measuredSize))
 // ── Der Wolkenschalter im Desktop ────────────────────────────────────
 //
 // Die Oberflaeche zeigt diese Zahlen, BEVOR jemand angemeldet ist, also bevor
@@ -145,6 +154,7 @@ const opsIds = new Set(
 )
 const countKind = (kind) => mediaRows.filter((row) => row.kind === kind && !opsIds.has(row.id)).length
 assert.equal(pitch.chatModels, catalogSize, 'pitch: chat model count drift')
+assert.equal(pitch.measuredChatModels, measuredSize, 'pitch: measured set drift')
 assert.equal(pitch.unfilteredChatModels, unfilteredFull, 'pitch: unfiltered count drift')
 assert.equal(pitch.flashModels, catalog.filter((row) => row.usageClass === 'flash').length, 'pitch: flash count drift')
 assert.equal(pitch.flashDailyTokens, daily, 'pitch: daily ceiling drift')

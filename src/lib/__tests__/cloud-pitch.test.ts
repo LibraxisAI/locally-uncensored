@@ -38,7 +38,8 @@ describe('cloud pitch', () => {
   })
 
   it('claims nothing the catalogue cannot carry', () => {
-    expect(CLOUD_PITCH.unfilteredChatModels).toBeLessThanOrEqual(CLOUD_PITCH.chatModels)
+    expect(CLOUD_PITCH.unfilteredChatModels).toBeLessThanOrEqual(CLOUD_PITCH.measuredChatModels)
+    expect(CLOUD_PITCH.measuredChatModels).toBeLessThanOrEqual(CLOUD_PITCH.chatModels)
     expect(CLOUD_PITCH.flashModels).toBeLessThanOrEqual(CLOUD_PITCH.chatModels)
     for (const line of cloudPitchLines()) expect(line).not.toMatch(/[–—]/u)
   })

@@ -22,6 +22,9 @@
 export interface CloudPitchNumbers {
   /** Chatmodelle im Katalog. */
   chatModels: number
+  /** Davon im Messlauf vom 10.09.2026 dabei. V4.1 Flash kam am selben Tag
+   *  nach dem Lauf in den Katalog und traegt bis zur Messung keine Marke. */
+  measuredChatModels: number
   /** Davon gemessen ohne Ablehnung. */
   unfilteredChatModels: number
   /** Modelle der Flash-Klasse, die im Chat keine Credits kosten. */
@@ -35,7 +38,8 @@ export interface CloudPitchNumbers {
 }
 
 export const CLOUD_PITCH: CloudPitchNumbers = {
-  chatModels: 46,
+  chatModels: 47,
+  measuredChatModels: 46,
   unfilteredChatModels: 27,
   flashModels: 12,
   flashDailyTokens: 500_000,
@@ -54,8 +58,8 @@ const n = (v: number) => v.toLocaleString('en-US')
  */
 export function cloudPitchLines(p: CloudPitchNumbers = CLOUD_PITCH): string[] {
   return [
-    `${p.unfilteredChatModels} of ${p.chatModels} chat models answer without refusing. Measured, not guessed, and marked in the picker.`,
+    `${p.unfilteredChatModels} of the ${p.measuredChatModels} chat models we measured answer without refusing. Measured, not guessed, and marked in the picker.`,
     `${p.flashModels} of them cost no credits at all in chat, up to ${n(p.flashDailyTokens)} tokens a day on a paid plan.`,
-    `${p.imageModels} image and ${p.videoModels} video models on our GPUs, including the ones your own machine cannot run.`,
+    `${p.chatModels} chat, ${p.imageModels} image and ${p.videoModels} video models on our GPUs, including the ones your own machine cannot run.`,
   ]
 }
