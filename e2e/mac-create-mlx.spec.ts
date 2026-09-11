@@ -25,7 +25,7 @@ const MAC_OPTS: TauriMockOptions = {
 }
 
 test('mac model install reports the missing snapshot component without claiming success', async ({ page }) => {
-  const error = 'Model installation did not finish: unet/ has no readable, non-empty .safetensors or .bin weights file. Retry the download to repair the missing files.'
+  const error = 'Model installation did not finish: unet/diffusion_pytorch_model.fp16.safetensors is missing (expected 5.1 GB). Retry the download to repair the missing files.'
   await page.addInitScript(tauriMockInit, {
     ...MAC_OPTS,
     mlx: { engineInstalled: true, installedImages: [], imageInstallError: error },
