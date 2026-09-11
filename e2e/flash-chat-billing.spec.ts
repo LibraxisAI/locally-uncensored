@@ -33,7 +33,10 @@ test('flash metadata and paid fallback reach the actual desktop composer', async
   await page.getByRole('button', { name: /New Chat/i }).first().click()
   await page.getByRole('button', { name: 'Select chat model', exact: true }).click()
   const row = page.getByRole('button', { name: /Llama 3.1 8B Turbo/ })
-  await expect(row.getByText('Flash', { exact: true })).toBeVisible()
+  // 7fa4b26b gab beiden Marken denselben Wortlaut in Auswahl und
+  // Eingabezeile: aus "Flash" wurde "No credits". Die Zeile selbst ist
+  // unveraendert, nur ihr Aufdruck.
+  await expect(row.getByText('No credits', { exact: true })).toBeVisible()
   await row.click()
   await expect(page.getByTestId('flash-chat-notice')).toContainText('50,000 input and output tokens')
   const composer = page.locator('textarea').first()

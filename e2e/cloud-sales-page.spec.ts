@@ -13,7 +13,10 @@ test('static cloud page renders locally and preserves source on the purchase lin
   await page.goto('http://lu-docs.test/cloud/')
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Use hosted models without buying a GPU')
   await expect(page.getByText('Hosted requests leave your machine', { exact: false })).toBeVisible()
-  const cta = page.getByRole('link', { name: 'Review credit packs', exact: true })
+  // 4d128954 hat den Knopf umbenannt und einen zweiten dazugestellt, der auf
+  // die neue Preisseite zeigt. Gemeint ist hier weiter der Kaufknopf, also
+  // der mit dem Herkunftszeichen an der Kasse.
+  const cta = page.getByRole('link', { name: 'Check packs and estimated usage', exact: true })
   await expect(cta).toHaveAttribute('href', 'https://lu-labs.ai/pricing?tab=credits&src=luc')
   await cta.focus()
   await expect(cta).toBeFocused()
