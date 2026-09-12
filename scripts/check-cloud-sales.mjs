@@ -34,6 +34,17 @@ function objects(file) {
   return out
 }
 
+// Jede Kundenseite unter docs/, einmal eingesammelt.
+function docsFiles(dir, out = []) {
+  for (const entry of readdirSync(dir)) {
+    const path = `${dir}/${entry}`
+    if (statSync(path).isDirectory()) docsFiles(path, out)
+    else if (/\.(html|txt|md)$/.test(entry)) out.push(path)
+  }
+  return out
+}
+const docsRoot = new URL('../docs', import.meta.url).pathname
+
 const page = new JSDOM(readFileSync(new URL('../docs/cloud/index.html', import.meta.url), 'utf8')).window.document
 const catalog = objects(source('apps/web/lib/chat/tier-models.ts'))
 for (const element of page.querySelectorAll('[data-model-id]')) {
@@ -180,6 +191,31 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Der Mac, einmal beantwortet ─────────────────────────────────────
+//
+// Das Handbuch ist die einzige docs/-Flaeche, die fuer 3.0.0 geschrieben
+// wurde, und es sagt: es gibt keinen Mac-Bau und hat nie einen gegeben. Keine
+// andere Seite darf daneben eine Roadmap versprechen. Der Anker ist der Satz
+// im Handbuch: verschwindet er, faellt auch diese Pruefung auf.
+const macAnswer = readFileSync(new URL('../docs/guide/faq-and-glossary/index.html', import.meta.url), 'utf8')
+assert.ok(
+  macAnswer.includes('There is no Mac build and there has never been one'),
+  'docs/guide/faq-and-glossary/index.html: the Mac answer drifted',
+)
+const macRoadmapClaims = []
+for (const path of docsFiles(docsRoot)) {
+  const text = readFileSync(path, 'utf8')
+  for (const satz of text.split(/(?<=[.!?])["\s]|\n/)) {
+    if (/roadmap/i.test(satz) && /\bmac(os)?\b/i.test(satz)) macRoadmapClaims.push(`${path.slice(docsRoot.length + 1)}: ${satz.trim().slice(0, 70)}`)
+  }
+}
+assert.equal(
+  macRoadmapClaims.length,
+  0,
+  `The handbook says there has never been a Mac build, so no page may put one on a roadmap: ${macRoadmapClaims.length} claim(s) [${macRoadmapClaims.join(' | ')}]`,
+)
+console.log('Mac guard passed: 0 roadmap promises for a Mac build in docs/, and the handbook answer is unchanged.')
+
 // ── Die Startseite verneint nicht, was die Wolkenseite verkauft ─────
 //
 // docs/cloud/index.html ist die Verkaufsseite fuer LU Cloud auf derselben
@@ -208,16 +244,6 @@ console.log('Home page guard passed: 0 "No cloud" claims in docs/index.html whil
 // Preisseite. Zwei Flaechen, ein Versprechen: sie muessen wortgleich bleiben,
 // sonst liest ein Kunde im Fenster etwas anderes als auf der Seite. Der
 // Ablehnungsteil wird hier nie schwaecher geprueft, nur gleichgehalten.
-// Jede Kundenseite unter docs/, einmal eingesammelt.
-function docsFiles(dir, out = []) {
-  for (const entry of readdirSync(dir)) {
-    const path = `${dir}/${entry}`
-    if (statSync(path).isDirectory()) docsFiles(path, out)
-    else if (/\.(html|txt|md)$/.test(entry)) out.push(path)
-  }
-  return out
-}
-const docsRoot = new URL('../docs', import.meta.url).pathname
 const sheet = readFileSync(new URL('../src/lib/release-notes.ts', import.meta.url), 'utf8')
 const csamLines = [
   'aterial involving minors is refused on every request',

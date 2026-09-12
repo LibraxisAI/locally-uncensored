@@ -48,7 +48,7 @@ It refers to abliterated AI models with artificial refusal behaviour removed. Th
 Only if you explicitly dispatch a chat over LAN or Cloudflare Tunnel. Remote access is opt-in, gated behind a 6-digit passcode, and shows visible device connection status. There are no background uploads and no telemetry.
 
 ### Can I run it on macOS?
-Not yet. Windows 10/11 and Linux are supported now. macOS is on the roadmap but not promised. The source is AGPL-3.0, so it can be built for other platforms.
+No. There is no Mac build and there has never been one. The release workflow builds Windows and Linux. On a Mac, use the hosted studio in a browser at lu-labs.ai.
 
 ### Is there a mobile app?
 Yes. The desktop app hosts a full mobile web app over LAN or Cloudflare Tunnel. From a phone you get chat, Coding Agent, 14 agent tools, plugins and personas.
