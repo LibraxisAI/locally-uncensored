@@ -200,7 +200,7 @@ const MARK_SENTENCE =
 // Auszeichnung weg, und genau dort stand der Satz mit der alten Zahl.
 const plainText = (raw) =>
   raw.replace(/<meta[^>]*content="([^"]*)"[^>]*>/g, ' $1 ').replace(/<[^>]+>/g, '').replace(/&quot;/g, '"')
-const markRatio = /\b\d+ of the \d+ (?:cloud )?(?:measured )?chat models[^.]*\./g
+const markRatio = /\b\d+ (?:of the \d+ )?(?:cloud )?(?:measured )?chat models (?:we measured |that )?answer[^.]*\./g
 const markOffences = []
 for (const file of docsFiles(docsRoot)) {
   for (const hit of plainText(readFileSync(file, 'utf8')).match(markRatio) ?? []) {
