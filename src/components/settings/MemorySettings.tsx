@@ -182,9 +182,24 @@ function MemorySettingsPanel() {
     e.target.value = '' // allow re-picking the same file
     if (!file) return
     const reader = new FileReader()
-    const collectionRevision = useMemoryStore.getState().memoryCollectionRevision
+    // Web gilt: die Sammlung wird an ZWEI Merkmalen festgehalten, nicht an
+    // einem. Die Revisionsnummer steigt nur beim Wechsel der ganzen Sammlung;
+    // wer waehrend des Lesens einen Eintrag anlegt oder loescht, aendert die
+    // Liste, nicht die Nummer, und der Import haette in eine andere Lage
+    // geschrieben als die, die der Nutzer vor sich hatte.
+    const erwarteteEintraege = useMemoryStore.getState().entries
+    const erwarteteRevision = useMemoryStore.getState().memoryCollectionRevision
     reader.onload = (ev) => {
-      if (useMemoryStore.getState().memoryCollectionRevision !== collectionRevision) return
+      // Und der Abbruch ist nicht mehr stumm (R5-33). Ein stilles `return`
+      // sah aus wie ein Import, der nichts gefunden hat, und der Nutzer
+      // probierte dieselbe Datei noch einmal.
+      if (
+        useMemoryStore.getState().entries !== erwarteteEintraege ||
+        useMemoryStore.getState().memoryCollectionRevision !== erwarteteRevision
+      ) {
+        setImportMsg('Memory collection changed. Choose the file again.')
+        return
+      }
       const content = ev.target?.result as string
       if (!content) { setImportMsg('Could not read that file.'); return }
       const trimmed = content.trimStart()
