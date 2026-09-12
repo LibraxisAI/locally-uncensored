@@ -121,7 +121,7 @@ export function ContentPolicySettings() {
 
       <p className="text-[0.6rem] text-gray-500 leading-relaxed">
         Material involving minors, and photographs of real people uploaded without their consent,
-        are refused on every request whatever this is set to, and reported.
+        are refused on every request whatever this is set to.
       </p>
     </div>
   )

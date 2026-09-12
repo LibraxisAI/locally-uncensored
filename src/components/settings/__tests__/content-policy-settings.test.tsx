@@ -76,6 +76,26 @@ describe('ContentPolicySettings', () => {
     expect(text).toMatch(/consent/i)
   })
 
+  /**
+   * Derselbe Grund wie beim Blatt in A5 (R6-2): der Meldeweg steht nicht.
+   * SAFETY_ALERT_WEBHOOK_URL ist auf dem Droplet nicht gesetzt, alertCsamBlock
+   * steigt ohne Ziel sofort aus, und keine Migration legt eine Tabelle dafuer
+   * an. Die Sperre selbst bleibt wortgleich und wird nie schwaecher; nur die
+   * Zusage, die die App nicht einloest, faellt weg.
+   */
+  it('verspricht keine Meldung, die niemand verschickt', () => {
+    render(<ContentPolicySettings />)
+    const text = document.body.textContent ?? ''
+    expect(text).toMatch(/refused on every request whatever this is set to\./)
+    expect(text).not.toMatch(/and reported/i)
+  })
+
+  it('NEGATIVKONTROLLE: die Sperre selbst steht unveraendert da', () => {
+    render(<ContentPolicySettings />)
+    const text = document.body.textContent ?? ''
+    expect(text).toMatch(/Material involving minors, and photographs of real people uploaded without their consent, are refused on every request/)
+  })
+
   it('says plainly that the local machine is not affected', () => {
     render(<ContentPolicySettings />)
     expect(document.body.textContent ?? '').toMatch(/nothing on\s+your own machine is/i)
