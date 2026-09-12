@@ -469,3 +469,23 @@ if (flashByNameOnly.length > 0) {
   )
 }
 console.log(`Flash-class guard passed: the handbook names the class and not the word, with ${flashByNameOnly.length} catalogue entry carrying Flash in the name without the class.`)
+
+// ── Das Datum der Messung, einmal ───────────────────────────────────
+//
+// Beide Verkaufsseiten zitieren den Messlauf im Fliesstext und tragen oben ein
+// <time>. Die Messtabelle datiert sich selbst, und das ist die Quelle fuer
+// beide Angaben. Eine Seite, die den 9. stempelt und im Text den 10. zitiert,
+// laesst den Leser raten, welcher Lauf gemeint ist.
+const factsDate = /Produced by the owner on (\d{4}-\d{2}-\d{2})/.exec(readWeb('apps/web/lib/chat/model-facts.md'))?.[1]
+assert.ok(factsDate, 'model-facts.md carries no production date')
+const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const [factsYear, factsMonth, factsDay] = factsDate.split('-')
+const factsSpelled = `${monthNames[Number(factsMonth) - 1]} ${Number(factsDay)}, ${factsYear}`
+for (const [name, doc] of zahlenseiten) {
+  const stamp = doc.querySelector('.post-meta time')
+  assert.ok(stamp, `${name}: the post date is gone`)
+  assert.equal(stamp.getAttribute('datetime'), factsDate, `${name}: the stamped date is not the date of the measurement it cites`)
+  assert.equal(stamp.textContent, factsSpelled, `${name}: the spelled date does not match the stamp`)
+  assert.ok(new RegExp(`measured on ${factsDate}`, 'i').test(doc.body.textContent), `${name}: the cited measurement date drifted`)
+}
+console.log(`Measurement-date guard passed: both sales pages stamp and cite ${factsDate}, the date model-facts.md carries.`)
