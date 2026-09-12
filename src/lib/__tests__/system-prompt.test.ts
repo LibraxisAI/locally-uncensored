@@ -179,7 +179,10 @@ describe('die Reichweitenzeile haengt an jeder Oberflaeche mit einem Menschen da
     }
   })
 
-  it('A/B-Vergleich: ohne Person der Grundtext, mit Person die Person', () => {
+  // Entscheid David 12.09.2026: der Vergleich schickt gar keine Person mehr,
+  // nur den Grundtext. Der Fall "mit Person" steht hier weiter, weil der Chat
+  // ihn hat; fuer den Vergleich zaehlt die erste Zeile.
+  it('Grundtext ohne Person, und mit Person traegt die Person die Rolle', () => {
     traegtDenHausteil(
       buildChatSystemPrompt({ systemPrompt: undefined, personaEnabled: false }),
     )
@@ -208,6 +211,9 @@ describe('die Reichweitenzeile haengt an jeder Oberflaeche mit einem Menschen da
     const quelle = read('hooks/useABCompare.ts')
     expect(quelle).toContain('buildChatSystemPrompt(')
     expect(quelle).not.toMatch(/content: persona\.systemPrompt/)
+    // Und seit dem 12.09.2026 holt er die Person gar nicht mehr. Der
+    // Koerperbeweis steht in hooks/__tests__/der-vergleich-schickt-keine-person.
+    expect(quelle).not.toMatch(/getActivePersona/)
   })
 
   /**

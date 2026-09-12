@@ -64,7 +64,8 @@ import { isRecord, asString } from '../types/json-guards'
 // Windows/Linux appMode reflects a real user choice and is never touched.
 // v20 (2.6.6): added settings.contextDecay (default true) and
 // settings.codexSendWindowTokens (default 64000) for the tool-result age decay,
-// plus settings.memoryCloudOptIn (default false, plan A7) and
+// plus settings.memoryCloudOptIn (plan A7; the DEFAULT moved to true on
+// 12.09.2026, this migration is untouched and stays purely additive) and
 // settings.codexDefaultMode (default 'ask', plan C1); all four ride the
 // default-merge, strictly additive, no one-shot reset (R1 downgrade contract)
 // and the paid-provider send cap. STRICTLY ADDITIVE and IDEMPOTENT: the merge

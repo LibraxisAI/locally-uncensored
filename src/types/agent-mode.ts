@@ -188,9 +188,11 @@ export interface MemoryFile {
 
 export interface MemorySettings {
   // Both ship ON: stores/memoryStore.ts sets them true for a fresh profile and
-  // for the migration of an old one. Auto-extraction is therefore opt-OUT, and
-  // it costs a second inference call. Whether that default is right is David's
-  // call; this comment only stops describing the opposite of what ships.
+  // for the migration of an old one. Auto-extraction is opt-OUT, and it costs
+  // a second inference call. David decided that on 12.09.2026 (R2-48, R5-27),
+  // together with the cloud gate that used to keep it silently dead on the
+  // desktop (settings.memoryCloudOptIn, lib/constants.ts). What it costs
+  // stands next to the switch that turns it off.
   autoExtractEnabled: boolean    // default true, costs extra inference
   autoExtractInAllModes: boolean // default true, also extract outside agent mode
   maxMemoriesInPrompt: number    // default 10 (legacy; retrieval uses the budget tier / override)

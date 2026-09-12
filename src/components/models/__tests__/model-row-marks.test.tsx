@@ -47,6 +47,18 @@ describe('ModelRowMarks', () => {
     expect(screen.getByText(FLASH_MARK_LABEL).getAttribute('title')).toContain('500,000')
   })
 
+  it('carries the wording David decided on 12.09.2026, to the character', () => {
+    // Die Marke hiess zwischendurch "Included". Sie heisst wieder
+    // "No credits", und der Titel ist der eine Satz, den das Web auch traegt.
+    // Zeichengleich, weil zwei Apps mit zwei Formulierungen derselben Zusage
+    // dem Kunden zwei Zusagen vorlesen.
+    expect(FLASH_MARK_LABEL).toBe('No credits')
+    signIn(true)
+    render(<ModelRowMarks model={{ flash }} />)
+    expect(screen.getByText('No credits').getAttribute('title'))
+      .toBe('No credits on your plan, up to 500,000 tokens per day.')
+  })
+
   it('carries both marks at once for a paying account', () => {
     signIn(true)
     render(<ModelRowMarks model={{ flash, unfiltered: 'full' }} />)

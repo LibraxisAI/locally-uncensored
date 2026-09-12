@@ -22,15 +22,26 @@
  * geaenderte Zahl zweimal geaendert werden muss, mit Absicht.
  *
  * Nichts hier ist eine Zusage fuer den Einzelfall. "Ohne Ablehnung" ist eine
- * MESSUNG vom 10.09.2026, kein Vertrag, und was eine Anfrage enthalten darf,
- * entscheidet der Server bei jedem Aufruf neu.
+ * MESSUNG, kein Vertrag, und was eine Anfrage enthalten darf, entscheidet der
+ * Server bei jedem Aufruf neu.
+ *
+ * ## Die Markenzahl wird gelesen, nicht getippt
+ *
+ * `unfilteredChatModels` ist die Zahl der Modelle, die die strenge Regel vom
+ * 12.09.2026 erfuellen: in BEIDEN Laeufen beide Fragen beantwortet. Sie steht
+ * als Zeile in `no-refusals-measurement.md` neben dieser Datei, und der
+ * Waechter in `__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts`
+ * zaehlt die `full`-Zeilen dieser Datei, statt eine zweite getippte Zahl
+ * danebenzustellen. Eine getippte Markenzahl war genau der Fund: sie konnte
+ * nicht laut falsch sein. Dasselbe gilt fuer `heldBackChatModels`, das die
+ * `partial`-Zeilen derselben Datei zaehlt.
  *
  * ## Zwei Mengen, kein Rueckbezug
  *
  * `unfilteredChatModels` und `flashModels` zaehlen verschiedene Dinge: die
  * einen sind gemessen, die anderen sind eine Abrechnungsklasse. Wie gross ihre
  * Schnittmenge ist, steht nirgends gemessen, also darf keine Zeile sie
- * behaupten. Die zweite Zeile sagte "12 of them" direkt hinter den 27
+ * behaupten. Die zweite Zeile sagte "12 of them" direkt hinter den
  * gemessenen und las sich damit als genau diese Schnittmenge (R6-7). Sie nennt
  * jetzt den Katalog, auf den sich die 12 wirklich beziehen.
  */
@@ -41,10 +52,11 @@ export interface CloudPitchNumbers {
   /** Davon im Messlauf vom 10.09.2026 dabei. V4.1 Flash kam am selben Tag
    *  nach dem Lauf in den Katalog und traegt bis zur Messung keine Marke. */
   measuredChatModels: number
-  /** Davon gemessen ohne Ablehnung. */
+  /** Davon nach der strengen Regel ohne Ablehnung: `full`-Zeilen in
+   *  `no-refusals-measurement.md`. Nur sie tragen die Marke. */
   unfilteredChatModels: number
   /** Davon gemessen mit Zurueckhaltung: sie antworten, gehen aber nicht ganz
-   *  mit, und tragen deshalb keine Marke. */
+   *  mit, und tragen deshalb keine Marke. `partial`-Zeilen derselben Datei. */
   heldBackChatModels: number
   /** Modelle der Flash-Klasse, die im Chat keine Credits kosten. */
   flashModels: number
@@ -74,8 +86,8 @@ export interface CloudPitchNumbers {
 export const CLOUD_PITCH: CloudPitchNumbers = {
   chatModels: 47,
   measuredChatModels: 46,
-  unfilteredChatModels: 27,
-  heldBackChatModels: 4,
+  unfilteredChatModels: 24,
+  heldBackChatModels: 19,
   flashModels: 12,
   flashDailyTokens: 500_000,
   imageModels: 10,

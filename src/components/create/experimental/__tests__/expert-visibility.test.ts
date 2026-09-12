@@ -39,6 +39,34 @@ describe('Expert controls match the desktop backend', () => {
     expect(screen.queryByText('Expert')).toBeNull()
   })
 
+  it('hides the five dead knobs on the local music lane', () => {
+    // R2-28: Sampler, Scheduler, LoRA, VAE und Skip CLIP standen auf der
+    // lokalen Musikbahn und keiner davon wurde je gesendet. Der Abschnitt
+    // traegt dort nichts mehr, also faellt er ganz weg.
+    useCreateStore.setState({ backend: 'local', mode: 'video' })
+    useCreateStore.getState().setIntent('music')
+    render(createElement(ParamGroups))
+    expect(screen.queryByText('Expert')).toBeNull()
+    for (const knopf of ['Sampler', 'Scheduler', 'LoRA stack', 'VAE', 'Skip CLIP layers']) {
+      expect(screen.queryByText(knopf), `${knopf} is still on the local music lane`).toBeNull()
+    }
+  })
+
+  it('leaves the lanes whose builder really reads sampler and scheduler alone', () => {
+    // Negativkontrolle: Lipsync und Motion lesen `params.sampler` und
+    // `params.scheduler` wirklich. Ein zu breiter Schnitt haette sie
+    // mitgenommen.
+    for (const intent of ['lipsync', 'motion'] as const) {
+      cleanup()
+      useCreateStore.setState({ backend: 'local', mode: 'video' })
+      useCreateStore.getState().setIntent(intent)
+      render(createElement(ParamGroups))
+      fireEvent.click(screen.getByText('Expert'))
+      expect(screen.getByText('Sampler'), `${intent} lost its sampler`).toBeTruthy()
+      expect(screen.getByText('Scheduler'), `${intent} lost its scheduler`).toBeTruthy()
+    }
+  })
+
   it('keeps cloud edit denoise while hiding local mask controls', () => {
     useCreateStore.setState({ backend: 'cloud', mode: 'image' })
     useCreateStore.getState().setIntent('edit')

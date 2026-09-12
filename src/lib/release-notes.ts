@@ -51,6 +51,12 @@ import { CLOUD_PITCH } from './cloud-pitch'
  */
 export const SHEET_CHAT_MODELS = CLOUD_PITCH.measuredChatModels
 export const SHEET_CATALOGUE_MODELS = CLOUD_PITCH.chatModels
+/**
+ * Die Markenzahl steht seit dem Entscheid vom 12.09.2026 auf der STRENGEN
+ * Regel: nur ein Modell, das in beiden Laeufen beide Fragen beantwortet hat,
+ * traegt die Marke. Ihre Quelle ist `no-refusals-measurement.md`, und der
+ * Waechter zaehlt dort die Zeilen, statt eine zweite Zahl zu tippen.
+ */
 export const SHEET_MARKED_MODELS = CLOUD_PITCH.unfilteredChatModels
 
 /**
@@ -87,7 +93,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
     lines: [
-      `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models we measured answer without refusing. The catalogue holds ${SHEET_CATALOGUE_MODELS} chat models. We asked them, twice each, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.`,
+      `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark. The catalogue holds ${SHEET_CATALOGUE_MODELS} chat models. We asked them, twice each, and counted only the ones that answered both times. The mark comes from that measurement, never from the model name.`,
       // Der Bezugspunkt der 12 steht ausgeschrieben, nie als Rueckverweis.
       // "12 of those models" stand direkt hinter der Zeile darueber, und die
       // nennt zwei Mengen: den Messlauf und den Katalog. Wer "those" auf die
@@ -97,7 +103,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       // Katalog seit diesem Fund ausdruecklich; T13 hat am 12.09.2026 auf der
       // Box gemessen, dass Blatt und Tor deshalb verschiedene Bezugspunkte
       // trugen. Beide nennen jetzt denselben.
-      `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on a paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.`,
+      `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on an active paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and accounts without an active plan keep paying credits too.`,
       'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
       'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.',
       'Sampling controls sit next to the prompt: temperature, top P and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
@@ -106,9 +112,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         title: 'Models and marks',
         items: [
-          `The ${SHEET_CHAT_MODELS} cloud chat models that were in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} answer in full. ${CLOUD_PITCH.heldBackChatModels} answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet.`,
+          `The ${SHEET_CHAT_MODELS} cloud chat models that were in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${CLOUD_PITCH.heldBackChatModels} answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet.`,
           'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
-          'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "Included" for the Flash class with its real daily number. The second one only shows on a plan that pays for it, because on any other account those models cost credits.',
+          'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number. The second one only shows on a plan that pays for it, because on any other account those models cost credits.',
           'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
         ],
       },
@@ -117,7 +123,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         items: [
           `${CLOUD_PITCH.flashModels} models run unmetered in chat inside the apps: GLM 5.3 Flash, DeepSeek V4 Flash 0731, Ling 3.0 flash, gpt-oss 120B, gpt-oss 20B, Gemma 4 26B, Gemma 4 31B Turbo, Qwen3 32B, Qwen 3.5 9B, Llama 3.3 70B Turbo, Llama 3.1 8B Turbo and Mistral Small 3.2 24B.`,
           `The ceiling is ${FLASH_DAILY} input and output tokens per account per day, resetting at 00:00 UTC, one free request at a time. It went up tenfold from the ceiling of the first version, where a working day ran out before lunch.`,
-          'It is a paid-plan benefit. An account that has never paid keeps its starting credits and pays credits for Flash exactly like for any other model.',
+          'It is a benefit of an active paid plan. An account without an active plan keeps its starting credits and pays credits for Flash exactly like for any other model.',
           'API keys always pay credits, including on these models. The unmetered path is the app, not the endpoint.',
         ],
       },

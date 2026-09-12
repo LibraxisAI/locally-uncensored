@@ -38,26 +38,19 @@ export function useABCompare() {
 
     // Build messages for the providers
     //
-    // `Persona` carries `systemPrompt`, never `prompt`: the old read was
-    // always undefined, so a comparison ran with no persona at all while the
-    // rest of the app (chat, Codex) sent one.
+    // R2-8, zweite Haelfte, Entscheid David vom 12.09.2026: der Vergleich
+    // schickt KEINE Person mehr mit, nur die Frage. Er nahm bis dahin die
+    // global gewaehlte Person ohne Nachfrage, waehrend der Chat sie je
+    // Unterhaltung unterdrueckt. Wer zwei Modelle nebeneinander stellt, will
+    // die Modelle vergleichen; eine Rolle, die beide Seiten gleich faerbt und
+    // im Vergleichsfenster nirgends zu sehen ist, verfaelscht genau das.
     //
-    // Und danach blieb der Vergleich die einzige Oberflaeche ohne Grundtext:
-    // er schickte NUR die Person, mit ausgeschalteter Person also gar nichts.
-    // Genau der leere Systemtext kostet laut Messung vom 10.09.2026 sechs
-    // Katalogmodelle die Antwort, und ein Vergleich, dessen beide Seiten aus
-    // der Anbieterhaltung antworten, vergleicht nicht LU. Jetzt baut er den
-    // Systemtext wie der Chat.
-    const persona = useSettingsStore.getState().getActivePersona()
-    const personasOn = useSettingsStore.getState().settings.personasEnabled !== false
+    // Der Hausteil bleibt. Ohne Systemtext antwortet ein Modell aus der
+    // Haltung seines Anbieters, und ein Vergleich, dessen beide Seiten so
+    // antworten, vergleicht nicht LU. `buildChatSystemPrompt({})` ist genau
+    // der Grundtext ohne Person, denselben schickt der Chat ohne Person.
     const chatMessages: ChatMessage[] = []
-    chatMessages.push({
-      role: 'system',
-      content: buildChatSystemPrompt({
-        systemPrompt: persona?.systemPrompt,
-        personaEnabled: personasOn && Boolean(persona?.systemPrompt?.trim()),
-      }),
-    })
+    chatMessages.push({ role: 'system', content: buildChatSystemPrompt({}) })
 
     // Include previous messages for context
     const prevMessages = useCompareStore.getState().messagesA.slice(0, -1) // exclude the empty assistant msg

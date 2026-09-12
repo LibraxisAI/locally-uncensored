@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Zap } from 'lucide-react'
 import { Modal } from '../ui/Modal'
-import { CREDITS_EXHAUSTED_EVENT, TOPUP_URL } from '../../lib/credits-exhausted'
+import { CREDITS_EXHAUSTED_EVENT, PRICING_URL } from '../../lib/credits-exhausted'
 import { openExternal } from '../../api/backend'
 
 /**
  * Globally mounted "out of credits" dialog. The OpenAI provider fires
  * CREDITS_EXHAUSTED_EVENT when LU Cloud answers `code: 'credits_exhausted'`
- * (lib/credits-exhausted.ts); this turns it into a purchase prompt with a
- * button to the website's top-up store instead of a dead-end error line.
+ * (lib/credits-exhausted.ts); this turns it into a readable next step instead
+ * of a dead-end error line.
+ *
+ * R5-51, Entscheid David vom 12.09.2026: der Knopf oeffnet die PREISSEITE im
+ * Browser, nicht die Aufladeseite. Wer leer ist, waehlt zwischen einem Plan
+ * und einem Paket; ein Knopf, der direkt in einen Kauf springt, nimmt ihm
+ * diese Wahl ab. Gekauft wird auf der Website.
  */
 export function CreditsExhaustedModal() {
   const [open, setOpen] = useState(false)
@@ -31,13 +36,13 @@ export function CreditsExhaustedModal() {
           <button
             type="button"
             onClick={() => {
-              void openExternal(TOPUP_URL)
+              void openExternal(PRICING_URL)
               setOpen(false)
             }}
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold px-4 py-2.5 transition-colors"
           >
             <Zap size={16} />
-            Load up your credits
+            See plans and packs
           </button>
           <button
             type="button"
