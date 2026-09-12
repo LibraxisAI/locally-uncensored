@@ -5,10 +5,24 @@
 // event (not a store) so the non-React provider layer can raise it without
 // new dependencies.
 
+import { CLOUD_BASE } from '../api/cloud/config'
+
 export const CREDITS_EXHAUSTED_EVENT = 'lu:credits-exhausted'
 
-/** Where the dialog's button leads. Purchases happen on the website. */
-export const TOPUP_URL = 'https://lu-labs.ai/credits'
+/**
+ * Wohin der Knopf fuehrt: auf die Preisseite, nicht in einen Kauf.
+ *
+ * R5-51, Entscheid David vom 12.09.2026. Der Knopf ging bis dahin auf die
+ * Aufladeseite, also mitten in einen Kauf hinein, und traf damit fuer den
+ * Kunden eine Entscheidung, die er noch gar nicht getroffen hatte: wer leer
+ * ist, hat die Wahl zwischen einem Plan und einem Paket, und die Uebersicht
+ * darueber steht auf der Preisseite. Gekauft wird weiter auf der Website und
+ * nie in dieser App.
+ *
+ * Zusammengesetzt aus der bestehenden App-Adresse, damit eine Entwicklung
+ * gegen einen lokalen Server nicht in die Live-Seite laeuft.
+ */
+export const PRICING_URL = `${CLOUD_BASE}/pricing`
 
 export function signalCreditsExhausted(): void {
   if (typeof window !== 'undefined') {
@@ -26,6 +40,6 @@ export function signalCreditsExhausted(): void {
 export const CREDITS_EXHAUSTED_MESSAGE =
   "You're out of credits, so the server refused this request.\n\n" +
   'Plan credits refill on your renewal date. Top-up credits are one-time, never ' +
-  'expire, and are only used once the plan credits are gone. Load up at ' +
-  TOPUP_URL +
+  'expire, and are only used once the plan credits are gone. Plans and packs are at ' +
+  PRICING_URL +
   '.'
