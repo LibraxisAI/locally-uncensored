@@ -1,5 +1,5 @@
 import type { CloudModel } from '../../types/models'
-import { FLASH_MARK_LABEL, useFlashEntitlement } from '../../lib/flash-entitlement'
+import { FLASH_MARK_LABEL, flashMarkTitle, useFlashEntitlement } from '../../lib/flash-entitlement'
 
 /**
  * Die Marken an einer Zeile der Modellauswahl.
@@ -37,7 +37,7 @@ export function ModelRowMarks({ model }: { model: { flash?: CloudModel['flash'];
       {freeFlash && (
         <span
           className="t-micro text-emerald-600 dark:text-emerald-400"
-          title={`Included in your plan, up to ${freeFlash.dailyTokens.toLocaleString('en-US')} tokens per day. Chat only, one request at a time.`}
+          title={flashMarkTitle(freeFlash.dailyTokens)}
           data-mark="unlimited"
         >
           {FLASH_MARK_LABEL}
