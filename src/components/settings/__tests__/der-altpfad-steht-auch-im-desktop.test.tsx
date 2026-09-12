@@ -25,11 +25,11 @@ const befund = {
   previous: [{ id: 'alt-1', content: 'aus der alten Kopie' }],
   current: [{ memory_id: 'alt-1', revision: 4, deleted: false, payload: { id: 'alt-1' }, updated_at: 'x' }],
 }
-const angesehen = vi.fn(async () => befund)
-const entfernt = vi.fn(async () => {})
+const angesehen = vi.fn(async (_owner: string, _signal?: AbortSignal) => befund)
+const entfernt = vi.fn(async (_review: unknown, _confirmed: boolean, _signal?: AbortSignal) => {})
 vi.mock('../../../lib/memory-legacy', () => ({
-  reviewPreviousMemories: (...args: unknown[]) => angesehen(...(args as [])),
-  finalizePreviousMemories: (...args: unknown[]) => entfernt(...(args as [])),
+  reviewPreviousMemories: (owner: string, signal?: AbortSignal) => angesehen(owner, signal),
+  finalizePreviousMemories: (review: unknown, confirmed: boolean, signal?: AbortSignal) => entfernt(review, confirmed, signal),
 }))
 
 const { MemorySettings } = await import('../MemorySettings')

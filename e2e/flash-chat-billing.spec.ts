@@ -37,12 +37,14 @@ test('flash metadata and paid fallback reach the actual desktop composer', async
   await page.getByRole('button', { name: /New Chat/i }).first().click()
   await page.getByRole('button', { name: 'Select chat model', exact: true }).click()
   const row = page.getByRole('button', { name: /Llama 3.1 8B Turbo/ })
-  // 7fa4b26b gab beiden Marken denselben Wortlaut in Auswahl und
-  // Eingabezeile: aus "Flash" wurde "No credits". Entscheid 4 der Fixliste hat
-  // daraus "Included" gemacht, weil "No credits" sich als Eigenschaft des
-  // Modells las und eine Eigenschaft des Kontos ist. Die Zeile selbst ist
-  // unveraendert, nur ihr Aufdruck.
-  await expect(row.getByText('Included', { exact: true })).toBeVisible()
+  // Der Aufdruck der Marke ist zweimal gewandert: "Flash", dann "No credits",
+  // dann "Included". David am 12.09.2026 endgueltig zurueck auf "No credits",
+  // weil "Included" nur sagt, dass etwas dabei ist. Dass die Marke am KONTO
+  // haengt, traegt die Logik daneben und der Titel, nicht das Etikett. Die
+  // Zeile selbst ist unveraendert, nur ihr Aufdruck.
+  const marke = row.getByText('No credits', { exact: true })
+  await expect(marke).toBeVisible()
+  await expect(marke).toHaveAttribute('title', 'No credits on your plan, up to 50,000 tokens per day.')
   await row.click()
   await expect(page.getByTestId('flash-chat-notice')).toContainText('50,000 input and output tokens')
   const composer = page.locator('textarea').first()
