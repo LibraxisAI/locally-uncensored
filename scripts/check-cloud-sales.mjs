@@ -70,7 +70,8 @@ console.log('Cloud sales guard passed: model IDs/labels, Flash membership/limit 
 // dort etwas anderes beschlossen wird. Jede Zahl der Seite wird hier gegen
 // ihre Quelle gehalten: Plaene, Guthaben, Pakete, das Tagesbudget und die
 // Anzahl der Modelle, die ohne Ablehnung antworten.
-const pricing = new JSDOM(readFileSync(new URL('../docs/pricing/index.html', import.meta.url), 'utf8')).window.document
+const pricingRaw = readFileSync(new URL('../docs/pricing/index.html', import.meta.url), 'utf8')
+const pricing = new JSDOM(pricingRaw).window.document
 const tiers = objects(source('apps/web/lib/pricing.ts'))
 const tierCredits = objects(source('apps/web/lib/billing/credits.ts'))
   .find((row) => typeof row.hosted === 'number' && typeof row['hosted-max'] === 'number')
@@ -167,6 +168,48 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Die zwei Zeilen, die kein Schalter bewegt ───────────────────────
+//
+// Derselbe Satz steht im Blatt (src/lib/release-notes.ts) und auf der
+// Preisseite. Zwei Flaechen, ein Versprechen: sie muessen wortgleich bleiben,
+// sonst liest ein Kunde im Fenster etwas anderes als auf der Seite. Der
+// Ablehnungsteil wird hier nie schwaecher geprueft, nur gleichgehalten.
+// Jede Kundenseite unter docs/, einmal eingesammelt.
+function docsFiles(dir, out = []) {
+  for (const entry of readdirSync(dir)) {
+    const path = `${dir}/${entry}`
+    if (statSync(path).isDirectory()) docsFiles(path, out)
+    else if (/\.(html|txt|md)$/.test(entry)) out.push(path)
+  }
+  return out
+}
+const docsRoot = new URL('../docs', import.meta.url).pathname
+const sheet = readFileSync(new URL('../src/lib/release-notes.ts', import.meta.url), 'utf8')
+const csamLines = [
+  'aterial involving minors is refused on every request',
+  'ou may not upload a photograph of a real, identifiable person without their consent',
+]
+for (const [name, text] of [['docs/pricing/index.html', pricingRaw], ['src/lib/release-notes.ts', sheet]]) {
+  for (const line of csamLines) {
+    assert.ok(text.includes(line), `${name}: the content-policy line drifted, expected "${line}"`)
+  }
+}
+// "and reported" ist eine Zusage ueber eine Meldung. Der einzige Meldeweg im
+// Web ist alertCsamBlock, und der steigt ohne gesetzte SAFETY_ALERT_WEBHOOK_URL
+// sofort aus. Solange der Weg an einer Umgebungsvariablen haengt, darf keine
+// Seite in docs/ eine Meldung versprechen.
+const safetySink = readWeb('apps/web/lib/render/safety.ts')
+const alertIsOptional = /SAFETY_ALERT_WEBHOOK_URL/.test(safetySink) && /if \(!url\) return/.test(safetySink)
+const reportedClaims = alertIsOptional
+  ? docsFiles(docsRoot).filter((path) => /refused on every request and reported/i.test(readFileSync(path, 'utf8')))
+  : []
+assert.equal(
+  reportedClaims.length,
+  0,
+  `alertCsamBlock returns early without SAFETY_ALERT_WEBHOOK_URL, so no page may promise a report: ${reportedClaims.length} page(s) [${reportedClaims.map((path) => path.slice(docsRoot.length + 1)).join(', ')}]`,
+)
+console.log('Content-policy guard passed: the two lines are word-identical on the pricing page and in the release sheet, and 0 pages in docs/ promise a report the code cannot make.')
+
 // ── Keine erfundene Tiersperre in docs/ ─────────────────────────────
 //
 // Der Katalog kennt kein Tier-Feld: die Zeichenkette `tier:` kommt in
@@ -194,15 +237,6 @@ const planGate = new RegExp(
   + `|\\b(?:Hosted\\s+)?(?:${planWords.map(escapeForRegExp).join('|')})\\s+(?:plan|tier|subscribers?|accounts?|only)\\b`,
   'g',
 )
-function docsFiles(dir, out = []) {
-  for (const entry of readdirSync(dir)) {
-    const path = `${dir}/${entry}`
-    if (statSync(path).isDirectory()) docsFiles(path, out)
-    else if (/\.(html|txt|md)$/.test(entry)) out.push(path)
-  }
-  return out
-}
-const docsRoot = new URL('../docs', import.meta.url).pathname
 const tierGateOffences = []
 if (!catalogHasTierField) {
   for (const path of docsFiles(docsRoot)) {
