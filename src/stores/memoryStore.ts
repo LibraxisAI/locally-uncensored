@@ -91,6 +91,13 @@ export interface MemoryImportResult {
   updated: number
   /** Already in this collection, left untouched. */
   alreadyPresent: number
+  /**
+   * How many of the refreshed records lost their "sensitive" mark because the
+   * file said so. Only present when it actually happened: a mark falling is a
+   * privacy event and gets its own number, but a clean import must not carry a
+   * zero about sensitive memories through every sentence.
+   */
+  unmarkedSensitive?: number
 }
 
 /** Everything that decides whether a known record still matches the file. */
@@ -109,6 +116,7 @@ export function describeMemoryImport(result: MemoryImportResult): string {
   const parts = [`Imported ${result.added} new ${noun(result.added)}`]
   if (result.updated > 0) parts.push(`${result.updated} updated`)
   if (result.alreadyPresent > 0) parts.push(`${result.alreadyPresent} already present`)
+  if (result.unmarkedSensitive) parts.push(`${result.unmarkedSensitive} no longer marked sensitive`)
   return `${parts.join(', ')}.`
 }
 
@@ -1063,6 +1071,21 @@ export const useMemoryStore = create<MemoryState>()(
           const confirmedAt = prop(e, 'confirmedAt')
           const originalId = asString(prop(e, 'id'))
           const supersededBy = asString(prop(e, 'supersededBy'))
+          const scopeValue = asString(scope)
+          // The app's own export carries the record id, so the same file read
+          // twice meets its own entries again. A file without ids still meets
+          // them through content, type and scope — the only three fields
+          // isSameMemory reads, which is why this can stand before the draft.
+          //
+          // It HAS to stand here: a 2.6.9 backup does not know the field
+          // `sensitive` at all, and reading a missing field as `=== true` turned
+          // it into `false`. Because importDigest carries the mark, that very
+          // mark then made the record an update, and the follow-up below
+          // re-embedded it — the memory was back in AI requests and back in
+          // vector search. A file may only drop a mark by saying so.
+          const known = (originalId ? pool.find((p) => p.id === originalId) : undefined)
+            ?? pool.find((p) => isSameMemory(p, { content, type, scope: scopeValue }))
+          const fileSensitive = prop(e, 'sensitive')
           const draft: Omit<MemoryFile, 'id' | 'createdAt'> = {
             type,
             title: (asString(prop(e, 'title')) ?? content).slice(0, 60).replace(/\n/g, ' '),
@@ -1073,17 +1096,12 @@ export const useMemoryStore = create<MemoryState>()(
             source: asString(prop(e, 'source')) ?? 'import',
             sourceKind: sourceKind === 'chat' || sourceKind === 'voice' || sourceKind === 'screen' ? sourceKind : undefined,
             confirmedAt: typeof confirmedAt === 'number' && Number.isFinite(confirmedAt) && confirmedAt > 0 && confirmedAt <= now ? confirmedAt : undefined,
-            sensitive: prop(e, 'sensitive') === true,
-            scope: asString(scope),
+            sensitive: fileSensitive === undefined ? known?.sensitive === true : fileSensitive === true,
+            scope: scopeValue,
             // A missing replacement must not reactivate an outdated fact.
             stale: prop(e, 'stale') === true || supersededBy !== undefined,
             validFrom: asNumber(prop(e, 'validFrom')),
           }
-          // The app's own export carries the record id, so the same file read
-          // twice meets its own entries again. A file without ids still meets
-          // them through content, type and scope.
-          const known = (originalId ? pool.find((p) => p.id === originalId) : undefined)
-            ?? pool.find((p) => isSameMemory(p, draft))
           // A known record keeps its id and its birthday; only a genuinely new
           // one gets a fresh id, which is why no import can collide with an
           // existing entry's id (that once broke edit/remove-by-id).
@@ -1109,10 +1127,15 @@ export const useMemoryStore = create<MemoryState>()(
         const newEntries: MemoryFile[] = []
         const updates = new Map<string, MemoryFile>()
         let alreadyPresent = 0
+        // A mark that falls is a privacy event, so it is counted and named.
+        let unmarkedSensitive = 0
         for (const { entry, known } of landed) {
           if (!known) newEntries.push(entry)
           else if (importDigest(known) === importDigest(entry)) alreadyPresent++
-          else updates.set(entry.id, entry)
+          else {
+            if (known.sensitive === true && entry.sensitive !== true) unmarkedSensitive++
+            updates.set(entry.id, entry)
+          }
         }
         if (newEntries.length > 0 || updates.size > 0) {
           set((state) => ({
@@ -1126,7 +1149,12 @@ export const useMemoryStore = create<MemoryState>()(
           if (entry.sensitive) void deleteVector(entry.id)
           else void enqueueEmbedding(entry)
         }
-        return { added: newEntries.length, updated: updates.size, alreadyPresent }
+        return {
+          added: newEntries.length,
+          updated: updates.size,
+          alreadyPresent,
+          ...(unmarkedSensitive > 0 ? { unmarkedSensitive } : {}),
+        }
       },
 
       // ── Legacy Compat ───────────────────────────────────────
