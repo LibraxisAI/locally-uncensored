@@ -521,15 +521,22 @@ console.log(`Tier-gate guard passed: 0 model-behind-a-plan claims in docs/, and 
 
 // ── Vergleichsseiten: kein Gratispfad ───────────────────────────────
 //
-// `planPays` im Web verlangt ein Konto, das schon Geld geschickt hat. Solange
-// das so ist, darf keine LU-Spalte einer Vergleichsseite einen kostenlosen
-// Flash-Pfad versprechen. Gebunden ist hier die Regel, nicht ihr Wortlaut:
-// faellt `tierIsPaid` aus `planPays` heraus, faellt auch dieses Verbot. Nur die
-// letzte Spalte wird geprueft, denn die Gegenseite darf ihren eigenen
+// `planPays` im Web verlangt seit dem Entscheid V3 vom 12.09.2026 ein
+// LAUFENDES Abo: die Funktion nimmt genau ein Argument, den Rang der aktiven
+// Lizenz, und antwortet nur fuer die drei Abo-Raenge ja. Solange das so ist,
+// darf keine LU-Spalte einer Vergleichsseite einen kostenlosen Flash-Pfad
+// versprechen. Gebunden ist hier die Regel, nicht ihr Wortlaut: faellt
+// `isSubscriptionTier` aus `planPays` heraus, faellt auch dieses Verbot. Nur
+// die letzte Spalte wird geprueft, denn die Gegenseite darf ihren eigenen
 // Gratistarif nennen.
-const planPaysBody = /export function planPays\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(readWeb('apps/web/lib/pricing.ts'))?.[1]
-assert.ok(planPaysBody, 'planPays not found in pricing.ts')
-const flashNeedsPaidAccount = /tierIsPaid\(/.test(planPaysBody) && /paidBefore/.test(planPaysBody)
+const pricingSource = readWeb('apps/web/lib/pricing.ts')
+const planPaysArgs = /export function planPays\(([^)]*)\)/.exec(pricingSource)?.[1]
+const planPaysBody = /export function planPays\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(pricingSource)?.[1]
+assert.ok(planPaysBody !== undefined && planPaysArgs !== undefined, 'planPays not found in pricing.ts')
+// Ein zweites Argument waere wieder die Kaufhistorie.
+const planPaysArity = planPaysArgs.trim() === '' ? 0 : planPaysArgs.split(',').length
+const flashNeedsActivePlan =
+  /isSubscriptionTier\(/.test(planPaysBody) && !/paidBefore/.test(planPaysBody) && planPaysArity === 1
 const freePathOffences = []
 
 for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
@@ -537,7 +544,7 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
   const luFacts = [...comparison.querySelectorAll('[data-comparison-row] td:last-child')].map((cell) => cell.textContent).join(' ')
   assert.ok(luFacts.includes(`EUR ${catalogPack.eurCents / 100} for ${catalogPack.credits.toLocaleString('en-US')} credits`), `${slug}: pack claim drift`)
   assert.ok(luFacts.includes(daily.toLocaleString('en-US')), `${slug}: allowance claim drift`)
-  if (flashNeedsPaidAccount) {
+  if (flashNeedsActivePlan) {
     for (const hit of luFacts.match(/free Flash|free allowance|competing free/gi) ?? []) {
       freePathOffences.push(`${slug}: "${hit}"`)
     }
@@ -549,9 +556,9 @@ const freePathPages = new Set(freePathOffences.map((entry) => entry.split(':')[0
 assert.equal(
   freePathOffences.length,
   0,
-  `planPays requires an account that has paid, so no LU column may promise a free Flash path: ${freePathOffences.length} claim(s) on ${freePathPages} page(s) [${freePathOffences.join(', ')}]`,
+  `planPays requires an active paid plan, so no LU column may promise a free Flash path: ${freePathOffences.length} claim(s) on ${freePathPages} page(s) [${freePathOffences.join(', ')}]`,
 )
-console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 comparison pages, and planPays still requires an account that has paid.')
+console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 comparison pages, and planPays still requires an active paid plan.')
 
 // ── Entscheid V3: die Freimenge haengt an einem laufenden Abo ───────
 //
@@ -559,13 +566,12 @@ console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 c
 // 5 Euro oeffnet die Freimenge NICHT auf Dauer. Die Bedingung heisst kuenftig
 // "laufendes bezahltes Abo", nicht "hat je einmal gezahlt".
 //
-// Geprueft wird hier der Wortlaut und nicht die Regel, weil der Code im Web
-// nachzieht und nicht mir gehoert: `planPays` haengt heute noch an
-// `paidBefore` (apps/web/lib/pricing.ts), also an "je gezahlt". Sobald W-API
-// das laufende Abo verlangt, wird aus der Wortlautschranke wieder eine
-// Codeschranke, eine Zeile. Bis dahin ist die alte Formulierung in docs/
-// verboten und die neue an vier Flaechen Pflicht, damit keine Seite den
-// Paketkunden weiter zur Freimenge einlaedt.
+// Seit dem Merge vom 12.09.2026 traegt der Code die Regel selbst:
+// `planPays` (apps/web/lib/pricing.ts) nimmt nur noch den Rang der aktiven
+// Lizenz und fragt die Kaufhistorie nicht mehr. Aus der Wortlautschranke ist
+// darum wieder eine Codeschranke geworden, und beide stehen nebeneinander:
+// die alte Formulierung ist in docs/ verboten, die neue an vier Flaechen
+// Pflicht, damit keine Seite den Paketkunden weiter zur Freimenge einlaedt.
 const handbookText = readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')
 const cloudRaw = readFileSync(new URL('../docs/cloud/index.html', import.meta.url), 'utf8')
 const homeRaw = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
@@ -597,14 +603,17 @@ assert.ok(
   /a credit pack on its own does not open it/i.test(handbookText),
   'docs/guide/cloud/index.html: the handbook has to say that a pack alone does not open the allowance',
 )
-// Die Wortlautschranke haengt trotzdem an einer Codeaussage: faellt die
-// Zahlungsbedingung ganz aus planPays heraus, ist der ganze Absatz falsch.
-assert.ok(flashNeedsPaidAccount, 'planPays no longer requires a paying account at all, the whole Flash wording is stale')
+// Die Wortlautschranke haengt an einer Codeaussage: faellt die Bedingung des
+// laufenden Abos ganz aus planPays heraus, ist der ganze Absatz falsch.
 assert.ok(
-  /never paid/i.test(readWeb('apps/web/lib/pricing.ts')),
-  'planPays seems to have moved to an active plan: tie this guard back to the code',
+  flashNeedsActivePlan,
+  'planPays no longer requires an active paid plan at all, the whole Flash wording is stale',
 )
-console.log('Handbook guard passed: 0 pages in docs/ promise the allowance to an account that paid once, and 4 surfaces name the active plan.')
+assert.ok(
+  !/paidBefore/.test(pricingSource),
+  'planPays reads the purchase history again: the Flash wording in docs/ promises the allowance to a pack buyer',
+)
+console.log(`Handbook guard passed: 0 pages in docs/ promise the allowance to an account that paid once, 4 surfaces name the active plan, and planPays takes ${planPaysArity} argument, the rank of the active licence.`)
 
 // ── Das Wort Flash ist kein Kriterium ───────────────────────────────
 //
