@@ -40,7 +40,22 @@ export interface CloudPitchNumbers {
   flashDailyTokens: number
   /** Bildmodelle. */
   imageModels: number
-  /** Videomodelle. */
+  /**
+   * Videomodelle im Katalog.
+   *
+   * ACHTUNG, gewollte Abweichung: die Kaufseite auf lu-labs.ai nennt eine
+   * KLEINERE Zahl. Sie zaehlt nicht den Katalog, sondern was sie auf dieser
+   * Domain zeigen darf: `apps/web/app/(marketing)/pricing/pricing-detail.ts`
+   * filtert ueber `keptOffThisDomain` und `CLAIM_IN_NAME`, der Entscheid dazu
+   * steht in `apps/web/lib/marketing/public-copy.ts` (10.09.2026). Der Desktop
+   * haengt an keiner Zahlungsdomain und nennt deshalb den ganzen Katalog.
+   *
+   * Beide Zahlen sind je fuer sich bewacht, aber nirgends stand, dass sie
+   * absichtlich verschieden sind (R5-47). Ob der Desktop weiter die groessere
+   * nennen soll, ist Entscheid David; hier steht nur, dass es kein Versehen
+   * ist. `scripts/check-cloud-sales.mjs` haelt diese Zahl gegen die volle
+   * Katalogliste, nicht gegen die Kaufseite.
+   */
   videoModels: number
 }
 
