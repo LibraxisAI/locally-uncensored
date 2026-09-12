@@ -13,6 +13,8 @@ import { CLOUD_BASE } from '../../api/cloud/config'
 import { MONOGRAM } from '../layout/brand'
 import { openExternal } from '../../api/backend'
 import { formatCount } from '../../lib/formatters'
+import { countUnsyncedAccountMemories } from '../../lib/memory-unsynced'
+import { Modal } from '../ui/Modal'
 
 /**
  * Run a sign-out and report what happened, in that order.
@@ -138,15 +140,36 @@ export function AccountPanel() {
   const [error, setError] = useState<string | null>(null)
   const [signOutError, setSignOutError] = useState<string | null>(null)
   const [signingOut, setSigningOut] = useState(false)
+  /**
+   * Wie viele Kontoerinnerungen noch nicht in der Wolke stehen, waehrend die
+   * Nachfrage offen ist. `null` heisst: keine Nachfrage.
+   *
+   * R3-19, Entscheid David vom 12.09.2026. Das Abmelden raeumt die
+   * Kontosammlung aus der Ansicht. Wer nie synchronisiert hat, sieht seine
+   * Eintraege auf dem naechsten Geraet nicht wieder, und das kam ohne
+   * Nachfrage als Verlust an. Bei null offenen Eintraegen wird nicht gefragt:
+   * eine Nachfrage, die immer kommt, wird weggeklickt wie ein Banner.
+   */
+  const [offeneErinnerungen, setOffeneErinnerungen] = useState<number | null>(null)
 
-  const onSignOut = async () => {
-    if (signingOut) return
+  const abmelden = async () => {
+    setOffeneErinnerungen(null)
     setSigningOut(true)
     try {
       await runSignOut(logout, setSignOutError)
     } finally {
       setSigningOut(false)
     }
+  }
+
+  const onSignOut = async () => {
+    if (signingOut || offeneErinnerungen !== null) return
+    const offen = await countUnsyncedAccountMemories()
+    if (offen > 0) {
+      setOffeneErinnerungen(offen)
+      return
+    }
+    await abmelden()
   }
 
   const submit = async (e: React.FormEvent) => {
@@ -253,6 +276,30 @@ export function AccountPanel() {
           {signingOut ? <Loader2 size={10} className="animate-spin" /> : <LogOut size={10} />} Sign out
         </button>
       </div>
+
+      <Modal
+        open={offeneErinnerungen !== null}
+        onClose={() => setOffeneErinnerungen(null)}
+        title={`${offeneErinnerungen ?? 0} memories are not synced yet. Sign out anyway?`}
+        maxWidth="max-w-md"
+      >
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setOffeneErinnerungen(null)}
+            className="rounded-xl px-4 py-2 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void abmelden()}
+            className="rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold px-4 py-2 text-sm transition-colors"
+          >
+            Sign out
+          </button>
+        </div>
+      </Modal>
 
       {/* A sign-out that did not happen has to say so HERE. The account is
           still shown above (the store stays signed-in on purpose), so without
