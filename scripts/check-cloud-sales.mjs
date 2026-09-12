@@ -489,3 +489,25 @@ for (const [name, doc] of zahlenseiten) {
   assert.ok(new RegExp(`measured on ${factsDate}`, 'i').test(doc.body.textContent), `${name}: the cited measurement date drifted`)
 }
 console.log(`Measurement-date guard passed: both sales pages stamp and cite ${factsDate}, the date model-facts.md carries.`)
+
+// ── Die Elf verlinkt nicht auf die Seite, die Fuenf sagt ────────────
+//
+// publicMediaModels auf lu-labs.ai filtert ueber keptOffThisDomain, dort
+// stehen fuenf Videomodelle. Auf locallyuncensored.com gilt die volle Zahl.
+// Beide duerfen nebeneinander stehen, nur nicht als Verlinkung: ein Satz, der
+// eine Videomodellzahl nennt und im selben Atemzug auf die Preisseite der
+// anderen Domain zeigt, schickt den Leser zu einer anderen Zahl.
+const linkedCountClaims = []
+for (const path of docsFiles(`${docsRoot}/blog`)) {
+  for (const satz of readFileSync(path, 'utf8').split(/(?<=\.)\s+/)) {
+    if (/\d+ video models?/i.test(satz) && /lu-labs\.ai\/pricing/.test(satz)) {
+      linkedCountClaims.push(path.slice(docsRoot.length + 1))
+    }
+  }
+}
+assert.equal(
+  linkedCountClaims.length,
+  0,
+  `lu-labs.ai publishes a smaller video count, so no blog sentence may link a count to its pricing page: ${linkedCountClaims.length} sentence(s) [${linkedCountClaims.join(', ')}]`,
+)
+console.log('Blog guard passed: 0 video-model counts linked to the lu-labs.ai pricing page, where keptOffThisDomain publishes a smaller set.')
