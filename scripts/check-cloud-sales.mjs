@@ -1,7 +1,7 @@
 // Cross-repository release guard. No network, credentials or output artifacts.
 // Usage: node scripts/check-cloud-sales.mjs /absolute/path/to/web
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve, isAbsolute } from 'node:path'
 import ts from 'typescript'
 import { JSDOM } from 'jsdom'
@@ -167,6 +167,65 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Keine erfundene Tiersperre in docs/ ─────────────────────────────
+//
+// Der Katalog kennt kein Tier-Feld: die Zeichenkette `tier:` kommt in
+// tier-models.ts null Mal vor, und die Datei sagt daneben, dass jede
+// Wolkenberechtigung jeden Eintrag erreicht. Solange das so ist, darf kein
+// Absatz in docs/ einen Modellnamen aus dem Katalog mit einem Plan als Sperre
+// paaren. Beide Wortlisten kommen aus der Quelle: die Modellnamen aus dem
+// Katalog, die Plannamen aus TIERS. Vom mehrteiligen Plannamen zaehlt auch das
+// unterscheidende Wort allein, weil die Seiten "Pro" schreiben und nicht
+// "Hosted Pro".
+const catalogHasTierField = /\btier\s*:/.test(readWeb('apps/web/lib/chat/tier-models.ts'))
+const planWords = [...new Set(
+  tiers
+    .filter((row) => typeof row.id === 'string' && typeof row.name === 'string')
+    .flatMap((row) => (row.name.includes(' ') ? [row.name, row.name.split(' ').at(-1)] : [row.name])),
+)].filter((word) => word !== 'Hosted' && word !== 'Self-Host')
+assert.ok(planWords.length > 0, 'No plan names found in pricing.ts')
+const escapeForRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// "GLM 5.3" im Katalog, "GLM-5.3" auf der Seite: der Trenner bleibt offen.
+const modelPatterns = catalog
+  .filter((row) => typeof row.id === 'string' && typeof row.label === 'string')
+  .map((row) => ({ label: row.label, re: new RegExp(`\\b${row.label.split(/[\s-]+/).map(escapeForRegExp).join('[\\s-]?')}\\b`, 'i') }))
+const planGate = new RegExp(
+  `\\b(?:on|for|requires?|needs?|limited to|included in)\\s+(?:the\\s+|a\\s+|an\\s+)?(?:Hosted\\s+)?(?:${planWords.map(escapeForRegExp).join('|')})\\b`
+  + `|\\b(?:Hosted\\s+)?(?:${planWords.map(escapeForRegExp).join('|')})\\s+(?:plan|tier|subscribers?|accounts?|only)\\b`,
+  'g',
+)
+function docsFiles(dir, out = []) {
+  for (const entry of readdirSync(dir)) {
+    const path = `${dir}/${entry}`
+    if (statSync(path).isDirectory()) docsFiles(path, out)
+    else if (/\.(html|txt|md)$/.test(entry)) out.push(path)
+  }
+  return out
+}
+const docsRoot = new URL('../docs', import.meta.url).pathname
+const tierGateOffences = []
+if (!catalogHasTierField) {
+  for (const path of docsFiles(docsRoot)) {
+    const raw = readFileSync(path, 'utf8')
+    const blocks = path.endsWith('.html')
+      ? [...new JSDOM(raw).window.document.querySelectorAll('p, li, td, th, dd, dt, h1, h2, h3, h4, h5, h6, figcaption, blockquote')].map((node) => node.textContent)
+      : raw.split('\n')
+    for (const text of blocks) {
+      const gates = text.match(planGate)
+      if (!gates) continue
+      const named = modelPatterns.filter((model) => model.re.test(text))
+      if (!named.length) continue
+      tierGateOffences.push(`${path.slice(docsRoot.length + 1)}: ${named.map((m) => m.label).join('/')} + "${gates.join('", "')}"`)
+    }
+  }
+}
+assert.equal(
+  tierGateOffences.length,
+  0,
+  `The catalogue has no tier field, so no page may put a model behind a plan: ${tierGateOffences.length} pairing(s) [${tierGateOffences.join(' | ')}]`,
+)
+console.log(`Tier-gate guard passed: 0 model-behind-a-plan claims in docs/, and the catalogue still carries no tier field (plan words: ${planWords.join(', ')}).`)
+
 // ── Vergleichsseiten: kein Gratispfad ───────────────────────────────
 //
 // `planPays` im Web verlangt ein Konto, das schon Geld geschickt hat. Solange
