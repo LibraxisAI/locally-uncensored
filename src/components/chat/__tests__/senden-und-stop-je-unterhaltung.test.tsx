@@ -130,6 +130,35 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
     expect(agent).not.toMatch(/drainApprovals\(stoppedConvId\)\s*\n\s*setIsAgentRunning\(false\)/)
   })
 
+  /**
+   * R2-19: der dritte Hook mit demselben Griff. `stopCodex` brach ihn
+   * bedingungslos ab, und V2a hat nachgewiesen, dass `CodexView` beim
+   * Unterhaltungswechsel NICHT neu montiert wird (`ChatView.tsx` gibt ihm kein
+   * `key`). Ein Lauf in A, Wechsel nach B, Stop gedrueckt: A war tot.
+   */
+  it('useCodex bricht den Controller der Instanz nur fuer die eigene Unterhaltung ab', () => {
+    const codex = src('../../../hooks/useCodex.ts')
+    expect(codex).toMatch(/const abortConvRef = useRef<string \| null>\(null\)/)
+    expect(codex).toMatch(/if \(abortConvRef\.current === stoppedConvId\) \{/)
+    // Und der Ref wird gesetzt UND geleert, sonst bricht Stop nie etwas ab
+    // oder bricht einen laengst beendeten Lauf ab.
+    expect(codex).toMatch(/abortConvRef\.current = convId/)
+    expect(codex).toMatch(/abortConvRef\.current = null/)
+    // Der richtige Griff je Unterhaltung liegt weiter davor und bleibt
+    // bedingungslos: er trifft genau die gemeinte Unterhaltung.
+    expect(codex).toMatch(/stopRun\(stoppedConvId\)/)
+    expect(codex).toMatch(/abortConversation\(stoppedConvId\)/)
+  })
+
+  it('und CodexView wird beim Unterhaltungswechsel wirklich nicht neu montiert', () => {
+    // Die Voraussetzung des Befunds, damit sie nicht still verschwindet: gaebe
+    // es hier ein `key`, waere der Griff bei jedem Wechsel frisch und die
+    // Klammer oben ueberfluessig. Sie ist es nicht.
+    const view = src('../ChatView.tsx')
+    expect(view).toMatch(/<CodexView\b/)
+    expect(view).not.toMatch(/<CodexView[^>]*\skey=/)
+  })
+
   it('der Komposer liest nicht mehr die app-weite Fahne', () => {
     const view = src('../ChatView.tsx')
     const composer = view.slice(view.indexOf('<ChatInput'), view.indexOf('composerActions='))
