@@ -133,11 +133,12 @@ describe('constants-validation', () => {
     // zurueck, und gemessen an 46 Katalogmodellen hat genau das sechs Modelle
     // vom Antworten aufs Ablehnen gebracht. Die Rolle steht jetzt drin, der
     // Test haelt fest, dass sie da ist und keine Inhaltsregel enthaelt.
-    it('contains the "unrestricted" persona with a real role and no content policy', () => {
+    // R5-3: leer, damit der Grundtext greift und der Hausteil genau einmal
+    // rausgeht. Die Rolle steht in CHAT_BASE_SYSTEM_PROMPT, nicht hier.
+    it('contains the "unrestricted" persona, and it carries no text of its own', () => {
       const unrestricted = BUILT_IN_PERSONAS.find(p => p.id === 'unrestricted')
       expect(unrestricted).toBeDefined()
-      expect(unrestricted!.systemPrompt.length).toBeGreaterThan(40)
-      expect(unrestricted!.systemPrompt).not.toMatch(/refuse|decline|nsfw|explicit|appropriate/i)
+      expect(unrestricted!.systemPrompt).toBe('')
     })
 
     it('all persona names are unique', () => {

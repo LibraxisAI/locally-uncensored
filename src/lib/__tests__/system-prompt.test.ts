@@ -162,6 +162,16 @@ describe('die Reichweitenzeile haengt an jeder Oberflaeche mit einem Menschen da
       buildChatSystemPrompt({ systemPrompt: 'You are a pirate.', personaEnabled: true }),
       false,
     )
+    // R2-8: die Vorgabeperson TRUG den Grundtext als ihren eigenen Text. Wer
+    // sie einschaltete, bekam den Hausteil deshalb zweimal, einmal aus der
+    // Person und einmal aus der Zusammensetzung. `withHouseConduct` hat den
+    // Schutz dagegen seit jeher, `buildChatSystemPrompt` hatte ihn nicht.
+    traegtDenHausteil(
+      buildChatSystemPrompt({
+        systemPrompt: BUILT_IN_PERSONAS.find((p) => p.id === 'unrestricted')!.systemPrompt,
+        personaEnabled: true,
+      }),
+    )
   })
 
   /**

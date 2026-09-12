@@ -12,18 +12,27 @@
 
 import { describe, expect, it } from 'vitest'
 import { BUILT_IN_PERSONAS } from '../constants'
+import { buildChatSystemPrompt, CHAT_BASE_SYSTEM_PROMPT } from '../system-prompt'
 
 const byId = (id: string) => BUILT_IN_PERSONAS.find((p) => p.id === id)
 const defaultPersona = byId('unrestricted')
 
 describe('built-in persona prompts', () => {
-  it('ships the default persona with an actual role', () => {
+  /**
+   * R5-3: die Vorgabeperson TRUG den Grundtext als ihren eigenen Text. Wer sie
+   * einschaltete, schickte den Hausteil zweimal, weil die Zusammensetzung ihn
+   * ein zweites Mal anhaengt. Sie sagt ohnehin nichts, was der Grundtext nicht
+   * sagt, also traegt sie gar nichts mehr und der Grundtext greift. Wie im Web.
+   */
+  it('ships the default persona empty, so the baseline carries the role', () => {
     expect(defaultPersona).toBeDefined()
-    expect(defaultPersona!.systemPrompt.trim().length).toBeGreaterThan(40)
+    expect(defaultPersona!.systemPrompt).toBe('')
+    expect(buildChatSystemPrompt({ systemPrompt: defaultPersona!.systemPrompt, personaEnabled: true }))
+      .toBe(CHAT_BASE_SYSTEM_PROMPT)
   })
 
-  it('gives every built-in persona a non-empty prompt', () => {
-    for (const p of BUILT_IN_PERSONAS) {
+  it('gives every NAMED persona a non-empty prompt', () => {
+    for (const p of BUILT_IN_PERSONAS.filter((x) => x.id !== 'unrestricted')) {
       expect(p.systemPrompt.trim(), p.id).not.toBe('')
     }
   })
@@ -44,16 +53,16 @@ describe('built-in persona prompts', () => {
     }
   })
 
-  it('keeps assistant-identity filler out of the default persona', () => {
+  it('keeps assistant-identity filler out of what the default sends', () => {
     // The exact phrasing that pushes a model into its built-in assistant mode.
     for (const pattern of [/helpful/i, /friendly/i, /\bassistant\b/i]) {
-      expect(pattern.test(defaultPersona!.systemPrompt), String(pattern)).toBe(false)
+      expect(pattern.test(CHAT_BASE_SYSTEM_PROMPT), String(pattern)).toBe(false)
     }
   })
 
   it('tells the model not to volunteer disclaimers, which is a style rule and not a filter', () => {
-    expect(defaultPersona!.systemPrompt).toMatch(/disclaimer/i)
-    expect(defaultPersona!.systemPrompt).toMatch(/did not ask for/i)
+    expect(CHAT_BASE_SYSTEM_PROMPT).toMatch(/disclaimer/i)
+    expect(CHAT_BASE_SYSTEM_PROMPT).toMatch(/did not ask for/i)
   })
 
   it('leaves the named personas free to describe their own job', () => {

@@ -73,7 +73,13 @@ export function buildChatSystemPrompt(conv: {
   personaEnabled?: boolean
 }): string {
   const persona = conv.personaEnabled === true ? (conv.systemPrompt || '').trim() : ''
-  return persona ? `${persona}\n\n${HOUSE_RULES}` : CHAT_BASE_SYSTEM_PROMPT
+  if (!persona) return CHAT_BASE_SYSTEM_PROMPT
+  // R2-8: eine Person kann den Hausteil selbst schon tragen, etwa weil sie aus
+  // dem Grundtext gebaut wurde oder weil ein Nutzer ihn hineinkopiert hat.
+  // Dann stand er zweimal im Systemtext, und ein doppelter Befehl liest sich
+  // fuer ein Modell als Nachdruck. `withHouseConduct` hat diesen Schutz seit
+  // jeher, hier fehlte er.
+  return persona.includes(HOUSE_RULES) ? persona : `${persona}\n\n${HOUSE_RULES}`
 }
 
 /**
