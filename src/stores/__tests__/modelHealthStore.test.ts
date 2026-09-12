@@ -64,3 +64,44 @@ describe('useModelHealthStore', () => {
     expect(s.lastScanTime).toBe(0)
   })
 })
+
+/**
+ * R2-40: der Hinweis kam zurueck, obwohl die Beschriftung das ausschliesst.
+ *
+ * `same` verglich nur Laenge und Enthaltensein, fiel also bei jeder
+ * Laengenaenderung, auch beim SCHRUMPFEN. Wer ein veraltetes Modell
+ * aktualisierte, bekam den eben weggeklickten Hinweis fuer die uebrigen
+ * sofort wieder. Die Beschriftung ist neu in 3.0.0 und verspricht das
+ * Gegenteil: "Dismiss. It comes back only when a different model goes stale."
+ */
+describe('R2-40: weggeklickt bleibt weggeklickt, bis wirklich eines dazukommt', () => {
+  beforeEach(() => useModelHealthStore.getState().reset())
+
+  it('ein aktualisiertes Modell holt den Hinweis nicht zurueck', () => {
+    useModelHealthStore.getState().setStaleModels(['phi4:14b', 'hermes3:8b'])
+    useModelHealthStore.getState().dismiss()
+    useModelHealthStore.getState().setStaleModels(['phi4:14b'])
+    expect(useModelHealthStore.getState().dismissed).toBe(true)
+  })
+
+  it('und auch die leere Liste nicht', () => {
+    useModelHealthStore.getState().setStaleModels(['phi4:14b'])
+    useModelHealthStore.getState().dismiss()
+    useModelHealthStore.getState().setStaleModels([])
+    expect(useModelHealthStore.getState().dismissed).toBe(true)
+  })
+
+  it('NEGATIVKONTROLLE: ein wirklich neues veraltetes Modell holt ihn zurueck', () => {
+    useModelHealthStore.getState().setStaleModels(['phi4:14b'])
+    useModelHealthStore.getState().dismiss()
+    useModelHealthStore.getState().setStaleModels(['phi4:14b', 'qwen3:32b'])
+    expect(useModelHealthStore.getState().dismissed).toBe(false)
+  })
+
+  it('NEGATIVKONTROLLE: ein Tausch bei gleicher Laenge holt ihn auch zurueck', () => {
+    useModelHealthStore.getState().setStaleModels(['phi4:14b'])
+    useModelHealthStore.getState().dismiss()
+    useModelHealthStore.getState().setStaleModels(['qwen3:32b'])
+    expect(useModelHealthStore.getState().dismissed).toBe(false)
+  })
+})
