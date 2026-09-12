@@ -34,7 +34,7 @@ const EXPORT = [
   '',
   '## User',
   '',
-  '- **Likes coffee** — black, no sugar *(manual)*',
+  '- **Likes coffee**, black, no sugar *(manual)*',
   '',
 ].join('\n')
 

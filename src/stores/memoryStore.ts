@@ -1109,14 +1109,14 @@ export const useMemoryStore = create<MemoryState>()(
           const scopeValue = asString(scope)
           // The app's own export carries the record id, so the same file read
           // twice meets its own entries again. A file without ids still meets
-          // them through content, type and scope — the only three fields
+          // them through content, type and scope, the only three fields
           // isSameMemory reads, which is why this can stand before the draft.
           //
           // It HAS to stand here: a 2.6.9 backup does not know the field
           // `sensitive` at all, and reading a missing field as `=== true` turned
           // it into `false`. Because importDigest carries the mark, that very
           // mark then made the record an update, and the follow-up below
-          // re-embedded it — the memory was back in AI requests and back in
+          // re-embedded it. The memory was back in AI requests and back in
           // vector search. A file may only drop a mark by saying so.
           const known = (originalId ? pool.find((p) => p.id === originalId) : undefined)
             ?? pool.find((p) => isSameMemory(p, { content, type, scope: scopeValue }))
