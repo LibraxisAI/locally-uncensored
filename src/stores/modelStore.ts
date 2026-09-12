@@ -459,6 +459,27 @@ export const useModelStore = create<ModelState>()(
         lastCloudModel: state.lastCloudModel,
         categoryFilter: state.categoryFilter,
       }),
+      /**
+       * R2-27: die beiden Erinnerungen sind neu in 3.0.0, `activeModel` nicht.
+       * Ein Speicherstand aus 2.6.9 traegt deshalb ein aktives Modell und
+       * zweimal `null`, und es gab weder `migrate` noch `onRehydrateStorage`.
+       * Der erste Ausflug in die Cloud fand damit nichts zum Zurueckkommen, und
+       * der Rueckweg landete auf "Select a chat model" statt auf dem Modell,
+       * mit dem der Nutzer die App gerade noch benutzt hatte.
+       *
+       * Der Anbieter des NAMENS entscheidet, in welches Feld die Vorbelegung
+       * geht, und geschrieben wird nur, wo noch nichts steht: ein wirklich
+       * gespeicherter Wert ist immer die bessere Auskunft.
+       */
+      onRehydrateStorage: () => (state) => {
+        if (!state?.activeModel) return
+        const istCloud = state.activeModel.startsWith('lu-cloud::')
+        if (istCloud) {
+          if (!state.lastCloudModel) state.lastCloudModel = state.activeModel
+        } else if (!state.lastLocalModel) {
+          state.lastLocalModel = state.activeModel
+        }
+      },
     }
   )
 )
