@@ -27,7 +27,13 @@ const signIn = () => useCloudAuthStore.setState({ status: 'signed-in' })
 beforeEach(() => {
   cleanup()
   vi.clearAllMocks()
+  // mockReset, nicht nur clearAllMocks: das leert auch die Warteschlange der
+  // mockResolvedValueOnce. Ohne das erbt ein Fall die uebrig gebliebene
+  // Einmalantwort des vorigen und misst etwas anderes, als er behauptet.
+  api.get.mockReset()
+  api.set.mockReset()
   api.get.mockResolvedValue({ policy: 'soft', ageConfirmedAt: null })
+  api.set.mockImplementation(async (p: string) => p)
   signIn()
 })
 
@@ -103,6 +109,45 @@ describe('ContentPolicySettings', () => {
     })
     // Negativkontrolle: das alte Verb darf nirgends mehr stehen.
     expect(document.body.textContent ?? '').not.toMatch(/Choosing another option/)
+  })
+
+  it('nimmt das Bestaetigungsdatum vom Server, nicht von der Uhr des Rechners', async () => {
+    // R2-30: `setContentPolicy` gibt nur die Richtlinie zurueck, den
+    // Zeitstempel setzt der Server. Bis 3.0.0 stempelte die Oberflaeche
+    // stattdessen `new Date()`, und wer seine Uhr verstellt hat, las ein
+    // Datum, das in keiner Datenbank steht.
+    const SERVERDATUM = '2019-03-04T12:00:00.000Z'
+    const ALS_TEXT = new Date(SERVERDATUM).toLocaleDateString()
+    api.get
+      .mockResolvedValueOnce({ policy: 'soft', ageConfirmedAt: null })
+      .mockResolvedValueOnce({ policy: 'off', ageConfirmedAt: SERVERDATUM })
+    render(<ContentPolicySettings />)
+    fireEvent.click(screen.getByDisplayValue('off'))
+    fireEvent.click(screen.getByRole('button', { name: 'I am 18 or older' }))
+
+    await waitFor(() => expect(document.body.textContent ?? '').toContain(`Age confirmed on ${ALS_TEXT}`))
+    // Die Oberflaeche hat nach dem Speichern wirklich nachgefragt.
+    expect(api.get).toHaveBeenCalledTimes(2)
+    // Negativkontrolle: das heutige Datum steht nur dann da, wenn es zufaellig
+    // dasselbe ist, und das ist es bei 2019 nicht.
+    expect(document.body.textContent ?? '').not.toContain(new Date().toLocaleDateString())
+  })
+
+  it('erfindet auch dann kein Datum, wenn die Nachfrage scheitert', async () => {
+    // Der Wunsch ist gespeichert, sobald setContentPolicy zurueck ist. Faellt
+    // das Netz genau dazwischen aus, gibt es keinen Fehler zu lesen und
+    // trotzdem kein erfundenes Datum.
+    api.get
+      .mockResolvedValueOnce({ policy: 'soft', ageConfirmedAt: null })
+      .mockRejectedValueOnce(new Error('offline'))
+    render(<ContentPolicySettings />)
+    fireEvent.click(screen.getByDisplayValue('off'))
+    fireEvent.click(screen.getByRole('button', { name: 'I am 18 or older' }))
+
+    await waitFor(() => expect(api.set).toHaveBeenCalledWith('off', true))
+    await waitFor(() => expect(screen.queryByTestId('age-gate')).toBeNull())
+    expect(document.body.textContent ?? '').not.toContain('Age confirmed on')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('und zeigt den Satz nur, solange die Regel wirklich aus ist', async () => {
