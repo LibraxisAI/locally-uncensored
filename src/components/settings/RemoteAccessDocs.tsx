@@ -102,8 +102,8 @@ export function RemoteAccessDocs() {
           <li>
             <p className="text-[0.6rem] text-gray-700 dark:text-gray-300">Filesystem Access</p>
             <p className="text-[0.55rem] text-gray-500">
-              Lets the remote agent read and write files and run shell commands in the dispatched
-              working folder. Leave off if you only want to chat.
+              Lets the remote agent read and write files in the dispatched working folder. Leave
+              off if you only want to chat.
             </p>
           </li>
           <li>
