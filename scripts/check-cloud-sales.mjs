@@ -117,21 +117,33 @@ for (const doc of [pricing, page, handbookCloud]) {
 // sie nur so lange dort stehen, wie der Katalog sie hergibt.
 const catalogSize = catalog.filter((row) => typeof row.inM === 'number' && typeof row.outM === 'number').length
 const unfilteredFull = catalog.filter((row) => row.unfiltered === 'full').length
-const claimed = pricing.querySelector('[data-unfiltered-count]')
-assert.equal(Number(claimed.dataset.unfilteredCount), unfilteredFull, 'unfiltered count drift')
-assert.equal(claimed.textContent, String(unfilteredFull))
-const claimedTotal = pricing.querySelector('[data-catalog-count]')
-assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, 'catalog size drift')
-assert.equal(claimedTotal.textContent, String(catalogSize))
+// Beide Verkaufsseiten nennen denselben Satz Zahlen, also haengen beide hier.
+// Eine Seite allein zu aendern war bisher moeglich, weil nur die Preisseite
+// geprueft wurde.
+const zahlenseiten = [['docs/pricing/index.html', pricing], ['docs/cloud/index.html', page]]
+for (const [name, doc] of zahlenseiten) {
+  const claimed = doc.querySelector('[data-unfiltered-count]')
+  assert.ok(claimed, `${name}: unfiltered count anchor missing`)
+  assert.equal(Number(claimed.dataset.unfilteredCount), unfilteredFull, `${name}: unfiltered count drift`)
+  assert.equal(claimed.textContent, String(unfilteredFull), `${name}: unfiltered count text drift`)
+  const claimedTotal = doc.querySelector('[data-catalog-count]')
+  assert.ok(claimedTotal, `${name}: catalog count anchor missing`)
+  assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, `${name}: catalog size drift`)
+  assert.equal(claimedTotal.textContent, String(catalogSize), `${name}: catalog size text drift`)
+}
 // Gemessen wurde am 10.09.2026; ein Modell kam danach in den Katalog. Die
 // Seite darf "27 von N" nur mit dem N sagen, das der Messlauf wirklich hatte,
 // und das steht in der Messtabelle: die Zeilen VOR der Zaehlzeile.
 const factsTable = readWeb('apps/web/lib/chat/model-facts.md').split('\nCounts:')[0]
 const measuredSize = factsTable.split('\n').filter((line) => /^\|\s*\S+\/\S+\s*\|\s*(full|partial|none|unknown)\s*\|/.test(line)).length
 assert.ok(measuredSize > 40 && measuredSize <= catalogSize, `measured set ${measuredSize} out of range`)
-const claimedMeasured = pricing.querySelector('[data-measured-count]')
-assert.equal(Number(claimedMeasured.dataset.measuredCount), measuredSize, 'measured size drift')
-assert.equal(claimedMeasured.textContent, String(measuredSize))
+for (const [name, doc] of zahlenseiten) {
+  const claimedMeasured = doc.querySelector('[data-measured-count]')
+  assert.ok(claimedMeasured, `${name}: measured count anchor missing`)
+  assert.equal(Number(claimedMeasured.dataset.measuredCount), measuredSize, `${name}: measured size drift`)
+  assert.equal(claimedMeasured.textContent, String(measuredSize), `${name}: measured size text drift`)
+}
+console.log(`Denominator guard passed: ${unfilteredFull} of ${measuredSize} measured and ${catalogSize} in the catalogue, identical on ${zahlenseiten.length} sales pages.`)
 // ── Der Wolkenschalter im Desktop ────────────────────────────────────
 //
 // Die Oberflaeche zeigt diese Zahlen, BEVOR jemand angemeldet ist, also bevor
