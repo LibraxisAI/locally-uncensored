@@ -2605,6 +2605,17 @@ fn remote_lifecycle(state: &tauri::State<'_, crate::state::AppState>) -> Result<
         .map_err(|_| "Remote state unavailable".to_string())
 }
 
+/// Which backend serves the dispatched model, as the desktop passes it in.
+///
+/// #87: the three fields are read together and defaulted together, so they
+/// travel as one. `None` everywhere keeps the old Ollama path for callers that
+/// say nothing.
+struct BackendChoice {
+    kind: Option<String>,
+    base: Option<String>,
+    key: Option<String>,
+}
+
 #[tauri::command]
 pub async fn start_remote_server(
     app: AppHandle,
@@ -2616,7 +2627,8 @@ pub async fn start_remote_server(
     backend_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let operation = remote_lifecycle(&state)?.acquire().await?;
-    start_remote_server_inner(app, state, model, system_prompt, backend_kind, backend_base, backend_key, &operation).await
+    let backend = BackendChoice { kind: backend_kind, base: backend_base, key: backend_key };
+    start_remote_server_inner(app, state, model, system_prompt, backend, &operation).await
 }
 
 async fn start_remote_server_inner(
@@ -2627,14 +2639,12 @@ async fn start_remote_server_inner(
     // #87: the desktop tells us which backend serves the dispatched model so the
     // mobile proxy reaches the real backend, not just Ollama. Defaults keep the
     // Ollama path for older callers / a plain Ollama dispatch.
-    backend_kind: Option<String>,
-    backend_base: Option<String>,
-    backend_key: Option<String>,
+    backend: BackendChoice,
     _operation: &tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<serde_json::Value, String> {
-    let backend_kind = backend_kind.unwrap_or_else(|| "ollama".to_string());
-    let openai_base = backend_base.unwrap_or_default();
-    let openai_key = backend_key.unwrap_or_default();
+    let backend_kind = backend.kind.unwrap_or_else(|| "ollama".to_string());
+    let openai_base = backend.base.unwrap_or_default();
+    let openai_key = backend.key.unwrap_or_default();
     // Clone Arcs from std::sync::Mutex, then drop it before any .await
     let (jwt_secret_arc, passcode_arc, permissions_arc, devices_arc, tunnel_url_arc, dispatched_model_arc, dispatched_system_prompt_arc, memory_revoked, port, comfy_port, comfy_host, ollama_base) = {
         let mut remote = state.remote.lock().map_err(|e| e.to_string())?;
@@ -2864,7 +2874,8 @@ pub async fn restart_remote_server(
     stop_remote_server_inner(&state.remote, &operation).await?;
     // Start fresh with a re-acquired State handle from the AppHandle
     let state2 = app.state::<crate::state::AppState>();
-    start_remote_server_inner(app.clone(), state2, model, system_prompt, backend_kind, backend_base, backend_key, &operation).await
+    let backend = BackendChoice { kind: backend_kind, base: backend_base, key: backend_key };
+    start_remote_server_inner(app.clone(), state2, model, system_prompt, backend, &operation).await
 }
 
 #[tauri::command]
