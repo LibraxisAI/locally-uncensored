@@ -192,18 +192,31 @@ describe('GH #129: woher das Fenster kommt', () => {
 })
 
 describe('GH #129: wer das Fenster verstellen darf', () => {
-  it('ein eigenes Backend mit geratenem Fenster ist verstellbar', () => {
-    expect(windowIsAdjustable({ source: 'guess', localBackend: true })).toBe(true)
-    expect(windowIsAdjustable({ source: 'user', localBackend: true })).toBe(true)
+  // R2-31: die Herkunft der Zahl steht nicht mehr in der Signatur. Sie stand
+  // vier Faelle lang daneben und wurde nie gelesen; die sechs Zeilen hielten
+  // denselben `localBackend` gegen zwei `source`-Werte und bekamen jedes Mal
+  // dasselbe Ergebnis. Jetzt haelt der Typcheck den Rueckbau fest: wer das Feld
+  // wieder hineinreicht, bekommt TS2353.
+  it('ein eigenes Backend ist verstellbar, egal woher die Zahl kommt', () => {
     // Auch ein gemessenes lokales Fenster bleibt verstellbar: es ist eine
     // Obergrenze auf eigener Hardware, und Ollama, LM Studio und der LU-Motor
     // halten es seit jeher genauso.
-    expect(windowIsAdjustable({ source: 'probe', localBackend: true })).toBe(true)
+    expect(windowIsAdjustable({ localBackend: true })).toBe(true)
   })
 
   it('ein fremdes, festes Fenster ist es nicht', () => {
-    expect(windowIsAdjustable({ source: 'probe', localBackend: false })).toBe(false)
-    expect(windowIsAdjustable({ source: 'guess', localBackend: false })).toBe(false)
+    expect(windowIsAdjustable({ localBackend: false })).toBe(false)
+  })
+
+  it('und die Antwort haengt weiter an genau diesem einen Feld', () => {
+    // Negativkontrolle zum Rueckbau: fuer beide Werte kommt dasselbe heraus
+    // wie vor dem Rueckbau, samt der vier Fenster, die durch die lebende
+    // Kaskade laufen.
+    for (const source of ['probe', 'user', 'trained', 'guess'] as const) {
+      const resolved = { tokens: 32768, source, modelMax: 0 }
+      expect(resolveActiveWindow({ resolved, localBackend: true }).adjustable, source).toBe(true)
+      expect(resolveActiveWindow({ resolved, localBackend: false }).adjustable, source).toBe(false)
+    }
   })
 
   it('nur ein gemessenes oder gesetztes Fenster gilt als bekannt', () => {

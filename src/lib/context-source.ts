@@ -122,8 +122,12 @@ export function capIsDerivable(w: Pick<ResolvedContextWindow, 'source' | 'guessK
  * Aus der Ferne nie. Dort gehoert das Fenster einer fremden Bereitstellung,
  * LU berichtet es nur, und der bezahlte Sendedeckel ist der Hebel, der den
  * Nenner dort regelt.
+ *
+ * Die Herkunft der Zahl steht deshalb absichtlich NICHT in der Signatur: sie
+ * ist die Begruendung fuer die Antwort, nicht ihre Eingabe. Bis 3.0.0 nahm die
+ * Funktion ein `source` entgegen und las es nie (R2-31).
  */
-export function windowIsAdjustable(input: { source: ContextSource; localBackend: boolean }): boolean {
+export function windowIsAdjustable(input: { localBackend: boolean }): boolean {
   return input.localBackend
 }
 
@@ -180,7 +184,7 @@ export function resolveActiveWindow(input: ActiveWindowInput): ActiveWindow {
     sendWindow: tokens,
     source,
     isTrue: source === 'probe',
-    adjustable: windowIsAdjustable({ source, localBackend: input.localBackend }),
+    adjustable: windowIsAdjustable({ localBackend: input.localBackend }),
     clampedFrom: input.resolved.clampedFrom ?? 0,
   }
 }
