@@ -306,7 +306,7 @@ pub(crate) fn plan_offload(input: &OffloadInputs) -> OffloadPlan {
     let blocks = read_from_header.unwrap_or(ASSUMED_BLOCK_COUNT);
     // Round the context UP to whole thousands: a 6000 token context pays for
     // six, because the error has to point at reserving too much.
-    let ctx_k = ((input.ctx.max(1) as u64) + 1023) / 1024;
+    let ctx_k = (input.ctx.max(1) as u64).div_ceil(1024);
     let kv_per_layer = KV_BYTES_PER_LAYER_PER_1K_CTX * ctx_k;
     let whole = input.model_bytes + kv_per_layer * blocks as u64 + VRAM_OVERHEAD_BYTES;
     if whole <= vram {
