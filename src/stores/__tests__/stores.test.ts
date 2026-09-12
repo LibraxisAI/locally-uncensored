@@ -590,19 +590,6 @@ describe('memoryStore', () => {
     })
   })
 
-  describe('getMemoryForPrompt (legacy compat)', () => {
-    it('returns formatted string via legacy API', () => {
-      useMemoryStore.getState().addEntry('fact', 'Earth orbits the Sun')
-      const prompt = useMemoryStore.getState().getMemoryForPrompt('Earth Sun')
-      expect(prompt).toContain('Earth orbits the Sun')
-    })
-
-    it('returns empty for no matches', () => {
-      const prompt = useMemoryStore.getState().getMemoryForPrompt('xylophone')
-      expect(prompt).toBe('')
-    })
-  })
-
   describe('exportAsMarkdown', () => {
     it('returns placeholder when no entries exist', () => {
       const md = useMemoryStore.getState().exportAsMarkdown()

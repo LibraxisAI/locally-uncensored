@@ -363,7 +363,6 @@ interface MemoryState {
 
   // Legacy compat (used by old code paths during transition)
   addEntry: (category: MemoryCategory, content: string, source?: string) => void
-  getMemoryForPrompt: (query: string, maxChars?: number) => string
 }
 
 // ── Migration from v1 (old MemoryEntry[]) to v2 (MemoryFile[]) ──
@@ -1141,15 +1140,6 @@ export const useMemoryStore = create<MemoryState>()(
           tags: source ? [source] : [],
           source: source || 'agent',
         })
-      },
-
-      getMemoryForPrompt: (query, maxChars = 2000) => {
-        // Legacy: the current API budgets in context TOKENS, so the 8K
-        // assumption stays. The caller's character cap used to be accepted and
-        // then silently dropped, which is the one thing this signature
-        // promises; it is honoured on the rendered block instead.
-        const block = get().getMemoriesForPrompt(query, 8192)
-        return block.length > maxChars ? block.slice(0, maxChars) : block
       },
     }),
     {
