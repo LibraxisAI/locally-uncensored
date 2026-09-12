@@ -2257,7 +2257,7 @@ export function SettingsPage() {
 // ── Update Section ──────────────────────────────────────────────
 
 export function UpdateSection() {
-  const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, lastCheckFailed, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
+  const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, lastChecked, lastCheckFailed, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
   // Defensive: only treat the persisted `latestVersion` as actually newer if a
   // semver compare confirms it. Otherwise the binary was updated out-of-band
   // and the persisted value is stale (e.g. localStorage still says 2.3.8 while
@@ -2383,10 +2383,25 @@ export function UpdateSection() {
           <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-check-failed">
             Could not check for updates. Check your connection and try again.
           </div>
-        ) : (
-          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600">
+        ) : lastChecked ? (
+          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-latest">
             <Check size={12} className="text-emerald-500" />
             You are on the latest version.
+          </div>
+        ) : (
+          /* Noch keine Pruefung ist durchgekommen. R2-12 hat den Haken vom
+             FEHLGESCHLAGENEN Versuch getrennt; hier fehlt der Versuch ganz.
+             Der Haken stand trotzdem da: beim Anlauf, bis die erste Pruefung
+             fuenf Sekunden spaeter zurueck ist, und nach jedem Neustart, weil
+             `onRehydrateStorage` den Zeitpunkt der letzten Pruefung wegwirft,
+             sobald die gespeicherte Version nicht neuer ist als die laufende.
+             T13 hat am 12.09.2026 auf der Box gemessen, was daran teuer ist:
+             der Satz stand vor UND nach dem Druck auf Check for updates
+             zeichengleich da, also sagt er dem Nutzer nichts darueber, ob
+             ueberhaupt jemand nachgesehen hat. Eine Zusage ohne Messung ist
+             hier dasselbe wie eine falsche. */
+          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-not-checked">
+            Not checked yet.
           </div>
         )}
 
