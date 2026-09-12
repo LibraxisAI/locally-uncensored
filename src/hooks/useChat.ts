@@ -768,6 +768,12 @@ export function useChat() {
         modelWindow: modelWindowTokens,
         sendWindowTokens: settings.codexSendWindowTokens,
         contextDecay: settings.contextDecay,
+        // R2-3: der Hauptpfad des einfachen Chats liess dieses Feld weg, also
+        // galt hier die Deckelung fuer bezahlte Anbieter und der eigene
+        // LAN-Server wurde bei 64000 gekappt statt bei 209715. Ein Server im
+        // eigenen Netz stellt keine Rechnung; jeder andere Sendepfad gibt es
+        // schon mit (useAgentChat, useCodex, useABCompare, run-compact-command).
+        localBackend: sendsToALanBackend(providerId),
       },
     ).messages
 
