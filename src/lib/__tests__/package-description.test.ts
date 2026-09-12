@@ -63,7 +63,7 @@ it('die Paketbeschreibung nennt Hardware, und zwar die aus dem Katalog', () => {
   expect(beschreibung).toContain(`${boden} GB of VRAM`)
 
   // Auf den Seiten steht dieselbe Zahl. &nbsp; ist Hausstil, kein Unterschied.
-  const ohneSchmalraum = (text: string) => text.replace(/&nbsp;| /g, ' ')
+  const ohneSchmalraum = (text: string) => text.replace(/&nbsp;|\u00a0/g, ' ')
   const quelle = ohneSchmalraum(readFileSync('docs/llms-full.txt', 'utf8'))
   expect(quelle).toContain('8 GB RAM')
   expect(quelle).toContain(`${boden} GB of VRAM`)
