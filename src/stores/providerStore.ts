@@ -14,6 +14,7 @@ import { clearProviderCache } from '../api/providers/client-cache'
 import { onLocalSlotChanged } from '../lib/builtin-slot-eviction'
 import { LU_ENGINE_NAME, renameLegacyEngine } from '../lib/engine-name'
 import { announceDarkenedSlots } from '../lib/provider-slot-darkening'
+import { honourUserDisable } from '../lib/provider-visibility'
 import { secretGet, secretSet, secretDelete } from '../api/backend'
 import { CLOUD_BASE } from '../api/cloud/config'
 
@@ -365,10 +366,18 @@ export const useProviderStore = create<ProviderState>()(
         // Defensive on purpose: a hand-edited or truncated blob can carry a
         // null entry, and a merge that throws takes the whole provider store
         // down to defaults, which is every API key the user typed.
+        //
+        // `honourUserDisable` raeumt dabei das Paar `enabled: true` plus
+        // `disabledByUser: true` weg, das ein Bau vor R2-14 anlegen konnte.
+        // Es muss hier stehen und nicht in der Anzeige: der Widerspruch
+        // laesst den Anbieter sonst weiter befragen, waehrend seine Zeile
+        // weder DISABLED noch Enable zeigt. Die Marke der `displaced`-Haelfte
+        // bleibt unangetastet, sie beschreibt einen Anbieter, der gar keine
+        // eigene Zeile hat.
         for (const id of Object.keys(merged) as ProviderId[]) {
           const raw = merged[id]
           if (!raw || typeof raw !== 'object') continue
-          const cfg = renameLegacyEngine(raw)
+          const cfg = honourUserDisable(renameLegacyEngine(raw))
           const displaced = cfg.displaced ? renameLegacyEngine(cfg.displaced) : cfg.displaced
           if (cfg !== raw || displaced !== cfg.displaced) {
             merged[id] = displaced ? { ...cfg, displaced } : cfg
