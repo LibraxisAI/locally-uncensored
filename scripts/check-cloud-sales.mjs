@@ -327,16 +327,18 @@ const cloudPageExists = existsSync(new URL('../docs/cloud/index.html', import.me
 // Modus gibt es wirklich keine Wolke. Unbedingt gesagt ist es eine Verneinung
 // des eigenen Angebots.
 const noCloudClaims = cloudPageExists
-  ? startseite
-      .split(/(?<=[.!?])["\s]|\n/)
-      .filter((satz) => /no cloud/i.test(satz) && !/local mode/i.test(satz))
+  ? ['index.html', 'llms.txt', 'llms-full.txt'].flatMap((datei) =>
+      readFileSync(new URL(`../docs/${datei}`, import.meta.url), 'utf8')
+        .split(/(?<=[.!?])["\s]|\n/)
+        .filter((satz) => /no cloud/i.test(satz) && !/local mode|unless you enable|local embeddings|when you switch it on/i.test(satz))
+        .map((satz) => `${datei}: ${satz.trim().slice(-50)}`))
   : []
 assert.equal(
   noCloudClaims.length,
   0,
-  `docs/cloud/index.html sells hosted models, so the home page may not deny the cloud: ${noCloudClaims.length} unqualified claim(s) in docs/index.html [${noCloudClaims.map((satz) => satz.trim().slice(-60)).join(' | ')}]`,
+  `docs/cloud/index.html sells hosted models, so the home page may not deny the cloud: ${noCloudClaims.length} unqualified claim(s) [${noCloudClaims.map((satz) => satz.trim().slice(-60)).join(' | ')}]`,
 )
-console.log('Home page guard passed: 0 "No cloud" claims in docs/index.html while docs/cloud/index.html sells hosted models.')
+console.log('Home page guard passed: 0 unqualified "No cloud" claims on the home page or in the language-model files while docs/cloud/index.html sells hosted models.')
 
 // ── Die zwei Zeilen, die kein Schalter bewegt ───────────────────────
 //
