@@ -645,9 +645,19 @@ export const useMemoryStore = create<MemoryState>()(
         const trimmedContent = memory.content.trim()
         if (!trimmedContent) return ''
 
-        // Deduplicate: don't add if the same memory is already in the collection
+        // Deduplicate: don't add if the same memory is already in the collection.
+        //
+        // The three extra conditions are the web's (R5-32), and each one is a
+        // record the user can no longer reach: an outdated twin, one that a
+        // newer record superseded, and one that is marked sensitive while this
+        // one is not (or the other way round, which is a different record to
+        // the app). Without them the form refused an entry against a twin the
+        // collection no longer shows, and the caller reads the empty id, so the
+        // user gets told why instead of watching the input vanish.
         const candidate = { content: trimmedContent, type: memory.type, scope: memory.scope }
-        if (get().entries.some(e => isSameMemory(e, candidate))) return ''
+        if (get().entries.some(e => isSameMemory(e, candidate) &&
+          (e.sensitive === true) === (memory.sensitive === true) &&
+          !e.stale && !e.supersededBy)) return ''
 
         const id = uuid()
         set((state) => ({

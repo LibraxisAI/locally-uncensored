@@ -230,7 +230,7 @@ function MemorySettingsPanel() {
     // so the Save button never looks broken.
     if (!newTitle.trim()) { setAddError('Add a title.'); return }
     if (!newContent.trim()) { setAddError('Add some details.'); return }
-    useMemoryStore.getState().addMemory({
+    const id = useMemoryStore.getState().addMemory({
       type: 'user',
       title: newTitle.trim().substring(0, 60),
       description: newContent.trim().substring(0, 120),
@@ -240,6 +240,11 @@ function MemorySettingsPanel() {
       sensitive: newSensitive,
       scope: useProject ? conversation?.memoryScope : undefined,
     })
+    // An empty id means the store refused the record, and the only reason left
+    // after the two checks above is a memory that is already there. Saying so
+    // beats clearing the fields and closing the form, which is what this did
+    // until R5-32: the text was gone and the page looked like it had saved.
+    if (!id) { setAddError('This memory is already saved.'); return }
     setNewTitle('')
     setNewContent('')
     setNewSensitive(false)
