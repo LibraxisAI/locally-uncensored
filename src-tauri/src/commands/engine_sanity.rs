@@ -433,10 +433,10 @@ pub(crate) struct EngineFacts {
 ///     A card WITH matrix cores takes a different kernel and this rung would
 ///     be a guess, so it is skipped there.
 ///
-///       https://github.com/ggml-org/llama.cpp/issues/20465
-///       https://github.com/ggml-org/llama.cpp/issues/20029
-///       https://github.com/ggml-org/llama.cpp/issues/19128
-///       https://github.com/ggml-org/llama.cpp/issues/19327
+///     https://github.com/ggml-org/llama.cpp/issues/20465
+///     https://github.com/ggml-org/llama.cpp/issues/20029
+///     https://github.com/ggml-org/llama.cpp/issues/19128
+///     https://github.com/ggml-org/llama.cpp/issues/19327
 ///
 ///  2. The processor. Slower, and correct on every report we have: in each of
 ///     them `-ngl 0` reads fine while the card does not.
