@@ -60,7 +60,16 @@ export function CodexView() {
   // Derselbe Weckhaken wie im Agentenweg: eine Hintergrundaufgabe endet fast
   // immer NACH dem Zug, der sie startete, und ohne diesen Haken erfuehre das
   // Modell davon erst bei der naechsten Eingabe des Menschen.
-  useBackgroundAgentWake(useChatStore((s) => s.activeConversationId), sendInstruction)
+  //
+  // R2-18: `sendInstruction` nimmt (text, opts), der Haken ruft aber
+  // (text, images, opts). Das Objekt mit `hiddenUser: true` landete damit auf
+  // Position 3 und fiel weg, also stand die Weckzeile als sichtbare
+  // Nutzernachricht im Verlauf, als haette der Mensch sie getippt. Ein Adapter
+  // schiebt sie auf die Stelle, an der sie gelesen wird.
+  useBackgroundAgentWake(
+    useChatStore((s) => s.activeConversationId),
+    (text, _images, opts) => sendInstruction(text, opts),
+  )
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const conversations = useChatStore((s) => s.conversations)
   const thread = useCodexStore((s) => activeConversationId ? s.threads[activeConversationId] : undefined)
