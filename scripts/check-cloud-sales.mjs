@@ -628,6 +628,42 @@ if (flashByNameOnly.length > 0) {
 }
 console.log(`Flash-class guard passed: the handbook names the class and not the word, with ${flashByNameOnly.length} catalogue entry carrying Flash in the name without the class.`)
 
+// ── Die Marke der Flash-Klasse heisst wieder "No credits" ───────────
+//
+// Entscheid David vom 12.09.2026 zum Wortlaut, den der Verfasser der
+// Logikkontrolle selbst gesetzt hatte: das Etikett heisst nicht "Included",
+// sondern wieder "No credits", weil "Included" nicht sagt, worin etwas
+// enthalten ist, und der Tooltip daneben ohnehin "No credits" sagte.
+//
+// Die Doku geht voran, die beiden Apps ziehen nach: FLASH_MARK_LABEL steht in
+// src/lib/flash-entitlement.ts und gehoert D-UI, das Web-Gegenstueck W-UI.
+// Geprueft wird deshalb, dass docs/ das alte Etikett nirgends mehr in
+// Anfuehrungszeichen fuehrt (die Vergleichsseite darf "Included usage" eines
+// Wettbewerbers weiter nennen, das ist kein Etikett von uns) und dass das
+// Handbuch an beiden Stellen die Entscheidform traegt. Der laufende Wert der
+// Apps wird mitgedruckt, damit ein Auseinanderlaufen sichtbar ist, statt
+// still zu bleiben; sobald beide Apps nachgezogen sind, wird aus der Zeile
+// eine Gleichheitspruefung, eine Zeile.
+const FLASH_MARK_DECISION = 'No credits'
+const markLabelSource = readFileSync(new URL('../src/lib/flash-entitlement.ts', import.meta.url), 'utf8')
+const markLabel = /FLASH_MARK_LABEL = '([^']+)'/.exec(markLabelSource)?.[1]
+assert.ok(markLabel, 'FLASH_MARK_LABEL not found in src/lib/flash-entitlement.ts')
+const labelOffences = docsFiles(docsRoot).filter((path) => /"Included"|&quot;Included&quot;/.test(readFileSync(path, 'utf8')))
+assert.equal(
+  labelOffences.length,
+  0,
+  `the Flash mark is called "${FLASH_MARK_DECISION}" now: ${labelOffences.length} page(s) still quote "Included" [${labelOffences.map((path) => path.slice(docsRoot.length + 1)).join(', ')}]`,
+)
+assert.ok(
+  handbookText.includes(`The picker marks them with "${FLASH_MARK_DECISION}".`),
+  `docs/guide/cloud/index.html: the picker mark is not named as "${FLASH_MARK_DECISION}"`,
+)
+assert.ok(
+  handbookText.includes(`<li>"${FLASH_MARK_DECISION}", with the tooltip`),
+  `docs/guide/cloud/index.html: the mark list does not lead with "${FLASH_MARK_DECISION}"`,
+)
+console.log(`Flash-mark guard passed: the handbook calls the mark "${FLASH_MARK_DECISION}" twice and 0 pages in docs/ quote "Included" (the desktop app still ships "${markLabel}", D-UI and W-UI pull it).`)
+
 // ── Das Datum der Messung, einmal ───────────────────────────────────
 //
 // Beide Verkaufsseiten zitieren den Messlauf im Fliesstext und tragen oben ein
