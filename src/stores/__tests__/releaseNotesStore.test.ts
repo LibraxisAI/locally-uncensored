@@ -245,6 +245,23 @@ describe('the notes table', () => {
     expect(prose).toContain('photograph of a real, identifiable person without their consent')
   })
 
+  it('the Flash allowance on the sheet hangs on a RUNNING plan, not on money that once arrived', () => {
+    // Entscheid V3 vom 12.09.2026. Das Blatt mass die Freimenge daran, ob je
+    // gezahlt wurde ("an account that has never paid"), der Server misst sie
+    // seit heute am laufenden Abo. Ein gekuendigtes Abo las auf dem Blatt also
+    // weiter eine Zusage, die es nicht mehr bekommt. Der Satz steht hier
+    // zeichengleich mit der Kaufseite im Web.
+    const prose = proseOf('3.0.0')
+    expect(prose, 'the sheet does not carry the decided Flash sentence').toContain(
+      `${CLOUD_PITCH.flashModels} of the ${CLOUD_PITCH.chatModels} models in the catalogue cost no credits at all`
+      + ' in chat on an active paid plan, up to 500,000 input and output tokens per day.'
+      + ' api keys keep paying credits, and accounts without an active plan keep paying credits too.',
+    )
+    expect(prose, 'the sheet still measures the benefit by whether money ever arrived')
+      .not.toMatch(/never paid/)
+    expect(prose, 'the detail line still measures it that way').toContain('benefit of an active paid plan')
+  })
+
   it('the model numbers on the 3.0.0 sheet are read from the catalogue, never typed', () => {
     // Der Fund, der diesen Waechter erzwungen hat: das Blatt sagte "27 of the
     // 46", waehrend das Freigabe-Tor auf DEMSELBEN Commit "27/47 chat"

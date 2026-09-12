@@ -103,7 +103,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       // Katalog seit diesem Fund ausdruecklich; T13 hat am 12.09.2026 auf der
       // Box gemessen, dass Blatt und Tor deshalb verschiedene Bezugspunkte
       // trugen. Beide nennen jetzt denselben.
-      `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on a paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.`,
+      `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on an active paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and accounts without an active plan keep paying credits too.`,
       'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
       'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.',
       'Sampling controls sit next to the prompt: temperature, top P and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
@@ -123,7 +123,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         items: [
           `${CLOUD_PITCH.flashModels} models run unmetered in chat inside the apps: GLM 5.3 Flash, DeepSeek V4 Flash 0731, Ling 3.0 flash, gpt-oss 120B, gpt-oss 20B, Gemma 4 26B, Gemma 4 31B Turbo, Qwen3 32B, Qwen 3.5 9B, Llama 3.3 70B Turbo, Llama 3.1 8B Turbo and Mistral Small 3.2 24B.`,
           `The ceiling is ${FLASH_DAILY} input and output tokens per account per day, resetting at 00:00 UTC, one free request at a time. It went up tenfold from the ceiling of the first version, where a working day ran out before lunch.`,
-          'It is a paid-plan benefit. An account that has never paid keeps its starting credits and pays credits for Flash exactly like for any other model.',
+          'It is a benefit of an active paid plan. An account without an active plan keeps its starting credits and pays credits for Flash exactly like for any other model.',
           'API keys always pay credits, including on these models. The unmetered path is the app, not the endpoint.',
         ],
       },
