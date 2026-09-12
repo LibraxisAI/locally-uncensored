@@ -47,6 +47,7 @@ import { MCPServerSettings } from './MCPServerSettings'
 import { WorkflowList } from '../agents/WorkflowList'
 import { WorkflowBuilder } from '../agents/WorkflowBuilder'
 import { useUpdateStore, isNewerVersion } from '../../stores/updateStore'
+import { timeAgo } from '../../lib/time-ago'
 import { backendCall, isTauri, isMacOS, isWindows, openExternal } from '../../api/backend'
 import { comfyPathPlaceholder } from '../../lib/comfy-path-placeholder'
 import { troubleshootHinweis, type TroubleshootHinweis } from './troubleshoot-message'
@@ -2256,6 +2257,17 @@ export function SettingsPage() {
 
 // ── Update Section ──────────────────────────────────────────────
 
+/** Der Satz "You are on the latest version." sagt nichts darueber, WANN
+ *  jemand nachgesehen hat. T13b hat am 12.09.2026 gemessen, wie weit das
+ *  auseinanderfallen kann: beim ersten Messlauf war die Aussage beim Oeffnen
+ *  rund eine Stunde und zwei Programmstarts alt und sah aus wie frisch. Diese
+ *  Zeile setzt das Datum daneben, in der Kurzform aus `src/lib/time-ago.ts`,
+ *  die im Haus schon fuer die Chatliste und das Agentenprotokoll laeuft. */
+export function lastCheckedText(ts: number, now: number = Date.now()): string {
+  const t = timeAgo(ts, now)
+  return t === 'now' ? 'Last checked just now' : `Last checked ${t} ago`
+}
+
 export function UpdateSection() {
   const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, lastChecked, lastCheckFailed, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
   // Defensive: only treat the persisted `latestVersion` as actually newer if a
@@ -2384,9 +2396,14 @@ export function UpdateSection() {
             Could not check for updates. Check your connection and try again.
           </div>
         ) : lastChecked ? (
-          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-latest">
-            <Check size={12} className="text-emerald-500" />
-            You are on the latest version.
+          <div className="space-y-0.5" data-testid="update-latest">
+            <div className="flex items-center gap-2 text-[0.6rem] text-gray-600">
+              <Check size={12} className="text-emerald-500" />
+              You are on the latest version.
+            </div>
+            <div className="pl-5 text-[0.55rem] text-gray-600" data-testid="update-last-checked">
+              {lastCheckedText(lastChecked)}
+            </div>
           </div>
         ) : (
           /* Noch keine Pruefung ist durchgekommen. R2-12 hat den Haken vom

@@ -183,6 +183,18 @@ interface UpdateState {
 const GITHUB_REPO = 'purpledoubled/locally-uncensored'
 const CHECK_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
 const INITIAL_DELAY = 5_000
+/** Eigener, kurzer Deckel fuer die Pruefung beim Programmstart. Der
+ *  6-Stunden-Deckel oben gilt fuer das Intervall in einem laufenden Prozess;
+ *  auf den Start angewandt verschluckt er die Pruefung ganz, weil
+ *  `lastChecked` den Neustart ueberlebt und `onRehydrateStorage` ihn nur dann
+ *  nullt, wenn eine gespeicherte `latestVersion` oder `updateAvailable`
+ *  danebensteht. T13b hat am 12.09.2026 auf der Box gemessen, was das kostet:
+ *  drei Starts, null Pruefungen, `lastChecked` beim dritten Start 47 Sekunden
+ *  alt. Wer die App oefter als alle sechs Stunden neu startet, bekommt sonst
+ *  nie eine automatische Pruefung. Eine Viertelstunde laesst jeden echten
+ *  Start pruefen und faengt nur den Nutzer ab, der dreimal hintereinander
+ *  neu startet. */
+const STARTUP_STALE = 15 * 60 * 1000 // 15 minutes
 
 // ── Non-serializable update object (module-level) ─────────────
 
@@ -658,7 +670,11 @@ export function initUpdateChecker() {
   _initDone = true
 
   setTimeout(() => {
-    useUpdateStore.getState().checkForUpdate()
+    const { lastChecked, checkForUpdate } = useUpdateStore.getState()
+    // Erzwingen, sobald die letzte Pruefung aelter als die Viertelstunde ist:
+    // sonst faengt der 6-Stunden-Deckel diesen Aufruf ab, und ein Nutzer, der
+    // die App oft neu startet, sieht nie eine Pruefung.
+    void checkForUpdate(!lastChecked || Date.now() - lastChecked > STARTUP_STALE)
   }, INITIAL_DELAY)
 
   setInterval(() => {

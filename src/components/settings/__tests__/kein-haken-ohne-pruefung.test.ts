@@ -20,6 +20,15 @@
  * Negativkontrolle: gegen den Stand vor dem Fix (der Haken als letzter Zweig,
  * ohne `lastChecked`) sind die ersten beiden Faelle rot.
  *
+ * T13b hat am 12.09.2026 den zweiten Teil davon nachgemessen: der Satz ist
+ * gedeckt, aber er traegt kein Datum. Beim ersten Messlauf war die Aussage
+ * beim Oeffnen rund eine Stunde und zwei Programmstarts alt, und die
+ * Zeichenfolge `Last checked` kam in `src/components` null Mal vor. Der zweite
+ * Block unten haengt das Datum daran, in der Kurzform aus
+ * `src/lib/time-ago.ts`. Negativkontrolle dazu: gegen die Originalquelle
+ * (`SettingsPage.tsx` ohne `lastCheckedText`) sind dessen erste vier Faelle
+ * rot, drei am fehlenden Text und einer am fehlenden Export.
+ *
  * Run: npx vitest run src/components/settings/__tests__/kein-haken-ohne-pruefung.test.ts
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
@@ -38,7 +47,7 @@ vi.mock('../../../api/backend', () => ({
   secretDelete: vi.fn(),
 }))
 
-const { UpdateSection } = await import('../SettingsPage')
+const { UpdateSection, lastCheckedText } = await import('../SettingsPage')
 const { useUpdateStore } = await import('../../../stores/updateStore')
 
 async function section(over: Record<string, unknown>) {
@@ -102,5 +111,55 @@ describe('der Haken haengt an einer Pruefung', () => {
 
     expect(screen.getByText('Update available!')).toBeTruthy()
     expect(screen.queryByTestId('update-not-checked')).toBeNull()
+  })
+})
+
+describe('und der Satz sagt, wann jemand nachgesehen hat', () => {
+  const MINUTE = 60 * 1000
+
+  it('setzt die Zeitangabe unter den Satz', async () => {
+    await section({ lastChecked: Date.now() - (3 * MINUTE + 5000) })
+
+    expect(screen.getByTestId('update-last-checked').textContent).toBe('Last checked 3m ago')
+  })
+
+  it('nennt eine frische Pruefung beim Namen statt mit einer Null', async () => {
+    await section({ lastChecked: Date.now() - 20 * 1000 })
+
+    expect(screen.getByTestId('update-last-checked').textContent).toBe('Last checked just now')
+  })
+
+  it('traegt auch den gemessenen Fall der Box, rund eine Stunde alt', async () => {
+    await section({ lastChecked: Date.now() - (61 * MINUTE) })
+
+    expect(screen.getByTestId('update-last-checked').textContent).toBe('Last checked 1h ago')
+  })
+
+  it('schreibt die Kurzform aus time-ago.ts fort, ohne eine zweite Uhr zu bauen', () => {
+    const now = Date.parse('2026-09-12T14:46:09.030Z')
+
+    expect(lastCheckedText(now - 47 * 1000, now)).toBe('Last checked just now')
+    expect(lastCheckedText(now - 5 * MINUTE, now)).toBe('Last checked 5m ago')
+    expect(lastCheckedText(now - 3 * 60 * MINUTE, now)).toBe('Last checked 3h ago')
+    expect(lastCheckedText(now - 2 * 24 * 60 * MINUTE, now)).toBe('Last checked 2d ago')
+    expect(lastCheckedText(now - 9 * 24 * 60 * MINUTE, now)).toBe('Last checked 1w ago')
+  })
+
+  // NEGATIVKONTROLLE: ohne Pruefung keine Zeitangabe. Sonst stuende dort eine
+  // Zahl, die aus nichts kommt.
+  it('haengt keine Zeitangabe an, solange niemand nachgesehen hat', async () => {
+    await section({})
+
+    expect(screen.queryByTestId('update-last-checked')).toBeNull()
+    expect(screen.getByTestId('update-not-checked')).toBeTruthy()
+  })
+
+  // NEGATIVKONTROLLE: und die gescheiterte Pruefung bekommt auch keine, denn
+  // sie hat `lastChecked` nicht angefasst.
+  it('haengt auch an die gescheiterte Pruefung keine Zeitangabe', async () => {
+    await section({ lastCheckFailed: true, lastChecked: Date.now() - 5 * MINUTE })
+
+    expect(screen.queryByTestId('update-last-checked')).toBeNull()
+    expect(screen.getByTestId('update-check-failed')).toBeTruthy()
   })
 })

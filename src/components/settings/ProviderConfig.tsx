@@ -428,7 +428,8 @@ export function ProviderSettings() {
 
         // Switched off by the user: the row stays and carries the way back.
         // Nothing to test and nothing to configure while it is off, so the row
-        // is one line and one button.
+        // is one line: the Power toggle where every other row carries it, the
+        // Enable button, and the note underneath.
         if (isReturnableRow(config)) {
           return (
             <div key={id} className="rounded-lg border border-white/8 bg-white/[0.01] overflow-hidden">
