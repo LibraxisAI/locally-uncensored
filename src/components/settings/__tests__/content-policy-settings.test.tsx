@@ -80,4 +80,40 @@ describe('ContentPolicySettings', () => {
     render(<ContentPolicySettings />)
     expect(document.body.textContent ?? '').toMatch(/nothing on\s+your own machine is/i)
   })
+
+  /**
+   * R5-7: dieselbe Bedienung, zwei Verben. Der Desktop sagte "Choosing another
+   * option", das Web "Switching to another option". Beide Saetze stehen vor
+   * demselben Kunden, und Paritaet ist Hausregel, wo dasselbe Feature existiert.
+   *
+   * Der Wortlaut steht hier ausgeschrieben und nicht aus dem Web-Baum gelesen:
+   * ein Checkout ohne das Nachbar-Repo wuerde sonst entweder fehlschlagen oder,
+   * schlimmer, still gruen melden. Quelle des Satzes:
+   * `apps/web/components/settings/ContentPolicySettings.tsx:135-136`.
+   */
+  const WEB_SATZ = 'Switching to another option clears that confirmation.'
+
+  it('nennt die Altersbestaetigung mit dem Verb des Web', async () => {
+    api.get.mockResolvedValue({ policy: 'off', ageConfirmedAt: '2026-09-10T08:00:00.000Z' })
+    render(<ContentPolicySettings />)
+    await waitFor(() => {
+      const text = (document.body.textContent ?? '').replace(/\s+/g, ' ')
+      expect(text).toContain(WEB_SATZ)
+      expect(text).toContain('Age confirmed on ')
+    })
+    // Negativkontrolle: das alte Verb darf nirgends mehr stehen.
+    expect(document.body.textContent ?? '').not.toMatch(/Choosing another option/)
+  })
+
+  it('und zeigt den Satz nur, solange die Regel wirklich aus ist', async () => {
+    // Negativkontrolle zur Bedingung: bei strict und soft steht die Zeile gar
+    // nicht da, auch wenn der Server ein Bestaetigungsdatum mitliefert.
+    for (const policy of ['strict', 'soft'] as const) {
+      cleanup()
+      api.get.mockResolvedValue({ policy, ageConfirmedAt: '2026-09-10T08:00:00.000Z' })
+      render(<ContentPolicySettings />)
+      await waitFor(() => expect((screen.getByDisplayValue(policy) as HTMLInputElement).checked).toBe(true))
+      expect(document.body.textContent ?? '', policy).not.toContain('Age confirmed on')
+    }
+  })
 })

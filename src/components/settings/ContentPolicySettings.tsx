@@ -112,8 +112,8 @@ export function ContentPolicySettings() {
 
       {policy === 'off' && confirmedAt && (
         <p className="text-[0.6rem] text-gray-500">
-          Age confirmed on {new Date(confirmedAt).toLocaleDateString()}. Choosing another option
-          clears that confirmation.
+          Age confirmed on {new Date(confirmedAt).toLocaleDateString()}. Switching to another
+          option clears that confirmation.
         </p>
       )}
 
