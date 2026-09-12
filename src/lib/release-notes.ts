@@ -88,7 +88,16 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
     lines: [
       `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models we measured answer without refusing. The catalogue holds ${SHEET_CATALOGUE_MODELS} chat models. We asked them, twice each, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.`,
-      `${CLOUD_PITCH.flashModels} of those models cost no credits at all in chat on a paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.`,
+      // Der Bezugspunkt der 12 steht ausgeschrieben, nie als Rueckverweis.
+      // "12 of those models" stand direkt hinter der Zeile darueber, und die
+      // nennt zwei Mengen: den Messlauf und den Katalog. Wer "those" auf die
+      // naechstgelegene Zahl las, bekam die Schnittmenge aus gemessenen und
+      // abrechnungsfreien Modellen zugesagt, die nirgends gemessen ist
+      // (R6-7, derselbe Fund wie in cloud-pitch.ts). Das Cloud-Tor nennt den
+      // Katalog seit diesem Fund ausdruecklich; T13 hat am 12.09.2026 auf der
+      // Box gemessen, dass Blatt und Tor deshalb verschiedene Bezugspunkte
+      // trugen. Beide nennen jetzt denselben.
+      `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on a paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.`,
       'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
       'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.',
       'Sampling controls sit next to the prompt: temperature, top P and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
