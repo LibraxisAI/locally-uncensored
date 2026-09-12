@@ -321,11 +321,11 @@ pub(crate) fn plan_offload(input: &OffloadInputs) -> OffloadPlan {
     }
     let usable = vram.saturating_sub(VRAM_OVERHEAD_BYTES);
     let per_layer = input.model_bytes / blocks as u64 + kv_per_layer;
-    let layers = if per_layer == 0 {
-        0
-    } else {
-        (usable / per_layer).min(blocks as u64) as u32
-    };
+    // A layer that costs nothing cannot be divided into the budget, so that
+    // case answers 0 layers instead of dividing by zero.
+    let layers = usable
+        .checked_div(per_layer)
+        .map_or(0, |fit| fit.min(blocks as u64) as u32);
     let counted = match read_from_header {
         Some(b) => format!("{b} layers the GGUF header names"),
         None => format!("{ASSUMED_BLOCK_COUNT} layers assumed, because the GGUF header carries no block count"),
