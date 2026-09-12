@@ -272,11 +272,15 @@ describe('the notes table', () => {
     // Konstanten. Vorher stand der Nenner des Katalogs darin, der Waechter
     // haette den falschen Nenner also mitgetragen statt ihn zu melden.
     const phrase = `${CLOUD_PITCH.unfilteredChatModels} of the ${CLOUD_PITCH.measuredChatModels}`
-    expect(phrase).toBe('27 of the 46')
-    expect(prose, 'the summary line does not quote the measured numbers')
-      .toContain(`${phrase.toLowerCase()} cloud chat models`)
-    expect(prose, 'the detail line does not quote the measured numbers')
-      .toContain(`${phrase.toLowerCase()} answer in full`)
+    expect(phrase).toBe('24 of the 46')
+    // Entscheid vom 12.09.2026: EIN Satz traegt die Aussage, und er sagt
+    // "in full". Vorher standen zwei Saetze mit zwei Formulierungen derselben
+    // Messung auf demselben Blatt, einer im Kurztext, einer im Ausklapper.
+    const satz = `${phrase.toLowerCase()} cloud chat models we measured answer in full without refusing, and only those carry the no refusals mark.`
+    expect(prose, 'the sheet does not carry the one mark sentence').toContain(satz)
+    expect(prose.split(satz).length - 1, 'the mark sentence stands exactly once').toBe(1)
+    expect(prose, 'the loose wording of the mark claim is back')
+      .not.toContain(`${phrase.toLowerCase()} answer in full.`)
     expect(prose, 'the catalogue denominator is back on the mark sentence')
       .not.toContain(`${CLOUD_PITCH.unfilteredChatModels} of the ${CLOUD_PITCH.chatModels}`)
 
@@ -287,7 +291,7 @@ describe('the notes table', () => {
     expect(typed, 'a model count typed into the sheet instead of read from CLOUD_PITCH')
       .toEqual([])
     const interpolations = src.split('${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS}').length - 1
-    expect(interpolations, 'both mentions have to come from the constants').toBe(2)
+    expect(interpolations, 'the one mention has to come from the constants').toBe(1)
     // R2-45 und R5-44: keine ausgeschriebene Zahl und keine getippte
     // Tausenderzahl mehr. Beide standen als Prosa neben derselben Zahl aus
     // CLOUD_PITCH und konnten still auseinanderlaufen.
