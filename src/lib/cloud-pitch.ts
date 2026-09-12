@@ -17,6 +17,15 @@
  * Nichts hier ist eine Zusage fuer den Einzelfall. "Ohne Ablehnung" ist eine
  * MESSUNG vom 10.09.2026, kein Vertrag, und was eine Anfrage enthalten darf,
  * entscheidet der Server bei jedem Aufruf neu.
+ *
+ * ## Zwei Mengen, kein Rueckbezug
+ *
+ * `unfilteredChatModels` und `flashModels` zaehlen verschiedene Dinge: die
+ * einen sind gemessen, die anderen sind eine Abrechnungsklasse. Wie gross ihre
+ * Schnittmenge ist, steht nirgends gemessen, also darf keine Zeile sie
+ * behaupten. Die zweite Zeile sagte "12 of them" direkt hinter den 27
+ * gemessenen und las sich damit als genau diese Schnittmenge (R6-7). Sie nennt
+ * jetzt den Katalog, auf den sich die 12 wirklich beziehen.
  */
 
 export interface CloudPitchNumbers {
@@ -27,6 +36,9 @@ export interface CloudPitchNumbers {
   measuredChatModels: number
   /** Davon gemessen ohne Ablehnung. */
   unfilteredChatModels: number
+  /** Davon gemessen mit Zurueckhaltung: sie antworten, gehen aber nicht ganz
+   *  mit, und tragen deshalb keine Marke. */
+  heldBackChatModels: number
   /** Modelle der Flash-Klasse, die im Chat keine Credits kosten. */
   flashModels: number
   /** Taegliche Obergrenze der Flash-Klasse, Ein- und Ausgabe zusammen. */
@@ -41,6 +53,7 @@ export const CLOUD_PITCH: CloudPitchNumbers = {
   chatModels: 47,
   measuredChatModels: 46,
   unfilteredChatModels: 27,
+  heldBackChatModels: 4,
   flashModels: 12,
   flashDailyTokens: 500_000,
   imageModels: 10,
@@ -59,7 +72,7 @@ const n = (v: number) => v.toLocaleString('en-US')
 export function cloudPitchLines(p: CloudPitchNumbers = CLOUD_PITCH): string[] {
   return [
     `${p.unfilteredChatModels} of the ${p.measuredChatModels} chat models we measured answer without refusing. Measured, not guessed, and marked in the picker.`,
-    `${p.flashModels} of them cost no credits at all in chat, up to ${n(p.flashDailyTokens)} tokens a day on a paid plan.`,
+    `${p.flashModels} of the ${p.chatModels} models in the catalogue cost no credits at all in chat, up to ${n(p.flashDailyTokens)} tokens a day on a paid plan.`,
     `${p.chatModels} chat, ${p.imageModels} image and ${p.videoModels} video models on our GPUs, including the ones your own machine cannot run.`,
   ]
 }
