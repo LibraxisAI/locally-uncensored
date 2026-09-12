@@ -86,6 +86,27 @@ function safeProviderFor(modelName: string): { provider: ProviderClient | null; 
  *
  * `reloadTick` lets the dropdown force a re-read right after it reloads a model.
  */
+/**
+ * Woher das Fenster eines ferngesteuerten Modells stammt.
+ *
+ * R2-5: hier stand `?? 'probe'`, und "probe" heisst im Werkzeugtext des
+ * Zaehlers "from server". Antwortet der Anbieter gar nicht, faellt `max` aber
+ * auf die KNOWN_CONTEXT-Tabelle dieses Hauses, auf die Namensheuristik oder
+ * ganz auf die 4096 aus `context-compaction.ts`. Der Nutzer las dann eine
+ * geratene Zahl als Auskunft des Betreibers und richtete seinen Sendedeckel
+ * danach. Eine Auskunft ist es nur, wenn der Anbieter sie wirklich gegeben hat
+ * oder wenn es der eigene Katalog ist; sonst steht dort "estimated", was
+ * `SOURCE_LABEL.guess` schon sagt.
+ */
+export function remoteWindowSource(
+  providerId: string,
+  resolved: ContextSource | undefined,
+  max: number,
+): ContextSource {
+  if (resolved) return resolved
+  return providerId === 'lu-cloud' && max > 0 ? 'probe' : 'guess'
+}
+
 export function useActiveContextWindow(reloadTick = 0): ActiveContext {
   const activeModel = useModelStore((s) => s.activeModel)
   const override = useSettingsStore((s) => s.settings.contextWindowOverride)
@@ -277,15 +298,8 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
         // einer fremden Bereitstellung, und der Sendedeckel ist hier der
         // Hebel, der den Nenner regelt.
         adjustable: false,
-        /*
-         * Woher die Zahl kommt, auch wenn sie hier niemand verstellen kann.
-         * Der Katalog eines Anbieters (LU Cloud) und die feste Liste von
-         * Anthropic sind Auskuenfte des Betreibers; was die
-         * KNOWN_CONTEXT-Tabelle dieses Hauses oder die Namensheuristik
-         * liefert, ist geraten, und der Werkzeugtext des Zaehlers sagt das
-         * jetzt auch.
-         */
-        source: cloudResolved?.source ?? 'probe',
+        // Woher die Zahl kommt, auch wenn sie hier niemand verstellen kann.
+        source: remoteWindowSource(providerId, cloudResolved?.source, max),
         windowKey: '',
       })
     })()

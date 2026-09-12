@@ -180,12 +180,49 @@ describe('updateStore', () => {
       expect(useUpdateStore.getState().updateAvailable).toBe(false)
     })
 
-    it('handles fetch error gracefully (offline)', async () => {
+    /**
+     * R2-12 und R2-13: der Fehlerfall schrieb dasselbe wie der Erfolgsfall.
+     * Die Einstellungsseite las daraus den gruenen Haken, und `lastChecked`
+     * sperrte danach sechs Stunden lang jede automatische Wiederholung. Wer
+     * beim Start offline war, bekam also einen Haken, den niemand geprueft
+     * hatte, und ein halber Tag verging bis zum naechsten Versuch.
+     */
+    it('a failed check says so and does not block the next attempt', async () => {
       vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Network error'))
 
       await useUpdateStore.getState().checkForUpdate()
       expect(useUpdateStore.getState().isChecking).toBe(false)
+      expect(useUpdateStore.getState().lastCheckFailed).toBe(true)
+      expect(useUpdateStore.getState().lastChecked).toBeNull()
+
+      // Und der naechste automatische Aufruf fetcht wirklich wieder.
+      const zweiter = vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Network error'))
+      await useUpdateStore.getState().checkForUpdate()
+      expect(zweiter).toHaveBeenCalled()
+    })
+
+    it('a refused check counts as failed too, not as up to date', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 403 } as Response)
+
+      await useUpdateStore.getState().checkForUpdate()
+      expect(useUpdateStore.getState().lastCheckFailed).toBe(true)
+      expect(useUpdateStore.getState().lastChecked).toBeNull()
+      expect(useUpdateStore.getState().updateAvailable).toBe(false)
+    })
+
+    it('NEGATIVKONTROLLE: a successful check keeps the tick and holds the interval', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ tag_name: 'v0.0.1', body: '' }),
+      } as Response)
+
+      await useUpdateStore.getState().checkForUpdate()
+      expect(useUpdateStore.getState().lastCheckFailed).toBe(false)
       expect(useUpdateStore.getState().lastChecked).not.toBeNull()
+
+      fetchSpy.mockClear()
+      await useUpdateStore.getState().checkForUpdate()
+      expect(fetchSpy, 'a second check within six hours went out anyway').not.toHaveBeenCalled()
     })
 
     it('does not run concurrently (isChecking guard)', async () => {

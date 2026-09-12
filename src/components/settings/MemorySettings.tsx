@@ -230,7 +230,7 @@ function MemorySettingsPanel() {
     // so the Save button never looks broken.
     if (!newTitle.trim()) { setAddError('Add a title.'); return }
     if (!newContent.trim()) { setAddError('Add some details.'); return }
-    useMemoryStore.getState().addMemory({
+    const id = useMemoryStore.getState().addMemory({
       type: 'user',
       title: newTitle.trim().substring(0, 60),
       description: newContent.trim().substring(0, 120),
@@ -240,6 +240,11 @@ function MemorySettingsPanel() {
       sensitive: newSensitive,
       scope: useProject ? conversation?.memoryScope : undefined,
     })
+    // An empty id means the store refused the record, and the only reason left
+    // after the two checks above is a memory that is already there. Saying so
+    // beats clearing the fields and closing the form, which is what this did
+    // until R5-32: the text was gone and the page looked like it had saved.
+    if (!id) { setAddError('This memory is already saved.'); return }
     setNewTitle('')
     setNewContent('')
     setNewSensitive(false)
@@ -318,18 +323,27 @@ function MemorySettingsPanel() {
 
       {/* Manual memory limit — override the context-derived count (David
           2026-06-07: "memory limit selber setzen, nicht 32k = 15 memories").
-          Blank = auto (tier-based). */}
+          Blank = auto (tier-based).
+
+          R2-23: das Feld nahm 0 an, und `effectiveMemoryBudget` liest 0 als
+          "nicht gesetzt". Wer 0 eintrug, um Erinnerungen abzustellen, bekam
+          also den vollen Stufenwert, und das Feld zeigte danach seine eigene 0
+          als Beleg. Das Feld beginnt deshalb bei 1: abstellen geht ueber den
+          Schalter darueber, nicht ueber eine Zahl, die das Gegenteil bewirkt.
+          Ein alter gespeicherter Nullwert wird als "nicht gesetzt" gezeigt,
+          also leer mit Platzhalter Auto, und genau so wirkt er auch. */}
       <div className="flex items-center justify-between gap-2 text-[0.6rem] text-gray-500 px-0.5">
         <span>Max memories injected</span>
         <input
           type="number"
-          min={0}
+          min={1}
           max={100}
-          value={settings.maxMemoriesOverride ?? ''}
+          data-testid="memory-max-override"
+          value={settings.maxMemoriesOverride || ''}
           placeholder="Auto"
           onChange={(e) => {
             const v = e.target.value.trim()
-            const n = v === '' ? null : Math.max(0, Math.min(100, Math.floor(Number(v) || 0)))
+            const n = v === '' ? null : Math.max(1, Math.min(100, Math.floor(Number(v) || 1)))
             updateMemorySettings({ maxMemoriesOverride: n })
           }}
           className="w-16 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/5 border border-gray-300 dark:border-white/10 text-gray-900 dark:text-white text-right placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"

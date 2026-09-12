@@ -283,3 +283,48 @@ describe('the existing guards still hold', () => {
     expect(chatStream).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * R5-26. The extraction ran on a 500 token budget. A model that pads the JSON
+ * with prose or a short think block tore off mid-object, and the whole turn was
+ * lost without a word, which is the same failure R5-25 fixes from the parsing
+ * side. 800 is the web's number (apps/web/hooks/useMemory.ts:98-101).
+ */
+describe('the budget the extraction asks for', () => {
+  it('R5-26: asks for 800 tokens, so a padded answer still arrives whole', async () => {
+    activeModel = 'qwen3:8b'
+    await threeTurns()
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    expect(chatStream.mock.calls[0][2]).toMatchObject({ maxTokens: 800 })
+  })
+
+  it('R5-26 NEGATIVKONTROLLE: temperature and the context window are untouched', async () => {
+    activeModel = 'qwen3:8b'
+    await threeTurns()
+    expect(chatStream.mock.calls[0][2]).toMatchObject({ temperature: 0.1, contextWindow: 8192 })
+  })
+
+  it('R5-26: a 700 token answer is still read in full', async () => {
+    // Four characters to the token, the rule of thumb this app sizes budgets
+    // with: 700 tokens is roughly 2800 characters. Under the old 500 the reply
+    // would have been cut before its closing brace and parsed to nothing.
+    activeModel = 'qwen3:8b'
+    const padding = 'a'.repeat(2600)
+    const lang = JSON.stringify({ shouldSave: true, memories: [{ type: 'user', title: 'Long fact', description: 'Long fact', content: padding, tags: [] }] })
+    expect(lang.length).toBeGreaterThan(4 * 500)
+    expect(lang.length).toBeLessThan(4 * 800)
+    chatStream.mockImplementation(() => (async function* () { yield { content: lang, done: true } })())
+    await threeTurns()
+    expect(addMemory).toHaveBeenCalledTimes(1)
+    expect(addMemory).toHaveBeenCalledWith(expect.objectContaining({ content: padding }))
+  })
+
+  it('R5-25: a think block around the answer is not stored as a memory', async () => {
+    activeModel = 'qwen3:8b'
+    chatStream.mockImplementation(() => (async function* () {
+      yield { content: '<think>Maybe {"shouldSave": true, "memories": [{"type": "user", "title": "Guess", "content": "A stray thought", "tags": []}]} would do.</think>{"shouldSave": false, "memories": []}', done: true }
+    })())
+    await threeTurns()
+    expect(addMemory).not.toHaveBeenCalled()
+  })
+})

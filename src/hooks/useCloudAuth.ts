@@ -55,6 +55,8 @@ async function probeAccount(): Promise<void> {
     // every licensed account): absent on older servers = allowed.
     const access = me.license?.access !== false
     const tier = me.license?.tier ?? null
+    // Absent on an older server: unknown, not "no". null promises nothing.
+    const paidPlan = typeof me.license?.paidPlan === 'boolean' ? me.license.paidPlan : null
     let quota: CloudQuota | null = null
     if (licenseActive && access) {
       // Gated accounts would just 403 here — skip the round-trip. A transient
@@ -68,7 +70,7 @@ async function probeAccount(): Promise<void> {
       if (stale()) return
       void refreshCatalog()
     }
-    store.setSignedIn({ id: me.user.id, email: me.user.email }, { licenseActive, tier, access, quota })
+    store.setSignedIn({ id: me.user.id, email: me.user.email }, { licenseActive, tier, access, paidPlan, quota })
     syncChatProvider()
     syncAppMode()
   } catch (err) {

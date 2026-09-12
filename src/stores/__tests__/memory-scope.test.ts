@@ -64,3 +64,54 @@ it('does not match absent or blank project IDs to scoped entries', () => {
   expect(memoryMatchesScope({ scope: ' ' }, ' ')).toBe(false)
   expect(memoryMatchesScope({ scope: 'A' }, 'a')).toBe(false)
 })
+
+/**
+ * R2-26: die leere Anfrage der Remote-Bruecke lieferte die AELTESTEN
+ * Erinnerungen.
+ *
+ * `scoreMemory` gibt bei leerer Anfrage jeder Erinnerung die 1, und der
+ * Frischebonus haengt an mindestens einem Worttreffer, greift dort also nicht.
+ * Die Sortierung ist stabil, also gewann die Einfuegereihenfolge. Genau so
+ * ruft `remoteStore` an, und das Handy bekam dauerhaft den aeltesten Stand.
+ */
+describe('R2-26: ohne Anfrage entscheidet die Frische', () => {
+  it('die leere Anfrage liefert die neuesten, nicht die aeltesten', () => {
+    useMemoryStore.setState({ entries: [] })
+    for (let i = 0; i < 20; i++) {
+      useMemoryStore.getState().addMemory({
+        type: 'user', title: `M${i}`, description: `Eintrag ${i}`,
+        content: `Eintrag Nummer ${i}`, tags: [], source: 'manual',
+      })
+    }
+    // Aufsteigendes Alter in Einfuegereihenfolge: der letzte ist der neueste.
+    useMemoryStore.setState({
+      entries: useMemoryStore.getState().entries.map((e, i) => ({ ...e, updatedAt: 1000 + i })),
+    })
+
+    const text = useMemoryStore.getState().getMemoriesForPrompt('', 8192)
+    // Acht passen ins Budget, und es muessen die acht NEUESTEN sein.
+    const genannt = [...text.matchAll(/Eintrag Nummer (\d+)/g)].map((m) => Number(m[1]))
+    expect(genannt).toHaveLength(8)
+    expect(genannt).toEqual([19, 18, 17, 16, 15, 14, 13, 12])
+  })
+
+  it('NEGATIVKONTROLLE: mit echter Anfrage entscheidet weiter die Wortdeckung', () => {
+    useMemoryStore.setState({ entries: [] })
+    useMemoryStore.getState().addMemory({
+      type: 'user', title: 'bread', description: 'The favourite bread is rye.',
+      content: 'The favourite bread is rye.', tags: [], source: 'manual',
+    })
+    useMemoryStore.getState().addMemory({
+      type: 'user', title: 'tea', description: 'The favourite tea is rooibos.',
+      content: 'The favourite tea is rooibos.', tags: [], source: 'manual',
+    })
+    // Der Tee ist der NEUERE, das Brot der gesuchte.
+    useMemoryStore.setState({
+      entries: useMemoryStore.getState().entries.map((e, i) => ({ ...e, updatedAt: 1000 + i })),
+    })
+
+    const text = useMemoryStore.getState().getMemoriesForPrompt('bread', 8192)
+    expect(text).toContain('rye')
+    expect(text, 'das Alter hat die Wortdeckung geschlagen').not.toContain('rooibos')
+  })
+})

@@ -41,10 +41,23 @@ import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
  *   - the keyboard goes into the popup when it opens and back to the trigger
  *     when it closes.
  */
+/**
+ * ## Why Top K is not in this list
+ *
+ * It used to be, and it moved nothing on the paid default path: the
+ * OpenAI-compatible body has no field for it, and `openai-provider.ts` never
+ * reads `options.topK` at all, so on LU Cloud and on this app's own engine the
+ * slider was a dead control with no feedback. The same value also had two
+ * scales, `0..200` here against `1..100` on the settings page, so this popup
+ * could write a 150 that the other control cannot even display.
+ *
+ * Top K stays on the settings page, where Ollama and Anthropic read it
+ * (`ollama-provider.ts:150`, `anthropic-provider.ts:320`). That is the same
+ * arrangement the web app describes in `apps/web/lib/sampling.ts:22-26`.
+ */
 const FIELDS = [
   { key: 'temperature', label: 'Temperature', min: 0, max: 2, step: 0.05 },
   { key: 'topP', label: 'Top P', min: 0, max: 1, step: 0.01 },
-  { key: 'topK', label: 'Top K', min: 0, max: 200, step: 1 },
 ] as const
 
 /**
@@ -149,6 +162,11 @@ export function SamplingControls() {
         aria-expanded={open}
         aria-controls={panelId}
         data-testid="sampling-trigger"
+        // Word for word the web app's trigger (apps/web/components/chat/
+        // SamplingControls.tsx:82-83), so the button has one name on Windows,
+        // Mac and the web app instead of being read out as a bare number.
+        title="Sampling for this chat"
+        aria-label={`Sampling: temperature ${settings.temperature}`}
         // Opens, never closes. A trigger that also closed made the panel
         // disappear under the pointer on the second click.
         onClick={() => setOpen(true)}
@@ -236,10 +254,11 @@ export function SamplingControls() {
               disabled={!changed}
               onClick={() => {
                 setDraft(null)
+                // Resets what this popup shows. Top K is not on it, so this
+                // button does not silently reach over to the settings page.
                 update({
                   temperature: DEFAULT_SETTINGS.temperature,
                   topP: DEFAULT_SETTINGS.topP,
-                  topK: DEFAULT_SETTINGS.topK,
                   maxTokens: DEFAULT_SETTINGS.maxTokens,
                 })
               }}

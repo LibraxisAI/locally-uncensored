@@ -68,12 +68,28 @@ export const CHAT_BASE_SYSTEM_PROMPT = `${CHAT_BASE_ROLE} ${HOUSE_RULES}`
  * nur den Hausteil an. Ohne Person gilt der Grundtext ganz. In beiden Faellen
  * geht etwas raus, nie mehr ein leerer String.
  */
-export function buildChatSystemPrompt(conv: {
-  systemPrompt?: string | null
-  personaEnabled?: boolean
-}): string {
-  const persona = conv.personaEnabled === true ? (conv.systemPrompt || '').trim() : ''
-  return persona ? `${persona}\n\n${HOUSE_RULES}` : CHAT_BASE_SYSTEM_PROMPT
+export function buildChatSystemPrompt(
+  conv: {
+    systemPrompt?: string | null
+    personaEnabled?: boolean
+  },
+  /**
+   * `settings.personasEnabled`, der GLOBALE Schalter. R5-1: der Chat las nur
+   * den Schalter der Unterhaltung. Wer Personen global abschaltete, bekam die
+   * eingefrorene Person der Unterhaltung trotzdem weiter geschickt, und der
+   * Schalter, den er gerade umgelegt hatte, tat sichtbar nichts. Vorgabe
+   * `true`, damit kein Aufrufer, der nichts uebergibt, sein Verhalten aendert.
+   */
+  personasOn = true,
+): string {
+  const persona = personasOn && conv.personaEnabled === true ? (conv.systemPrompt || '').trim() : ''
+  if (!persona) return CHAT_BASE_SYSTEM_PROMPT
+  // R2-8: eine Person kann den Hausteil selbst schon tragen, etwa weil sie aus
+  // dem Grundtext gebaut wurde oder weil ein Nutzer ihn hineinkopiert hat.
+  // Dann stand er zweimal im Systemtext, und ein doppelter Befehl liest sich
+  // fuer ein Modell als Nachdruck. `withHouseConduct` hat diesen Schutz seit
+  // jeher, hier fehlte er.
+  return persona.includes(HOUSE_RULES) ? persona : `${persona}\n\n${HOUSE_RULES}`
 }
 
 /**

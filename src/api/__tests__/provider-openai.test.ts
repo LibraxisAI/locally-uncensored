@@ -655,6 +655,46 @@ describe('OpenAIProvider', () => {
       vi.restoreAllMocks()
     })
 
+    /**
+     * R5-16: der Server schickt `detail` als Geschwister von `error`, der
+     * Desktop las nur `error`. Genau in `detail` steht die Haelfte, die dem
+     * Nutzer sagt, was er tun kann; uebrig blieb der blanke Satz. Das Web
+     * haengt es seit jeher an.
+     */
+    it('haengt das detail des Servers an den Satz', async () => {
+      const provider = new OpenAIProvider(makeConfig({ name: 'LU Cloud' }))
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: 'inference upstream error', detail: 'model qwen3-32b is warming up' }),
+          { status: 422 },
+        ),
+      )
+      try {
+        await provider.listModels()
+        expect.fail('Should have thrown')
+      } catch (thrown) {
+        const e = asProviderError(thrown)
+        expect(e.message).toContain('inference upstream error')
+        expect(e.message, 'das detail des Servers faellt weg')
+          .toContain('model qwen3-32b is warming up')
+      }
+      vi.restoreAllMocks()
+    })
+
+    it('NEGATIVKONTROLLE: ohne detail bleibt der blanke Satz unveraendert', async () => {
+      const provider = new OpenAIProvider(makeConfig({ name: 'LU Cloud' }))
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'inference upstream error' }), { status: 422 }),
+      )
+      try {
+        await provider.listModels()
+        expect.fail('Should have thrown')
+      } catch (thrown) {
+        expect(asProviderError(thrown).message).toBe('inference upstream error')
+      }
+      vi.restoreAllMocks()
+    })
+
     it('falls back to the canned texts when the body carries no message', async () => {
       const provider = new OpenAIProvider(makeConfig())
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('{}', { status: 401 }))

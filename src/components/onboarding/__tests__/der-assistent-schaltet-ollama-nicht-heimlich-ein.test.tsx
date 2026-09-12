@@ -26,6 +26,7 @@ import { createElement } from 'react'
 import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { isReturnableRow } from '../../../lib/provider-visibility'
 
 const listModels = vi.fn(async () => [{ name: 'llama3.1:8b' }, { name: 'qwen3:14b' }])
 vi.mock('../../../api/ollama', () => ({
@@ -152,5 +153,63 @@ describe('Erstlauf: keine Marke, alles wie bisher', () => {
     await act(async () => { fireEvent.click(screen.getByText('llama3.1:8b')) })
     expect(ollama().enabled).toBe(true)
     expect(useModelStore.getState().activeModel).toBe('llama3.1:8b')
+  })
+})
+
+/**
+ * R2-14: dieselbe Marke, die andere Tuer.
+ *
+ * Der Modellschritt fragt das Tor seit dem ersten Fund. Der Erkenner beim
+ * Anlauf der App (`AppShell.tsx`) fragte es nicht: er schrieb `enabled: true`
+ * fuer beide Steckplaetze und liess `disabledByUser: true` daneben stehen.
+ * V1 hat ausdruecklich widerlegt, dass der openai-Steckplatz geschuetzt sei,
+ * diese Stelle ruft `slotTakeoverUpdate` gar nicht. Ein ausdrueckliches Nein
+ * ueberlebte also den Modellschritt und starb am naechsten App-Start.
+ *
+ * Am Quelltext geprueft, wie der Nachbarfall darueber: der Erkenner haengt an
+ * einem Effekt der ganzen Schale und ist einzeln nicht erreichbar. Der
+ * Wirkungsteil steht darunter am Anbieter-Store.
+ */
+describe('R2-14: der Erkenner beim Anlauf hebt den Disable-Knopf nicht auf', () => {
+  const schale = () => readFileSync(resolve(__dirname, '../../layout', 'AppShell.tsx'), 'utf8')
+
+  it('setzt enabled fuer BEIDE Steckplaetze nur hinter dem Tor', () => {
+    const quelle = schale()
+    expect(quelle).toContain("import { mayEnableFromWizard }")
+    // Jeder Aufruf des Erkenners, der einschaltet, geht durch das Tor.
+    const einschaltungen = [...quelle.matchAll(/\{ enabled: true \}/g)]
+    const ungetorte = [...quelle.matchAll(/^\s*enabled: true,$/gm)]
+    expect(einschaltungen.length, 'keine getorte Einschaltung mehr im Erkenner')
+      .toBeGreaterThanOrEqual(2)
+    expect(ungetorte.length, 'eine Einschaltung ohne Tor im Erkenner').toBe(0)
+  })
+
+  it('die Adresse darf trotzdem nachgezogen werden, ein Port ist keine Einschaltung', () => {
+    const quelle = schale()
+    expect(quelle).toContain('baseUrl: nonOllama.baseUrl')
+    expect(quelle).toContain('baseUrl: detectedOllama.baseUrl')
+  })
+
+  it('WIRKUNG: ein ausdrueckliches Nein ueberlebt eine Adressaktualisierung', () => {
+    // isReturnableRow ist das, was die Anbieterkarte zeichnet: die Zeile mit
+    // dem Enable-Knopf, die T2 nach dem Anlauf nicht mehr vorfand.
+    useProviderStore.getState().setProviderConfig('ollama', { enabled: false, disabledByUser: true })
+    // Genau das, was der Erkenner hinter dem geschlossenen Tor noch schreibt.
+    useProviderStore.getState().setProviderConfig('ollama', {
+      baseUrl: 'http://127.0.0.1:11434',
+      isLocal: true,
+    })
+    expect(ollama().enabled).toBe(false)
+    expect(ollama().disabledByUser).toBe(true)
+    expect(isReturnableRow(ollama())).toBe(true)
+    expect(ollama().baseUrl).toBe('http://127.0.0.1:11434')
+  })
+
+  it('NEGATIVKONTROLLE: eine frische Installation ohne Marke wird weiter eingeschaltet', () => {
+    useProviderStore.getState().setProviderConfig('ollama', { enabled: false, disabledByUser: undefined })
+    expect(mayEnableFromWizard(useProviderStore.getState().providers.ollama)).toBe(true)
+    expect(isReturnableRow(useProviderStore.getState().providers.ollama), 'keine Enable-Zeile ohne Marke').toBe(false)
+    useProviderStore.getState().setProviderConfig('ollama', { enabled: true })
+    expect(ollama().enabled).toBe(true)
   })
 })

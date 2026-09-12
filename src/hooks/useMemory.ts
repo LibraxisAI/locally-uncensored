@@ -159,7 +159,10 @@ export async function extractMemoriesFromPair(
     let fullResponse = ''
     const stream = provider.chatStream(modelId, messages, {
       temperature: 0.1,
-      maxTokens: 500,
+      // 800 tokens leaves headroom for models that pad the JSON with prose or a
+      // short think block. At 500 the extraction tore off mid-object and the
+      // whole turn was lost without a word. Same number as the web.
+      maxTokens: 800,
       contextWindow: numCtx,
     })
 

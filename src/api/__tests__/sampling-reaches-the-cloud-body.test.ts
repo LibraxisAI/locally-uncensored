@@ -7,17 +7,18 @@
  * interface in types/settings.ts:49-52, not in DEFAULT_SETTINGS in
  * lib/constants.ts:12-15, and `OpenAIChatRequest` in openai-provider.ts:86-100
  * has no member it could be assigned to), and temperature goes on the wire.
- * SamplingControls writes exactly four keys, all through one setter
- * (SamplingControls.tsx:77 for the three sliders, :96 for Max tokens), and
- * useChat.ts:825-828 hands the same four to the provider.
+ * SamplingControls writes three keys, all through one setter (the FIELDS table
+ * for the two sliders, the Max tokens box for the third), and useChat.ts hands
+ * four to the provider: those three plus Top K from the settings page.
  *
- * The value that really has no effect in the cloud is TOP K, and that is not a
- * bug to fix here: the OpenAI-compatible body has no field for it. It is read
- * by ollama-provider.ts:150 and anthropic-provider.ts:320 and dropped by
- * openai-provider, which never looks at `options.topK` at all, so the slider
- * works on Ollama and Anthropic and is inert on every OpenAI-protocol backend,
- * LU Cloud and this app's own engine included. Documented on the wire here
- * rather than argued about again.
+ * The value that really has no effect in the cloud is TOP K. The OpenAI
+ * compatible body has no field for it: it is read by ollama-provider.ts:150 and
+ * anthropic-provider.ts:320 and dropped by openai-provider, which never looks at
+ * `options.topK` at all, so it works on Ollama and Anthropic and is inert on
+ * every OpenAI-protocol backend, LU Cloud and this app's own engine included.
+ * Since R5-13 it is therefore no longer a slider in the per-chat popup, only a
+ * control on the settings page. Documented on the wire here rather than argued
+ * about again.
  *
  * Asserted on the JSON body of a real request, because a note about a slider
  * is exactly the kind of claim that source-reading gets wrong twice.
@@ -148,15 +149,35 @@ describe('what the sliders put on the wire', () => {
 })
 
 describe('the panel writes the keys the send reads', () => {
-  it('the three sliders and the number field write those four settings', () => {
+  it('the two sliders and the number field write those three settings', () => {
     const panel = src('../../components/chat/SamplingControls.tsx')
     expect(panel).toMatch(/key: 'temperature'/)
     expect(panel).toMatch(/key: 'topP'/)
-    expect(panel).toMatch(/key: 'topK'/)
     expect(panel).toMatch(/update\(\{ maxTokens:/)
     // The slider setter is keyed off the FIELDS table, so it cannot write a
     // name that is not in it.
     expect(panel).toMatch(/update\(\{ \[f\.key\]: Number\(e\.target\.value\) \}\)/)
+  })
+
+  /**
+   * R5-13. The dead control is gone from the popup, and this is the guard that
+   * keeps it from coming back: the popup writes nothing the OpenAI-compatible
+   * body has no field for. Mirrors the web guard in
+   * apps/web/components/chat/__tests__/sampling-popup-parity.test.ts.
+   */
+  it('R5-13: the popup offers no Top K, and names itself the way the web app does', () => {
+    const panel = src('../../components/chat/SamplingControls.tsx')
+    expect(panel).not.toContain("key: 'topK'")
+    expect(panel).not.toContain('topK: DEFAULT_SETTINGS.topK')
+    expect(panel).toContain('title="Sampling for this chat"')
+  })
+
+  it('R5-13 NEGATIVKONTROLLE: Top K is still offered on the settings page', () => {
+    // Removed from the popup, not from the app. Ollama and Anthropic read it,
+    // and that is where it is set.
+    const page = src('../../components/settings/SettingsPage.tsx')
+    expect(page).toContain('topK')
+    expect(src('../providers/ollama-provider.ts')).toContain('top_k')
   })
 
   it('and the send reads exactly those four', () => {

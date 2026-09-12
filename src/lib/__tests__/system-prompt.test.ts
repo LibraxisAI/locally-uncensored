@@ -21,7 +21,7 @@ import {
   buildChatSystemPrompt,
   withHouseConduct,
 } from '../system-prompt'
-import { BUILT_IN_PERSONAS } from '../constants'
+import { BUILT_IN_PERSONAS, DEFAULT_SETTINGS } from '../constants'
 import { groupSystemPrompt } from '../group-chat'
 import { buildHermesToolPrompt } from '../../api/hermes-tool-calling'
 import {
@@ -86,8 +86,33 @@ describe('system prompt', () => {
   it('leaves no assembly point that can fall back to an empty string', () => {
     for (const file of ['hooks/useChat.ts', 'hooks/useAgentChat.ts']) {
       expect(read(file)).not.toMatch(/personaEnabled === true \? conv\.systemPrompt : ''/)
-      expect(read(file)).toContain('buildChatSystemPrompt(conv)')
+      // R5-1: der Aufruf traegt jetzt den globalen Schalter als zweites
+      // Argument, wie im Web. Die Klammer bleibt deshalb offen.
+      expect(read(file)).toContain('buildChatSystemPrompt(conv, settings.personasEnabled !== false)')
     }
+  })
+
+  /**
+   * R5-1: der Chat las nur den Schalter der Unterhaltung. Wer Personen global
+   * abschaltete, bekam die eingefrorene Person weiter geschickt, und der
+   * Schalter tat sichtbar nichts.
+   */
+  it('der globale Schalter schlaegt den Schalter der Unterhaltung', () => {
+    const mitPerson = { systemPrompt: 'You are a pirate.', personaEnabled: true }
+    expect(buildChatSystemPrompt(mitPerson, true)).toContain('You are a pirate.')
+    const aus = buildChatSystemPrompt(mitPerson, false)
+    expect(aus).not.toContain('You are a pirate.')
+    expect(aus).toBe(CHAT_BASE_SYSTEM_PROMPT)
+    // Negativkontrolle: wer nichts uebergibt, bekommt das Verhalten von vorher.
+    expect(buildChatSystemPrompt(mitPerson)).toContain('You are a pirate.')
+  })
+
+  /**
+   * R5-2: stand der globale Schalter auf an, kaperte eine global gewaehlte
+   * Person jede neue Unterhaltung, und der Grundtext kam nicht zum Zug.
+   */
+  it('frische Einstellungen schicken keine Person', () => {
+    expect(DEFAULT_SETTINGS.personasEnabled).toBe(false)
   })
 
   it('carries the conduct line on the coding surface too', () => {
@@ -161,6 +186,16 @@ describe('die Reichweitenzeile haengt an jeder Oberflaeche mit einem Menschen da
     traegtDenHausteil(
       buildChatSystemPrompt({ systemPrompt: 'You are a pirate.', personaEnabled: true }),
       false,
+    )
+    // R2-8: die Vorgabeperson TRUG den Grundtext als ihren eigenen Text. Wer
+    // sie einschaltete, bekam den Hausteil deshalb zweimal, einmal aus der
+    // Person und einmal aus der Zusammensetzung. `withHouseConduct` hat den
+    // Schutz dagegen seit jeher, `buildChatSystemPrompt` hatte ihn nicht.
+    traegtDenHausteil(
+      buildChatSystemPrompt({
+        systemPrompt: BUILT_IN_PERSONAS.find((p) => p.id === 'unrestricted')!.systemPrompt,
+        personaEnabled: true,
+      }),
     )
   })
 

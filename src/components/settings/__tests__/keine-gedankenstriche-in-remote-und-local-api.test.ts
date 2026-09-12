@@ -62,3 +62,33 @@ describe('die Texte aus T5 tragen keinen Gedankenstrich', () => {
     expect(mitKommentar).toContain('No web page may read this API')
   })
 })
+
+/**
+ * R2-29: der Erklaertext versprach Shell hinter dem Filesystem-Schalter.
+ *
+ * "Lets the remote agent read and write files AND RUN SHELL COMMANDS in the
+ * dispatched working folder" stand unter dem Dateizugriff. Der Schalter macht
+ * das nicht, dafuer gibt es den vierten Punkt weiter unten, und ein Nutzer, der
+ * bewusst nur Dateizugriff geben wollte, las hier, er gebe damit auch die
+ * Shell. Die Rust-Seite bleibt unangetastet, der Text war falsch, nicht die
+ * Trennung.
+ */
+describe('R2-29: der Dateischalter verspricht keine Shell', () => {
+  const docs = () => ausgeliefert(join('components', 'settings', 'RemoteAccessDocs.tsx'))
+
+  it('nennt shell commands nur noch im vierten Punkt', () => {
+    const quelle = docs()
+    expect([...quelle.matchAll(/run shell commands/g)]).toHaveLength(1)
+    const dateiteil = quelle.slice(
+      quelle.indexOf('Filesystem Access'),
+      quelle.indexOf('Downloads &amp; Installs'),
+    )
+    expect(dateiteil, 'der Dateischalter verspricht weiter die Shell')
+      .not.toContain('shell')
+    expect(dateiteil).toContain('read and write files in the dispatched working folder')
+  })
+
+  it('NEGATIVKONTROLLE: der vierte Punkt bleibt wortgleich', () => {
+    expect(docs()).toContain('Lets the remote device run shell commands and code on this machine.')
+  })
+})

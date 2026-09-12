@@ -1,7 +1,25 @@
 import { useEffect } from 'react'
 import { useModelStore } from '../../stores/modelStore'
 import { clearFlashNotices, useFlashBillingStore } from '../../lib/flash-ui'
+import { FLASH_UNPAID_NOTICE, useFlashEntitlement } from '../../lib/flash-entitlement'
 
+/**
+ * Was eine Runde auf dem gewaehlten Modell dieses Konto kostet.
+ *
+ * Der stehende Satz beschreibt die Freimenge, und die hat nur ein bezahlter
+ * Plan. Ein Starter-Konto zahlt fuer genau diese Modelle und liest deshalb
+ * einen ehrlichen Satz statt der Zusage (T7 hat am 11.09.2026 das Gegenteil
+ * gemessen: dieselbe Zusage wie beim Planbesitzer, und ein Credit war weg).
+ *
+ * Zwei Sorten Text leben hier und verhalten sich mit Absicht verschieden:
+ *   - die Zeilen je Anfrage melden eine Antwort, die schon zurueck ist. Sie
+ *     veralten, sobald diese Oberflaeche weg ist, also raeumen Fokus und Blur
+ *     sie ab.
+ *   - der stehende Satz darueber beschreibt das gewaehlte Modell und den Plan
+ *     dieses Kontos. Das veraltet durch einen Blur nicht, er bleibt stehen.
+ *     Seine Kontohaelfte kommt aus dem Kontospeicher, den `useCloudAuth` im
+ *     Takt aus `/api/me` nachzieht.
+ */
 export function FlashChatNotice() {
   useEffect(() => {
     // Another tab can change the account while this surface is unfocused.
@@ -16,7 +34,18 @@ export function FlashChatNotice() {
   const active = useModelStore((s) => s.models.find((m) => m.name === s.activeModel))
   const policy = active && 'flash' in active ? active.flash : undefined
   const notice = useFlashBillingStore((s) => policy ? s.entries[policy.billingKey] : undefined)
+  const paidPlan = useFlashEntitlement()
   if (!policy) return null
+  // Noch nicht beantwortet. Schweigen ist der einzige ehrliche Zustand: beide
+  // Saetze darunter sind Aussagen ueber Geld.
+  if (paidPlan === null) return null
+  if (!paidPlan) {
+    return (
+      <div className="mb-2 text-xs text-gray-500" data-testid="flash-chat-notice">
+        <p>{FLASH_UNPAID_NOTICE}</p>
+      </div>
+    )
+  }
   return (
     <div className="mb-2 text-xs text-gray-500" data-testid="flash-chat-notice">
       <details>

@@ -258,6 +258,16 @@ let codexLoopTimer: ReturnType<typeof setTimeout> | null = null
 export function useCodex() {
   const [isRunning, setIsRunning] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  /**
+   * Zu WELCHER Unterhaltung der Controller oben gehoert.
+   *
+   * R2-19: `stopCodex` brach ihn bedingungslos ab. Der Griff gehoert der
+   * Hook-INSTANZ und haelt den zuletzt gestarteten Lauf, egal wo, und
+   * `CodexView` wird beim Unterhaltungswechsel nicht neu montiert
+   * (`ChatView.tsx` gibt ihm kein `key`). Stop in B toetete damit den Lauf in
+   * A. Dieselbe Klammer wie in useChat und useAgentChat.
+   */
+  const abortConvRef = useRef<string | null>(null)
   const runningRef = useRef(false)
   // "The user pressed stop" lives in lib/run-stop, keyed by conversation, NOT
   // in a ref of this hook instance. The Code view unmounts on every tab switch,
@@ -834,6 +844,7 @@ export function useCodex() {
     // Setup
     const abort = new AbortController()
     abortRef.current = abort
+    abortConvRef.current = convId
     // Hand Stop to everything this run starts, including the nested ReAct loop
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
@@ -1535,6 +1546,13 @@ export function useCodex() {
           }
           feedUI(splitter.feed(display.flush()))
           feedUI(splitter.flush())
+          // R2-17: dieser Zweig setzte den Grund nie, also stand die Variable
+          // auf undefined und der Satz aus `codexCutoffNote` blieb aus. Derselbe
+          // Transport wie im Zweig darueber, also derselbe Grund: ein
+          // Prompt-Transport kann den Zug genauso mitten im `<tool_call>`
+          // abschneiden, und dann steht hier ebenfalls kein Werkzeugaufruf.
+          // Gleiche Stelle wie in useAgentChat.
+          turnFinishReason = hermesTurn.finishReason
           if (keepThinking && hermesTurn.thinking) {
             thinkingContent += (thinkingContent ? '\n\n' : '') + hermesTurn.thinking
             useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
@@ -2386,6 +2404,7 @@ export function useCodex() {
       useGenerationStore.getState().clearAborter(convId)
       runningRef.current = false
       abortRef.current = null
+      abortConvRef.current = null
       // Close THIS run. The process-wide mirror is only cleared when this run
       // still owns it, so a run that outlives us keeps its workspace and its
       // read-only flag (plan C1 ERZWINGUNG, blocker S3).
@@ -2554,10 +2573,16 @@ export function useCodex() {
       codexLoopTimer = null
     }
     useAgentLoopStore.getState().clear()
-    runningRef.current = false
-    abortRef.current?.abort()
-    abortRef.current = null
-    setIsRunning(false)
+    // NUR wenn der Controller dieser Instanz auch zu DIESER Unterhaltung
+    // gehoert. Gehoert er woanders hin, hat `abortConversation` oben schon den
+    // richtigen Griff gezogen, und der Lauf in der anderen Unterhaltung laeuft
+    // weiter.
+    if (abortConvRef.current === stoppedConvId) {
+      runningRef.current = false
+      abortRef.current?.abort()
+      abortRef.current = null
+      setIsRunning(false)
+    }
   }, [])
 
   return { sendInstruction, stopCodex, isRunning }

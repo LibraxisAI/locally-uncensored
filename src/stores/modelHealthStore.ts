@@ -41,17 +41,19 @@ export const useModelHealthStore = create<ModelHealthState>()(
       // runs once per launch, so clearing the flag unconditionally meant the
       // banner returned on every start over the same untouched model and
       // "dismiss" was decorative.
+      //
+      // R2-40: `same` fiel bei jeder Laengenaenderung, also auch beim
+      // SCHRUMPFEN. Wer ein veraltetes Modell aktualisierte, bekam den eben
+      // weggeklickten Hinweis fuer die uebrigen sofort wieder, obwohl die
+      // Beschriftung genau das ausschliesst: "Dismiss. It comes back only when
+      // a different model goes stale." Zurueckgesetzt wird deshalb nur, wenn
+      // wirklich ein Modell dazugekommen ist, das vorher nicht dabei war.
       setStaleModels: (models) =>
-        set((s) => {
-          const same =
-            s.staleModels.length === models.length &&
-            models.every((m) => s.staleModels.includes(m))
-          return {
-            staleModels: models,
-            lastScanTime: Date.now(),
-            dismissed: same ? s.dismissed : false,
-          }
-        }),
+        set((s) => ({
+          staleModels: models,
+          lastScanTime: Date.now(),
+          dismissed: models.some((m) => !s.staleModels.includes(m)) ? false : s.dismissed,
+        })),
       markFresh: (name) =>
         set((s) => ({ staleModels: s.staleModels.filter((m) => m !== name) })),
       setScanning: (scanning) => set({ scanning }),

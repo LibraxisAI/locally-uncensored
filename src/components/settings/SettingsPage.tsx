@@ -2257,7 +2257,7 @@ export function SettingsPage() {
 // ── Update Section ──────────────────────────────────────────────
 
 export function UpdateSection() {
-  const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
+  const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, lastCheckFailed, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
   // Defensive: only treat the persisted `latestVersion` as actually newer if a
   // semver compare confirms it. Otherwise the binary was updated out-of-band
   // and the persisted value is stale (e.g. localStorage still says 2.3.8 while
@@ -2375,6 +2375,13 @@ export function UpdateSection() {
                 </button>
               )}
             </div>
+          </div>
+        ) : lastCheckFailed ? (
+          /* R2-12: hier stand der gruene Haken auch dann, wenn die Pruefung gar
+             nicht durchgekommen war. Eine ruhige Zeile sagt, was wirklich
+             passiert ist, ohne aus einem Netzfehler einen Alarm zu machen. */
+          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-check-failed">
+            Could not check for updates. Check your connection and try again.
           </div>
         ) : (
           <div className="flex items-center gap-2 text-[0.6rem] text-gray-600">

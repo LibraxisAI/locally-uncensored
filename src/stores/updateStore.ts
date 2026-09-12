@@ -133,6 +133,16 @@ interface UpdateState {
   releaseNotes: string | null
   isChecking: boolean
   lastChecked: number | null
+  /**
+   * R2-12: eine gescheiterte Pruefung schrieb dasselbe wie eine erfolgreiche.
+   * Die Einstellungsseite las daraus den gruenen Haken "You are on the latest
+   * version.", und R2-13: `lastChecked` sperrte danach sechs Stunden lang jede
+   * automatische Wiederholung. Wer beim Start offline war, bekam also einen
+   * Haken, den niemand geprueft hatte, und der halbe Tag verging, bevor die App
+   * es noch einmal versuchte. Eine gescheiterte Pruefung setzt deshalb dieses
+   * Feld und laesst `lastChecked` in Ruhe.
+   */
+  lastCheckFailed: boolean
   dismissed: string | null
   /** Fetch the update in the background as soon as it is found, so the badge
    *  offers a one-click Restart instead of a download the user has to sit
@@ -232,6 +242,7 @@ export const useUpdateStore = create<UpdateState>()(
       releaseNotes: null,
       isChecking: false,
       lastChecked: null,
+      lastCheckFailed: false,
       dismissed: null,
       autoDownload: true,
 
@@ -280,6 +291,7 @@ export const useUpdateStore = create<UpdateState>()(
                 releaseNotes: update.body ? truncateNotes(update.body) : null,
                 isChecking: false,
                 lastChecked: Date.now(),
+                lastCheckFailed: false,
                 ...(isNewTarget
                   ? {
                       downloadStatus: 'idle' as DownloadStatus,
@@ -313,6 +325,7 @@ export const useUpdateStore = create<UpdateState>()(
               set({
                 isChecking: false,
                 lastChecked: Date.now(),
+                lastCheckFailed: false,
                 updateAvailable: false,
                 latestVersion: null,
                 releaseNotes: null,
@@ -325,7 +338,7 @@ export const useUpdateStore = create<UpdateState>()(
               { headers: { 'Accept': 'application/vnd.github.v3+json' } }
             )
             if (!res.ok) {
-              set({ isChecking: false, lastChecked: Date.now() })
+              set({ isChecking: false, lastCheckFailed: true })
               return
             }
             const data = await res.json()
@@ -338,10 +351,11 @@ export const useUpdateStore = create<UpdateState>()(
               releaseNotes: data.body ? truncateNotes(data.body) : null,
               isChecking: false,
               lastChecked: Date.now(),
+              lastCheckFailed: false,
             })
           }
         } catch {
-          set({ isChecking: false, lastChecked: Date.now() })
+          set({ isChecking: false, lastCheckFailed: true })
         }
       },
 

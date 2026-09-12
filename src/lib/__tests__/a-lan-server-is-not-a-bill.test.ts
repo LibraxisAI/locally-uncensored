@@ -145,6 +145,24 @@ describe('the budget follows it', () => {
  * silently back to the bug. Reading the sources is the only way to catch the
  * next `effectiveSendWindow({ ... })` that goes in without it.
  */
+/**
+ * Alles zwischen der eben geoeffneten Klammer und der, die sie schliesst.
+ * Eine Textsuche nach dem naechsten `},` faellt ueber jedes Objekt im ersten
+ * Argument, und genau dort steht bei beiden Aufrufen eine Nachrichtenliste.
+ */
+function argumentsOf(afterOpenParen: string): string {
+  let depth = 1
+  for (let i = 0; i < afterOpenParen.length; i++) {
+    const c = afterOpenParen[i]
+    if (c === '(') depth++
+    else if (c === ')') {
+      depth--
+      if (depth === 0) return afterOpenParen.slice(0, i)
+    }
+  }
+  return afterOpenParen
+}
+
 describe('no budget is computed without asking the question', () => {
   const SITES = [
     'src/hooks/useAgentChat.ts',
@@ -166,11 +184,53 @@ describe('no budget is computed without asking the question', () => {
     }
   })
 
-  it('and both chat surfaces fill the field they were given', () => {
+  /**
+   * R2-4: das hier war eine Dateitextsuche. Sie fand die eine Stelle, die das
+   * Feld setzte, und sagte nichts ueber die zweite daneben, die es wegliess.
+   * `useChat.ts` baut ZWEI Budgets, eines fuer die Gruppenrunde und eines fuer
+   * den Hauptpfad, und genau dem Hauptpfad fehlte es (R2-3). Jetzt wird wie im
+   * Nachbartest zerlegt und jeder Block einzeln gefragt.
+   */
+  it('and every budget input of the chat surfaces fills the field', () => {
     for (const site of ['src/hooks/useChat.ts', 'src/hooks/useABCompare.ts']) {
       const src = readFileSync(resolve(process.cwd(), site), 'utf8')
-      expect(src, `${site} builds a budget input without localBackend`)
-        .toContain('localBackend: sendsToALanBackend(providerId)')
+      // Beide Namen, unter denen ein Chatbudget gebaut wird. useABCompare geht
+      // ueber sharedChatSendBudget, useChat ueber applyChatSendBudget, und
+      // useChat baut zwei davon.
+      const calls = [
+        ...src.split('applyChatSendBudget(').slice(1),
+        ...src.split('sharedChatSendBudget(').slice(1),
+      ].map(argumentsOf)
+      expect(calls.length, `${site} no longer builds a send budget`).toBeGreaterThan(0)
+      for (const [i, call] of calls.entries()) {
+        expect(call, `${site} budget ${i + 1} of ${calls.length} without localBackend`)
+          .toContain('localBackend: sendsToALanBackend(providerId)')
+      }
     }
+  })
+
+  /**
+   * Und was das am Hauptpfad in Tokens ausmacht. Der eigene Server im Netz
+   * stellt keine Rechnung, also gilt dort 0.8 mal das eigene Fenster und nicht
+   * die Kostendeckelung fuer bezahlte Anbieter.
+   */
+  it('a LAN server in the openai slot keeps its own window on the main path', () => {
+    slotPointsAt('http://127.0.0.1:8080/v1', true)
+    expect(
+      chatSendBudget({
+        providerId: 'openai',
+        modelWindow: 262_144,
+        localBackend: sendsToALanBackend('openai'),
+      }),
+    ).toBe(209_715)
+
+    slotPointsAt('https://api.openai.com/v1', false)
+    expect(
+      chatSendBudget({
+        providerId: 'openai',
+        modelWindow: 262_144,
+        localBackend: sendsToALanBackend('openai'),
+      }),
+    ).toBe(DEFAULT_SEND_WINDOW_TOKENS)
   })
 })

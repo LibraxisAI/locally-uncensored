@@ -91,6 +91,13 @@ export interface MemoryImportResult {
   updated: number
   /** Already in this collection, left untouched. */
   alreadyPresent: number
+  /**
+   * How many of the refreshed records lost their "sensitive" mark because the
+   * file said so. Only present when it actually happened: a mark falling is a
+   * privacy event and gets its own number, but a clean import must not carry a
+   * zero about sensitive memories through every sentence.
+   */
+  unmarkedSensitive?: number
 }
 
 /** Everything that decides whether a known record still matches the file. */
@@ -109,6 +116,7 @@ export function describeMemoryImport(result: MemoryImportResult): string {
   const parts = [`Imported ${result.added} new ${noun(result.added)}`]
   if (result.updated > 0) parts.push(`${result.updated} updated`)
   if (result.alreadyPresent > 0) parts.push(`${result.alreadyPresent} already present`)
+  if (result.unmarkedSensitive) parts.push(`${result.unmarkedSensitive} no longer marked sensitive`)
   return `${parts.join(', ')}.`
 }
 
@@ -544,9 +552,22 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  * The trailing date is only stripped when it follows the `*(source)*` group. A
  * bare `content, with a comma` keeps its comma, because there is no source to
  * anchor a date to.
+ *
+ * WHY THE TAG GROUP SITS INSIDE THE SOURCE GROUP. It used to hang free right
+ * behind the lazy content, so any line that merely ENDED in a bracket group lost
+ * it: `- Start the app with [debug]` came back as the content `Start the app
+ * with` plus a tag `debug` nobody ever set. The bracket group is now only read
+ * when the `*(source)*` group follows it, which is the only shape this app's own
+ * export writes. A bracket at the end of a bare line stays part of the content.
+ *
+ * The remaining ambiguity is a content that ends in a bracket group AND carries a
+ * source. `exportAsMarkdown` resolves it from the writing side: when there are no
+ * tags and the content ends in `]`, it writes an empty group `[]`, so the tag
+ * slot is always occupied and the content keeps its own bracket. That is why the
+ * group accepts an EMPTY body.
  */
 const MD_ITEM =
-  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:\s+\[([^\]]+)\])?(?:\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
+  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
 
 /**
  * The date the export writes: `YYYY-MM-DD`, not a locale string.
@@ -624,9 +645,19 @@ export const useMemoryStore = create<MemoryState>()(
         const trimmedContent = memory.content.trim()
         if (!trimmedContent) return ''
 
-        // Deduplicate: don't add if the same memory is already in the collection
+        // Deduplicate: don't add if the same memory is already in the collection.
+        //
+        // The three extra conditions are the web's (R5-32), and each one is a
+        // record the user can no longer reach: an outdated twin, one that a
+        // newer record superseded, and one that is marked sensitive while this
+        // one is not (or the other way round, which is a different record to
+        // the app). Without them the form refused an entry against a twin the
+        // collection no longer shows, and the caller reads the empty id, so the
+        // user gets told why instead of watching the input vanish.
         const candidate = { content: trimmedContent, type: memory.type, scope: memory.scope }
-        if (get().entries.some(e => isSameMemory(e, candidate))) return ''
+        if (get().entries.some(e => isSameMemory(e, candidate) &&
+          (e.sensitive === true) === (memory.sensitive === true) &&
+          !e.stale && !e.supersededBy)) return ''
 
         const id = uuid()
         set((state) => ({
@@ -729,11 +760,20 @@ export const useMemoryStore = create<MemoryState>()(
           candidates = candidates.filter(e => (budget.typesAllowed as MemoryType[]).includes(e.type))
         }
 
-        // Score and sort (keyword)
+        // Score and sort (keyword).
+        //
+        // R2-26: bei LEERER Anfrage gibt `scoreMemory` jeder Erinnerung die 1,
+        // und der Frischebonus haengt an mindestens einem Worttreffer, greift
+        // hier also nicht. Die Sortierung ist stabil, also gewann die
+        // Einfuegereihenfolge und der Anrufer bekam die AELTESTEN Eintraege.
+        // Genau so ruft die Remote-Bruecke an (`remoteStore`,
+        // `getMemoriesForPromptAsync('', 8192)`), und das Handy bekam damit
+        // dauerhaft den aeltesten Stand. Ohne Anfrage gibt es keine Abdeckung,
+        // die entscheiden koennte, also entscheidet die Frische.
         const ordered = candidates
           .map((entry) => ({ entry, score: scoreMemory(entry, words) }))
           .filter(({ score }) => score > 0)
-          .sort((a, b) => b.score - a.score)
+          .sort((a, b) => (words.length === 0 ? b.entry.updatedAt - a.entry.updatedAt : b.score - a.score))
           .slice(0, budget.maxMemories)
           .map(({ entry }) => entry)
 
@@ -951,6 +991,10 @@ export const useMemoryStore = create<MemoryState>()(
             const date = isoTag(entry.updatedAt)
             md += `- **${entry.title}**, ${entry.content}`
             if (entry.tags.length > 0) md += ` [${entry.tags.join(', ')}]`
+            // A content that ends in a bracket group would otherwise read back
+            // as a tag list on import. The empty group occupies the tag slot,
+            // so the content keeps its own bracket. See MD_ITEM.
+            else if (entry.content.endsWith(']')) md += ' []'
             md += ` *(${entry.source})*, ${date}\n`
           }
           md += '\n'
@@ -1063,6 +1107,21 @@ export const useMemoryStore = create<MemoryState>()(
           const confirmedAt = prop(e, 'confirmedAt')
           const originalId = asString(prop(e, 'id'))
           const supersededBy = asString(prop(e, 'supersededBy'))
+          const scopeValue = asString(scope)
+          // The app's own export carries the record id, so the same file read
+          // twice meets its own entries again. A file without ids still meets
+          // them through content, type and scope — the only three fields
+          // isSameMemory reads, which is why this can stand before the draft.
+          //
+          // It HAS to stand here: a 2.6.9 backup does not know the field
+          // `sensitive` at all, and reading a missing field as `=== true` turned
+          // it into `false`. Because importDigest carries the mark, that very
+          // mark then made the record an update, and the follow-up below
+          // re-embedded it — the memory was back in AI requests and back in
+          // vector search. A file may only drop a mark by saying so.
+          const known = (originalId ? pool.find((p) => p.id === originalId) : undefined)
+            ?? pool.find((p) => isSameMemory(p, { content, type, scope: scopeValue }))
+          const fileSensitive = prop(e, 'sensitive')
           const draft: Omit<MemoryFile, 'id' | 'createdAt'> = {
             type,
             title: (asString(prop(e, 'title')) ?? content).slice(0, 60).replace(/\n/g, ' '),
@@ -1073,17 +1132,12 @@ export const useMemoryStore = create<MemoryState>()(
             source: asString(prop(e, 'source')) ?? 'import',
             sourceKind: sourceKind === 'chat' || sourceKind === 'voice' || sourceKind === 'screen' ? sourceKind : undefined,
             confirmedAt: typeof confirmedAt === 'number' && Number.isFinite(confirmedAt) && confirmedAt > 0 && confirmedAt <= now ? confirmedAt : undefined,
-            sensitive: prop(e, 'sensitive') === true,
-            scope: asString(scope),
+            sensitive: fileSensitive === undefined ? known?.sensitive === true : fileSensitive === true,
+            scope: scopeValue,
             // A missing replacement must not reactivate an outdated fact.
             stale: prop(e, 'stale') === true || supersededBy !== undefined,
             validFrom: asNumber(prop(e, 'validFrom')),
           }
-          // The app's own export carries the record id, so the same file read
-          // twice meets its own entries again. A file without ids still meets
-          // them through content, type and scope.
-          const known = (originalId ? pool.find((p) => p.id === originalId) : undefined)
-            ?? pool.find((p) => isSameMemory(p, draft))
           // A known record keeps its id and its birthday; only a genuinely new
           // one gets a fresh id, which is why no import can collide with an
           // existing entry's id (that once broke edit/remove-by-id).
@@ -1109,10 +1163,15 @@ export const useMemoryStore = create<MemoryState>()(
         const newEntries: MemoryFile[] = []
         const updates = new Map<string, MemoryFile>()
         let alreadyPresent = 0
+        // A mark that falls is a privacy event, so it is counted and named.
+        let unmarkedSensitive = 0
         for (const { entry, known } of landed) {
           if (!known) newEntries.push(entry)
           else if (importDigest(known) === importDigest(entry)) alreadyPresent++
-          else updates.set(entry.id, entry)
+          else {
+            if (known.sensitive === true && entry.sensitive !== true) unmarkedSensitive++
+            updates.set(entry.id, entry)
+          }
         }
         if (newEntries.length > 0 || updates.size > 0) {
           set((state) => ({
@@ -1126,7 +1185,12 @@ export const useMemoryStore = create<MemoryState>()(
           if (entry.sensitive) void deleteVector(entry.id)
           else void enqueueEmbedding(entry)
         }
-        return { added: newEntries.length, updated: updates.size, alreadyPresent }
+        return {
+          added: newEntries.length,
+          updated: updates.size,
+          alreadyPresent,
+          ...(unmarkedSensitive > 0 ? { unmarkedSensitive } : {}),
+        }
       },
 
       // ── Legacy Compat ───────────────────────────────────────

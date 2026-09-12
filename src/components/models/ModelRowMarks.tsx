@@ -1,10 +1,10 @@
 import type { CloudModel } from '../../types/models'
+import { FLASH_MARK_LABEL, useFlashEntitlement } from '../../lib/flash-entitlement'
 
 /**
  * Die Marken an einer Zeile der Modellauswahl.
  *
- * Wortgleich mit dem Bauteil derselben Aufgabe in der Webanwendung. Beide
- * Marken kommen aus dem Server-Katalog und nie aus dem Modellnamen:
+ * Beide kommen aus dem Server-Katalog und nie aus dem Modellnamen:
  * `unfiltered` ist gemessen, `flash` ist die Klasse, die keine Credits kostet.
  * Eine Marke beschreibt das Modell, sie erlaubt nichts. Was eine Anfrage
  * enthalten darf, entscheidet der Server bei jedem Aufruf neu.
@@ -12,8 +12,17 @@ import type { CloudModel } from '../../types/models'
  * Nur `full` wird markiert. Ein Modell, das teilweise mitgeht, bekommt keine
  * Marke: eine Marke, die manchmal stimmt, ist im Kaufmoment schlimmer als
  * keine, weil der Kunde sie als Zusage liest.
+ *
+ * Die Freimengenmarke sagt etwas ueber das KONTO und nicht nur ueber das
+ * Modell, also fragt die Zeile das Konto (lib/flash-entitlement, dieselbe
+ * Regel, nach der der Chat-Vermittler abrechnet). Der Server liefert `flash`
+ * an jedes Konto mit Cloud; ein Konto ohne bezahlten Plan zahlt fuer genau
+ * diese Modelle und darf die Marke nicht sehen. Eine noch unbeantwortete
+ * Abfrage verspricht nichts.
  */
 export function ModelRowMarks({ model }: { model: { flash?: CloudModel['flash']; unfiltered?: CloudModel['unfiltered'] } }) {
+  const paidPlan = useFlashEntitlement()
+  const freeFlash = model.flash && paidPlan === true ? model.flash : undefined
   return (
     <>
       {model.unfiltered === 'full' && (
@@ -25,13 +34,13 @@ export function ModelRowMarks({ model }: { model: { flash?: CloudModel['flash'];
           No refusals
         </span>
       )}
-      {model.flash && (
+      {freeFlash && (
         <span
           className="t-micro text-emerald-600 dark:text-emerald-400"
-          title={`No credits, up to ${model.flash.dailyTokens.toLocaleString('en-US')} tokens per day on a paid plan. Chat only, one request at a time.`}
+          title={`Included in your plan, up to ${freeFlash.dailyTokens.toLocaleString('en-US')} tokens per day. Chat only, one request at a time.`}
           data-mark="unlimited"
         >
-          No credits
+          {FLASH_MARK_LABEL}
         </span>
       )}
     </>

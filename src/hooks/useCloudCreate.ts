@@ -30,6 +30,7 @@ import {
   cloudMediaLive,
 } from '../stores/cloudCatalogStore'
 import { checkPromptSafety, SAFETY_BLOCK_MESSAGE } from '../lib/render/safety'
+import { signalCreditsExhausted } from '../lib/credits-exhausted'
 import { resolveRunSeed } from '../lib/run-seed'
 
 // Character-Studio generation endpoint per trained-LoRA family (fast default;
@@ -67,24 +68,40 @@ function opProgressVerb(op: string): string {
 
 // What a 429 from the render queue actually means.
 //
-// The queue answers 429 for three different things (lib/http-status states the
-// same policy for the chat path): the per-user burst guard, an upstream
-// provider throttle — both transient, both carrying retry-after — and an empty
-// wallet, which is the only one paying more fixes. Every one of them used to
-// read "Monthly credit budget exhausted, upgrade your plan", so a subscriber
+// The queue answers 429 for five different things (lib/http-status states the
+// same policy for the chat path): the per-user burst guard and an upstream
+// provider throttle, both transient and both carrying retry-after, and three
+// that are about money, each with a different way out. Every one of them used
+// to read "Monthly credit budget exhausted, upgrade your plan", so a subscriber
 // who was merely clicking too fast, with credits left in the meter next to the
-// message, was told to buy a bigger plan. That is a sales pitch for a refusal
-// the money would not have prevented, so the wallet case has to be positively
-// identified — by the server's own `code`, or failing that by a message that
-// actually talks about credits — and everything else says what it is.
+// message, was told to buy a bigger plan.
+//
+// The repair after that asked `/credit/i` about the message, and the server's
+// video-budget sentence carries the word "credits". The wrong branch won and
+// the customer was offered a plan change instead of the pack that unblocks him
+// (R5-49). `trainings_exhausted` carries the word nowhere and fell into the
+// throttle text, which points at a clock that never runs out (R5-50). So the
+// code the server sends decides, in that order, and the heuristic is gone: a
+// message is prose, a code is a decision. Wordings come from the web
+// (apps/web/hooks/useCloudCreate.ts), because the same refusal must not read
+// differently depending on which of the two apps the customer happens to use.
 export function throttleMessage(err: CloudJobError): string {
-  if (err.code === 'credits_exhausted' || /credit/i.test(err.message)) {
-    return 'Monthly credit budget exhausted, upgrade your plan or wait for the next period.'
+  switch (err.code) {
+    case 'credits_exhausted':
+      // R5-52: the buy dialog had exactly one caller and it sat in the chat
+      // path, so a render that ran the wallet dry left the customer with a red
+      // line and no way to pay.
+      signalCreditsExhausted()
+      return "You're out of credits. Load up your credits or upgrade your plan."
+    case 'video_budget_exhausted':
+      return "This month's video budget is used up. Top-up credits keep video going, or upgrade your plan."
+    case 'trainings_exhausted':
+      return "Your plan's character trainings for this month are used up."
   }
   const secs = err.retryAfterMs && err.retryAfterMs > 0 ? Math.ceil(err.retryAfterMs / 1000) : null
   return secs
-    ? `Too many requests right now — the render queue is throttling, not your credit balance. Try again in ${secs}s.`
-    : 'Too many requests right now — the render queue is throttling, not your credit balance. Give it a moment and try again.'
+    ? `Too many requests at once. Wait ${secs}s and try again.`
+    : 'Too many requests at once. Wait a moment and try again.'
 }
 
 // Decoded by hand instead of fetch(dataUrl): the webview CSP's connect-src

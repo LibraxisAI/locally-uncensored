@@ -106,3 +106,74 @@ describe('the pick is written to disk in the first place', () => {
     expect(shellSrc).not.toMatch(/const inMode = \(name: string \| null\)/)
   })
 })
+
+/**
+ * R2-27: der Aufstieg aus 2.6.9 liess beide Erinnerungen leer.
+ *
+ * `lastLocalModel` und `lastCloudModel` sind neu in 3.0.0, `activeModel` nicht.
+ * Ein Speicherstand aus 2.6.9 traegt also ein aktives Modell und zweimal
+ * `null`, und es gab weder `migrate` noch `onRehydrateStorage`. Der erste
+ * Ausflug in die Cloud fand nichts zum Zurueckkommen, und der Rueckweg landete
+ * auf "Select a chat model" statt auf dem Modell, mit dem der Nutzer die App
+ * gerade noch benutzt hatte.
+ *
+ * Geprueft wird der Rehydrierhaken direkt: `persist` laesst sich in einem
+ * Test nicht zweimal aufsetzen, die Regel dahinter ist aber eine reine
+ * Zustandsergaenzung.
+ */
+describe('R2-27: der Aufstieg aus 2.6.9 belegt die leere Erinnerung vor', () => {
+  const QUELLE = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '..', 'modelStore.ts'), 'utf8',
+  )
+
+  /** Genau der Haken aus dem Store, an einem Zustand nachgefahren. */
+  const rehydriere = (state: {
+    activeModel: string | null
+    lastLocalModel: string | null
+    lastCloudModel: string | null
+  }) => {
+    if (!state?.activeModel) return state
+    const istCloud = state.activeModel.startsWith('lu-cloud::')
+    if (istCloud) {
+      if (!state.lastCloudModel) state.lastCloudModel = state.activeModel
+    } else if (!state.lastLocalModel) {
+      state.lastLocalModel = state.activeModel
+    }
+    return state
+  }
+
+  it('der Store hat den Haken ueberhaupt', () => {
+    expect(QUELLE, 'kein onRehydrateStorage, der Aufstieg bleibt leer')
+      .toContain('onRehydrateStorage:')
+    expect(QUELLE).toContain("state.activeModel.startsWith('lu-cloud::')")
+  })
+
+  it('ein lokales aktives Modell landet in lastLocalModel', () => {
+    const s = rehydriere({ activeModel: 'qwen3:3b', lastLocalModel: null, lastCloudModel: null })
+    expect(s.lastLocalModel).toBe('qwen3:3b')
+    expect(s.lastCloudModel).toBeNull()
+  })
+
+  it('und der Ausflug in die Cloud findet den Rueckweg', () => {
+    const s = rehydriere({ activeModel: 'qwen3:3b', lastLocalModel: null, lastCloudModel: null })
+    // Cloud hin: der Rueckweg steht jetzt da, wo ihn der Umschalter liest.
+    expect(s.lastLocalModel).toBe('qwen3:3b')
+  })
+
+  it('NEGATIVKONTROLLE: ein gespeicherter Wert wird nicht ueberschrieben', () => {
+    const s = rehydriere({ activeModel: 'qwen3:3b', lastLocalModel: 'llama3.1:8b', lastCloudModel: null })
+    expect(s.lastLocalModel).toBe('llama3.1:8b')
+  })
+
+  it('NEGATIVKONTROLLE: ein Cloud-Modell landet nicht in lastLocalModel', () => {
+    const s = rehydriere({ activeModel: 'lu-cloud::qwen3-32b', lastLocalModel: null, lastCloudModel: null })
+    expect(s.lastLocalModel).toBeNull()
+    expect(s.lastCloudModel).toBe('lu-cloud::qwen3-32b')
+  })
+
+  it('NEGATIVKONTROLLE: ohne aktives Modell passiert gar nichts', () => {
+    const s = rehydriere({ activeModel: null, lastLocalModel: null, lastCloudModel: null })
+    expect(s.lastLocalModel).toBeNull()
+    expect(s.lastCloudModel).toBeNull()
+  })
+})

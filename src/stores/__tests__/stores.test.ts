@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { useChatStore } from '../chatStore'
 import { useModelStore } from '../modelStore'
 import { useAgentModeStore } from '../agentModeStore'
@@ -444,6 +446,29 @@ describe('memoryStore', () => {
       expect(effectiveMemoryBudget(32768, null).maxMemories).toBe(15)
       expect(effectiveMemoryBudget(32768, 0).maxMemories).toBe(15)
       expect(effectiveMemoryBudget(32768, undefined).maxMemories).toBe(15)
+    })
+
+    /**
+     * R2-23 und R2-24: 0 heisst hier "nicht gesetzt", das Feld nahm 0 aber an.
+     * Wer 0 eintrug, um Erinnerungen abzustellen, bekam den vollen Stufenwert,
+     * und das Feld zeigte danach seine eigene 0 als Beleg. Das Feld beginnt
+     * jetzt bei 1, und ein alter gespeicherter Nullwert wird leer gezeigt,
+     * genau wie er wirkt.
+     */
+    it('das Feld laesst sich nicht unter 1 stellen und zeigt eine alte 0 als leer', () => {
+      const quelle = readFileSync(
+        resolve(__dirname, '..', '..', 'components/settings/MemorySettings.tsx'), 'utf8',
+      )
+      const feld = quelle.slice(quelle.indexOf('Max memories injected'))
+      const bis = feld.slice(0, feld.indexOf('</div>'))
+      expect(bis, 'das Feld nimmt weiter 0 an').toContain('min={1}')
+      expect(bis, 'die Zahl faellt weiter unter 1').toContain('Math.max(1,')
+      expect(bis, 'eine gespeicherte 0 wird weiter als 0 gezeigt')
+        .toContain("value={settings.maxMemoriesOverride || ''}")
+      // Und die Zeile darueber nennt dieselbe Zahl: 0 gespeichert wirkt als
+      // "nicht gesetzt", also ist ein leeres Feld die ehrliche Anzeige.
+      expect(effectiveMemoryBudget(32768, 0).maxMemories)
+        .toBe(effectiveMemoryBudget(32768, null).maxMemories)
     })
     it('honors a positive override and grows the token budget + allows all types', () => {
       const b = effectiveMemoryBudget(32768, 30)

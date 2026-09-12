@@ -18,6 +18,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useCompareStore } from '../../stores/compareStore'
 import { useProviderStore } from '../../stores/providerStore'
+import { mayEnableFromWizard } from '../../lib/onboarding-provider-gate'
 import { useChatStore } from '../../stores/chatStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useRemoteStore } from '../../stores/remoteStore'
@@ -876,9 +877,16 @@ export function AppShell() {
               }
             }
             if (userMsg) {
-              extractMemoriesFromPair(userMsg, content, dispatchedConversationId).catch(
-                () => {},
-              )
+              // R2-22: ohne Bereich schrieb die Bruecke jede Erinnerung global.
+              // Der Ausloeser ist nicht der erste Dispatch, der legt eine
+              // frische Unterhaltung an, sondern der Neustartweg in
+              // `ChatView.tsx`: der haengt die Bruecke an eine BESTEHENDE
+              // Unterhaltung, und deren Projekt ging dabei verloren. Der
+              // Speicher wird hier ohnehin schon gelesen.
+              extractMemoriesFromPair(userMsg, content, dispatchedConversationId, {
+                scope: useChatStore.getState().conversations
+                  .find((c) => c.id === dispatchedConversationId)?.memoryScope,
+              }).catch(() => {})
             }
           }
         },
@@ -942,11 +950,18 @@ export function AppShell() {
       // (Pre-2.5.7 rationale — Discord #help-chat, djoks.exe 2026-04-21: without
       //  auto-enable, dismissing the selector left LM Studio disabled and its
       //  models never appeared. Still true for users who left the built-in slot.)
+      //
+      // R2-14: `enabled: true` stand hier bedingungslos und hob damit den
+      // Disable-Knopf der Anbieterkarte wieder auf. `disabledByUser` heisst
+      // "ich will den nicht", und der Erkenner beim Anlauf hat kein Recht,
+      // dagegen zu entscheiden. Das Tor ist dasselbe, das ModelsStep schon
+      // fragt. Der baseUrl-Teil darf bleiben: ein geaenderter Port ist keine
+      // Einschaltung, nur eine aktuelle Adresse.
       const openaiSlot = useProviderStore.getState().providers.openai
       const nonOllama = backends.find((b) => b.id !== 'ollama')
       if (nonOllama && !openaiSlot.managed) {
         useProviderStore.getState().setProviderConfig('openai', {
-          enabled: true,
+          ...(mayEnableFromWizard(openaiSlot) ? { enabled: true } : {}),
           name: nonOllama.name,
           baseUrl: nonOllama.baseUrl,
           isLocal: true,
@@ -960,8 +975,13 @@ export function AppShell() {
       // Settings → AI Backends list and the chat selector.
       const detectedOllama = backends.find((b) => b.id === 'ollama')
       if (detectedOllama) {
+        // R2-14, zweite Stelle, dieselbe Regel. T2 hat genau diesen Fall auf
+        // der Box gemessen: Ollama stand ausdruecklich auf DISABLED und stand
+        // nach einem Anlauf wieder da.
         useProviderStore.getState().setProviderConfig('ollama', {
-          enabled: true,
+          ...(mayEnableFromWizard(useProviderStore.getState().providers.ollama)
+            ? { enabled: true }
+            : {}),
           baseUrl: detectedOllama.baseUrl,
           isLocal: true,
         })

@@ -444,12 +444,31 @@ describe('Der Weckhaken haengt an beiden Sendewegen', () => {
 
   it('beide Sendewege koennen die Nachricht verstecken', () => {
     // Ohne `hiddenUser` stuende im Verlauf ein Satz, den der Mensch nie
-    // geschrieben hat — und zwar in seiner eigenen Blase.
+    // geschrieben hat, und zwar in seiner eigenen Blase.
     for (const datei of ['hooks/useAgentChat.ts', 'hooks/useCodex.ts']) {
       const t = lies(datei)
       expect(t, datei).toContain('hiddenUser?: boolean')
       expect(t, datei).toContain("...(opts?.hiddenUser ? { hidden: true } : {})")
     }
+  })
+
+  /**
+   * R2-18: koennen reicht nicht, es muss auch ankommen. Der Haken ruft
+   * `(text, images, opts)`, `sendInstruction` im Code-Tab nimmt aber
+   * `(text, opts)`. Das Objekt landete damit auf Position 3 und fiel weg, also
+   * stand die Weckzeile als sichtbare Nutzernachricht im Verlauf, als haette
+   * der Mensch sie getippt. Der Agentenweg reicht drei Stellen durch und war
+   * nie betroffen.
+   */
+  it('und im Code-Tab kommt das Versteck auch an', () => {
+    const t = lies('components/chat/CodexView.tsx')
+    expect(t, 'der Haken bekommt sendInstruction wieder roh, opts faellt weg')
+      .not.toMatch(/useBackgroundAgentWake\(\s*useChatStore\([^)]*\),\s*sendInstruction\s*\)/)
+    expect(t, 'kein Adapter, der opts auf die gelesene Stelle schiebt')
+      .toContain('(text, _images, opts) => sendInstruction(text, opts)')
+    // Und der Haken schickt das Versteck wirklich als drittes Argument.
+    expect(lies('hooks/useBackgroundAgentWake.ts'))
+      .toContain("sendenRef.current(text, undefined, { hiddenUser: true })")
   })
 
   it('der Nutzlastbau laesst versteckte Nachrichten durch, die Ansicht nicht', () => {

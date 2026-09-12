@@ -38,10 +38,45 @@ describe('SamplingControls', () => {
     open()
     fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.3' } })
     fireEvent.change(screen.getByLabelText('Top P'), { target: { value: '0.5' } })
-    fireEvent.change(screen.getByLabelText('Top K'), { target: { value: '20' } })
     expect(settings().temperature).toBe(1.3)
     expect(settings().topP).toBe(0.5)
-    expect(settings().topK).toBe(20)
+  })
+
+  /**
+   * R5-13. Top K moved nothing on the paid default path: the OpenAI-compatible
+   * body has no field for it and `openai-provider.ts` never reads it, so on LU
+   * Cloud and on this app's own engine the slider was a dead control. It also
+   * carried a second scale, 0..200 here against 1..100 on the settings page.
+   * It belongs on the settings page, where Ollama and Anthropic read it.
+   */
+  it('R5-13: carries no Top K, because it moves nothing on the cloud path', () => {
+    render(<SamplingControls />)
+    open()
+    expect(screen.queryByLabelText('Top K')).toBeNull()
+    expect(screen.queryByText('Top K')).toBeNull()
+  })
+
+  it('R5-13 NEGATIVKONTROLLE: Top K keeps its stored value, this popup only stops showing it', () => {
+    // The value is not deleted and the settings page keeps offering it. What
+    // falls away is a control that wrote a number nobody could see again.
+    useSettingsStore.getState().updateSettings({ topK: 55 })
+    render(<SamplingControls />)
+    open()
+    expect(settings().topK).toBe(55)
+    expect(screen.getByLabelText('Temperature')).toBeTruthy()
+  })
+
+  /**
+   * R5-14. The trigger was bare text, so a screen reader announced a number
+   * and nothing else. Both strings are word for word the web app's
+   * (apps/web/components/chat/SamplingControls.tsx:82-83).
+   */
+  it('R5-14: the trigger has the same name and title as the web app', () => {
+    useSettingsStore.getState().updateSettings({ temperature: 0.7 })
+    render(<SamplingControls />)
+    expect(trigger().getAttribute('title')).toBe('Sampling for this chat')
+    expect(trigger().getAttribute('aria-label')).toBe('Sampling: temperature 0.7')
+    expect(screen.getByRole('button', { name: 'Sampling: temperature 0.7' })).toBeTruthy()
   })
 
   it('never lets max tokens go negative', () => {
@@ -96,14 +131,26 @@ describe('SamplingControls', () => {
   })
 
   it('marks a changed setup and resets every field at once', () => {
-    useSettingsStore.getState().updateSettings({ temperature: 1.9, topK: 5 })
+    useSettingsStore.getState().updateSettings({ temperature: 1.9, topP: 0.3, maxTokens: 512 })
     render(<SamplingControls />)
     expect(screen.getByTitle(/Changed from the defaults/)).toBeTruthy()
     open()
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
     expect(settings().temperature).toBe(DEFAULT_SETTINGS.temperature)
-    expect(settings().topK).toBe(DEFAULT_SETTINGS.topK)
+    expect(settings().topP).toBe(DEFAULT_SETTINGS.topP)
+    expect(settings().maxTokens).toBe(DEFAULT_SETTINGS.maxTokens)
     expect(screen.queryByTitle(/Changed from the defaults/)).toBeNull()
+  })
+
+  it('R5-13: Reset stays inside this popup and leaves Top K alone', () => {
+    // Top K is not on this panel any more, so a Reset here must not reach over
+    // to the settings page and undo a value the user set there.
+    useSettingsStore.getState().updateSettings({ temperature: 1.9, topK: 55 })
+    render(<SamplingControls />)
+    open()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(settings().temperature).toBe(DEFAULT_SETTINGS.temperature)
+    expect(settings().topK).toBe(55)
   })
 
   it('offers no reset while everything is at its default', () => {

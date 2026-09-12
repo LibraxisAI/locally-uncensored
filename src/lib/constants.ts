@@ -1,5 +1,4 @@
 import type { Persona, Settings } from '../types/settings'
-import { CHAT_BASE_SYSTEM_PROMPT } from './system-prompt'
 
 // Feature flags — flip to true when ready to ship
 export const FEATURE_FLAGS = {
@@ -19,7 +18,10 @@ export const DEFAULT_SETTINGS: Settings = {
   appMode: 'local',
   // Cloud teasers in Local mode (2.5.8) — on by default, one-click off.
   cloudTeasersEnabled: true,
-  personasEnabled: true,
+  // R5-2: Web gilt. Stand er auf true, kaperte eine global gewaehlte Person
+  // jede neue Unterhaltung, und der Grundtext, der die Ablehnungen abstellt,
+  // kam gar nicht erst zum Zug.
+  personasEnabled: false,
   thinkingEnabled: true,
   // Reasoning effort (2.6.8). 'high' is not a taste, it is the rung this
   // client has always sent for thinking ON. Any other default would move every
@@ -189,7 +191,11 @@ export const BUILT_IN_PERSONAS: Persona[] = [
     id: 'unrestricted',
     name: 'No Filter',
     icon: 'Shield',
-    systemPrompt: CHAT_BASE_SYSTEM_PROMPT,
+    // R5-3: hier stand CHAT_BASE_SYSTEM_PROMPT, also der Grundtext als
+    // Personentext. Diese Person sagt nichts, was der Grundtext nicht ohnehin
+    // sagt; sie einzuschalten hiess bisher, ihn ein zweites Mal zu schicken.
+    // Leer heisst: die Zusammensetzung faellt auf den Grundtext, wie im Web.
+    systemPrompt: '',
     isBuiltIn: true,
   },
   {

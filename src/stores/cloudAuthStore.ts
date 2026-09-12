@@ -20,10 +20,18 @@ export interface CloudAccount {
    *  the beta is fully open since, so servers now send true for every
    *  licensed account — kept as a kill-switch the server owns. */
   access: boolean
+  /**
+   * Hat dieses Konto wirklich bezahlt? `/api/me` fuehrt dafuer dieselbe
+   * Funktion aus, nach der der Chat-Vermittler eine Flash-Runde abrechnet.
+   * `null` heisst "noch keine Antwort" oder "aelterer Server ohne das Feld",
+   * und das verspricht nichts (siehe lib/flash-entitlement).
+   */
+  paidPlan?: boolean | null
   quota: CloudQuota | null
 }
 
 interface CloudAuthState extends CloudAccount {
+  paidPlan: boolean | null
   /** 'probing' until the keychain session restore + first /api/me resolve. */
   status: 'probing' | 'signed-out' | 'signed-in'
   user: CloudUser | null
@@ -39,11 +47,13 @@ export const useCloudAuthStore = create<CloudAuthState>()((set) => ({
   licenseActive: false,
   tier: null,
   access: true,
+  paidPlan: null,
   quota: null,
 
   setSignedOut: () =>
-    set({ status: 'signed-out', user: null, licenseActive: false, tier: null, access: true, quota: null }),
-  setSignedIn: (user, account) => set({ status: 'signed-in', user, ...account }),
+    set({ status: 'signed-out', user: null, licenseActive: false, tier: null, access: true, paidPlan: null, quota: null }),
+  setSignedIn: (user, account) =>
+    set({ status: 'signed-in', user, ...account, paidPlan: account.paidPlan ?? null }),
   setQuota: (quota) => set({ quota }),
 }))
 

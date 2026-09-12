@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Folder, Shield, X } from 'lucide-react'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { AgentWorkspaceDialog } from './AgentWorkspaceDialog'
 import type { AgentWorkspace } from '../../types/agent-workspace'
 
@@ -16,6 +17,11 @@ import type { AgentWorkspace } from '../../types/agent-workspace'
  */
 export function AgentWorkspaceBadge() {
   const [dialogOpen, setDialogOpen] = useState(false)
+  // Gesetzt, nachdem das x den Eintrag je Chat geloescht hat und ein
+  // Vorgabeordner nachruecken wuerde. Eigener Zustand, weil die Pille in
+  // diesem Moment schon verschwunden ist und der Dialog trotzdem stehen
+  // bleiben muss.
+  const [leftInto, setLeftInto] = useState<AgentWorkspace | null>(null)
   const activeId = useChatStore((s) => s.activeConversationId)
   const isActive = useAgentModeStore((s) =>
     activeId ? s.agentModeActive[activeId] ?? false : false,
@@ -23,8 +29,48 @@ export function AgentWorkspaceBadge() {
   const workspace = useAgentModeStore((s) =>
     activeId ? s.workspaces[activeId] : undefined,
   )
+  const defaultWorkspace = useSettingsStore((s) => s.settings.defaultWorkspace)
 
-  if (!activeId || !isActive || !workspace) return null
+  if (!activeId) return null
+
+  const handleChoose = (next: AgentWorkspace) => {
+    useAgentModeStore.getState().setWorkspace(activeId, next)
+    setDialogOpen(false)
+    setLeftInto(null)
+  }
+
+  // helpslowlydying, 01.09.2026: der Agent stand in einem riesigen Baum, in dem
+  // er nichts zu suchen hatte, und es gab KEINEN Weg hinaus. Die Plakette
+  // konnte den Ordner wechseln, nicht ihn verlassen; clearWorkspace gab es im
+  // Speicher, nur hat es niemand aufgerufen. Jetzt liegt es hier, direkt an der
+  // Stelle, an der der Nutzer den Ordner sieht.
+  //
+  // R2-1: der Eintrag je Chat war nur die obere Haelfte. `resolveWorkspace`
+  // faellt danach auf `settings.defaultWorkspace` zurueck, und der Umschalter
+  // ueberspringt bei gesetztem Vorgabeordner den Dialog. Der Agent behielt also
+  // Schreib- und Shellzugriff auf genau den Baum, den der Nutzer eben verlassen
+  // hat. Steht ein Vorgabeordner, geht deshalb der Dialog auf: er ist die
+  // einzige Stelle mit "Forget it". Ohne Vorgabeordner bleibt es beim
+  // bisherigen Verhalten, die Pille geht weg und der Agent fragt neu.
+  const handleLeave = () => {
+    useAgentModeStore.getState().clearWorkspace(activeId)
+    setDialogOpen(false)
+    if (defaultWorkspace) setLeftInto(defaultWorkspace)
+  }
+
+  if (leftInto) {
+    return (
+      <AgentWorkspaceDialog
+        open={true}
+        conversationId={activeId}
+        initialWorkspace={leftInto}
+        onChoose={handleChoose}
+        onClose={() => setLeftInto(null)}
+      />
+    )
+  }
+
+  if (!isActive || !workspace) return null
 
   const extras = workspace.kind === 'folder' ? workspace.extraPaths ?? [] : []
   const label =
@@ -40,21 +86,6 @@ export function AgentWorkspaceBadge() {
       // as an alert. Text + Folder icon inherit this gray. Sandbox stays green.
       ? 'text-gray-500 dark:text-gray-400 border-gray-200 dark:border-white/10'
       : 'text-emerald-500 border-emerald-500/30'
-
-  const handleChoose = (next: AgentWorkspace) => {
-    useAgentModeStore.getState().setWorkspace(activeId, next)
-    setDialogOpen(false)
-  }
-
-  // helpslowlydying, 01.09.2026: der Agent stand in einem riesigen Baum, in dem
-  // er nichts zu suchen hatte, und es gab KEINEN Weg hinaus. Die Plakette
-  // konnte den Ordner wechseln, nicht ihn verlassen; clearWorkspace gab es im
-  // Speicher, nur hat es niemand aufgerufen. Jetzt liegt es hier, direkt an der
-  // Stelle, an der der Nutzer den Ordner sieht.
-  const handleLeave = () => {
-    useAgentModeStore.getState().clearWorkspace(activeId)
-    setDialogOpen(false)
-  }
 
   return (
     <>

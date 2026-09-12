@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Bug D, symptom 3. Discord ticket, aldrich_ironhart, 2026-09-08, Windows 11,
  * LU 2.6.8, provider Ollama, DESKTOP app, Code tab:
@@ -31,7 +32,7 @@
  *
  * Run: npx vitest run src/components/chat/__tests__/the-picked-folder-is-not-swallowed.test.ts
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { workspacePickRefusedMessage } from '../../../lib/workspace-rejected'
@@ -137,5 +138,52 @@ describe('the sentence the user reads', () => {
   it('never tells the user to do the thing that cannot work', () => {
     const satz = workspacePickRefusedMessage(new Error('system or credential directory'))
     expect(satz.toLowerCase(), 'the closed loop is back').not.toContain('pick it again')
+  })
+})
+
+/**
+ * R2-15 und R2-16: der vierte Weg, auf dem derselbe Satz verschwand.
+ *
+ * Die Fehlerzeile der Baumspalte stand HINTER dem leeren Zustand. Wird ein
+ * Ordner abgelehnt, bleibt `workingDirectory` leer, also gewann "No folder
+ * picked." und der Grund verschwand ungelesen. Der Nutzer sah einen Klick, der
+ * nichts tat, und genau den Satz, der ihm haette sagen koennen warum, bekam er
+ * nie zu sehen.
+ *
+ * Gemessen statt gelesen, also jsdom. Die Ablehnung kommt aus der Bruecke, und
+ * V2a hat gemessen, dass die Gegenprobe einen Vorlauf braucht, bis der
+ * abgewiesene Aufruf im Zustand angekommen ist (R2-43).
+ */
+describe('die Ablehnung im leeren Zustand', () => {
+  it('steht im Rumpf, statt vom leeren Zustand verdeckt zu werden', async () => {
+    const { render, screen, fireEvent, act, cleanup } = await import('@testing-library/react')
+    const { createElement } = await import('react')
+    const { useCodexStore } = await import('../../../stores/codexStore')
+    const backend = await import('../../../api/backend')
+    const { ExplorerPanel } = await import('../ExplorerPanel')
+
+    vi.spyOn(backend, 'isTauri').mockReturnValue(true)
+    vi.spyOn(backend, 'backendCall').mockImplementation(async (cmd: string) => {
+      if (cmd === 'pick_folder') throw new Error('a home or mount container is not a workspace')
+      return null as never
+    })
+    useCodexStore.setState({ workingDirectory: '' })
+
+    render(createElement(ExplorerPanel, { onApprovePlan: () => {} }))
+    expect(screen.queryByTestId('explorer-no-folder'), 'ohne Klick steht der leere Zustand da')
+      .not.toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('explorer-pick-folder'))
+      await new Promise((r) => setTimeout(r, 30))
+    })
+
+    const fehler = screen.queryByTestId('explorer-error')
+    expect(fehler, 'die Ablehnung wird weiterhin verschluckt').not.toBeNull()
+    expect(fehler!.textContent).toContain('a home or mount container is not a workspace')
+    expect(screen.queryByTestId('explorer-no-folder'), 'der leere Zustand verdeckt den Grund')
+      .toBeNull()
+    cleanup()
+    vi.restoreAllMocks()
   })
 })
