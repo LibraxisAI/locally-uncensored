@@ -91,6 +91,14 @@ export function parseExtractionResponse(response: string): ExtractionResult {
     // Try to extract JSON from the response
     let jsonStr = response.trim()
 
+    // Reasoning models prepend a think block, and extractJsonObject takes the
+    // FIRST balanced object that parses, so a brace pair inside that block would
+    // be stored as the user's memory. Drop it (an unterminated one means the
+    // token budget died mid-think: nothing to parse). Word for word the web's
+    // apps/web/lib/memory-extraction.ts.
+    jsonStr = jsonStr.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+    if (/<think>/i.test(jsonStr)) return fallback
+
     // Strip markdown code blocks
     const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/)
     if (codeBlockMatch) {

@@ -301,3 +301,50 @@ describe('parsers survive prose around the JSON', () => {
     expect(parseResolutionResponse('no idea {really}').action).toBe('ADD')
   })
 })
+
+/**
+ * R5-25. `extractJsonObject` takes the FIRST balanced object that parses, and
+ * `useMemory` never ran the response through the think splitter, so a brace pair
+ * the model wrote while thinking out loud could be stored as the user's memory.
+ * The three cases are the web's word for word
+ * (apps/web/lib/__tests__/memory-extraction.test.ts:152-171).
+ */
+describe('parseExtractionResponse — reasoning models', () => {
+  it('strips a leading think block before the JSON', () => {
+    const response = '<think>The user mentioned they are a nurse. That is worth saving.</think>\n{"shouldSave": true, "memories": [{"type": "user", "title": "Role", "content": "Works as a nurse", "tags": []}]}'
+    const result = parseExtractionResponse(response)
+    expect(result.shouldSave).toBe(true)
+    expect(result.memories[0].title).toBe('Role')
+  })
+
+  it('rejects an unterminated think block (token budget died mid-think)', () => {
+    const response = '<think>Let me consider whether {"shouldSave": true} applies here because'
+    const result = parseExtractionResponse(response)
+    expect(result.shouldSave).toBe(false)
+    expect(result.memories).toEqual([])
+  })
+
+  it('ignores braces inside the think block', () => {
+    const response = '<think>maybe {"shouldSave": true, "memories": []} hmm</think>{"shouldSave": false, "memories": []}'
+    const result = parseExtractionResponse(response)
+    expect(result.shouldSave).toBe(false)
+  })
+
+  it('HAUPTFALL: a memory the model only WEIGHED inside the think block is not saved', () => {
+    // The discriminating case. The other three pass on the old code by luck:
+    // their think blocks hold no object that survives the shape check, so the
+    // first balanced object that parses happens to be the real answer anyway.
+    // Here the thought is a complete, well-formed extraction result, so without
+    // the strip the model's musing becomes the user's memory.
+    const response = '<think>Maybe {"shouldSave": true, "memories": [{"type": "user", "title": "Guess", "description": "Guess", "content": "A stray thought", "tags": []}]} would do.</think>{"shouldSave": false, "memories": []}'
+    const result = parseExtractionResponse(response)
+    expect(result.shouldSave).toBe(false)
+    expect(result.memories).toEqual([])
+  })
+
+  it('NEGATIVKONTROLLE: an answer without a think block behaves exactly as before', () => {
+    const result = parseExtractionResponse('{"shouldSave": true, "memories": [{"type": "user", "title": "Role", "content": "Works as a nurse", "tags": []}]}')
+    expect(result.shouldSave).toBe(true)
+    expect(result.memories[0].content).toBe('Works as a nurse')
+  })
+})
