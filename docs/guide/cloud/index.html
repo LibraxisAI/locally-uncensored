@@ -109,9 +109,9 @@
 
 <h2 id="flash">Flash chat: the daily allowance</h2>
 
-<p>Some hosted chat models carry the word Flash. On a paid plan, inside the apps, those models answer without spending credits, up to a published daily ceiling of <span data-flash-limit="500000">500,000 input and output tokens per account per day</span>, which resets at 00:00 UTC. The notice in the app reads "Flash: 500,000 input and output tokens per UTC day without credits" and adds "API keys always use credits."</p>
+<p>Some hosted chat models belong to a Flash class that costs no credits inside the apps on a paid plan, up to a published daily ceiling of <span data-flash-limit="500000">500,000 input and output tokens per account per day</span>, which resets at 00:00 UTC. The picker marks them with "Included". The word Flash in a model name does not decide it. The notice in the app reads "Flash: <span data-flash-limit="500000">500,000</span> input and output tokens per UTC day without credits" and adds "API keys always use credits."</p>
 
-<p>The conditions, as the app and the pricing page state them: it is a paid plan benefit, so a pack without a plan does not get it; only one free request can run at a time per account, and a second one is refused rather than billed ("One free chat request is already running on this account. Wait for it to finish or stop it first."); a request whose budget would exceed what is left of the day's allowance runs at normal credit pricing, with a notice in the app; and a request through an API key always uses credits, Flash or not. The current list of Flash models is on the <a href="/pricing/">pricing page</a>.</p>
+<p>The conditions, as the app and the pricing page state them: it is a paid benefit, so an account that has never paid does not get it, whether it holds a plan or a pack; only one free request can run at a time per account, and a second one is refused rather than billed ("One free chat request is already running on this account. Wait for it to finish or stop it first."); a request whose budget would exceed what is left of the day's allowance runs at normal credit pricing, with a notice in the app; and a request through an API key always uses credits, Flash or not. The current list of Flash models is on the <a href="/pricing/">pricing page</a>.</p>
 
 <h2 id="marks">The marks in the picker</h2>
 
@@ -119,7 +119,7 @@
 
 <ul>
 <li>"No refusals", with the tooltip "Measured: this model answers without refusing. Your account's content policy still applies." The mark comes from a measurement, not a promise: every hosted chat model was asked an explicit adult fiction request, and the ones that answered in full carry the mark. The number that did, out of the number measured, is on the <a href="/cloud/">cloud page</a>.</li>
-<li>"No credits", with the tooltip "No credits, up to 500,000 tokens per day on a paid plan. Chat only, one request at a time." That is the Flash allowance above.</li>
+<li>"Included", with the tooltip "No credits, up to <span data-flash-limit="500000">500,000</span> tokens per day on a paid plan. Chat only, one request at a time." That is the Flash allowance above.</li>
 </ul>
 
 <h2 id="policy">The content policy setting</h2>

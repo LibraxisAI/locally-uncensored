@@ -28,21 +28,59 @@ for (const platform of ['windows', 'linux', 'macos']) {
  * compatible hardware and downloaded models", also kein Mass, an dem jemand
  * vor dem Herunterladen erkennen kann, ob seine Kiste reicht.
  *
- * Die Zahlen sind nicht geschaetzt, sie stehen geschrieben: die
- * Systemvoraussetzungen der Download-Seite von lu-labs.ai nennen
- * "8 GB min . 16 GB rec." und "NVIDIA 6 GB+" mit dem Zusatz, dass eine Karte
- * nur fuer Bild und Video noetig ist. Dieselben zwei Zahlen stehen in diesem
- * Repo auf locallyuncensored.com, und genau dagegen prueft dieser Waechter:
- * eine Zahl in der Paketbeschreibung, die dort nicht steht, faellt auf.
+ * R6-1 hat gezeigt, dass die alte Fassung dieses Waechters zu schwach war: sie
+ * hat nur nachgesehen, ob die Zeichenkette "6 GB VRAM" irgendwo in
+ * docs/llms-full.txt vorkommt, und das tat sie dreimal in einer
+ * FramePack-Zeile, waehrend zwei Saetze daneben 8+ GB und 10 bis 12 GB
+ * verlangten. Die Zahl haengt jetzt am Katalog: src/api/model-bundles.ts
+ * fuehrt je Paket ein Feld vramRequired, und der kleinste Wert der Bild- und
+ * der Videoliste ist der Boden, den ein Kundentext nennen darf. Getippt wird
+ * hier keine Zahl.
  */
-it('die Paketbeschreibung nennt Hardware, und zwar die geschriebene', () => {
+function vramBodenAusDemKatalog(): number {
+  const katalog = readFileSync('src/api/model-bundles.ts', 'utf8')
+  const liste = (name: string) => {
+    const start = katalog.indexOf(`export function ${name}(): ModelBundle[]`)
+    expect(start, `${name} fehlt im Katalog`).toBeGreaterThan(-1)
+    const rest = katalog.slice(start + 1)
+    const ende = rest.search(/\nexport (function|interface|const|type) /)
+    return ende === -1 ? rest : rest.slice(0, ende)
+  }
+  const zahlen = ['getImageBundles', 'getVideoBundles']
+    .flatMap((name) => [...liste(name).matchAll(/vramRequired: '([^']+)'/g)])
+    .map((treffer) => Number.parseInt(treffer[1], 10))
+    .filter(Number.isFinite)
+  // Bild und Video tragen zusammen deutlich mehr als zwanzig Pakete. Faellt die
+  // Zahl darunter, hat sich der Aufbau der Datei geaendert und nicht der Boden.
+  expect(zahlen.length).toBeGreaterThan(20)
+  return Math.min(...zahlen)
+}
+
+it('die Paketbeschreibung nennt Hardware, und zwar die aus dem Katalog', () => {
+  const boden = vramBodenAusDemKatalog()
   const beschreibung: string = base.bundle.longDescription
   expect(beschreibung).toContain('8 GB of system memory')
-  expect(beschreibung).toContain('6 GB of VRAM')
+  expect(beschreibung).toContain(`${boden} GB of VRAM`)
 
-  const quelle = readFileSync('docs/llms-full.txt', 'utf8')
+  // Auf den Seiten steht dieselbe Zahl. &nbsp; ist Hausstil, kein Unterschied.
+  const ohneSchmalraum = (text: string) => text.replace(/&nbsp;| /g, ' ')
+  const quelle = ohneSchmalraum(readFileSync('docs/llms-full.txt', 'utf8'))
   expect(quelle).toContain('8 GB RAM')
-  expect(quelle).toContain('6 GB VRAM')
+  expect(quelle).toContain(`${boden} GB of VRAM`)
+
+  // Jede Stelle, die eine Bilduntergrenze nennt, nennt dieselbe Zahl. Genau das
+  // hat der alte Waechter durchgelassen.
+  for (const datei of ['docs/llms-full.txt', 'docs/index.html']) {
+    const saetze = ohneSchmalraum(readFileSync(datei, 'utf8'))
+      .split('Image generation')
+      .slice(1)
+      .map((rest) => rest.split(/\.(?=\s|$|")|\n/)[0])
+      .filter((satz) => /GB/.test(satz))
+    expect(saetze.length, `${datei}: keine Hardwarezeile gefunden`).toBeGreaterThan(0)
+    for (const satz of saetze) {
+      expect(satz, `${datei}: Bilduntergrenze weicht vom Katalog ab`).toMatch(new RegExp(`\\b${boden} GB\\b`))
+    }
+  }
 
   // Gegenkontrolle: der Waechter kann eine erfundene Zahl auch sehen.
   expect(quelle).not.toContain('64 GB VRAM')

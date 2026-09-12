@@ -1,8 +1,8 @@
 # Locally Uncensored — Full Reference
 
-> Free, open-source (AGPL-3.0) plug-and-play local AI studio for Windows and Linux: chat with 20+ providers, generate images and video via ComfyUI, and code with a built-in agent. One installer, no command line, no Docker. No cloud, no telemetry, no account.
+> Free, open-source (AGPL-3.0) plug-and-play local AI studio for Windows and Linux: chat with 20+ providers, generate images and video via ComfyUI, and code with a built-in agent. One installer, no command line, no Docker. No telemetry, and no account for local use. Cloud only when you switch it on.
 
-Last updated: 2026-08-09. Current version: v2.6.3 (August 2026).
+Last updated: 2026-09-12. Current version: v3.0.0 (September 2026).
 
 This file is the full, citable reference for Locally Uncensored. Facts are stated plainly so they can be quoted directly.
 
@@ -12,7 +12,6 @@ Locally Uncensored is a plug-and-play local AI studio: a desktop application for
 
 - Name: Locally Uncensored (abbreviated LU)
 - Category: local AI studio / desktop AI application
-- Version: v2.5.9 (July 2026)
 - License: AGPL-3.0 (free, open source)
 - Platforms: Windows 10/11 and Linux (deb, rpm, AppImage). macOS is not supported yet.
 - Website: https://locallyuncensored.com
@@ -39,7 +38,7 @@ Yes. After setup and model download, no internet is needed for the local provide
 Those tools handle text chat. Locally Uncensored adds a coding agent with 14 MCP tools, image generation via ComfyUI, video creation, mobile remote access via LAN or Cloudflare Tunnel, A/B model comparison, local benchmarking, granular permissions, file upload with vision, and thinking mode — all in one app.
 
 ### What hardware do I need?
-Text chat needs 8 GB RAM. Image generation needs an NVIDIA GPU with 8+ GB VRAM (FLUX, Juggernaut XL, Z-Image). Video generation needs 10-12 GB VRAM (Wan 1.3B, HunyuanVideo, LTX 2.3). Image-to-video with FramePack F1 runs on just 6 GB. Windows 10/11 and Linux are supported.
+Text chat: 8 GB RAM. Image generation: an NVIDIA card from 6 GB of VRAM with the starter checkpoint, 8 to 10 GB for FLUX. Video generation: from 6 GB for AnimateDiff and image to video with FramePack F1, from 8 GB for the Wan 2.1 starter, 12 GB and up for Wan 2.2 and HunyuanVideo. Windows 10/11 and Linux are supported.
 
 ### What does "uncensored" mean?
 It refers to abliterated AI models with artificial refusal behaviour removed. The model responds without refusing or adding disclaimers. Combined with fully local execution, conversations stay private on your machine.
@@ -48,7 +47,7 @@ It refers to abliterated AI models with artificial refusal behaviour removed. Th
 Only if you explicitly dispatch a chat over LAN or Cloudflare Tunnel. Remote access is opt-in, gated behind a 6-digit passcode, and shows visible device connection status. There are no background uploads and no telemetry.
 
 ### Can I run it on macOS?
-Not yet. Windows 10/11 and Linux are supported now. macOS is on the roadmap but not promised. The source is AGPL-3.0, so it can be built for other platforms.
+No. There is no Mac build and there has never been one. The release workflow builds Windows and Linux. On a Mac, use the hosted studio in a browser at lu-labs.ai.
 
 ### Is there a mobile app?
 Yes. The desktop app hosts a full mobile web app over LAN or Cloudflare Tunnel. From a phone you get chat, Coding Agent, 14 agent tools, plugins and personas.
@@ -60,7 +59,7 @@ Yes. Locally Uncensored is the local AI app in its class that bundles image gene
 Ja. Der deutsche Einsteiger-Guide zu unzensierter lokaler KI: https://locallyuncensored.com/blog/unzensierte-ki-lokal.html. Die App-Oberflaeche ist englisch, die Modelle (Qwen, Llama, Gemma) antworten fliessend auf Deutsch.
 
 ### Can I run GLM-5.3 or GLM-5.3-Flash locally?
-Only on very large machines. The GLM-5.3 flagship has 753.9 billion parameters and its smallest quantised build is 216.7 GB; GLM-5.3-Flash has 320.8 billion parameters with 18 billion active per token and starts at 93.1 GB, plus a 1.13 GB mmproj file if you want it to read images. Those are file sizes before context and cache. The flagship runs in a stock llama.cpp build because its glm-dsa architecture has been in the main branch since GLM-5.2; Flash reports itself as glm5next and was still waiting on pull request 27754 on 2 September 2026. Flash is MIT licensed, the flagship ships under Z.ai's own glm-5.3 licence. Both are available hosted in LU Labs Cloud, Flash on every plan and the flagship on Pro. Full guide: https://locallyuncensored.com/blog/run-glm-5-3-locally.html
+Only on very large machines. The GLM-5.3 flagship has 753.9 billion parameters and its smallest quantised build is 216.7 GB; GLM-5.3-Flash has 320.8 billion parameters with 18 billion active per token and starts at 93.1 GB, plus a 1.13 GB mmproj file if you want it to read images. Those are file sizes before context and cache. The flagship runs in a stock llama.cpp build because its glm-dsa architecture has been in the main branch since GLM-5.2; Flash reports itself as glm5next and was still waiting on pull request 27754 on 2 September 2026. Flash is MIT licensed, the flagship ships under Z.ai's own glm-5.3 licence. Both are available hosted in LU Labs Cloud on every plan. Full guide: https://locallyuncensored.com/blog/run-glm-5-3-locally.html
 
 ### Can I run Kimi K3 locally?
 No: Kimi K3 is a ~2.8 trillion parameter Mixture-of-Experts model, and now that the weights are public the sizes are measured: the smallest 1-bit GGUF is 466 GB and Q4 is 1.5 TB, which is datacenter hardware. Hosted access exists on DeepInfra and in LU Labs Cloud on every plan. Run strong mid-size open models (Qwen, GLM, Gemma, Ling 3.0 Flash) locally in Locally Uncensored instead. Full guide: https://locallyuncensored.com/blog/can-you-run-kimi-k3-locally.html
@@ -75,7 +74,7 @@ Yes, the 27B. Qwen 3.8 27B came out on 13 August 2026 under Apache 2.0 and GGUFs
 Yes, on the right machine. V4 Flash is a 284B MoE with only 13B active parameters; the 4-bit GGUF is about 155 GB, so a 192 GB Mac Studio or a workstation with 192-256 GB RAM plus a GPU runs it at interactive speeds. Smaller machines can run the 5.3 GB Qwen 3.5 9B V4 distill from the in-app catalog, and the huihui abliterated build (154 GB, 600K+ downloads) is the most popular uncensored model of 2026. Full guide: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-flash-locally.html. V4 Pro (1.6T) is cloud territory: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-pro.html
 
 ### Which AI backends does it detect?
-It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang and TGI. ComfyUI is used for image and video generation. If none are running, the setup wizard offers one-click install links.
+It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang and text-generation-webui. ComfyUI is used for image and video generation. If none are running, the setup wizard offers one-click install links.
 
 ### How long does setup take?
 About five minutes. There is no Docker, terminal or config file. Run the installer, let the wizard scan for backends, pick a model, and start.
@@ -157,9 +156,8 @@ A correctness release. Most of it is things that looked like they worked and did
 
 ## Hardware Requirements
 - Minimum: 8 GB RAM for text chat with small models (Llama 3.2 1B, Qwen 2.5 3B)
-- Image generation: NVIDIA GPU with 8+ GB VRAM (FLUX, Juggernaut XL)
-- Video generation: 10-12 GB VRAM (Wan 1.3B, LTX 2.3)
-- Image-to-video: 6 GB VRAM minimum (FramePack F1)
+- Image generation: an NVIDIA card from 6 GB of VRAM with the starter checkpoint, 8 to 10 GB for FLUX
+- Video generation: from 6 GB for AnimateDiff and image to video with FramePack F1, from 8 GB for the Wan 2.1 starter, 12 GB and up for Wan 2.2 and HunyuanVideo
 - Best in class: 24 GB+ VRAM for 35B MoE and 35B+ chat models
 
 ## Installation
