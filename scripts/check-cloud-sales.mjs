@@ -117,12 +117,30 @@ assert.equal(pricing.querySelectorAll('[data-pack-id]').length, packs.length, 'E
 // Das Handbuch-Kapitel zu LU Cloud nennt dasselbe Tagesbudget mit demselben
 // Anker und haengt hier an derselben Quelle wie die beiden Verkaufsseiten.
 const handbookCloud = new JSDOM(readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')).window.document
+// Jede genannte Zahl haengt am Anker, nicht nur die erste der Seite: das
+// Handbuch nennt die Decke dreimal, einmal im eigenen Satz und zweimal in
+// zitierten Bildschirmtexten.
+let flashAnchors = 0
 for (const doc of [pricing, page, handbookCloud]) {
-  const limit = doc.querySelector('[data-flash-limit]')
-  assert.ok(limit, 'flash allowance anchor missing')
-  assert.equal(Number(limit.dataset.flashLimit), daily, 'flash allowance drift')
-  assert.ok(limit.textContent.startsWith(daily.toLocaleString('en-US')))
+  const limits = doc.querySelectorAll('[data-flash-limit]')
+  assert.ok(limits.length > 0, 'flash allowance anchor missing')
+  for (const limit of limits) {
+    assert.equal(Number(limit.dataset.flashLimit), daily, 'flash allowance drift')
+    assert.ok(limit.textContent.startsWith(daily.toLocaleString('en-US')))
+    flashAnchors += 1
+  }
 }
+// Die Anzahl der Flash-Modelle war als Wort getippt und von nichts bewacht.
+const flashInCatalog = catalog.filter((row) => row.usageClass === 'flash').length
+const flashCount = pricing.querySelector('[data-flash-model-count]')
+assert.ok(flashCount, 'docs/pricing/index.html: the Flash model count carries no anchor')
+assert.equal(Number(flashCount.dataset.flashModelCount), flashInCatalog, 'flash model count drift')
+assert.equal(flashCount.textContent, String(flashInCatalog), 'flash model count text drift')
+assert.ok(
+  !/\b(Twelve|Eleven|Thirteen) models are in that class/i.test(pricingRaw),
+  'docs/pricing/index.html: the Flash model count is typed out again instead of anchored',
+)
+console.log(`Flash guard passed: ${flashAnchors} anchored mentions of the ${daily.toLocaleString('en-US')} ceiling and ${flashInCatalog} Flash models, all from the web source.`)
 
 // Die gemessene Zahl. Sie steht als Verkaufsargument auf der Seite, also darf
 // sie nur so lange dort stehen, wie der Katalog sie hergibt.
