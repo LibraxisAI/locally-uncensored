@@ -737,11 +737,20 @@ export const useMemoryStore = create<MemoryState>()(
           candidates = candidates.filter(e => (budget.typesAllowed as MemoryType[]).includes(e.type))
         }
 
-        // Score and sort (keyword)
+        // Score and sort (keyword).
+        //
+        // R2-26: bei LEERER Anfrage gibt `scoreMemory` jeder Erinnerung die 1,
+        // und der Frischebonus haengt an mindestens einem Worttreffer, greift
+        // hier also nicht. Die Sortierung ist stabil, also gewann die
+        // Einfuegereihenfolge und der Anrufer bekam die AELTESTEN Eintraege.
+        // Genau so ruft die Remote-Bruecke an (`remoteStore`,
+        // `getMemoriesForPromptAsync('', 8192)`), und das Handy bekam damit
+        // dauerhaft den aeltesten Stand. Ohne Anfrage gibt es keine Abdeckung,
+        // die entscheiden koennte, also entscheidet die Frische.
         const ordered = candidates
           .map((entry) => ({ entry, score: scoreMemory(entry, words) }))
           .filter(({ score }) => score > 0)
-          .sort((a, b) => b.score - a.score)
+          .sort((a, b) => (words.length === 0 ? b.entry.updatedAt - a.entry.updatedAt : b.score - a.score))
           .slice(0, budget.maxMemories)
           .map(({ entry }) => entry)
 
