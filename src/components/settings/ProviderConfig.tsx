@@ -12,7 +12,6 @@ import {
   slotRemoveOccupantUpdate,
   slotForgetStandbyUpdate,
 } from '../../lib/openai-slot-handover'
-import { useMemoryStore } from '../../stores/memoryStore'
 import { getProvider } from '../../api/providers'
 import { PROVIDER_PRESETS } from '../../api/providers/types'
 import { Modal } from '../ui/Modal'
@@ -122,7 +121,6 @@ export function ProviderSettings() {
   const [pendingPreset, setPendingPreset] = useState<typeof PROVIDER_PRESETS[0] | null>(null)
   const [expandedProvider, setExpandedProvider] = useState<ProviderId | null>(null)
 
-  const autoExtractEnabled = useMemoryStore((s) => s.settings.autoExtractEnabled)
 
   // Bug (g) state — LM-Studio-on-disk-but-server-off detection.
   const [lmStudioInfo, setLmStudioInfo] = useState<LmStudioServerInfo | null>(null)
@@ -619,15 +617,11 @@ export function ProviderSettings() {
                   </p>
                 )}
 
-                {/* Cloud + auto-extract cost note. Nichts ist kaputt und
-                    nichts muss jetzt passieren, also ruhig: das ist eine
-                    Folge einer Einstellung, die der Nutzer selbst gesetzt
-                    hat. */}
-                {needsKey && autoExtractEnabled && (
-                  <p className={`text-[0.55rem] ${HINWEIS_TEXT.ruhig} mt-1 leading-tight`}>
-                    Memory auto-extraction runs a secondary inference every 3rd turn, increasing API costs. Disable in Settings &gt; Memory if not needed.
-                  </p>
-                )}
+                {/* Die Kostenzeile der Erinnerungs-Extraktion stand hier, hinter
+                    `needsKey`. `lu-cloud` braucht keinen Schluessel, also las
+                    genau der Kunde sie nie, dem der stille Aufruf wirklich
+                    berechnet wird (R5-41). Sie steht jetzt an einer Stelle,
+                    neben dem Schalter in Settings > Memory. */}
               </div>
             )}
           </div>

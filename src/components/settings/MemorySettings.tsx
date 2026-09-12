@@ -3,6 +3,9 @@ import { Brain, Download, Upload, Trash2, Search, Plus, X, Check, Pencil, Zap, F
 import { useMemoryStore, effectiveMemoryBudget, describeMemoryImport } from '../../stores/memoryStore'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { useModelStore } from '../../stores/modelStore'
+import { useProviderStore } from '../../stores/providerStore'
+import { getProviderIdFromModel } from '../../api/providers/model-name'
+import type { ProviderId } from '../../api/providers/types'
 import { useChatStore, persistConversationMemoryScope } from '../../stores/chatStore'
 import { getModelMaxTokens } from '../../lib/context-compaction'
 // Eine Schreibweise fuer jedes Kontextfenster. Hier stand zweimal
@@ -10,6 +13,7 @@ import { getModelMaxTokens } from '../../lib/context-compaction'
 // diese Zeile 31K und der Rest der Oberflaeche 31.3K.
 import { formatContextWindow } from '../../lib/formatters'
 import { GlowButton } from '../ui/GlowButton'
+import { HINWEIS_TEXT } from '../../lib/hinweis'
 import type { MemoryType, MemoryFile } from '../../types/agent-mode'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
 import { synchronizeMemoryCollection, type MemorySyncResolution } from '../../lib/memory-sync'
@@ -26,6 +30,33 @@ const TYPE_DOT_COLORS: Record<MemoryType, string> = {
   feedback: 'bg-pink-400',
   project: 'bg-purple-400',
   reference: 'bg-green-400',
+}
+
+/**
+ * Was ein stiller Extraktionsaufruf kostet, in den Worten des Zahlwegs, auf
+ * dem er wirklich landet.
+ *
+ * Die ersten beiden Saetze sind wortgleich mit
+ * `apps/web/components/settings/MemorySettings.tsx`. Der dritte ist der Fall,
+ * den es im Web nicht gibt: ein Server auf der eigenen Maschine schickt keine
+ * Rechnung, und eine zu behaupten waere derselbe Fehler in die andere
+ * Richtung.
+ */
+export const EXTRAKTIONSKOSTEN = {
+  cloud: 'This runs a second, hidden model call every 3rd turn, billed like a chat turn. It uses the cheapest model in the catalogue, not the one you chat with.',
+  eigenerSchluessel: 'This runs a second, hidden model call every 3rd turn, which adds to your API costs.',
+  lokal: 'This runs a second, hidden model call every 3rd turn on your own machine. It costs no money, only time and memory.',
+} as const
+
+/** Welcher der drei Saetze fuer dieses Modell gilt. `null` = kein Modell gewaehlt. */
+export function extraktionskostenFuer(
+  activeModel: string | null,
+  istLokal: (providerId: ProviderId) => boolean,
+): string | null {
+  if (!activeModel) return null
+  const providerId = getProviderIdFromModel(activeModel)
+  if (providerId === 'lu-cloud') return EXTRAKTIONSKOSTEN.cloud
+  return istLokal(providerId) ? EXTRAKTIONSKOSTEN.lokal : EXTRAKTIONSKOSTEN.eigenerSchluessel
 }
 
 // ── Component ─────────────────────────────────────────────────
@@ -64,6 +95,10 @@ function MemorySettingsPanel() {
   // effect was a cascading render for something nothing had to be fetched for
   // (React 19 `set-state-in-effect`).
   const activeModel = useModelStore((s) => s.activeModel)
+  // R5-41: der stille Aufruf laeuft auf dem Anbieter des aktiven Modells,
+  // also sagt der Satz darunter, was DIESER Weg kostet.
+  const providers = useProviderStore((s) => s.providers)
+  const extraktionsKosten = extraktionskostenFuer(activeModel, (id) => providers[id]?.isLocal === true)
   const [budgetLabel, setBudgetLabel] = useState('')
   // Feature FF: reveal outdated (stale/superseded) entries, read-only.
   const [showOutdated, setShowOutdated] = useState(false)
@@ -371,7 +406,25 @@ function MemorySettingsPanel() {
           </button>
         </div>
 
-        {settings.autoExtractEnabled && (
+        {settings.autoExtractEnabled && (<>
+          {/*
+            * Die Kostenzeile stand bis 3.0.0 in Settings > AI Backends, hinter
+            * dem Zweig "dieser Anbieter braucht einen Schluessel" (R5-41).
+            * `lu-cloud` braucht keinen, also las genau der Kunde sie nie, dem
+            * der stille Aufruf wirklich berechnet wird. Sie gehoert neben den
+            * Schalter, den sie beschreibt.
+            *
+            * Drei Faelle, weil der Desktop drei hat und das Web zwei: der
+            * Aufruf laeuft auf dem Anbieter des aktiven Modells
+            * (`useMemory.resolveSilentCall`). Bei LU Cloud kostet er Guthaben,
+            * bei einem eigenen Schluessel Geld beim Anbieter, und auf einem
+            * Server auf der eigenen Maschine kostet er kein Geld. Die ersten
+            * beiden Saetze sind die des Web, der dritte behauptet keine
+            * Rechnung, die es nicht gibt.
+            */}
+          <p className={`text-[0.55rem] ${HINWEIS_TEXT.ruhig} pl-4 leading-tight`}>
+            {extraktionsKosten}
+          </p>
           <div className="flex items-center justify-between py-0.5 pl-4">
             <span className="text-[0.6rem] text-gray-500">Also extract outside Agent Mode</span>
             <button
@@ -381,7 +434,7 @@ function MemorySettingsPanel() {
               <span className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full bg-white transition-transform ${settings.autoExtractInAllModes ? 'translate-x-3.5' : ''}`} />
             </button>
           </div>
-        )}
+        </>)}
       </div>
 
       {/* Search */}
