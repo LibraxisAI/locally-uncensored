@@ -624,7 +624,23 @@ pub(crate) fn write_onboarding_marker(done: bool) -> Result<(), String> {
 /// successful write — the marker is the one truth the windows are decided
 /// from, and moving them on a marker that is not there would leave the main
 /// window hidden behind a rule it can never satisfy.
-#[tauri::command]
+// ASYNC: this command BUILDS A WINDOW. `follow_marker(false)`, the
+// Settings "Re-run onboarding" path, goes through `onboarding_window::open`,
+// and that is the only WebviewWindowBuilder in the app. A synchronous Tauri
+// command runs in the CALLER's thread, and that is the main thread inside
+// WebView2's WebResourceRequested handler, with the deferral still open for
+// the very IPC request it is answering. Building a webview there pumps a
+// nested Windows message loop and waits on the same browser process that is
+// waiting for that answer: the command never returns, and with it the WHOLE
+// command layer stops answering anything (T11 point 2, 2026-09-11: four
+// empty chat replies, Models stuck on "Loading models", the window cross
+// dead, only taskkill /F /T helped). With `(async)` Tauri dispatches the body
+// off the main thread, so `Message::CreateWindow` is posted to the event loop
+// instead of being built in place. Same treatment `find_comfyui`
+// (commands/process.rs) and `fs_search` (commands/filesystem.rs) already got.
+// The window build arrived with be2e3849 (2026-09-01) and shipped in 2.6.8
+// and 2.6.9.
+#[tauri::command(async)]
 pub fn set_onboarding_done(app: tauri::AppHandle, done: Option<bool>) -> Result<(), String> {
     let done = done.unwrap_or(true);
     write_onboarding_marker(done)?;
