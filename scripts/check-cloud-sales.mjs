@@ -167,10 +167,36 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Vergleichsseiten: kein Gratispfad ───────────────────────────────
+//
+// `planPays` im Web verlangt ein Konto, das schon Geld geschickt hat. Solange
+// das so ist, darf keine LU-Spalte einer Vergleichsseite einen kostenlosen
+// Flash-Pfad versprechen. Gebunden ist hier die Regel, nicht ihr Wortlaut:
+// faellt `tierIsPaid` aus `planPays` heraus, faellt auch dieses Verbot. Nur die
+// letzte Spalte wird geprueft, denn die Gegenseite darf ihren eigenen
+// Gratistarif nennen.
+const planPaysBody = /export function planPays\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(readWeb('apps/web/lib/pricing.ts'))?.[1]
+assert.ok(planPaysBody, 'planPays not found in pricing.ts')
+const flashNeedsPaidAccount = /tierIsPaid\(/.test(planPaysBody) && /paidBefore/.test(planPaysBody)
+const freePathOffences = []
+
 for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
   const comparison = new JSDOM(readFileSync(new URL(`../docs/vs/${slug}/index.html`, import.meta.url), 'utf8')).window.document
   const luFacts = [...comparison.querySelectorAll('[data-comparison-row] td:last-child')].map((cell) => cell.textContent).join(' ')
   assert.ok(luFacts.includes(`EUR ${catalogPack.eurCents / 100} for ${catalogPack.credits.toLocaleString('en-US')} credits`), `${slug}: pack claim drift`)
   assert.ok(luFacts.includes(daily.toLocaleString('en-US')), `${slug}: allowance claim drift`)
+  if (flashNeedsPaidAccount) {
+    for (const hit of luFacts.match(/free Flash|free allowance|competing free/gi) ?? []) {
+      freePathOffences.push(`${slug}: "${hit}"`)
+    }
+  }
   console.log(`${slug}: LU pack and allowance claims match the web source.`)
 }
+
+const freePathPages = new Set(freePathOffences.map((entry) => entry.split(':')[0])).size
+assert.equal(
+  freePathOffences.length,
+  0,
+  `planPays requires an account that has paid, so no LU column may promise a free Flash path: ${freePathOffences.length} claim(s) on ${freePathPages} page(s) [${freePathOffences.join(', ')}]`,
+)
+console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 comparison pages, and planPays still requires an account that has paid.')
