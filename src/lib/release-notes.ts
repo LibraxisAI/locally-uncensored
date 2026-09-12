@@ -95,7 +95,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         items: [
           'The setting lives in your LU Cloud account and reads the same in the desktop app and in the browser, because it is one setting behind one route, not two copies.',
           'Off requires an age confirmation in the same step, and the server stamps the time itself. Switching back to another option clears that confirmation, so re-opening it asks again.',
-          'Two lines no setting moves: material involving minors is refused on every request and reported, and you may not upload a photograph of a real, identifiable person without their consent.',
+          'Two lines no setting moves: material involving minors is refused on every request, and you may not upload a photograph of a real, identifiable person without their consent.',
           'The refusal message used to say cloud rendering cannot do this at all, which sent people to a local backend for something that was a setting. It now names the setting and where it is.',
         ],
       },

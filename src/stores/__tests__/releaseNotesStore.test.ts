@@ -231,9 +231,18 @@ describe('the notes table', () => {
       'forgotten in the workspace dialog',
       // Der Messer hat V4.1 Flash gemessen.
       'no mark until it is measured',
+      // R6-2: niemand wird benachrichtigt. SAFETY_ALERT_WEBHOOK_URL steht auf
+      // dem Droplet nicht, `alertCsamBlock` steigt ohne Ziel sofort aus, und
+      // keine der 45 Migrationen legt eine Tabelle dafuer an. Uebrig bleibt
+      // eine Containerzeile, die niemand abonniert hat. Der Block selbst wird
+      // davon nicht schwaecher: die Ablehnung steht unveraendert im Satz.
+      'and reported',
     ]) {
       expect(prose, `${shipping}: still says "${wrong}"`).not.toContain(wrong)
     }
+    // Die Ablehnung bleibt, und die zweite Haelfte des Satzes steht wortgleich.
+    expect(prose).toContain('refused on every request')
+    expect(prose).toContain('photograph of a real, identifiable person without their consent')
   })
 
   it('the model numbers on the 3.0.0 sheet are read from the catalogue, never typed', () => {
