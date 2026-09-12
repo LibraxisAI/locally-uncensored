@@ -216,6 +216,59 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+
+// ── Die sechs Erwachsenen-Videomodelle auf der LUC-Preisseite ────────
+//
+// Entscheid David (R3-8, 12.09.2026): die sechs Endpunkte ohne eingebaute
+// Inhaltsbeschraenkung stehen mit Namen und Credit-Preis je Clip auf der
+// LUC-Preisseite. lu-labs.ai bleibt unberuehrt; dort haelt keptOffThisDomain
+// sie weiter von der Zahlungsdomain fern, und genau deshalb darf diese Seite
+// nicht von der Kaufseite abgeschrieben werden. Namen und Preise kommen aus
+// dem Katalog: cloud-models.ts liefert Id und Etikett, credits.ts den
+// Dollarsatz und den Credit-Kurs. Eine Tokenmenge je Geld steht nirgends.
+const mediaText = mediaSource.getFullText()
+const adultVideo = mediaText.split('\n')
+  .filter((line) => /kind: 'video'/.test(line) && /adult: true/.test(line) && !/ops: \[/.test(line))
+  .map((line) => ({ id: /id: '([^']+)'/.exec(line)?.[1], label: /label: '([^']+)'/.exec(line)?.[1] }))
+assert.ok(adultVideo.length > 0 && adultVideo.every((row) => row.id && row.label), 'adult video rows unreadable')
+const creditsText = readWeb('apps/web/lib/billing/credits.ts')
+const creditUsd = Number(/export const CREDIT_USD = ([0-9.e-]+)/.exec(creditsText)?.[1])
+assert.ok(creditUsd > 0, 'CREDIT_USD not found in credits.ts')
+const priceTable = /export const MEDIA_MODEL_USD[^{]*\{([\s\S]*?)\n\}/.exec(creditsText)?.[1]
+assert.ok(priceTable, 'MEDIA_MODEL_USD not found in credits.ts')
+const clipPrice = (id) => {
+  const hit = new RegExp(`'${id.replaceAll('.', '\\.')}': \\{ base: ([0-9.]+)(, long: ([0-9.]+))?`).exec(priceTable)
+  assert.ok(hit, `no base price for ${id} in MEDIA_MODEL_USD`)
+  return { base: Number(hit[1]), long: hit[3] === undefined ? undefined : Number(hit[3]) }
+}
+const adultRows = [...pricing.querySelectorAll('[data-adult-video-row]')]
+assert.equal(
+  adultRows.length,
+  adultVideo.length,
+  `docs/pricing/index.html: the page lists ${adultRows.length} adult video models, the catalogue has ${adultVideo.length}`,
+)
+adultVideo.forEach((model, index) => {
+  const row = adultRows[index]
+  const name = row.querySelector('[data-adult-model-id]')
+  assert.ok(name, `docs/pricing/index.html: adult video row ${index + 1} carries no model anchor`)
+  assert.equal(name.dataset.adultModelId, model.id, `docs/pricing/index.html: adult video id drift in row ${index + 1}`)
+  assert.equal(name.textContent, model.label, `docs/pricing/index.html: adult video label drift for ${model.id}`)
+  const cell = row.querySelector('[data-clip-credits]')
+  assert.ok(cell, `docs/pricing/index.html: no clip price anchor for ${model.id}`)
+  const price = clipPrice(model.id)
+  const credits = Math.ceil(price.base / creditUsd)
+  assert.equal(Number(cell.dataset.clipCredits), credits, `docs/pricing/index.html: clip price drift for ${model.id}`)
+  assert.equal(cell.textContent, credits.toLocaleString('en-US'), `docs/pricing/index.html: clip price text drift for ${model.id}`)
+  // Der Satz daneben sagt "five seconds, no eight second option". Er haengt
+  // daran, dass die sechs in der Preistabelle keinen 8-Sekunden-Satz haben;
+  // clipLengths blendet den Knopf genau daran aus (R3-8).
+  assert.equal(price.long, undefined, `docs/pricing/index.html: ${model.id} now has an 8s rate, the five-second sentence is stale`)
+})
+assert.ok(
+  /renders a clip of five seconds/.test(pricingRaw),
+  'docs/pricing/index.html: the adult video block no longer states the clip length it prices',
+)
+console.log(`Adult video guard passed: ${adultRows.length} endpoints with catalogue names and ${adultRows.map((r) => r.querySelector('[data-clip-credits]').dataset.clipCredits).join('/')} credits per five second clip, all from the web source.`)
 // ── Die zwoelf Motoren, Name fuer Name ──────────────────────────────
 //
 // Die Anzahl stimmte schon, der zwoelfte Name nicht: die Sprachmodell-Dateien
