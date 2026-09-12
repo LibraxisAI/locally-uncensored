@@ -197,6 +197,7 @@ console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR ===
 // wurde, und es sagt: es gibt keinen Mac-Bau und hat nie einen gegeben. Keine
 // andere Seite darf daneben eine Roadmap versprechen. Der Anker ist der Satz
 // im Handbuch: verschwindet er, faellt auch diese Pruefung auf.
+const startseite = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
 const macAnswer = readFileSync(new URL('../docs/guide/faq-and-glossary/index.html', import.meta.url), 'utf8')
 assert.ok(
   macAnswer.includes('There is no Mac build and there has never been one'),
@@ -214,7 +215,26 @@ assert.equal(
   0,
   `The handbook says there has never been a Mac build, so no page may put one on a roadmap: ${macRoadmapClaims.length} claim(s) [${macRoadmapClaims.join(' | ')}]`,
 )
-console.log('Mac guard passed: 0 roadmap promises for a Mac build in docs/, and the handbook answer is unchanged.')
+// Die Startseite hat den Mac ausserdem als behobenen Fehler gefuehrt. Jede
+// Stelle, die den Mac nennt, muss im selben Satz sagen, dass es den Bau nicht
+// gibt, sonst liest die Startseite sich wie eine Plattformzusage. Ein Bau
+// gaebe es an einem .dmg zu erkennen, und das kommt im ganzen Baum nicht vor.
+const macMentions = []
+for (const satz of startseite.split(/(?<=[.!?])["\s]|\n/)) {
+  if (!/\bmac(os)?\b/i.test(satz.replace(/machine/gi, ''))) continue
+  // Die Frage selbst darf den Mac nennen, nur die Antwort ist gebunden.
+  if (/\?/.test(satz)) continue
+  if (/no Mac build|on a Mac, use the hosted studio/i.test(satz)) continue
+  macMentions.push(satz.trim().slice(0, 70))
+}
+assert.equal(
+  macMentions.length,
+  0,
+  `There is no Mac build, so docs/index.html may only say so: ${macMentions.length} other Mac mention(s) [${macMentions.join(' | ')}]`,
+)
+const dmgClaims = docsFiles(docsRoot).filter((path) => /\.dmg\b|\bdmg\b/i.test(readFileSync(path, 'utf8')))
+assert.equal(dmgClaims.length, 0, `No Mac build exists, so docs/ may not offer a .dmg: ${dmgClaims.length} page(s)`)
+console.log('Mac guard passed: 0 roadmap promises, 0 stray Mac mentions on the home page and 0 dmg offers in docs/, and the handbook answer is unchanged.')
 
 // ── Die Startseite verneint nicht, was die Wolkenseite verkauft ─────
 //
@@ -222,7 +242,6 @@ console.log('Mac guard passed: 0 roadmap promises for a Mac build in docs/, and 
 // Domain. Solange es sie gibt, darf die Startseite nicht "No cloud" sagen,
 // auch nicht im JSON-LD, aus dem Suchmaschinen und Sprachmodelle zitieren.
 const cloudPageExists = existsSync(new URL('../docs/cloud/index.html', import.meta.url))
-const startseite = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
 // Ein Satz darf "no cloud" sagen, wenn er die Bedingung mitnennt: im lokalen
 // Modus gibt es wirklich keine Wolke. Unbedingt gesagt ist es eine Verneinung
 // des eigenen Angebots.
