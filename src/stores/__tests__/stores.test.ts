@@ -717,5 +717,20 @@ describe('memoryStore', () => {
       useMemoryStore.getState().updateMemorySettings({ autoExtractEnabled: true })
       expect(useMemoryStore.getState().settings.autoExtractEnabled).toBe(true)
     })
+
+    it('beide Extraktionsschalter kommen ab Werk auf an', () => {
+      // R2-48 und R5-40: der Typkommentar in types/agent-mode.ts sagte
+      // "default false", ausgeliefert wird true. Der Kommentar ist
+      // nachgezogen, diese Zeile haelt ihn und den Zustand zusammen.
+      // Ob die Vorbelegung selbst richtig ist, ist Entscheid David; dieser
+      // Fall behauptet nur, was heute ausgeliefert wird.
+      //
+      // getInitialState(), nicht getState(): der Fall eine Zeile darueber
+      // schaltet denselben Schalter an, und gegen einen gesetzten Wert zu
+      // pruefen beweist nichts ueber die Vorbelegung.
+      const werk = useMemoryStore.getInitialState().settings
+      expect(werk.autoExtractEnabled).toBe(true)
+      expect(werk.autoExtractInAllModes).toBe(true)
+    })
   })
 })
