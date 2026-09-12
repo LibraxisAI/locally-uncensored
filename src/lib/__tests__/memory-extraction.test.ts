@@ -309,7 +309,7 @@ describe('parsers survive prose around the JSON', () => {
  * The three cases are the web's word for word
  * (apps/web/lib/__tests__/memory-extraction.test.ts:152-171).
  */
-describe('parseExtractionResponse — reasoning models', () => {
+describe('parseExtractionResponse, reasoning models', () => {
   it('strips a leading think block before the JSON', () => {
     const response = '<think>The user mentioned they are a nurse. That is worth saving.</think>\n{"shouldSave": true, "memories": [{"type": "user", "title": "Role", "content": "Works as a nurse", "tags": []}]}'
     const result = parseExtractionResponse(response)
