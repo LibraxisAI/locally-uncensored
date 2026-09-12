@@ -48,33 +48,33 @@ describe('der Altpfad in den Erinnerungseinstellungen', () => {
     render(<MemorySettings />)
     zustimmen()
 
-    fireEvent.click(screen.getByText('Check old memory copy'))
+    fireEvent.click(screen.getByText('Review previous cloud copy for removal'))
     await waitFor(() => expect(angesehen).toHaveBeenCalledTimes(1))
     expect(screen.getByRole('status').textContent)
       .toBe('Review both versions before removing the previous cloud copy.')
-    const entfernen = screen.getByText('Remove old copy') as HTMLButtonElement
+    const entfernen = screen.getByText('Remove previous cloud copy') as HTMLButtonElement
     expect(entfernen.disabled, 'entfernen war ohne Haekchen anklickbar').toBe(true)
 
     fireEvent.click(entfernen)
     expect(entfernt, 'ein toter Knopf hat trotzdem entfernt').not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByLabelText(/I reviewed these versions and confirm removing the previous cloud copy/))
-    expect((screen.getByText('Remove old copy') as HTMLButtonElement).disabled).toBe(false)
-    fireEvent.click(screen.getByText('Remove old copy'))
+    expect((screen.getByText('Remove previous cloud copy') as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(screen.getByText('Remove previous cloud copy'))
     await waitFor(() => expect(entfernt).toHaveBeenCalledTimes(1))
     expect(entfernt.mock.calls[0][0]).toBe(befund)
     expect(entfernt.mock.calls[0][1]).toBe(true)
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe(
       'Previous cloud copy removed. Older versions can no longer synchronize memories. Conversations keep synchronizing.',
     ))
-    expect(screen.queryByText('Remove old copy'), 'der Befund steht nach dem Entfernen noch da').toBeNull()
+    expect(screen.queryByText('Remove previous cloud copy'), 'der Befund steht nach dem Entfernen noch da').toBeNull()
   })
 
   it('fragt ohne Zustimmung zur Wolke gar nicht erst nach', () => {
     // Negativkontrolle: derselbe Riegel wie am Synchronisierungslauf. Ohne das
     // Haekchen zur Wolkenspeicherung geht keine Anfrage raus.
     render(<MemorySettings />)
-    const nachsehen = screen.getByText('Check old memory copy') as HTMLButtonElement
+    const nachsehen = screen.getByText('Review previous cloud copy for removal') as HTMLButtonElement
     expect(nachsehen.disabled).toBe(true)
     fireEvent.click(nachsehen)
     expect(angesehen).not.toHaveBeenCalled()
@@ -84,6 +84,22 @@ describe('der Altpfad in den Erinnerungseinstellungen', () => {
     cleanup()
     useMemoryStore.setState({ activeMemoryOwner: null })
     render(<MemorySettings />)
-    expect(screen.queryByText('Check old memory copy')).toBeNull()
+    expect(screen.queryByText('Review previous cloud copy for removal')).toBeNull()
+  })
+
+  it('traegt die Aufschriften des Webs, nicht mehr die alten kurzen', async () => {
+    // Paritaet mit apps/web/components/settings/MemorySettings.tsx auf
+    // ef0d616a: dort heissen die zwei Knoepfe "Review previous cloud copy for
+    // removal" und "Remove previous cloud copy". Der Desktop hat sie
+    // abgekuerzt, und der Bericht hat trotzdem "wortgleich mit dem Web"
+    // behauptet. Die zwei queryByText sind die Negativkontrolle: faellt eine
+    // der alten kurzen Aufschriften zurueck, steht sie hier wieder im Baum.
+    render(<MemorySettings />)
+    zustimmen()
+    expect(screen.queryByText('Check old memory copy'), 'die alte kurze Aufschrift steht wieder da').toBeNull()
+    fireEvent.click(screen.getByText('Review previous cloud copy for removal'))
+    await waitFor(() => expect(angesehen).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Remove old copy'), 'die alte kurze Aufschrift steht wieder da').toBeNull()
+    expect(screen.getByText('Remove previous cloud copy')).toBeTruthy()
   })
 })

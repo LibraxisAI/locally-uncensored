@@ -375,14 +375,14 @@ function MemorySettingsPanel() {
               liegen, wo der Kunde ihn nie zu Gesicht bekam. Ansehen zuerst,
               entfernen nur mit Haekchen: eine alte Kopie ist manchmal die
               einzige, und wer sie ungesehen wegwirft, merkt es spaeter. */}
-          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync(undefined, 'review')}>Check old memory copy</button>
+          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync(undefined, 'review')}>Review previous cloud copy for removal</button>
           {legacyReview && <div className="space-y-2 rounded border border-gray-200 p-2 dark:border-white/10" role="group" aria-label="Legacy memory finalization review">
             <details><summary className="cursor-pointer">Compare both versions</summary>
               <p>Previous cloud copy</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(legacyReview.previous, null, 2)}</pre>
               <p>Synchronized versions, including deletions</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(legacyReview.current, null, 2)}</pre>
             </details>
             <label className="block"><input type="checkbox" checked={confirmLegacyRemoval} disabled={syncBusy} onChange={event => setConfirmLegacyRemoval(event.target.checked)} /> I reviewed these versions and confirm removing the previous cloud copy, including any differences.</label>
-            <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy || !confirmLegacyRemoval} onClick={() => void runSync(undefined, 'finalize')}>Remove old copy</button>
+            <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy || !confirmLegacyRemoval} onClick={() => void runSync(undefined, 'finalize')}>Remove previous cloud copy</button>
           </div>}
           {syncConflicts.map((conflict, index) => {
             const local = entries.find(entry => entry.id === conflict.id)
