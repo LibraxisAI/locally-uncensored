@@ -45,7 +45,15 @@ export function ParamGroups() {
   // silently dropped, so the whole Expert section is dead on the local Mac.
   // Keep it on Mac-cloud and on the ComfyUI hosts (Windows/Linux).
   const isMlxLocal = !isCloud && isMlxImageHost()
-  const showExpert = !isMlxLocal && (!isCloud || isEdit)
+  // R2-28, Entscheid David 12.09.2026: auf der LOKALEN Musikbahn waren fuenf
+  // Expert-Regler sichtbar und alle fuenf tot. `dynamic-workflow.ts` nagelt
+  // sampler_name, scheduler und denoise fuer Audio fest, `LocalOpParams`
+  // traegt weder `loras` noch `selectedVae` noch `clipSkip`, und VAEDecodeAudio
+  // nimmt den VAE des Checkpoints. Es ist dieselbe Begruendung, die eine Zeile
+  // hoeher fuer den MLX-Mac steht; sie war nur nie auf diese Bahn angewandt.
+  // Die Wolken-Musikbahn bleibt unberuehrt.
+  const isLocalAudio = isAudio && !isCloud
+  const showExpert = !isMlxLocal && !isLocalAudio && (!isCloud || isEdit)
   // LoRA is a local-only knob; for video it's offered only on families whose
   // builder actually applies it (see VIDEO_LORA_FAMILIES). Image always qualifies.
   const loraSupported = !isCloud && (!isVideo || VIDEO_LORA_FAMILIES.has(classifyModel(s.videoModel)))
