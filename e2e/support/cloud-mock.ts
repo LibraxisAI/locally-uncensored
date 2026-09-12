@@ -21,6 +21,16 @@ export interface CloudScenario {
   /** Server MEDIA_LIVE switch surfaced via the catalog. Default true. */
   mediaLive?: boolean
   tier?: string
+  /**
+   * /api/me license.paidPlan: hat dieses Konto je gezahlt?
+   *
+   * Die Freimengenmarke und der stehende Flash-Satz haengen daran und nicht am
+   * Lizenzstatus, weil der Chat-Vermittler nach derselben Regel abrechnet. Ohne
+   * Angabe fehlt das Feld in der Antwort, der Klient liest das als "noch nicht
+   * beantwortet" und verspricht nichts. Ein Fall, der die Marke sehen will,
+   * sagt es hier.
+   */
+  paidPlan?: boolean
 }
 
 const CORS: Record<string, string> = {
@@ -81,7 +91,7 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
           user: { id: USER.id, email: USER.email },
           license:
             scenario.license === 'active'
-              ? { status: 'active', tier, access }
+              ? { status: 'active', tier, access, ...(scenario.paidPlan === undefined ? {} : { paidPlan: scenario.paidPlan }) }
               : { status: 'none' },
           profile: null,
         }),

@@ -5,7 +5,11 @@ import { routeCloud, seedOnboardingDone, signInViaGate, cloudSwitch } from './su
 test('flash metadata and paid fallback reach the actual desktop composer', async ({ page }) => {
   await page.addInitScript(tauriMockInit, { assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME })
   await seedOnboardingDone(page)
-  await routeCloud(page, { license: 'active', access: true, mediaLive: true })
+  // Die Freimenge gehoert dem Konto und nicht dem Modell: Marke und stehender
+  // Satz erscheinen nur bei `paidPlan: true`, weil der Chat-Vermittler nach
+  // derselben Regel abrechnet. Ohne die Zeile antwortet `/api/me` ohne das
+  // Feld, der Klient schweigt, und der Fall haette nichts zu sehen.
+  await routeCloud(page, { license: 'active', access: true, mediaLive: true, paidPlan: true })
   const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type',
     'access-control-expose-headers': 'x-lu-chat-billing, x-lu-flash-remaining' }
   await page.route('**/api/inference/v1/models', (route) => route.fulfill({ status: 200, headers: cors,
@@ -34,9 +38,11 @@ test('flash metadata and paid fallback reach the actual desktop composer', async
   await page.getByRole('button', { name: 'Select chat model', exact: true }).click()
   const row = page.getByRole('button', { name: /Llama 3.1 8B Turbo/ })
   // 7fa4b26b gab beiden Marken denselben Wortlaut in Auswahl und
-  // Eingabezeile: aus "Flash" wurde "No credits". Die Zeile selbst ist
+  // Eingabezeile: aus "Flash" wurde "No credits". Entscheid 4 der Fixliste hat
+  // daraus "Included" gemacht, weil "No credits" sich als Eigenschaft des
+  // Modells las und eine Eigenschaft des Kontos ist. Die Zeile selbst ist
   // unveraendert, nur ihr Aufdruck.
-  await expect(row.getByText('No credits', { exact: true })).toBeVisible()
+  await expect(row.getByText('Included', { exact: true })).toBeVisible()
   await row.click()
   await expect(page.getByTestId('flash-chat-notice')).toContainText('50,000 input and output tokens')
   const composer = page.locator('textarea').first()
