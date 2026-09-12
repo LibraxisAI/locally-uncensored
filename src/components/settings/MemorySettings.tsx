@@ -366,7 +366,7 @@ function MemorySettingsPanel() {
           <p>Marking a memory sensitive does not erase existing cloud copies. Delete the memory and sync to request its removal from cloud sync.</p>
           <label className="block"><input type="checkbox" checked={syncConsent} disabled={syncBusy} onChange={event => setSyncConsent(event.target.checked)} /> Allow cloud storage for this account collection</label>
           <label className="block"><input type="checkbox" checked={sensitiveSyncConsent} disabled={syncBusy} onChange={event => setSensitiveSyncConsent(event.target.checked)} /> Also allow cloud storage of sensitive memories</label>
-          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync()}>Sync account memories</button>
+          <button className="mr-3 underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync()}>Sync account memories</button>
           {syncBusy && <button className="ml-3 underline" onClick={() => syncController.current?.abort()}>Cancel synchronization</button>}
           {syncMessage && <p role="status">{syncMessage}</p>}
           {/* R5-30: der Altpfad. Vor dem heutigen Protokoll lag die
@@ -375,7 +375,7 @@ function MemorySettingsPanel() {
               liegen, wo der Kunde ihn nie zu Gesicht bekam. Ansehen zuerst,
               entfernen nur mit Haekchen: eine alte Kopie ist manchmal die
               einzige, und wer sie ungesehen wegwirft, merkt es spaeter. */}
-          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync(undefined, 'review')}>Review previous cloud copy for removal</button>
+          <button className="block underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync(undefined, 'review')}>Review previous cloud copy for removal</button>
           {legacyReview && <div className="space-y-2 rounded border border-gray-200 p-2 dark:border-white/10" role="group" aria-label="Legacy memory finalization review">
             <details><summary className="cursor-pointer">Compare both versions</summary>
               <p>Previous cloud copy</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(legacyReview.previous, null, 2)}</pre>

@@ -37,6 +37,20 @@ const { useMemoryStore } = await import('../../../stores/memoryStore')
 
 const zustimmen = () => fireEvent.click(screen.getByLabelText('Allow cloud storage for this account collection'))
 
+// jsdom rechnet kein Layout. Diese Lesart formt den Text so, wie die Klassen
+// ihn am Schirm formen: block, p und div stehen in eigener Zeile, mr-* und
+// ml-* setzen Luft. Mehr Regeln braucht der eine Fall unten nicht.
+const sichtbarerText = (el: Element): string => Array.from(el.childNodes).map(node => {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+  if (!(node instanceof Element)) return ''
+  const klassen = Array.from(node.classList)
+  let text = sichtbarerText(node)
+  if (klassen.some(k => /^m[rx]-/.test(k))) text = `${text} `
+  if (klassen.some(k => /^m[lx]-/.test(k))) text = ` ${text}`
+  if (klassen.includes('block') || node.tagName === 'P' || node.tagName === 'DIV') text = `\n${text}\n`
+  return text
+}).join('')
+
 beforeEach(() => {
   angesehen.mockClear(); entfernt.mockClear()
   useMemoryStore.setState({ entries: [], activeMemoryOwner: 'konto-1', memoryCollectionRevision: 0 })
@@ -101,5 +115,26 @@ describe('der Altpfad in den Erinnerungseinstellungen', () => {
     await waitFor(() => expect(angesehen).toHaveBeenCalledTimes(1))
     expect(screen.queryByText('Remove old copy'), 'die alte kurze Aufschrift steht wieder da').toBeNull()
     expect(screen.getByText('Remove previous cloud copy')).toBeTruthy()
+  })
+
+  it('Sync und Review kleben nicht aneinander, Abstand und eigene Zeile wie im Web', () => {
+    // T13e, Nebenfund N1: an der Kontosammlung stand am Schirm
+    // "Sync account memoriesReview previous cloud copy for removal", eine
+    // einzige unterstrichene Zeile, die wie ein Link aussah. Zwei Inline-Knoepfe
+    // ohne Luft dazwischen. Das Web setzt an denselben Stellen mr-3 und block
+    // (apps/web/components/settings/MemorySettings.tsx:272 und :277 auf
+    // 224f923d). textContent allein beweist hier nichts: Klassen schreiben
+    // keinen Text, der Elternknoten klebt die zwei Aufschriften in textContent
+    // immer zusammen. Deshalb Elemente, Klassen und die Lesart oben.
+    render(<MemorySettings />)
+    const sync = screen.getByText('Sync account memories')
+    const review = screen.getByText('Review previous cloud copy for removal')
+    expect(sync.tagName).toBe('BUTTON')
+    expect(review.tagName).toBe('BUTTON')
+    expect(sync, 'beide Aufschriften stehen in einem Element').not.toBe(review)
+    expect(sync.parentElement).toBe(review.parentElement)
+    expect(sync.classList.contains('mr-3'), 'Sync hat keinen Abstand nach rechts').toBe(true)
+    expect(review.classList.contains('block'), 'Review steht nicht in eigener Zeile').toBe(true)
+    expect(sichtbarerText(sync.parentElement!), 'Sync und Review kleben aneinander').not.toContain('memoriesReview')
   })
 })
