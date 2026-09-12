@@ -35,8 +35,26 @@ import { CLOUD_PITCH } from './cloud-pitch'
  * why the test forbids the typed form outright instead of only checking that
  * today's digits happen to be right.
  */
-export const SHEET_CHAT_MODELS = CLOUD_PITCH.chatModels
+/**
+ * Der Nenner der Marke ist der MESSLAUF, nicht der Katalog (R2-10, R6-5).
+ *
+ * Stand dort der Katalog, behauptete das Blatt, jedes Katalogmodell sei
+ * gemessen worden, und die Differenz zur Markenzahl seien Durchgefallene.
+ * Gemessen wurde nur, was am Tag des Laufs im Katalog stand; V4.1 Flash kam am
+ * selben Tag danach dazu und traegt bis zu seiner Messung keine Marke. Der
+ * Katalog steht weiter im Blatt, aber in seinem eigenen Halbsatz statt als
+ * Nenner einer Aussage, die er nicht traegt.
+ */
+export const SHEET_CHAT_MODELS = CLOUD_PITCH.measuredChatModels
+export const SHEET_CATALOGUE_MODELS = CLOUD_PITCH.chatModels
 export const SHEET_MARKED_MODELS = CLOUD_PITCH.unfilteredChatModels
+
+/**
+ * Die Tagesgrenze der Flash-Klasse, formatiert wie im Kundentext (R5-44).
+ * Getippt stand sie dreimal neben derselben Zahl aus CLOUD_PITCH und konnte
+ * still auseinanderlaufen.
+ */
+const FLASH_DAILY = CLOUD_PITCH.flashDailyTokens.toLocaleString('en-US')
 
 export interface ReleaseNoteSection {
   title: string
@@ -65,17 +83,17 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
     lines: [
-      `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models answer without refusing. We asked them, twice each, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.`,
-      'Twelve of those models cost no credits at all in chat on a paid plan, up to 500,000 input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.',
+      `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models we measured answer without refusing. The catalogue holds ${SHEET_CATALOGUE_MODELS} chat models. We asked them, twice each, and the ones that really do carry a "No refusals" mark in the picker. The mark comes from that measurement, never from the model name.`,
+      `${CLOUD_PITCH.flashModels} of those models cost no credits at all in chat on a paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and an account that has never paid keeps paying credits too.`,
       'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
       'Six video models and three image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.',
-      'Sampling controls sit next to the prompt: temperature, top P, top K and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
+      'Sampling controls sit next to the prompt: temperature, top P and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
     ],
     details: [
       {
         title: 'Models and marks',
         items: [
-          `The cloud chat models in the catalogue were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} answer in full. Four answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet. We have measured it since.`,
+          `The ${SHEET_CHAT_MODELS} cloud chat models that were in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} answer in full. ${CLOUD_PITCH.heldBackChatModels} answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet.`,
           'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
           'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "Included" for the Flash class with its real daily number. The second one only shows on a plan that pays for it, because on any other account those models cost credits.',
           'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
@@ -84,8 +102,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         title: 'Flash chat without credits',
         items: [
-          'Twelve models run unmetered in chat inside the apps: GLM 5.3 Flash, DeepSeek V4 Flash 0731, Ling 3.0 flash, gpt-oss 120B, gpt-oss 20B, Gemma 4 26B, Gemma 4 31B Turbo, Qwen3 32B, Qwen 3.5 9B, Llama 3.3 70B Turbo, Llama 3.1 8B Turbo and Mistral Small 3.2 24B.',
-          'The ceiling is 500,000 input and output tokens per account per day, resetting at 00:00 UTC, one free request at a time. It went up tenfold from the 50,000 of the first version, where a working day ran out before lunch.',
+          `${CLOUD_PITCH.flashModels} models run unmetered in chat inside the apps: GLM 5.3 Flash, DeepSeek V4 Flash 0731, Ling 3.0 flash, gpt-oss 120B, gpt-oss 20B, Gemma 4 26B, Gemma 4 31B Turbo, Qwen3 32B, Qwen 3.5 9B, Llama 3.3 70B Turbo, Llama 3.1 8B Turbo and Mistral Small 3.2 24B.`,
+          `The ceiling is ${FLASH_DAILY} input and output tokens per account per day, resetting at 00:00 UTC, one free request at a time. It went up tenfold from the ceiling of the first version, where a working day ran out before lunch.`,
           'It is a paid-plan benefit. An account that has never paid keeps its starting credits and pays credits for Flash exactly like for any other model.',
           'API keys always pay credits, including on these models. The unmetered path is the app, not the endpoint.',
         ],
@@ -102,8 +120,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         title: 'Prompt and sampling',
         items: [
-          'Temperature, top P, top K and maximum answer length sit next to the model picker, with the current temperature visible and one reset for all of them. The controls open over the prompt row instead of pushing it down. An x closes the window, and so do Escape and a click outside. Clicking the trigger a second time no longer does, because it used to close the panel under your own pointer. Reasoning models accept these and react less to them, which the help line says instead of hiding the control.',
-          'The default persona had an empty system prompt. An empty prompt is not neutral: the model falls back to whatever its provider trained it to be, and that is where the refusals come from. It now states the role and nothing else, no content rule in either direction.',
+          'Temperature, top P and maximum answer length sit next to the model picker, with the current temperature visible and one reset for all of them. Top K stays on the settings page, next to the backends that read it. The controls open over the prompt row instead of pushing it down. An x closes the window, and so do Escape and a click outside. Clicking the trigger a second time no longer does, because it used to close the panel under your own pointer. Reasoning models accept these and react less to them, which the help line says instead of hiding the control.',
+          "The default persona had an empty system prompt. An empty prompt is not neutral: the model falls back to whatever its provider trained it to be, and that is where the refusals come from. It now states the role, one line on how to answer, and one line saying that the user's subject is the subject. No topic list in either direction.",
           'Chat, Agent and Coding all send that baseline now. The persona switch decides which PERSONA applies, not whether anything is sent at all.',
         ],
       },

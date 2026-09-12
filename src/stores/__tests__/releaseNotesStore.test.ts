@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
-import { RELEASE_NOTES, releaseNoteFor, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
+import { RELEASE_NOTES, releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
 import { CLOUD_PITCH } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -257,16 +257,28 @@ describe('the notes table', () => {
     // liesse sich auch die HEUTE richtige Zahl wieder eintippen und bliebe
     // stehen, wenn der Katalog sich bewegt.
     const prose = proseOf('3.0.0')
-    expect(SHEET_CHAT_MODELS, 'sheet count is not the catalogue count')
+    // R2-10 und R6-5: der Nenner der Marke ist der MESSLAUF, nicht der
+    // Katalog. 27 von 47 behauptete, 20 Katalogmodelle seien gemessen worden
+    // und durchgefallen; gemessen wurden 46, und V4.1 Flash kam danach dazu.
+    // Der Katalog steht weiter im Blatt, aber in einem eigenen Halbsatz.
+    expect(SHEET_CHAT_MODELS, 'the mark denominator is the measurement run')
+      .toBe(CLOUD_PITCH.measuredChatModels)
+    expect(SHEET_CATALOGUE_MODELS, 'the catalogue half-sentence counts the catalogue')
       .toBe(CLOUD_PITCH.chatModels)
     expect(SHEET_MARKED_MODELS, 'sheet mark count is not the measured one')
       .toBe(CLOUD_PITCH.unfilteredChatModels)
 
-    const phrase = `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS}`
-    expect(prose, 'the summary line does not quote the catalogue numbers')
+    // R2-11: der Waechter baut seinen eigenen Satz aus denselben zwei
+    // Konstanten. Vorher stand der Nenner des Katalogs darin, der Waechter
+    // haette den falschen Nenner also mitgetragen statt ihn zu melden.
+    const phrase = `${CLOUD_PITCH.unfilteredChatModels} of the ${CLOUD_PITCH.measuredChatModels}`
+    expect(phrase).toBe('27 of the 46')
+    expect(prose, 'the summary line does not quote the measured numbers')
       .toContain(`${phrase.toLowerCase()} cloud chat models`)
-    expect(prose, 'the detail line does not quote the catalogue numbers')
+    expect(prose, 'the detail line does not quote the measured numbers')
       .toContain(`${phrase.toLowerCase()} answer in full`)
+    expect(prose, 'the catalogue denominator is back on the mark sentence')
+      .not.toContain(`${CLOUD_PITCH.unfilteredChatModels} of the ${CLOUD_PITCH.chatModels}`)
 
     const src = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), '../../lib/release-notes.ts'), 'utf8',
@@ -276,6 +288,15 @@ describe('the notes table', () => {
       .toEqual([])
     const interpolations = src.split('${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS}').length - 1
     expect(interpolations, 'both mentions have to come from the constants').toBe(2)
+    // R2-45 und R5-44: keine ausgeschriebene Zahl und keine getippte
+    // Tausenderzahl mehr. Beide standen als Prosa neben derselben Zahl aus
+    // CLOUD_PITCH und konnten still auseinanderlaufen.
+    // Eng gefasst auf die Stelle, die getippt danebenstand: die Flash-Zahl als
+    // Zahlwort vor "models" oder "of those". Ein blankes /Twelve/ traefe auch
+    // die zwoelf Sekunden der Ladephase, die mit keinem Katalog wandern.
+    expect(src.match(/\bTwelve\b\s+(models|of those)/i),
+      'the flash model count written out instead of read').toBeNull()
+    expect(src.match(/\d{1,3}(,\d{3})+/), 'a token ceiling typed instead of read').toBeNull()
   })
 
   it('says nothing in the shipping note twice, word for word', () => {
