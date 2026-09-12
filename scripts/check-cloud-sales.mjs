@@ -205,6 +205,13 @@ assert.equal(pitch.unfilteredChatModels, unfilteredFull, 'pitch: unfiltered coun
 assert.equal(pitch.flashModels, catalog.filter((row) => row.usageClass === 'flash').length, 'pitch: flash count drift')
 assert.equal(pitch.flashDailyTokens, daily, 'pitch: daily ceiling drift')
 assert.equal(pitch.imageModels, countKind('image'), 'pitch: image model count drift')
+// Absichtliche Abweichung: der Desktop nennt die volle Katalogliste, die
+// Kaufseite auf lu-labs.ai nennt weniger. publicMediaModels filtert dort ueber
+// keptOffThisDomain (apps/web/app/(marketing)/pricing/pricing-detail.ts), weil
+// die erwachsenenfaehigen Videoendpunkte auf der Zahlungsdomain nicht beworben
+// werden. Hier wird deshalb gegen die UNGEFILTERTE Liste geprueft, und das ist
+// kein Versehen. Ob der Desktop weiter die volle Zahl nennen soll, waehrend
+// die Kaufseite eine kleinere nennt, ist Entscheid David.
 assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count drift')
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
