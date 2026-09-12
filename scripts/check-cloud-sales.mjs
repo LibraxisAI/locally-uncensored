@@ -438,3 +438,25 @@ if (flashNeedsPaidAccount) {
   )
 }
 console.log('Handbook guard passed: the Flash condition reads as planPays writes it, paid once rather than plan held.')
+
+// ── Das Wort Flash ist kein Kriterium ───────────────────────────────
+//
+// Der Katalog fuehrt Modelle, deren Name Flash enthaelt, die aber kein
+// usageClass 'flash' tragen: DeepSeek V4.1 Flash kostet 0,30 ein und 1,20 aus
+// je Million. Solange es so einen Eintrag gibt, darf das Handbuch den Namen
+// nicht zum Kriterium machen. Der Beleg kommt aus dem Katalog, nicht aus einem
+// getippten Modellnamen.
+const flashByNameOnly = catalog.filter(
+  (row) => typeof row.label === 'string' && /\bflash\b/i.test(row.label) && row.usageClass !== 'flash',
+)
+if (flashByNameOnly.length > 0) {
+  assert.ok(
+    !/carry the word Flash/i.test(handbookText),
+    `docs/guide/cloud/index.html: ${flashByNameOnly.length} catalogue entr(y/ies) carry Flash in the name without the Flash class, so the name may not be the criterion`,
+  )
+  assert.ok(
+    /The word Flash in a model name does not decide it/i.test(handbookText),
+    'docs/guide/cloud/index.html: the sentence that the name does not decide it is missing',
+  )
+}
+console.log(`Flash-class guard passed: the handbook names the class and not the word, with ${flashByNameOnly.length} catalogue entry carrying Flash in the name without the class.`)
