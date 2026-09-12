@@ -1643,16 +1643,23 @@ export class OpenAIProvider implements ProviderClient {
     let serverCode: string | undefined
 
     try {
-      const data = await res.json() as { error?: unknown; message?: string; code?: string }
+      const data = await res.json() as { error?: unknown; message?: string; code?: string; detail?: unknown }
       const err = data.error
       if (typeof data.code === 'string' && data.code.trim()) serverCode = data.code
+      // R5-16: der Server schickt `detail` als Geschwister von `error`, und der
+      // Desktop las es nicht. Genau dort steht die Haelfte, die dem Nutzer sagt,
+      // was er tun kann; uebrig blieb der blanke Satz. Das Web haengt es seit
+      // jeher an (`apps/web/api/providers/openai-provider.ts`).
+      const detail = typeof data.detail === 'string' && data.detail.trim()
+        ? ` (${data.detail.slice(0, 200)})`
+        : ''
       // OpenAI & most servers: { error: { message, code } }. But LM Studio and
       // llama.cpp commonly send a BARE string ({ error: "..." }) or a top-level
       // { message: "..." }. The old object-only read missed both → the real
       // reason (e.g. a context-window overflow) was swallowed and the user saw
       // the opaque "Request failed". Handle all three shapes.
       if (typeof err === 'string' && err.trim()) {
-        message = err
+        message = err + detail
         hasServerMessage = true
       } else if (err && typeof err === 'object') {
         const eo = err as { message?: string; code?: string }
