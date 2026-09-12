@@ -94,9 +94,12 @@ export function useBackendScan(): BackendScan {
   const detect = async () => {
     const backends = await detectLocalBackends()
     setDetectedBackends(backends)
-    if (backends.length > 0 && !selectedBackend) {
-      setSelectedBackend(backends[0].id)
-    } else if (backends.length === 0 && isTauri) {
+    // Was der Scan findet, waehlt er NICHT aus. Die eingebaute Maschine steht
+    // ab Werk im Waehler, und ein zweiter Zweig fuer "noch nichts gewaehlt" war
+    // von Anfang an unerreichbar: der Anfangswert ist ein nicht leerer String,
+    // die Frage "noch nichts gewaehlt" also nie wahr (R2-52). Gewaehlt wird in
+    // BackendsStep, von Hand, an vier Stellen.
+    if (backends.length === 0 && isTauri) {
       // No live backend on any well-known port. Before we push the user
       // through a 570 MB LM-Studio re-install, ask the Rust side whether
       // LM Studio is actually present on disk — its embedded server may
