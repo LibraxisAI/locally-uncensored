@@ -2175,8 +2175,14 @@ fn serve_or_heal_garbled(
             );
             let _ = spawn_engine_attempt(state, binary, args, model_path, port, ctx, auto_layers, false);
             answer["garbled"] = serde_json::json!(true);
-            answer["note"] = serde_json::json!(engine_sanity::GARBLED_ON_CPU_NOTE);
-            remember_sanity_note(state, engine_sanity::GARBLED_ON_CPU_NOTE);
+            // Not the CPU sentence. Nothing ran on the processor here and
+            // nothing was judged there: the restart never came up, so
+            // `probe_engine` was never called for it, and on the flash
+            // attention rung the processor was not even the destination. The
+            // user is told what actually happened, which is that the settings
+            // could not be changed and the engine he already had is back.
+            answer["note"] = serde_json::json!(engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE);
+            remember_sanity_note(state, engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE);
             return answer;
         }
         answer["retried"] = serde_json::json!(true);
@@ -3985,13 +3991,14 @@ mod tests {
     }
 
     #[test]
-    fn the_three_notes_are_english_and_say_different_things() {
-        // UI strings, and the only three sentences this fix ever puts on
+    fn the_four_notes_are_english_and_say_different_things() {
+        // UI strings, and the only four sentences this fix ever puts on
         // screen.
         let notes = [
             engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE,
             engine_sanity::HEALED_ON_CPU_NOTE,
             engine_sanity::GARBLED_ON_CPU_NOTE,
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE,
         ];
         for note in notes {
             assert!(note.contains("Settings > Troubleshoot"), "{note}");
@@ -4001,10 +4008,55 @@ mod tests {
         assert!(engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE.contains("Flash Attention"));
         assert!(engine_sanity::HEALED_ON_CPU_NOTE.contains("restarted on the CPU"));
         assert!(engine_sanity::GARBLED_ON_CPU_NOTE.contains("on the CPU as well"));
+        // The fourth one is the only one that may not claim a measurement.
+        // Nothing ran on the processor in its branch, so the words must not be
+        // there either.
+        assert!(
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE.contains("could not be restarted"),
+            "{}",
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE
+        );
+        assert!(
+            !engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE.contains("on the CPU"),
+            "the note claims a CPU measurement that never happened: {}",
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE
+        );
         assert_eq!(
             notes.iter().collect::<std::collections::BTreeSet<_>>().len(),
             notes.len(),
-            "the three notes have to be distinguishable"
+            "the four notes have to be distinguishable"
+        );
+        // And each note sits in the branch it is true for. The block that puts
+        // the first engine back must not reach for the CPU sentence any more;
+        // the branch that really did judge the processor still carries it.
+        // `split` takes what stands AFTER the anchor, and the anchors' first
+        // occurrence is the production code far above this test.
+        let quelle = include_str!("engine.rs");
+        let block_ab = |anker: &str| -> String {
+            quelle
+                .split(anker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("the branch is gone: {anker}"))
+                .split("return answer;")
+                .next()
+                .unwrap_or("")
+                .to_string()
+        };
+        let rueckfall = block_ab("the restart did not come up, bringing the first LU Engine back");
+        assert!(
+            !rueckfall.contains("GARBLED_ON_CPU_NOTE"),
+            "the restart that never came up still claims a CPU measurement: {rueckfall}"
+        );
+        assert!(
+            rueckfall.contains("RESTART_DID_NOT_COME_BACK_NOTE"),
+            "the restart that never came up says nothing at all: {rueckfall}"
+        );
+        let aufgegeben = block_ab(
+            "the LU Engine answers unreadably without the graphics card, so the card is not the cause",
+        );
+        assert!(
+            aufgegeben.contains("GARBLED_ON_CPU_NOTE"),
+            "the branch that really did run on the processor lost its sentence: {aufgegeben}"
         );
     }
 
