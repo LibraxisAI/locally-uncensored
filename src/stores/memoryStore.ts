@@ -552,9 +552,22 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  * The trailing date is only stripped when it follows the `*(source)*` group. A
  * bare `content, with a comma` keeps its comma, because there is no source to
  * anchor a date to.
+ *
+ * WHY THE TAG GROUP SITS INSIDE THE SOURCE GROUP. It used to hang free right
+ * behind the lazy content, so any line that merely ENDED in a bracket group lost
+ * it: `- Start the app with [debug]` came back as the content `Start the app
+ * with` plus a tag `debug` nobody ever set. The bracket group is now only read
+ * when the `*(source)*` group follows it, which is the only shape this app's own
+ * export writes. A bracket at the end of a bare line stays part of the content.
+ *
+ * The remaining ambiguity is a content that ends in a bracket group AND carries a
+ * source. `exportAsMarkdown` resolves it from the writing side: when there are no
+ * tags and the content ends in `]`, it writes an empty group `[]`, so the tag
+ * slot is always occupied and the content keeps its own bracket. That is why the
+ * group accepts an EMPTY body.
  */
 const MD_ITEM =
-  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:\s+\[([^\]]+)\])?(?:\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
+  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
 
 /**
  * The date the export writes: `YYYY-MM-DD`, not a locale string.
@@ -968,6 +981,10 @@ export const useMemoryStore = create<MemoryState>()(
             const date = isoTag(entry.updatedAt)
             md += `- **${entry.title}**, ${entry.content}`
             if (entry.tags.length > 0) md += ` [${entry.tags.join(', ')}]`
+            // A content that ends in a bracket group would otherwise read back
+            // as a tag list on import. The empty group occupies the tag slot,
+            // so the content keeps its own bracket. See MD_ITEM.
+            else if (entry.content.endsWith(']')) md += ' []'
             md += ` *(${entry.source})*, ${date}\n`
           }
           md += '\n'
