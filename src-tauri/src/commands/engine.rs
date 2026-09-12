@@ -1749,8 +1749,7 @@ fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> b
         &vorher.model_path,
         vorher.port,
         vorher.ctx,
-        vorher.auto_layers,
-        vorher.cpu_fallback,
+        AttemptFlags { auto_layers: vorher.auto_layers, cpu_fallback: vorher.cpu_fallback },
     )
     .is_ok();
     if !ok {
@@ -1911,7 +1910,15 @@ fn start_after_stop(
 
     let deadline = health_timeout_for(model_path);
     let ctx = Some(ctx_size);
-    let first = spawn_engine_attempt(state, &binary, &desired_args, model_path, port, ctx, auto_layers, false);
+    let first = spawn_engine_attempt(
+        state,
+        &binary,
+        &desired_args,
+        model_path,
+        port,
+        ctx,
+        AttemptFlags { auto_layers, cpu_fallback: false },
+    );
     let failure = match first {
         Ok(startup) => {
             tracing::info!(target: "engine", port, attempt = 1, "the LU Engine is serving");
@@ -1989,7 +1996,15 @@ fn start_after_stop(
     // next start with the same settings has to be allowed to try the card
     // again.
     let retry_auto = auto_layers && !offload_was_tried;
-    match spawn_engine_attempt(state, &binary, &retry_args, model_path, retry_port, ctx, retry_auto, offload_was_tried) {
+    match spawn_engine_attempt(
+        state,
+        &binary,
+        &retry_args,
+        model_path,
+        retry_port,
+        ctx,
+        AttemptFlags { auto_layers: retry_auto, cpu_fallback: offload_was_tried },
+    ) {
         Ok(_) => {
             if offload_was_tried {
                 tracing::warn!(
@@ -2163,7 +2178,15 @@ fn serve_or_heal_garbled(
         // the idempotence key must not remember it as one: the next start with
         // these settings has to be allowed to try the card again. Same rule as
         // the died-on-start retry.
-        if spawn_engine_attempt(state, binary, &next_args, model_path, port, ctx, false, cpu_rung).is_err() {
+        if spawn_engine_attempt(
+            state,
+            binary,
+            &next_args,
+            model_path,
+            port,
+            ctx,
+            AttemptFlags { auto_layers: false, cpu_fallback: cpu_rung },
+        ).is_err() {
             // The restart did not come up, and an engine that at least served
             // has just been torn down for it. Put the first one back rather
             // than leave the user with nothing; ONE attempt, for the same
@@ -2173,7 +2196,15 @@ fn serve_or_heal_garbled(
                 port,
                 "the restart did not come up, bringing the first LU Engine back"
             );
-            let _ = spawn_engine_attempt(state, binary, args, model_path, port, ctx, auto_layers, false);
+            let _ = spawn_engine_attempt(
+                state,
+                binary,
+                args,
+                model_path,
+                port,
+                ctx,
+                AttemptFlags { auto_layers, cpu_fallback: false },
+            );
             answer["garbled"] = serde_json::json!(true);
             // Not the CPU sentence. Nothing ran on the processor here and
             // nothing was judged there: the restart never came up, so
@@ -2227,6 +2258,17 @@ pub(crate) struct StartFailure {
     pub stderr: String,
 }
 
+/// The two marks an attempt leaves in `BundledEngine`: the restart paths and
+/// the idempotence key read them back from there. They travel together because
+/// they describe the same attempt, not two independent switches.
+#[derive(Clone, Copy)]
+struct AttemptFlags {
+    /// The layer count was measured for this start, not typed by the user.
+    auto_layers: bool,
+    /// This attempt is already the one without the graphics card.
+    cpu_fallback: bool,
+}
+
 /// Spawn the engine and wait for it, watching BOTH the health endpoint and the
 /// child. Reaps the child on every failure path so no half-loaded server is
 /// left behind.
@@ -2243,8 +2285,7 @@ fn spawn_engine_attempt(
     model_path: &str,
     port: u16,
     ctx: Option<u32>,
-    auto_layers: bool,
-    cpu_fallback: bool,
+    flags: AttemptFlags,
 ) -> Result<String, StartFailure> {
     // The one line a support log has to carry. Everything the start depends on
     // is in the argv: model path, context size, layer count, cache types,
@@ -2304,8 +2345,8 @@ fn spawn_engine_attempt(
         port,
         ctx,
         args: args.to_vec(),
-        auto_layers,
-        cpu_fallback,
+        auto_layers: flags.auto_layers,
+        cpu_fallback: flags.cpu_fallback,
         sanity_note: None,
     });
 
