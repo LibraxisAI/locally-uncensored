@@ -248,7 +248,17 @@ describe('ein Zug, den das Modell nie zu Ende schreiben konnte', () => {
     expect(leer, 'die Weiche ohne Werkzeugaufruf ist verschwunden').toBeGreaterThan(0)
     const zweig = raw.slice(leer, raw.indexOf("break-no-toolcalls", leer))
     expect(zweig, 'der abgeschnittene Zug endet wieder wortlos').toContain('codexCutoffNote')
-    expect(raw, 'Ollama liefert den Grund, die Schleife nimmt ihn nicht').toContain('turn.doneReason')
-    expect(raw, 'die uebrigen Transporte liefern ihn auch').toContain('turn.finishReason')
+    // R2-17: es sind DREI Transporte, und der dritte setzte den Grund nie.
+    // Ein Prompt-Transport schneidet den Zug genauso mitten im `<tool_call>`
+    // ab; ohne diese Zeile stand die Variable auf undefined und der Lauf
+    // endete wortlos, obwohl der Grund vorlag.
+    for (const quelle of [
+      'turnFinishReason = turn.doneReason',
+      'turnFinishReason = turn.finishReason',
+      'turnFinishReason = hermesTurn.finishReason',
+    ]) {
+      expect(raw, `der Transport liefert den Grund, die Schleife nimmt ihn nicht: ${quelle}`)
+        .toContain(quelle)
+    }
   })
 })

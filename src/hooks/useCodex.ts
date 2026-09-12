@@ -1535,6 +1535,13 @@ export function useCodex() {
           }
           feedUI(splitter.feed(display.flush()))
           feedUI(splitter.flush())
+          // R2-17: dieser Zweig setzte den Grund nie, also stand die Variable
+          // auf undefined und der Satz aus `codexCutoffNote` blieb aus. Derselbe
+          // Transport wie im Zweig darueber, also derselbe Grund: ein
+          // Prompt-Transport kann den Zug genauso mitten im `<tool_call>`
+          // abschneiden, und dann steht hier ebenfalls kein Werkzeugaufruf.
+          // Gleiche Stelle wie in useAgentChat.
+          turnFinishReason = hermesTurn.finishReason
           if (keepThinking && hermesTurn.thinking) {
             thinkingContent += (thinkingContent ? '\n\n' : '') + hermesTurn.thinking
             useChatStore.getState().updateMessageThinking(convId!, assistantMsg.id, thinkingContent)
