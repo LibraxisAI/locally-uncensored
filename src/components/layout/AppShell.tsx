@@ -877,9 +877,16 @@ export function AppShell() {
               }
             }
             if (userMsg) {
-              extractMemoriesFromPair(userMsg, content, dispatchedConversationId).catch(
-                () => {},
-              )
+              // R2-22: ohne Bereich schrieb die Bruecke jede Erinnerung global.
+              // Der Ausloeser ist nicht der erste Dispatch, der legt eine
+              // frische Unterhaltung an, sondern der Neustartweg in
+              // `ChatView.tsx`: der haengt die Bruecke an eine BESTEHENDE
+              // Unterhaltung, und deren Projekt ging dabei verloren. Der
+              // Speicher wird hier ohnehin schon gelesen.
+              extractMemoriesFromPair(userMsg, content, dispatchedConversationId, {
+                scope: useChatStore.getState().conversations
+                  .find((c) => c.id === dispatchedConversationId)?.memoryScope,
+              }).catch(() => {})
             }
           }
         },

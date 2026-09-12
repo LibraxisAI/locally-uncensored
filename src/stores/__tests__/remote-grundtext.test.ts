@@ -128,3 +128,50 @@ describe('Remote-Bruecke: was die Handy-Seite daraus macht', () => {
     expect(zaehle(bisZumEnde, 'parts.push(dispatchedSystemPrompt)')).toBe(1)
   })
 })
+
+/**
+ * R2-22: und was die Bruecke aus der Antwort MERKT, gehoert in dasselbe
+ * Projekt wie die Unterhaltung.
+ *
+ * `extractMemoriesFromPair` ohne Bereich schreibt global. Der Ausloeser ist
+ * nicht der erste Dispatch, der legt eine frische Unterhaltung an, sondern der
+ * Neustartknopf: der haengt die Bruecke an eine BESTEHENDE Unterhaltung, und
+ * deren Projekt ging dabei verloren. Danach steht eine Projekterinnerung in
+ * jeder anderen Unterhaltung.
+ *
+ * Quelltextrechnung, weil der Aufruf in einem Ereignishaken der ganzen Schale
+ * sitzt; die Regel darunter wird an der Sammlung gemessen.
+ */
+describe('R2-22: die Bruecke merkt sich im Projekt der Unterhaltung', () => {
+  const schale = () => readFileSync(resolve(SRC, 'components/layout/AppShell.tsx'), 'utf8')
+
+  it('gibt den Bereich der dispatchten Unterhaltung mit', () => {
+    const quelle = schale()
+    const aufruf = quelle.slice(quelle.indexOf('extractMemoriesFromPair('))
+    expect(aufruf.slice(0, aufruf.indexOf('.catch')), 'kein Bereich, also global')
+      .toContain('memoryScope')
+    expect(quelle, 'der Bereich kommt nicht aus der dispatchten Unterhaltung')
+      .toContain('.find((c) => c.id === dispatchedConversationId)?.memoryScope')
+  })
+
+  it('WIRKUNG: eine Erinnerung mit Projekt bleibt im Projekt', () => {
+    useMemoryStore.setState({ entries: [] })
+    useMemoryStore.getState().addMemory({
+      type: 'project', title: 'Bruecke', description: 'x',
+      content: 'Der Kunde heisst Hafner.', tags: [], source: 'remote', scope: 'projektA',
+    })
+    // Eine Unterhaltung ohne Projekt darf sie nicht sehen.
+    expect(useMemoryStore.getState().getMemoriesForPrompt('Kunde', 8192)).toBe('')
+    expect(useMemoryStore.getState().getMemoriesForPrompt('Kunde', 8192, { scope: 'projektA' }))
+      .toContain('Hafner')
+  })
+
+  it('NEGATIVKONTROLLE: eine frisch dispatchte Unterhaltung ohne Projekt schreibt weiter global', () => {
+    useMemoryStore.setState({ entries: [] })
+    useMemoryStore.getState().addMemory({
+      type: 'user', title: 'Global', description: 'x',
+      content: 'Der Kunde heisst Hafner.', tags: [], source: 'remote', scope: undefined,
+    })
+    expect(useMemoryStore.getState().getMemoriesForPrompt('Kunde', 8192)).toContain('Hafner')
+  })
+})
