@@ -377,8 +377,11 @@ export function getRecommendedAgentModels(): RecommendedModel[] {
     { name: 'qwen3.5:35b-a3b', label: 'Qwen 3.5 35B MoE', reason: '35B brain, 3B active. Best agentic + 256K context. SWE-bench leader.', hot: true, provider: 'ollama' },
     { name: 'gemma4:26b', label: 'Gemma 4 26B MoE', reason: '26B brain, runs like 4B. Native tools + vision. Apache 2.0.', hot: true, provider: 'ollama' },
     { name: 'qwen3-coder:30b', label: 'Qwen3-Coder 30B MoE', reason: 'Built for code + agentic workflows. 256K context.', hot: true, provider: 'ollama' },
-    { name: 'hermes3:8b', label: 'Hermes 3 8B', reason: 'Uncensored + native tool calling. Best small agent.', hot: true, provider: 'ollama' },
-    // Local — solid picks
+    // Nothing under 9B is recommended to run locally: the small ones lose the
+    // thread on the second tool call and the user reads that as the product
+    // being broken. Whoever has no machine for the big ones takes the cloud,
+    // which is the entry below and not a smaller local model.
+    // Local: solid picks
     { name: 'deepseek-v3.2', label: 'DeepSeek V3.2', reason: 'Frontier reasoning + tool use. Open-source.', provider: 'ollama' },
     { name: 'glm4.7', label: 'GLM 4.7', reason: 'Strong coding, reasoning, agentic execution.', provider: 'ollama' },
     // Cloud

@@ -25,9 +25,13 @@ import { CLOUD_PITCH } from './cloud-pitch'
  * time and ships no copy of it. `src/lib/cloud-pitch.ts` is where the counts
  * that have to exist before anyone signs in are written down, and
  * `scripts/check-cloud-sales.mjs` pins every one of them to that file in the
- * web repository. Taking the sheet's two numbers from there is what makes them
- * move with the catalogue: mark one model more, or one fewer, and the release
- * guard fails until both sides agree again.
+ * web repository. That script is RUN BY HAND before a release: it needs a
+ * checkout of the web repository as its argument and therefore stands in no
+ * workflow and in no npm script. Nobody may rely on it catching a drift on its
+ * own. What runs on every commit is the literal tripwire in
+ * `__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts`; it holds the
+ * seven numbers in `cloud-pitch.ts` against written-out values, so a changed
+ * number has to be changed twice, on purpose.
  *
  * This is not decoration. The sheet quoted a denominator of 46 while the guard
  * on the same commit printed "27/47 chat", because one number was prose and the

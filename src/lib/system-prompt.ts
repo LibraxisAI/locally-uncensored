@@ -6,7 +6,7 @@
  * Ein leerer Systemtext ist nicht neutral. Ohne Systemtext antwortet ein
  * Modell aus der Haltung, die sein Anbieter antrainiert hat, und genau die
  * enthaelt die Ablehnungen, die wir nicht wollen. Gemessen am 10.09.2026 ueber
- * alle 46 Katalogmodelle: sechs Modelle wechseln allein durch einen Systemtext,
+ * den damaligen Katalog: sechs Modelle wechseln allein durch einen Systemtext,
  * der die Rolle benennt, vom Ablehnen zum Antworten. Der Systemtext wirkt
  * staerker als die Temperatur.
  *

@@ -11,8 +11,15 @@
  * Der Katalog liegt im Web-Repo. Diese Oberflaeche zeigt die Zahlen, BEVOR
  * jemand angemeldet ist, also bevor es einen Katalog zu lesen gibt. Sie stehen
  * deshalb hier, und `scripts/check-cloud-sales.mjs` haelt jede einzelne gegen
- * ihre Quelle im Web-Repo. Wer eine Zahl aendert, ohne die andere Seite zu
- * aendern, faellt dort auf.
+ * ihre Quelle im Web-Repo.
+ *
+ * Dieses Skript wird VOR DEM RELEASE VON HAND gefahren. Es braucht einen
+ * ausgecheckten Web-Baum als Argument und steht deshalb in keinem Workflow und
+ * in keinem npm-Skript; niemand darf sich darauf verlassen, dass es eine
+ * Abweichung von allein bemerkt. Bei jedem Commit laeuft stattdessen die
+ * Reissleine in `__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts`:
+ * sie haelt die sieben Zahlen unten gegen ausgeschriebene Werte, damit eine
+ * geaenderte Zahl zweimal geaendert werden muss, mit Absicht.
  *
  * Nichts hier ist eine Zusage fuer den Einzelfall. "Ohne Ablehnung" ist eine
  * MESSUNG vom 10.09.2026, kein Vertrag, und was eine Anfrage enthalten darf,
@@ -45,7 +52,22 @@ export interface CloudPitchNumbers {
   flashDailyTokens: number
   /** Bildmodelle. */
   imageModels: number
-  /** Videomodelle. */
+  /**
+   * Videomodelle im Katalog.
+   *
+   * ACHTUNG, gewollte Abweichung: die Kaufseite auf lu-labs.ai nennt eine
+   * KLEINERE Zahl. Sie zaehlt nicht den Katalog, sondern was sie auf dieser
+   * Domain zeigen darf: `apps/web/app/(marketing)/pricing/pricing-detail.ts`
+   * filtert ueber `keptOffThisDomain` und `CLAIM_IN_NAME`, der Entscheid dazu
+   * steht in `apps/web/lib/marketing/public-copy.ts` (10.09.2026). Der Desktop
+   * haengt an keiner Zahlungsdomain und nennt deshalb den ganzen Katalog.
+   *
+   * Beide Zahlen sind je fuer sich bewacht, aber nirgends stand, dass sie
+   * absichtlich verschieden sind (R5-47). Ob der Desktop weiter die groessere
+   * nennen soll, ist Entscheid David; hier steht nur, dass es kein Versehen
+   * ist. `scripts/check-cloud-sales.mjs` haelt diese Zahl gegen die volle
+   * Katalogliste, nicht gegen die Kaufseite.
+   */
   videoModels: number
 }
 

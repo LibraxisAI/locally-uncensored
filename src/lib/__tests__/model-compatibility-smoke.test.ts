@@ -182,6 +182,44 @@ describe('getRecommendedAgentModels', () => {
   })
 })
 
+// ── Davids 9B-Grenze, gespiegelt aus dem Web ────────────────────────────
+//
+// R5-68: die Tabelle empfahl `hermes3:8b` zum lokalen Laufen. Das Web hat die
+// Zeile mit Begruendung entfernt und haelt sie seither mit einem Waechter
+// (`apps/web/lib/__tests__/model-compatibility-parity.test.ts`). Dass die
+// Tabelle im Desktop heute ausser Tests keinen Aufrufer hat, ist kein Grund:
+// die Regel kennt keine Ausnahme fuer unsichtbaren Code.
+
+/** Groesste Parameterzahl, die ein Name oder ein Etikett behauptet, sonst null. */
+function milliarden(text: string): number | null {
+  const gefunden = [...text.matchAll(/(\d+(?:\.\d+)?)\s*b\b/gi)].map((m) => Number(m[1]))
+  return gefunden.length ? Math.max(...gefunden) : null
+}
+
+describe('keine lokale Empfehlung unter 9B', () => {
+  it('gilt fuer jede lokale Empfehlung', () => {
+    const lokal = getRecommendedAgentModels().filter((m) => m.provider === 'ollama')
+    expect(lokal.length).toBeGreaterThan(0)
+    for (const m of lokal) {
+      const groesse = milliarden(`${m.name} ${m.label}`)
+      if (groesse !== null) expect(groesse, `${m.name} (${m.label})`).toBeGreaterThanOrEqual(9)
+    }
+  })
+
+  it('die 8B-Empfehlung ist weg, die Wolke steht weiter daneben', () => {
+    expect(getRecommendedAgentModels().map((m) => m.name)).not.toContain('hermes3:8b')
+    expect(getRecommendedAgentModels().some((m) => m.provider === 'anthropic')).toBe(true)
+  })
+
+  it('liest ein Expertengemisch an seinem Hirn, nicht am aktiven Teil', () => {
+    // Negativkontrolle zur Lesart: `qwen3.5:35b-a3b` ist 35B mit 3B aktiv.
+    // Wer die 3 liest, wirft eine Empfehlung raus, auf die die Regel nie zielte.
+    expect(milliarden('qwen3.5:35b-a3b')).toBe(35)
+    expect(milliarden('hermes3:8b Hermes 3 8B')).toBe(8)
+    expect(milliarden('deepseek-v3.2 DeepSeek V3.2')).toBe(null)
+  })
+})
+
 // ── Qwen 3.8 (August 2026) ──────────────────────────────────────────────
 // The family arrives on three routes with three different name shapes: an
 // Ollama tag, a GGUF file name in the built-in engine, and LM Studio's

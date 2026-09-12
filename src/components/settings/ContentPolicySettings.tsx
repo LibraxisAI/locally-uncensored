@@ -42,7 +42,26 @@ export function ContentPolicySettings() {
     try {
       const saved = await setContentPolicy(next, ageConfirmed)
       setPolicy(saved)
-      setConfirmedAt(saved === 'off' ? new Date().toISOString() : null)
+      /*
+       * Das Bestaetigungsdatum kommt vom Server, nicht von der Uhr dieses
+       * Rechners (R2-30). `setContentPolicy` gibt nur die Richtlinie zurueck,
+       * weil der Server den Zeitstempel selbst setzt und ein mitgeschickter
+       * wertlos waere (api/cloud/jobs.ts). Wer die Uhr seines Rechners
+       * verstellt hat, las deshalb bis 3.0.0 ein Datum, das in keiner
+       * Datenbank steht, und beim naechsten Laden ein anderes.
+       *
+       * Die zweite Anfrage ist bewusst ihr eigener Versuch: der Wunsch ist
+       * gespeichert, sobald `setContentPolicy` zurueck ist. Faellt das Netz
+       * genau dazwischen aus, ist das kein Fehler, den jemand zu lesen
+       * bekommt, und erfunden wird hier trotzdem kein Datum.
+       */
+      try {
+        const vomServer = await getContentPolicy()
+        setPolicy(vomServer.policy)
+        setConfirmedAt(vomServer.ageConfirmedAt)
+      } catch {
+        setConfirmedAt(null)
+      }
       setPending(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the setting.')
@@ -112,8 +131,8 @@ export function ContentPolicySettings() {
 
       {policy === 'off' && confirmedAt && (
         <p className="text-[0.6rem] text-gray-500">
-          Age confirmed on {new Date(confirmedAt).toLocaleDateString()}. Choosing another option
-          clears that confirmation.
+          Age confirmed on {new Date(confirmedAt).toLocaleDateString()}. Switching to another
+          option clears that confirmation.
         </p>
       )}
 

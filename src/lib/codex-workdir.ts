@@ -1,44 +1,18 @@
 /**
- * Where the Coding Agent actually works, and when that may be changed.
+ * When the Coding Agent's working directory may be changed, and what the empty
+ * state is allowed to promise.
  *
- * Both halves used to live inline in useCodex and in the two views, which is
- * how A8 (2.6.8) got as far as it did: the precedence was a three-line boolean
- * chain nobody could test, and "is a run in flight" was a different expression
- * on every surface. They are pure functions here, with the tests next to them.
+ * "Is a run in flight" used to be a different expression on every surface,
+ * which is how A8 (2.6.8) got as far as it did. It is a pure function here,
+ * with the tests next to it.
+ *
+ * WO der Agent arbeitet, steht NICHT hier, sondern in
+ * `hooks/codex/workspace-precedence.ts`, wo `useCodex` es auch liest. Bis 3.0.0
+ * lag daneben eine zweite Rechnung derselben Rangfolge, die kein Aufrufer je
+ * gelesen hat, waehrend sechs Tests sie massen und damit die ausgelieferte
+ * Rechnung gruen aussehen liessen, ohne sie anzufassen (R2-42).
  */
 import { isActiveCodexStatus, type CodexThreadStatus } from '../types/codex'
-
-export interface CodexWorkDirInput {
-  /** The folder pinned on this conversation's thread. */
-  threadDir: string | null | undefined
-  /** Per-chat agent workspace, or settings.defaultWorkspace, when folder-kind. */
-  workspacePath: string | null | undefined
-  /** The folder the Code tab's picker currently shows. */
-  storeDir: string | null | undefined
-}
-
-/** The bridge's per-chat sandbox under ~/agent-workspace. */
-export const CODEX_SANDBOX = '.'
-
-/**
- * Precedence, unchanged from the inline version it replaces:
- *   1. the thread's own folder (the picker value, synced at every send)
- *   2. the resolved agent workspace, when it names a real folder
- *   3. the picker value again, for a thread that has not been synced yet
- *   4. the per-chat sandbox
- *
- * A thread carrying the literal '.' does NOT count as a pick. It is what
- * `initThread` writes when there is no folder, and treating it as one used to
- * hide a per-chat workspace behind a placeholder.
- */
-export function resolveCodexWorkDir({
-  threadDir,
-  workspacePath,
-  storeDir,
-}: CodexWorkDirInput): string {
-  const fromThread = threadDir && threadDir !== CODEX_SANDBOX ? threadDir : null
-  return fromThread || workspacePath || storeDir || CODEX_SANDBOX
-}
 
 /**
  * What the agent falls back to when the picker is empty, in the words the user
