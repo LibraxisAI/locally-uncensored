@@ -191,6 +191,31 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Die zwoelf Motoren, Name fuer Name ──────────────────────────────
+//
+// Die Anzahl stimmte schon, der zwoelfte Name nicht: die Sprachmodell-Dateien
+// fuehrten TGI, der Erkennungslauf kennt text-generation-webui. Zwei
+// verschiedene Produkte. Geprueft wird deshalb jeder Name gegen LOCAL_BACKENDS
+// in der Ersteinrichtung, nicht die Anzahl.
+const backendsStep = readFileSync(new URL('../src/components/onboarding/BackendsStep.tsx', import.meta.url), 'utf8')
+const backendNames = [...backendsStep.matchAll(/name: '([^']+)',\s+description:/g)].map((treffer) => treffer[1])
+assert.ok(backendNames.length >= 12, `LOCAL_BACKENDS not read: ${backendNames.length} names`)
+const backendDrift = []
+for (const datei of ['llms.txt', 'llms-full.txt']) {
+  const text = readFileSync(new URL(`../docs/${datei}`, import.meta.url), 'utf8')
+  const liste = /auto-detected \(([^)]+)\)|auto-detects \d+ local backends: (.+?)\. ComfyUI/.exec(text)
+  assert.ok(liste, `docs/${datei}: the backend list is gone`)
+  const genannt = (liste[1] ?? liste[2]).split(/,\s*|\s+and\s+/).map((name) => name.trim()).filter(Boolean)
+  for (const name of genannt) if (!backendNames.includes(name)) backendDrift.push(`${datei}: ${name}`)
+  for (const name of backendNames) if (!genannt.includes(name)) backendDrift.push(`${datei}: missing ${name}`)
+}
+assert.equal(
+  backendDrift.length,
+  0,
+  `The engine names come from LOCAL_BACKENDS: ${backendDrift.length} difference(s) [${backendDrift.join(', ')}]`,
+)
+console.log(`Backend guard passed: both language-model files name the same ${backendNames.length} engines as LOCAL_BACKENDS.`)
+
 // ── Eine Installergroesse fuer den ganzen Baum ──────────────────────
 //
 // Gemessen wurde bei jedem Bau: der Installerbericht zu 3.0.0 nennt

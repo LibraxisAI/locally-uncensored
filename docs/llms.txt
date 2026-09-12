@@ -11,7 +11,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - License: AGPL-3.0 (free and open source)
 - Platforms: Windows 10/11, Linux (deb, rpm, AppImage)
 - Tech Stack: React 19, TypeScript, Tailwind CSS 4, Vite 8, Tauri v2 (Rust backend)
-- AI Backends: 12 auto-detected (Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang, TGI) plus ComfyUI for images/video
+- AI Backends: 12 auto-detected (Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang, text-generation-webui) plus ComfyUI for images/video
 - Cloud Providers: optional, BYOK (OpenAI, Anthropic, OpenRouter, Groq, Together, DeepSeek, Mistral)
 - GitHub: https://github.com/PurpleDoubleD/locally-uncensored
 - Website: https://locallyuncensored.com

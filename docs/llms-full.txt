@@ -75,7 +75,7 @@ Yes, the 27B. Qwen 3.8 27B came out on 13 August 2026 under Apache 2.0 and GGUFs
 Yes, on the right machine. V4 Flash is a 284B MoE with only 13B active parameters; the 4-bit GGUF is about 155 GB, so a 192 GB Mac Studio or a workstation with 192-256 GB RAM plus a GPU runs it at interactive speeds. Smaller machines can run the 5.3 GB Qwen 3.5 9B V4 distill from the in-app catalog, and the huihui abliterated build (154 GB, 600K+ downloads) is the most popular uncensored model of 2026. Full guide: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-flash-locally.html. V4 Pro (1.6T) is cloud territory: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-pro.html
 
 ### Which AI backends does it detect?
-It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang and TGI. ComfyUI is used for image and video generation. If none are running, the setup wizard offers one-click install links.
+It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang and text-generation-webui. ComfyUI is used for image and video generation. If none are running, the setup wizard offers one-click install links.
 
 ### How long does setup take?
 About five minutes. There is no Docker, terminal or config file. Run the installer, let the wizard scan for backends, pick a model, and start.
