@@ -11,6 +11,10 @@ import { CLOUD_PITCH, cloudPitchLines } from '../cloud-pitch'
 
 describe('cloud pitch', () => {
   it('leads with what the models may do, then the price, then the equipment', () => {
+    // R2-47: erst zaehlen, dann lesen. Bis 3.0.0 pruefte der Waechter drei
+    // Zeilen inhaltlich und zaehlte sie nie, waehrend CloudGateModal jede Zeile
+    // rendert, die er bekommt: eine vierte stuende ungeprueft im Kaufmoment.
+    expect(cloudPitchLines()).toHaveLength(3)
     const [first, second, third] = cloudPitchLines()
     expect(first).toMatch(/without refusing/i)
     expect(second).toMatch(/no credits/i)
