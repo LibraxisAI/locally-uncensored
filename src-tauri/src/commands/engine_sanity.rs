@@ -82,6 +82,16 @@ pub(crate) const HEALED_ON_CPU_NOTE: &str = "The GPU produced unreadable output,
 /// saying so beats a third restart that would change nothing.
 pub(crate) const GARBLED_ON_CPU_NOTE: &str = "The engine produced unreadable output on the CPU as well, so the graphics card is not the cause. Please send the log file from Settings > Troubleshoot.";
 
+/// What the user is told when the restart itself never came up and the first
+/// engine had to be put back.
+///
+/// This one is NOT a verdict about the hardware. The rung that was aimed for
+/// was never measured, because nothing answered on the port to measure: the
+/// probe is only ever run on an engine that came up. Saying "on the CPU as
+/// well" here would claim a measurement that never happened, and on the flash
+/// attention rung the processor was not even the destination.
+pub(crate) const RESTART_DID_NOT_COME_BACK_NOTE: &str = "The engine could not be restarted with different settings, so the first engine is running again. Please send the log file from Settings > Troubleshoot.";
+
 // ── The classifier ──────────────────────────────────────────────────────────
 //
 // Every threshold below is set so that it cannot fire on healthy output, and

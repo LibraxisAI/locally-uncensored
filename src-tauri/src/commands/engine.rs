@@ -2142,10 +2142,22 @@ fn serve_or_heal_garbled(
         };
         // A restart is a measurement thrown away: whatever `plan_offload` said
         // for the first start is not asked again, because the argument that is
-        // being changed is not the layer count. `None` for `auto_ngl` keeps the
-        // layer count out of the way, and the rung above puts the one value it
-        // cares about into the tuning.
-        let next_args = build_server_args(model_path, &next, port, slot_dir, mmproj, None);
+        // being changed is not the layer count. So the layer count the engine
+        // is actually running with is carried across instead of dropped, read
+        // from the argv that was spawned, exactly as `facts.gpu_layers` above
+        // reads it. `None` here would hand the sentinel to the flash attention
+        // rung: a card measured at twelve layers would be asked for all of
+        // them on the very restart that is meant to rescue it. On the
+        // processor rung it changes nothing, `gpu_layers: 0` is a typed number
+        // and outranks `auto_ngl` in `build_server_args`.
+        let next_args = build_server_args(
+            model_path,
+            &next,
+            port,
+            slot_dir,
+            mmproj,
+            gpu_layers_in(&serving_args),
+        );
         stop_engine_locked(state);
         // A restart is never an auto layer count, whatever the request said, so
         // the idempotence key must not remember it as one: the next start with
@@ -2163,8 +2175,14 @@ fn serve_or_heal_garbled(
             );
             let _ = spawn_engine_attempt(state, binary, args, model_path, port, ctx, auto_layers, false);
             answer["garbled"] = serde_json::json!(true);
-            answer["note"] = serde_json::json!(engine_sanity::GARBLED_ON_CPU_NOTE);
-            remember_sanity_note(state, engine_sanity::GARBLED_ON_CPU_NOTE);
+            // Not the CPU sentence. Nothing ran on the processor here and
+            // nothing was judged there: the restart never came up, so
+            // `probe_engine` was never called for it, and on the flash
+            // attention rung the processor was not even the destination. The
+            // user is told what actually happened, which is that the settings
+            // could not be changed and the engine he already had is back.
+            answer["note"] = serde_json::json!(engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE);
+            remember_sanity_note(state, engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE);
             return answer;
         }
         answer["retried"] = serde_json::json!(true);
@@ -3862,19 +3880,81 @@ mod tests {
 
     #[test]
     fn the_flash_attention_rung_moves_only_that_one_flag() {
-        // The first rung of the ladder. The card keeps every layer; the only
-        // difference in the argv is the `-fa` pair.
+        // The first rung of the ladder. The card keeps the layer count it was
+        // measured at; the only difference in the argv is the `-fa` pair.
+        //
+        // The rung is built the way production builds it: the layer count is
+        // not typed in here a second time, it is read back out of the argv the
+        // running engine got, which is what `serve_or_heal_garbled` does.
         let auto = EngineTuning { ctx: 4096, threads: 6, ..Default::default() };
         assert_eq!(auto.flash_attn, "auto");
         let before = build_server_args("/m.gguf", &auto, 8127, None, None, Some(12));
-        let after =
-            build_server_args("/m.gguf", &without_flash_attention(&auto), 8127, None, None, Some(12));
+        let after = build_server_args(
+            "/m.gguf",
+            &without_flash_attention(&auto),
+            8127,
+            None,
+            None,
+            gpu_layers_in(&before),
+        );
         assert!(!before.iter().any(|a| a == "-fa"), "auto is not forwarded: {before:?}");
         assert_eq!(after.windows(2).find(|w| w[0] == "-fa").map(|w| w[1].as_str()), Some("off"));
         assert_eq!(gpu_layers_in(&after), Some(12));
         let stripped: Vec<String> =
             after.iter().filter(|a| *a != "-fa" && *a != "off").cloned().collect();
         assert_eq!(stripped, before);
+        // Negative control, the two ways this can go wrong. `None` on a tuning
+        // that left GPU Layers on auto is the sentinel, 999 layers on a card
+        // that was just measured at twelve; and the processor rung is not
+        // touched by any of it, a typed 0 outranks `auto_ngl`.
+        assert_eq!(
+            gpu_layers_in(&build_server_args(
+                "/m.gguf",
+                &without_flash_attention(&auto),
+                8127,
+                None,
+                None,
+                None
+            )),
+            Some(999)
+        );
+        assert_eq!(
+            gpu_layers_in(&build_server_args(
+                "/m.gguf",
+                &on_the_processor(&auto),
+                8127,
+                None,
+                None,
+                Some(12)
+            )),
+            Some(0)
+        );
+        // Quellanker, sonst ist der Test blind: er baut die Sprosse selbst und
+        // wuerde gruen bleiben, waehrend die Produktionszeile weiter `None`
+        // schickt. `split` schneidet den Rumpf der echten Funktion heraus, die
+        // Suchbegriffe stehen zwar auch in diesem Test, aber nicht darin.
+        let leiter = include_str!("engine.rs")
+            .split("fn serve_or_heal_garbled(")
+            .nth(1)
+            .expect("the ladder is gone")
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        let sprosse = leiter
+            .split("let next_args = build_server_args(")
+            .nth(1)
+            .expect("the rung no longer builds its own argv")
+            .split(");")
+            .next()
+            .unwrap();
+        assert!(
+            sprosse.contains("gpu_layers_in(&serving_args)"),
+            "the restart throws the measured layer count away: {sprosse}"
+        );
+        assert!(
+            !sprosse.contains("None"),
+            "the restart hands the sentinel to the rung again: {sprosse}"
+        );
     }
 
     #[test]
@@ -3911,13 +3991,14 @@ mod tests {
     }
 
     #[test]
-    fn the_three_notes_are_english_and_say_different_things() {
-        // UI strings, and the only three sentences this fix ever puts on
+    fn the_four_notes_are_english_and_say_different_things() {
+        // UI strings, and the only four sentences this fix ever puts on
         // screen.
         let notes = [
             engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE,
             engine_sanity::HEALED_ON_CPU_NOTE,
             engine_sanity::GARBLED_ON_CPU_NOTE,
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE,
         ];
         for note in notes {
             assert!(note.contains("Settings > Troubleshoot"), "{note}");
@@ -3927,10 +4008,55 @@ mod tests {
         assert!(engine_sanity::HEALED_WITHOUT_FLASH_ATTENTION_NOTE.contains("Flash Attention"));
         assert!(engine_sanity::HEALED_ON_CPU_NOTE.contains("restarted on the CPU"));
         assert!(engine_sanity::GARBLED_ON_CPU_NOTE.contains("on the CPU as well"));
+        // The fourth one is the only one that may not claim a measurement.
+        // Nothing ran on the processor in its branch, so the words must not be
+        // there either.
+        assert!(
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE.contains("could not be restarted"),
+            "{}",
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE
+        );
+        assert!(
+            !engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE.contains("on the CPU"),
+            "the note claims a CPU measurement that never happened: {}",
+            engine_sanity::RESTART_DID_NOT_COME_BACK_NOTE
+        );
         assert_eq!(
             notes.iter().collect::<std::collections::BTreeSet<_>>().len(),
             notes.len(),
-            "the three notes have to be distinguishable"
+            "the four notes have to be distinguishable"
+        );
+        // And each note sits in the branch it is true for. The block that puts
+        // the first engine back must not reach for the CPU sentence any more;
+        // the branch that really did judge the processor still carries it.
+        // `split` takes what stands AFTER the anchor, and the anchors' first
+        // occurrence is the production code far above this test.
+        let quelle = include_str!("engine.rs");
+        let block_ab = |anker: &str| -> String {
+            quelle
+                .split(anker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("the branch is gone: {anker}"))
+                .split("return answer;")
+                .next()
+                .unwrap_or("")
+                .to_string()
+        };
+        let rueckfall = block_ab("the restart did not come up, bringing the first LU Engine back");
+        assert!(
+            !rueckfall.contains("GARBLED_ON_CPU_NOTE"),
+            "the restart that never came up still claims a CPU measurement: {rueckfall}"
+        );
+        assert!(
+            rueckfall.contains("RESTART_DID_NOT_COME_BACK_NOTE"),
+            "the restart that never came up says nothing at all: {rueckfall}"
+        );
+        let aufgegeben = block_ab(
+            "the LU Engine answers unreadably without the graphics card, so the card is not the cause",
+        );
+        assert!(
+            aufgegeben.contains("GARBLED_ON_CPU_NOTE"),
+            "the branch that really did run on the processor lost its sentence: {aufgegeben}"
         );
     }
 

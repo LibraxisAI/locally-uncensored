@@ -1005,7 +1005,9 @@ fn known_bad_rocm_build(torch: Option<&str>, target: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "The build installed here is torch {version}, and ROCm 7.12 ships a kernel for {target}          that is registered and empty (ROCm/TheRock issue 5284). torch 2.11.0+rocm7.13.0 is the          first build without it."
+        "The build installed here is torch {version}, and ROCm 7.12 ships a kernel for {target} \
+         that is registered and empty (ROCm/TheRock issue 5284). torch 2.11.0+rocm7.13.0 is the \
+         first build without it."
     ))
 }
 
@@ -1016,7 +1018,8 @@ fn arch_sentence(p: &RuntimeProbe, target: &str) -> String {
     }
     if arch_list_carries(&p.archs, target) {
         return format!(
-            "Your card reports itself as {target} and this PyTorch build does carry it ({}), so a              missing architecture is not the reason.",
+            "Your card reports itself as {target} and this PyTorch build does carry it ({}), so a \
+             missing architecture is not the reason.",
             p.archs.join(", ")
         );
     }
@@ -2526,6 +2529,35 @@ mod start_tests {
         let RuntimeVerdict::Fail(msg) = runtime_verdict(&p) else { panic!() };
         assert!(msg.contains("no code for this card"), "{msg}");
         assert!(msg.contains(torch_wheels::ROCM_CHANNELS[0]) || msg.contains(torch_wheels::ROCM_WINDOWS_CHANNELS[0]), "{msg}");
+    }
+
+    #[test]
+    fn no_customer_sentence_in_here_carries_a_run_of_spaces() {
+        // Two sentences had 14 and 10 spaces standing in the middle of them,
+        // left over from source lines that were never continued with a `\`.
+        // The user reads the string, not the source, so he read the gap.
+        let traegt_es = RuntimeProbe {
+            archs: vec!["gfx1200".into()],
+            device_arch: Some("gfx1200".into()),
+            ..Default::default()
+        };
+        let satz = arch_sentence(&traegt_es, "gfx1200");
+        assert!(!satz.contains("  "), "a run of spaces is back: {satz:?}");
+        let rocm = known_bad_rocm_build(Some("2.11.0+rocm7.12.0"), "gfx1200")
+            .expect("the broken build is named for this card");
+        assert!(!rocm.contains("  "), "a run of spaces is back: {rocm:?}");
+        // The other half of the repair: closing the gap must not swallow a
+        // word, so both sentences are pinned across the seam.
+        assert!(satz.contains("so a missing architecture is not the reason."), "{satz}");
+        assert!(rocm.contains("for gfx1200 that is registered and empty"), "{rocm}");
+        assert!(rocm.contains("7.13.0 is the first build without it."), "{rocm}");
+        // And the sentence of the same function that never had the fault is
+        // still clean, which is what says the test measures the fault and not
+        // the function.
+        let traegt_es_nicht = RuntimeProbe { archs: vec!["gfx1100".into()], ..Default::default() };
+        let anderer = arch_sentence(&traegt_es_nicht, "gfx1200");
+        assert!(!anderer.contains("  "), "{anderer:?}");
+        assert!(anderer.contains("carries gfx1100 and not gfx1200."), "{anderer}");
     }
 
     #[test]
