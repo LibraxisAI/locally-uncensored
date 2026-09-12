@@ -17,6 +17,7 @@ import { HINWEIS_TEXT } from '../../lib/hinweis'
 import type { MemoryType, MemoryFile } from '../../types/agent-mode'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
 import { synchronizeMemoryCollection, type MemorySyncResolution } from '../../lib/memory-sync'
+import { reviewPreviousMemories, finalizePreviousMemories, type LegacyMemoryReview } from '../../lib/memory-legacy'
 
 // ── Subtle type indicator (internal, not user-facing) ─────────
 
@@ -77,6 +78,14 @@ function MemorySettingsPanel() {
     controller?.abort()
   }, [])
   const [syncMessage, setSyncMessage] = useState('')
+  /**
+   * Der Altpfad (R5-30, Entscheid David vom 12.09.2026). `legacyReview` ist
+   * der angesehene Befund, `confirmLegacyRemoval` das Haekchen darunter. Der
+   * Befund lebt nur hier im Fenster: eine alte Kopie, die wir speichern, waere
+   * wieder eine zweite Ablage.
+   */
+  const [legacyReview, setLegacyReview] = useState<LegacyMemoryReview | null>(null)
+  const [confirmLegacyRemoval, setConfirmLegacyRemoval] = useState(false)
   const [syncConflicts, setSyncConflicts] = useState<Awaited<ReturnType<typeof synchronizeMemoryCollection>>['conflicts']>([])
   const owner = useCloudAuthStore(state => state.status === 'signed-in' ? state.user?.id : undefined)
   const activeOwner = useMemoryStore(state => state.activeMemoryOwner)
@@ -110,25 +119,49 @@ function MemorySettingsPanel() {
   useEffect(() => useMemoryStore.subscribe((state, previous) => {
     // Do not retain cloud previews after local editing or forgetting. A new
     // sync can fetch a fresh review; the durable metadata contains hashes only.
-    if (state.entries !== previous.entries) setSyncConflicts([])
+    if (state.entries !== previous.entries) {
+      setSyncConflicts([])
+      setLegacyReview(null)
+      setConfirmLegacyRemoval(false)
+    }
   }), [])
-  const runSync = async (resolution?: MemorySyncResolution) => {
+  const runSync = async (resolution?: MemorySyncResolution, quelle?: 'review' | 'finalize') => {
     if (activeOwner === null || !syncConsent || syncController.current) return
     const controller = new AbortController()
     syncController.current = controller
     setSyncBusy(true)
     setSyncConflicts([])
-    setSyncMessage('Synchronizing memories...')
+    setSyncMessage(quelle ? 'Checking previous memories...' : 'Synchronizing memories...')
+    if (quelle !== 'finalize') { setLegacyReview(null); setConfirmLegacyRemoval(false) }
     try {
+      if (quelle === 'review') {
+        const review = await reviewPreviousMemories(activeOwner, controller.signal)
+        if (syncController.current !== controller) return
+        setLegacyReview(review)
+        setSyncMessage('Review both versions before removing the previous cloud copy.')
+        return
+      }
+      if (quelle === 'finalize') {
+        if (!legacyReview || !confirmLegacyRemoval) return
+        await finalizePreviousMemories(legacyReview, confirmLegacyRemoval, controller.signal)
+        if (syncController.current !== controller) return
+        setLegacyReview(null)
+        setConfirmLegacyRemoval(false)
+        setSyncMessage('Previous cloud copy removed. Older versions can no longer synchronize memories. Conversations keep synchronizing.')
+        return
+      }
       const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution, controller.signal)
       if (syncController.current !== controller) return
       setSyncConflicts(result.conflicts)
       setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
     } catch (error) {
       if (syncController.current !== controller) return
+      if (quelle === 'finalize') { setLegacyReview(null); setConfirmLegacyRemoval(false) }
       const messages = ['Sensitive memories need explicit permission for cloud storage before this collection can synchronize',
         'This conflict changed. Sync again before choosing a version.',
-        'Memory synchronization cancelled. Some changes may already be saved.']
+        'Memory synchronization cancelled. Some changes may already be saved.',
+        'Memories changed. Review the previous cloud copy again.',
+        'Import and synchronize every previous memory before finalizing.']
       setSyncMessage(error instanceof Error && messages.includes(error.message) ? error.message
         : 'Could not complete memory synchronization. Check this account and try again. Some changes may already be saved.')
     } finally {
@@ -336,6 +369,21 @@ function MemorySettingsPanel() {
           <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync()}>Sync account memories</button>
           {syncBusy && <button className="ml-3 underline" onClick={() => syncController.current?.abort()}>Cancel synchronization</button>}
           {syncMessage && <p role="status">{syncMessage}</p>}
+          {/* R5-30: der Altpfad. Vor dem heutigen Protokoll lag die
+              Kontosammlung als EIN Blob in der Wolke. Das Web konnte ihn
+              ansehen und entfernen, der Desktop nicht, also blieb er dort
+              liegen, wo der Kunde ihn nie zu Gesicht bekam. Ansehen zuerst,
+              entfernen nur mit Haekchen: eine alte Kopie ist manchmal die
+              einzige, und wer sie ungesehen wegwirft, merkt es spaeter. */}
+          <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy} onClick={() => void runSync(undefined, 'review')}>Check old memory copy</button>
+          {legacyReview && <div className="space-y-2 rounded border border-gray-200 p-2 dark:border-white/10" role="group" aria-label="Legacy memory finalization review">
+            <details><summary className="cursor-pointer">Compare both versions</summary>
+              <p>Previous cloud copy</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(legacyReview.previous, null, 2)}</pre>
+              <p>Synchronized versions, including deletions</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(legacyReview.current, null, 2)}</pre>
+            </details>
+            <label className="block"><input type="checkbox" checked={confirmLegacyRemoval} disabled={syncBusy} onChange={event => setConfirmLegacyRemoval(event.target.checked)} /> I reviewed these versions and confirm removing the previous cloud copy, including any differences.</label>
+            <button className="underline disabled:opacity-50" disabled={!syncConsent || syncBusy || !confirmLegacyRemoval} onClick={() => void runSync(undefined, 'finalize')}>Remove old copy</button>
+          </div>}
           {syncConflicts.map((conflict, index) => {
             const local = entries.find(entry => entry.id === conflict.id)
             const review = conflict.review

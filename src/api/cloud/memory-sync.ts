@@ -27,6 +27,19 @@ function record(raw: unknown): SyncedMemoryRecord {
 export interface MemorySyncSession {
   assertCurrent(): void
   pull(): Promise<SyncedMemoryRecord[]>
+  /**
+   * Die alte Kontokopie, wie sie vor dem heutigen Protokoll geschrieben wurde
+   * (R5-30, Entscheid David vom 12.09.2026). Roh und ungeprueft: was in dieser
+   * Zeile steht, hat eine aeltere Fassung dieser App geschrieben, und der
+   * Leser prueft jedes Feld selbst.
+   */
+  pullLegacy(): Promise<unknown[]>
+  /**
+   * Die alte Kopie endgueltig entfernen. Nur mit einem Beleg, den jemand
+   * gesehen hat: die genaue alte Liste und die Revision jeder neuen Fassung.
+   * Der Server vergleicht beides und riegelt in einem Zug ab.
+   */
+  finalizeLegacy(memories: unknown[], revisions: Record<string, number>): Promise<void>
   write(id: string, revision: number, payload: Record<string, unknown> | null): Promise<SyncedMemoryRecord>
 }
 
@@ -67,16 +80,18 @@ export async function withMemorySyncSession<T>(ownerId: string, work: (session: 
     if (verified.error || verified.data.user?.id !== ownerId) throw accountError()
     assertCurrent()
     let receivedBytes = 0
-    const request = async (suffix: string, body?: unknown): Promise<Record<string, unknown>> => {
+    const request = async (suffix: string, body?: unknown, path = '/api/memory/sync'): Promise<Record<string, unknown>> => {
       assertCurrent()
-      const response = await bounded(fetch(`${CLOUD_BASE}/api/memory/sync${suffix}`, {
+      const response = await bounded(fetch(`${CLOUD_BASE}${path}${suffix}`, {
         method: body === undefined ? 'GET' : 'POST', credentials: 'omit', redirect: 'error',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
       }))
       if (!response.ok) {
         void response.body?.cancel().catch(() => {})
-        if (response.status === 409) throw new MemorySyncError('conflict', 'Memory changed or was deleted. Pull before resolving the conflict.')
+        if (response.status === 409) throw new MemorySyncError('conflict', path === '/api/memory/legacy'
+          ? 'Memories changed. Review the previous cloud copy again.'
+          : 'Memory changed or was deleted. Pull before resolving the conflict.')
         throw new MemorySyncError('network', 'Could not synchronize memories')
       }
       const reader = response.body?.getReader()
@@ -106,6 +121,21 @@ export async function withMemorySyncSession<T>(ownerId: string, work: (session: 
     }
     const result = await bounded(work({
       assertCurrent,
+      async finalizeLegacy(memories, revisions) {
+        const raw = await request('', { expectedMemories: memories, expectedRevisions: revisions, confirmDiscard: true }, '/api/memory/legacy')
+        if (raw.finalized !== true) throw invalid()
+      },
+      async pullLegacy() {
+        assertCurrent()
+        const legacy = await bounded(supabaseCloud().from('client_sync').select('user_id, memories')
+          .eq('user_id', ownerId).abortSignal(controller.signal).maybeSingle())
+        assertCurrent()
+        if (legacy.error) throw new MemorySyncError('network', 'Could not read previous cloud memories')
+        if (!legacy.data) return []
+        if (legacy.data.user_id !== ownerId || !Array.isArray(legacy.data.memories) ||
+          new TextEncoder().encode(JSON.stringify(legacy.data.memories)).length > 2_000_000) throw invalid()
+        return legacy.data.memories
+      },
       async pull() {
         const records: SyncedMemoryRecord[] = []
         const ids = new Set<string>()
