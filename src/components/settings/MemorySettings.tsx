@@ -410,7 +410,7 @@ function MemorySettingsPanel() {
                 machte aus einer Einstellung eine Warnung. */}
             <Zap size={11} className="text-gray-500" />
             <span className="text-[0.65rem] text-gray-400">Auto-extract memories</span>
-            <span className="text-[0.5rem] text-gray-600">(extra inference)</span>
+            <span className="text-[0.5rem] text-gray-600">(extra inference, on out of the box)</span>
           </div>
           <button
             onClick={() => updateMemorySettings({ autoExtractEnabled: !settings.autoExtractEnabled })}

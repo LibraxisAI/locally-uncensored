@@ -73,7 +73,22 @@ export const DEFAULT_SETTINGS: Settings = {
   // already answers with "off". A version bump that buys nothing costs a full
   // state loss on downgrade (lib/persist-version.ts, DOWNGRADE-KONTRAKT).
   autoCompactThreshold: 0,
-  memoryCloudOptIn: false,
+  // R5-27, Entscheid David vom 12.09.2026: die automatische Erinnerungs-
+  // Extraktion steht ab Werk AN, auch auf LU Cloud. Bis dahin stand sie im
+  // Desktop still auf aus und im Web still auf an, und im Desktop gab es
+  // keinen Schalter, der sie je eingeschaltet haette: der Kunde bekam eine
+  // Funktion, die er weder sah noch abstellen musste, weil sie nie lief.
+  //
+  // Die Kosten stehen dafuer am Schalter (`EXTRAKTIONSKOSTEN` in
+  // components/settings/MemorySettings.tsx, drei Saetze fuer drei Zahlwege),
+  // und `autoExtractEnabled` in den Erinnerungseinstellungen schaltet die
+  // ganze Sache mit einem Klick ab.
+  //
+  // NUR NEUE PROFILE: die Migration in stores/settingsStore.ts bleibt
+  // unangetastet und ist rein additiv ({ ...DEFAULT_SETTINGS, ...gespeichert }).
+  // Ein Profil, in dem dieser Wert schon steht, behaelt seinen eigenen. Kein
+  // Einmal-Reset, das waere der Fehler aus v10 und v19 (DOWNGRADE-KONTRAKT).
+  memoryCloudOptIn: true,
   codexDefaultMode: 'ask' as const,
   builtinEngine: {
     ctx: 8192,

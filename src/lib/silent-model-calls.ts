@@ -11,7 +11,10 @@
  * instead of each call site re-deciding:
  *
  *  1. GATE — on lu-cloud a silent call needs `settings.memoryCloudOptIn`.
- *     Default off means a cloud conversation fires NO hidden request at all.
+ *     Since David's decision of 12.09.2026 that setting ships ON, so a fresh
+ *     profile does extract on a cloud conversation; a profile that already
+ *     carries the old `false` keeps it, and `autoExtractEnabled` in the memory
+ *     settings switches the whole thing off in one click.
  *     Local backends (Ollama, built-in engine, LM Studio) and BYOK keys are
  *     not gated: those calls cost the user nothing we bill for, and BYOK
  *     already has its own switch (memory settings `autoExtractInAllModes`).
