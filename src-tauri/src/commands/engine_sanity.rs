@@ -447,7 +447,7 @@ pub(crate) fn decide(verdict: Sanity, facts: &EngineFacts) -> AfterProbe {
     if !verdict.is_garbled() {
         return AfterProbe::Serve;
     }
-    if !facts.gpu_layers.is_some_and(|n| n > 0) {
+    if facts.gpu_layers.is_none_or(|n| n == 0) {
         return AfterProbe::GiveUp;
     }
     if facts.flash_attention_on && facts.every_device_without_matrix_cores {
