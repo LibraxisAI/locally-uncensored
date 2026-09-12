@@ -24,13 +24,14 @@ import { resolve } from 'node:path'
 import { CLOUD_PITCH } from '../cloud-pitch'
 
 /**
- * Die sieben Felder, ausgeschrieben. Ein achtes Feld gehoert hier als eigene
+ * Die acht Felder, ausgeschrieben. Ein neuntes Feld gehoert hier als eigene
  * Zeile hinein, sonst faellt es durch.
  */
 const ERWARTET = {
   chatModels: 47,
   measuredChatModels: 46,
   unfilteredChatModels: 27,
+  heldBackChatModels: 4,
   flashModels: 12,
   flashDailyTokens: 500_000,
   imageModels: 10,
