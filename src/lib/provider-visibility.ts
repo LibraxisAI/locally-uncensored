@@ -47,6 +47,32 @@ export function isReturnableRow<T extends ProviderVisibilityConfig>(config: T | 
 }
 
 /**
+ * Das Nein des Nutzers gewinnt gegen ein stehengebliebenes `enabled: true`.
+ *
+ * Beide Marken zusammen sind ein Widerspruch, den nur ein aelterer Bau
+ * schreiben konnte: der Anlauf-Erkenner in AppShell setzte `enabled: true`
+ * bedingungslos ueber eine Zeile, die der Nutzer abgeschaltet hatte. Seit
+ * R2-14 fragt er `mayEnableFromWizard` und legt den Widerspruch nicht mehr an,
+ * aber er raeumt ihn auch nicht weg: wer Ollama in 2.6.x abschaltete und
+ * danach einmal mit laufendem Ollama startete, traegt das Paar in seinen
+ * Speicherwert und bringt es beim Update mit.
+ *
+ * Was der Nutzer davon sieht, hat T13 am 12.09.2026 auf der Windows-Box
+ * gemessen: die Zeile zeigt weder DISABLED noch Enable, weil
+ * `isReturnableRow` an `enabled` scheitert, und der Anbieter zaehlt zugleich
+ * als eingeschaltet. Der Abschalter, den der Nutzer gedrueckt hat, tut also
+ * nichts und sagt auch nicht, dass er nichts tut.
+ *
+ * Geheilt wird beim Laden und nicht beim Anzeigen: eine Heilung nur in der
+ * Liste liesse den Anbieter weiter befragen. `disabledByUser` schreibt einzig
+ * der Disable-Knopf, ist also die Marke mit der Absicht dahinter, und
+ * gewinnt.
+ */
+export function honourUserDisable<T extends ProviderVisibilityConfig>(config: T): T {
+  return config.enabled && config.disabledByUser === true ? { ...config, enabled: false } : config
+}
+
+/**
  * No backend the CURRENT mode can use is enabled. Local mode never lists the
  * hosted models and cloud mode never lists the local ones, so "is anything
  * enabled" has to be asked per mode or the picker would claim a backend it
