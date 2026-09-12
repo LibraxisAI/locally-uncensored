@@ -600,6 +600,43 @@ mod tests {
         assert!(f.contains("?;"), "a failed write must not move the windows — the marker is the truth");
     }
 
+    /// Der Fensterbau gehört NICHT in den synchronen IPC-Handler.
+    ///
+    /// `set_onboarding_done` ist der einzige Befehl, der zur Laufzeit ein
+    /// zweites WebView-Fenster baut: `follow_marker(false)` ruft `open()`,
+    /// und das ist der einzige `WebviewWindowBuilder` der App. Ein
+    /// synchroner Tauri-Befehl läuft im Faden des AUFRUFERS, und der ist auf
+    /// Windows der Hauptfaden mitten im WebResourceRequested-Handler von
+    /// WebView2, mit offenem Deferral für genau die IPC-Anfrage, die er
+    /// beantworten soll. Ein Fensterbau pumpt dort eine geschachtelte
+    /// Windows-Nachrichtenschleife und wartet auf denselben Browserprozess,
+    /// der auf diese Antwort wartet. Der Befehl kehrt nie zurück, und mit ihm
+    /// antwortet die GANZE Befehlsschicht auf nichts mehr: gemessen auf der
+    /// Testbox am 11.09.2026 (T11, Punkt 2) als vier leere Chatantworten,
+    /// Models-Tab dauerhaft auf `Loading models`, das Fensterkreuz ohne
+    /// Wirkung, und nur `taskkill /F /T` half.
+    ///
+    /// Quelltextwächter mit Absicht: der Fix ist, welches Attribut Tauris
+    /// Makro sieht. Er ändert, wie der BEFEHL ausgeliefert wird, nicht was
+    /// die Rust-Funktion tut, also kann kein Aufruf im Prozess ihn
+    /// beobachten. Gleiches Vorbild: `fs_search_is_dispatched_off_the_main_thread`
+    /// in `commands/filesystem.rs`.
+    #[test]
+    fn set_onboarding_done_baut_das_fenster_nicht_auf_dem_hauptfaden() {
+        let at = SYSTEM_RS.find("pub fn set_onboarding_done(").expect("exists");
+        let head = &SYSTEM_RS[..at];
+        let preamble = &head[head.rfind("\n\n").map(|i| i + 2).unwrap_or(0)..];
+        assert!(
+            preamble.contains("#[tauri::command(async)]"),
+            "set_onboarding_done builds a window and must not run on the main thread:\n{preamble}",
+        );
+        assert!(
+            !preamble.contains("#[tauri::command]"),
+            "set_onboarding_done is back on the plain (main-thread) command attribute:\n{preamble}",
+        );
+        assert!(preamble.len() < 2_000, "the slice ran past the attribute block");
+    }
+
     #[test]
     fn das_onboarding_fenster_schliesst_sich_nur_per_destroy() {
         // `close()` würde CloseRequested auslösen; der Handler darunter
