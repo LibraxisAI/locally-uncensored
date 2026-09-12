@@ -359,7 +359,19 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
       )}
 
       <div className={`overflow-y-auto scrollbar-thin p-1 ${selected ? 'max-h-[45%] shrink-0' : 'flex-1 min-h-0'}`}>
-        {!root ? (
+        {/* R2-15: der leere Zustand stand VOR der Fehlerzeile. Wird ein Ordner
+            abgelehnt, bleibt `root` leer, also gewann "No folder picked." und
+            der Grund verschwand ungelesen. Der Nutzer sah einen Klick, der
+            nichts tat, und den einzigen Satz, der ihm haette sagen koennen,
+            warum, bekam er nie. Der Fehler steht deshalb zuerst. */}
+        {error ? (
+          <p
+            data-testid="explorer-error"
+            className="text-[0.5rem] text-red-500/80 px-1 py-2 break-words"
+          >
+            {error}
+          </p>
+        ) : !root ? (
           <p
             data-testid="explorer-no-folder"
             className="text-[0.5rem] text-gray-400 dark:text-gray-600 px-1 py-2 leading-relaxed"
@@ -367,8 +379,6 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
             No folder picked. The agent works in {fallbackLabel} until you
             click "Select folder..." above.
           </p>
-        ) : error ? (
-          <p className="text-[0.5rem] text-red-500/80 px-1 py-2 break-words">{error}</p>
         ) : !rootListing ? (
           <p className="text-[0.5rem] text-gray-400 dark:text-gray-600 px-1 py-2">Loading...</p>
         ) : rows.length === 0 ? (
