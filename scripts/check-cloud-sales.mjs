@@ -1,7 +1,7 @@
 // Cross-repository release guard. No network, credentials or output artifacts.
 // Usage: node scripts/check-cloud-sales.mjs /absolute/path/to/web
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve, isAbsolute } from 'node:path'
 import ts from 'typescript'
 import { JSDOM } from 'jsdom'
@@ -180,6 +180,28 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Die Startseite verneint nicht, was die Wolkenseite verkauft ─────
+//
+// docs/cloud/index.html ist die Verkaufsseite fuer LU Cloud auf derselben
+// Domain. Solange es sie gibt, darf die Startseite nicht "No cloud" sagen,
+// auch nicht im JSON-LD, aus dem Suchmaschinen und Sprachmodelle zitieren.
+const cloudPageExists = existsSync(new URL('../docs/cloud/index.html', import.meta.url))
+const startseite = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
+// Ein Satz darf "no cloud" sagen, wenn er die Bedingung mitnennt: im lokalen
+// Modus gibt es wirklich keine Wolke. Unbedingt gesagt ist es eine Verneinung
+// des eigenen Angebots.
+const noCloudClaims = cloudPageExists
+  ? startseite
+      .split(/(?<=[.!?])["\s]|\n/)
+      .filter((satz) => /no cloud/i.test(satz) && !/local mode/i.test(satz))
+  : []
+assert.equal(
+  noCloudClaims.length,
+  0,
+  `docs/cloud/index.html sells hosted models, so the home page may not deny the cloud: ${noCloudClaims.length} unqualified claim(s) in docs/index.html [${noCloudClaims.map((satz) => satz.trim().slice(-60)).join(' | ')}]`,
+)
+console.log('Home page guard passed: 0 "No cloud" claims in docs/index.html while docs/cloud/index.html sells hosted models.')
+
 // ── Die zwei Zeilen, die kein Schalter bewegt ───────────────────────
 //
 // Derselbe Satz steht im Blatt (src/lib/release-notes.ts) und auf der
