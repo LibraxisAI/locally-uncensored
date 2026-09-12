@@ -473,7 +473,7 @@ export function useAgentChat() {
     // Per-chat persona toggle — default OFF. Only apply persona prompt
     // when user explicitly flipped it on. See useChat.ts for the
     // full rationale (Devil's Advocate hijack bug).
-    let systemPrompt = buildChatSystemPrompt(conv)
+    let systemPrompt = buildChatSystemPrompt(conv, settings.personasEnabled !== false)
     const ragState = useRAGStore.getState()
     const ragEnabled = ragState.ragEnabled[convId] ?? false
     let ragSuffix = ''

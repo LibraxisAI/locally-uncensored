@@ -18,7 +18,10 @@ export const DEFAULT_SETTINGS: Settings = {
   appMode: 'local',
   // Cloud teasers in Local mode (2.5.8) — on by default, one-click off.
   cloudTeasersEnabled: true,
-  personasEnabled: true,
+  // R5-2: Web gilt. Stand er auf true, kaperte eine global gewaehlte Person
+  // jede neue Unterhaltung, und der Grundtext, der die Ablehnungen abstellt,
+  // kam gar nicht erst zum Zug.
+  personasEnabled: false,
   thinkingEnabled: true,
   // Reasoning effort (2.6.8). 'high' is not a taste, it is the rung this
   // client has always sent for thinking ON. Any other default would move every

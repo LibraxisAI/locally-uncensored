@@ -561,7 +561,7 @@ export function useChat() {
     // flipped it on via the Plugins dropdown does the persona prompt
     // apply. Undefined / unset → suppress, so a globally selected
     // persona never silently hijacks a new chat.
-    let systemPrompt = buildChatSystemPrompt(conv)
+    let systemPrompt = buildChatSystemPrompt(conv, settings.personasEnabled !== false)
     const ragState = useRAGStore.getState()
     const ragEnabled = ragState.ragEnabled[convId] ?? false
     let ragSuffix = ''
