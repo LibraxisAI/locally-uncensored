@@ -191,6 +191,28 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+// ── Eine Installergroesse fuer den ganzen Baum ──────────────────────
+//
+// Gemessen wurde bei jedem Bau: der Installerbericht zu 3.0.0 nennt
+// Locally Uncensored_3.0.0_x64-setup.exe mit 14.075.397 Bytes. Im Repo haelt
+// das Handbuch diese Zahl, und es ist die einzige docs/-Datei, die fuer 3.0.0
+// geschrieben wurde. Jede Seite, die eine Installergroesse nennt, nennt diese.
+const installGuide = readFileSync(new URL('../docs/guide/install/index.html', import.meta.url), 'utf8')
+const installerMB = Number(/about (\d+) MB on Windows/.exec(installGuide)?.[1])
+assert.ok(Number.isFinite(installerMB), 'docs/guide/install/index.html: the installer size is gone')
+const installerDrift = []
+for (const path of docsFiles(docsRoot)) {
+  for (const claim of readFileSync(path, 'utf8').match(/~\s?\d+ MB installer/g) ?? []) {
+    if (Number(/\d+/.exec(claim)[0]) !== installerMB) installerDrift.push(`${path.slice(docsRoot.length + 1)}: ${claim}`)
+  }
+}
+assert.equal(
+  installerDrift.length,
+  0,
+  `The handbook measures the installer at ${installerMB} MB, so every page says that: ${installerDrift.length} page(s) disagree [${installerDrift.join(', ')}]`,
+)
+console.log(`Installer guard passed: every "MB installer" claim in docs/ says ${installerMB} MB, the size the handbook carries.`)
+
 // ── Der Mac, einmal beantwortet ─────────────────────────────────────
 //
 // Das Handbuch ist die einzige docs/-Flaeche, die fuer 3.0.0 geschrieben
