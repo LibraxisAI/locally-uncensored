@@ -281,7 +281,16 @@ assert.equal(
 )
 const dmgClaims = docsFiles(docsRoot).filter((path) => /\.dmg\b|\bdmg\b/i.test(readFileSync(path, 'utf8')))
 assert.equal(dmgClaims.length, 0, `No Mac build exists, so docs/ may not offer a .dmg: ${dmgClaims.length} page(s)`)
-console.log('Mac guard passed: 0 roadmap promises, 0 stray Mac mentions on the home page and 0 dmg offers in docs/, and the handbook answer is unchanged.')
+// Die Fernzugriff-Anleitung endet im Fenster der App, und das laeuft auf
+// einem Mac nicht. Eine Installationszeile fuer macOS fuehrt den Leser bis
+// Schritt 2 und dann ins Leere.
+const remoteAccess = readFileSync(new URL('../docs/remote-access/index.html', import.meta.url), 'utf8')
+const macSetupLines = remoteAccess.split('\n').filter((zeile) => /macos/i.test(zeile))
+assert.equal(macSetupLines.length, 0, `There is no Mac build, so docs/remote-access/index.html may not carry a macOS setup line: ${macSetupLines.length}`)
+for (const platform of ['Windows:', 'Linux:']) {
+  assert.ok(remoteAccess.includes(platform), `docs/remote-access/index.html: the ${platform} line is gone`)
+}
+console.log('Mac guard passed: 0 roadmap promises, 0 stray Mac mentions on the home page, 0 macOS setup lines in the remote-access guide and 0 dmg offers in docs/, and the handbook answer is unchanged.')
 
 // ── Die Startseite verneint nicht, was die Wolkenseite verkauft ─────
 //
