@@ -744,3 +744,41 @@ for (const datei of ['llms.txt', 'llms-full.txt']) {
   assert.equal(angaben.length, 1, `docs/${datei}: ${angaben.length} current-version statements, expected exactly one`)
 }
 console.log(`Version guard passed: every current-version claim on the home page and in the language-model files says ${appVersion}, the version package.json carries.`)
+
+// ── Der Changelog-Abschnitt der laufenden Version ────────────────────
+//
+// CHANGELOG.md wird auf GitHub gespiegelt und endete bis zum 12.09.2026 bei
+// 2.6.9, obwohl alle fuenf Manifeste auf 3.0.0 stehen. Der Abschnitt haengt
+// jetzt an denselben Quellen wie die Verkaufsseiten, damit er nicht die
+// zweite, freie Fassung derselben Zahlen wird.
+//
+// Geprueft wird ohne Zeilenumbrueche, weil der Changelog auf 80 Zeichen
+// umgebrochen ist und ein Satz deshalb ueber drei Zeilen laeuft. Ein
+// getippter Zeilenumbruch darf einen Wortlaut nicht durchrutschen lassen.
+const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8')
+const changelogSection = changelog.split(/^## \[/m).find((part) => part.startsWith(`${appVersion}]`))
+assert.ok(changelogSection, `CHANGELOG.md carries no section for ${appVersion}, the version package.json says`)
+const flat = changelogSection.replace(/\s+/g, ' ')
+// Der Satz zur Freimenge, Entscheid V3, zeichengleich.
+const FLASH_SENTENCE =
+  `${flashInCatalog} of the ${catalogSize} models in the catalogue cost no credits at all in chat on an active paid plan, up to ${daily.toLocaleString('en-US')} input and output tokens per day. API keys keep paying credits, and accounts without an active plan keep paying credits too.`
+assert.ok(flat.includes(FLASH_SENTENCE), `CHANGELOG.md ${appVersion}: the Flash sentence does not read as the decision writes it`)
+// Der Satz zur Marke, Entscheid R6-5, derselbe wie in docs/.
+assert.ok(flat.includes(MARK_SENTENCE), `CHANGELOG.md ${appVersion}: the mark sentence does not read as the decision writes it`)
+// Keine veraltete Schwelle, keine alte Bedingung, kein altes Etikett.
+for (const [pattern, why] of [
+  [/\b27 of the\b/, 'the old mark threshold'],
+  [/never paid/i, 'the old Flash condition'],
+  [/"Included"/, 'the old Flash mark label'],
+  [/welcome credits/i, 'the welcome credits, which are switched off'],
+]) {
+  assert.ok(!pattern.test(flat), `CHANGELOG.md ${appVersion}: ${why} is still in the section`)
+}
+// Keine Gedankenstriche in dem Abschnitt. Der Altbestand der aelteren
+// Abschnitte bleibt unberuehrt, Entscheid David zu R6-21.
+const changelogDashes = changelogSection.match(/[–—]|&[mn]dash;/g) ?? []
+assert.equal(changelogDashes.length, 0, `CHANGELOG.md ${appVersion}: ${changelogDashes.length} typographic dash(es) in the new section`)
+// Nirgends, wie viele Tokens Geld kauft. Dieselbe Regel wie auf den Seiten.
+const tokensForMoney = /(EUR|USD|euro|credits?)[^.]{0,60}\b(buys?|gets?|worth)\b[^.]{0,40}tokens/i
+assert.ok(!tokensForMoney.test(flat), `CHANGELOG.md ${appVersion}: a sentence says how many tokens money buys`)
+console.log(`Changelog guard passed: the ${appVersion} section carries the mark sentence and the Flash sentence word for word, with 0 typographic dashes and 0 token-per-money claims.`)
