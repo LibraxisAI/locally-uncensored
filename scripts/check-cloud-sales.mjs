@@ -553,24 +553,58 @@ assert.equal(
 )
 console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 comparison pages, and planPays still requires an account that has paid.')
 
-// ── Das Handbuch spricht dem Paketkunden nichts ab ──────────────────
+// ── Entscheid V3: die Freimenge haengt an einem laufenden Abo ───────
 //
-// planPays ist true, sobald Geld angekommen ist: ein Paketkauf schreibt eine
-// starter-Lizenz und setzt paidBefore, also zahlt das Konto. Die Bedingung ist
-// "hat je gezahlt", nicht "haelt einen Plan". Solange die Regel so lautet, darf
-// das Handbuch dem Paketkunden die Freimenge nicht absprechen.
+// Entscheid David vom 12.09.2026 zum Zusatzfund V3: ein einmaliger Pack von
+// 5 Euro oeffnet die Freimenge NICHT auf Dauer. Die Bedingung heisst kuenftig
+// "laufendes bezahltes Abo", nicht "hat je einmal gezahlt".
+//
+// Geprueft wird hier der Wortlaut und nicht die Regel, weil der Code im Web
+// nachzieht und nicht mir gehoert: `planPays` haengt heute noch an
+// `paidBefore` (apps/web/lib/pricing.ts), also an "je gezahlt". Sobald W-API
+// das laufende Abo verlangt, wird aus der Wortlautschranke wieder eine
+// Codeschranke, eine Zeile. Bis dahin ist die alte Formulierung in docs/
+// verboten und die neue an vier Flaechen Pflicht, damit keine Seite den
+// Paketkunden weiter zur Freimenge einlaedt.
 const handbookText = readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')
-if (flashNeedsPaidAccount) {
+const cloudRaw = readFileSync(new URL('../docs/cloud/index.html', import.meta.url), 'utf8')
+const homeRaw = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
+const staleFlashWording = docsFiles(docsRoot).filter((path) =>
+  /never paid|paid-plan benefit|is a paid benefit/i.test(readFileSync(path, 'utf8')),
+)
+assert.equal(
+  staleFlashWording.length,
+  0,
+  `the Flash allowance needs an active plan now, so "has never paid" may not stand in docs/: ${staleFlashWording.length} page(s) [${staleFlashWording.map((path) => path.slice(docsRoot.length + 1)).join(', ')}]`,
+)
+for (const [name, raw] of [
+  ['docs/guide/cloud/index.html', handbookText],
+  ['docs/pricing/index.html', pricingRaw],
+  ['docs/cloud/index.html', cloudRaw],
+  ['docs/index.html', homeRaw],
+]) {
   assert.ok(
-    !/pack without a plan does not get it/i.test(handbookText),
-    'docs/guide/cloud/index.html: planPays counts a paid pack, so the handbook may not exclude it',
+    /accounts without an active plan keep paying credits/i.test(raw),
+    `${name}: the condition an account without an active plan really meets is missing`,
   )
-  assert.ok(
-    /an account that has never paid does not get it/i.test(handbookText),
-    'docs/guide/cloud/index.html: the condition planPays really applies is missing',
-  )
+  assert.ok(/on an active paid plan/.test(raw), `${name}: the Flash allowance is not tied to an active plan`)
 }
-console.log('Handbook guard passed: the Flash condition reads as planPays writes it, paid once rather than plan held.')
+assert.ok(
+  !/pack without a plan does not get it/i.test(handbookText),
+  'docs/guide/cloud/index.html: say what a pack does instead of only what it does not',
+)
+assert.ok(
+  /a credit pack on its own does not open it/i.test(handbookText),
+  'docs/guide/cloud/index.html: the handbook has to say that a pack alone does not open the allowance',
+)
+// Die Wortlautschranke haengt trotzdem an einer Codeaussage: faellt die
+// Zahlungsbedingung ganz aus planPays heraus, ist der ganze Absatz falsch.
+assert.ok(flashNeedsPaidAccount, 'planPays no longer requires a paying account at all, the whole Flash wording is stale')
+assert.ok(
+  /never paid/i.test(readWeb('apps/web/lib/pricing.ts')),
+  'planPays seems to have moved to an active plan: tie this guard back to the code',
+)
+console.log('Handbook guard passed: 0 pages in docs/ promise the allowance to an account that paid once, and 4 surfaces name the active plan.')
 
 // ── Das Wort Flash ist kein Kriterium ───────────────────────────────
 //
