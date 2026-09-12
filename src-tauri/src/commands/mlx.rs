@@ -28,7 +28,7 @@ use crate::commands::CmdResult;
 use crate::state::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const MLX_PORT: u16 = 47712;
@@ -785,7 +785,7 @@ fn refetch_file(
     python: &str,
     repo: &str,
     revision: &str,
-    snap: &PathBuf,
+    snap: &Path,
     repair: &crate::commands::mlx_snapshot::Repair,
 ) -> Result<(), String> {
     let cache = mlx_root().join("cache");

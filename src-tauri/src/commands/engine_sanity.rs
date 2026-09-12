@@ -433,10 +433,10 @@ pub(crate) struct EngineFacts {
 ///     A card WITH matrix cores takes a different kernel and this rung would
 ///     be a guess, so it is skipped there.
 ///
-///       https://github.com/ggml-org/llama.cpp/issues/20465
-///       https://github.com/ggml-org/llama.cpp/issues/20029
-///       https://github.com/ggml-org/llama.cpp/issues/19128
-///       https://github.com/ggml-org/llama.cpp/issues/19327
+///     https://github.com/ggml-org/llama.cpp/issues/20465
+///     https://github.com/ggml-org/llama.cpp/issues/20029
+///     https://github.com/ggml-org/llama.cpp/issues/19128
+///     https://github.com/ggml-org/llama.cpp/issues/19327
 ///
 ///  2. The processor. Slower, and correct on every report we have: in each of
 ///     them `-ngl 0` reads fine while the card does not.
@@ -447,7 +447,7 @@ pub(crate) fn decide(verdict: Sanity, facts: &EngineFacts) -> AfterProbe {
     if !verdict.is_garbled() {
         return AfterProbe::Serve;
     }
-    if !facts.gpu_layers.is_some_and(|n| n > 0) {
+    if facts.gpu_layers.is_none_or(|n| n == 0) {
         return AfterProbe::GiveUp;
     }
     if facts.flash_attention_on && facts.every_device_without_matrix_cores {
