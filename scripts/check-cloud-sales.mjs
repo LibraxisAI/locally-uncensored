@@ -150,11 +150,27 @@ const unfilteredFull = catalog.filter((row) => row.unfiltered === 'full').length
 // Eine Seite allein zu aendern war bisher moeglich, weil nur die Preisseite
 // geprueft wurde.
 const zahlenseiten = [['docs/pricing/index.html', pricing], ['docs/cloud/index.html', page]]
+// Entscheid David R6-5 vom 12.09.2026: die Marke traegt nur, was in BEIDEN
+// Laeufen nach der strengen Regel `full` war. Das sind 24, hergeleitet in
+// e2e/6-nachlauf/marken-nachmessung.md, Abschnitt 13.2 und Zeile "Sicher
+// `full` nach strenger Regel in beiden Laeufen | 24". Die Zahl steht hier
+// ausgeschrieben, weil sie ein Entscheid ist und keine Ableitung; abgeleitet
+// wird, was sie darf.
+const MARKED_MODELS = 24
+// Strenger lesen kann die Menge nur verkleinern: ein Modell, das die lockere
+// Regel schon durchfallen liess, kommt unter der strengen nicht dazu. Sinkt
+// `unfiltered: 'full'` im Katalog unter die Entscheidzahl, ist der Entscheid
+// ueberholt und diese Zeile rot, statt dass die Seite mehr verspricht als
+// die Messung hergibt.
+assert.ok(
+  MARKED_MODELS <= unfilteredFull,
+  `the mark decision claims ${MARKED_MODELS} models, the catalogue only carries ${unfilteredFull} unfiltered ones`,
+)
 for (const [name, doc] of zahlenseiten) {
   const claimed = doc.querySelector('[data-unfiltered-count]')
   assert.ok(claimed, `${name}: unfiltered count anchor missing`)
-  assert.equal(Number(claimed.dataset.unfilteredCount), unfilteredFull, `${name}: unfiltered count drift`)
-  assert.equal(claimed.textContent, String(unfilteredFull), `${name}: unfiltered count text drift`)
+  assert.equal(Number(claimed.dataset.unfilteredCount), MARKED_MODELS, `${name}: unfiltered count drift`)
+  assert.equal(claimed.textContent, String(MARKED_MODELS), `${name}: unfiltered count text drift`)
   const claimedTotal = doc.querySelector('[data-catalog-count]')
   assert.ok(claimedTotal, `${name}: catalog count anchor missing`)
   assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, `${name}: catalog size drift`)
@@ -172,7 +188,35 @@ for (const [name, doc] of zahlenseiten) {
   assert.equal(Number(claimedMeasured.dataset.measuredCount), measuredSize, `${name}: measured size drift`)
   assert.equal(claimedMeasured.textContent, String(measuredSize), `${name}: measured size text drift`)
 }
-console.log(`Denominator guard passed: ${unfilteredFull} of ${measuredSize} measured and ${catalogSize} in the catalogue, identical on ${zahlenseiten.length} sales pages.`)
+// Ein Satz, ueberall zeichengleich. Die Zahlen darin kommen aus dem Entscheid
+// und aus der Messtabelle, der Wortlaut aus dem Entscheid selbst. Geprueft
+// wird gegen den Text OHNE Auszeichnung, damit die Anker den Vergleich nicht
+// verstecken: jede Stelle in docs/, die ein Verhaeltnis von Chatmodellen
+// nennt, muss genau dieser Satz sein.
+const MARK_SENTENCE =
+  `${MARKED_MODELS} of the ${measuredSize} cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark.`
+// Die Beschreibung im Kopf ist Kundentext wie der Fliesstext, steht aber IN
+// einem Element. Ohne das Herausziehen faellt sie beim Entfernen der
+// Auszeichnung weg, und genau dort stand der Satz mit der alten Zahl.
+const plainText = (raw) =>
+  raw.replace(/<meta[^>]*content="([^"]*)"[^>]*>/g, ' $1 ').replace(/<[^>]+>/g, '').replace(/&quot;/g, '"')
+const markRatio = /\b\d+ of the \d+ (?:cloud )?(?:measured )?chat models[^.]*\./g
+const markOffences = []
+for (const file of docsFiles(docsRoot)) {
+  for (const hit of plainText(readFileSync(file, 'utf8')).match(markRatio) ?? []) {
+    if (hit !== MARK_SENTENCE) markOffences.push(`${file.slice(docsRoot.length - 4)}: ${hit}`)
+  }
+}
+assert.equal(
+  markOffences.length,
+  0,
+  `every mark ratio in docs/ has to read as the decision writes it: ${markOffences.length} deviation(s) [${markOffences.join(' | ')}]`,
+)
+const markSentences = docsFiles(docsRoot)
+  .map((file) => (plainText(readFileSync(file, 'utf8')).match(markRatio) ?? []).length)
+  .reduce((a, b) => a + b, 0)
+assert.ok(markSentences >= 3, `the mark sentence stands in ${markSentences} place(s) in docs/, expected at least 3`)
+console.log(`Denominator guard passed: ${MARKED_MODELS} of ${measuredSize} measured and ${catalogSize} in the catalogue, identical on ${zahlenseiten.length} sales pages, and the mark sentence is word-identical in ${markSentences} place(s).`)
 // ── Der Wolkenschalter im Desktop ────────────────────────────────────
 //
 // Die Oberflaeche zeigt diese Zahlen, BEVOR jemand angemeldet ist, also bevor
