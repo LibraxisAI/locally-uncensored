@@ -121,12 +121,16 @@ test('a value set in the popup is still there when it is opened again', async ({
 
   const trigger = page.getByTestId('sampling-trigger')
   await trigger.click()
-  const temperature = page.getByLabel('Temperature')
+  // Der Ausloeser traegt seit B18 selbst einen Namen ("Sampling: temperature
+  // 0.7"), damit ihn eine Vorlesehilfe im geschlossenen Zustand ansagt. Ein
+  // Name auf Text trifft damit zwei Elemente. Gemeint ist der Regler im Popup,
+  // also greift der Fall ihn ueber seine Rolle.
+  const temperature = page.getByRole('slider', { name: 'Temperature' })
   await temperature.fill('1.45')
   await page.getByRole('button', { name: 'Close sampling settings' }).click()
 
   await trigger.click()
-  await expect(page.getByLabel('Temperature')).toHaveValue('1.45')
+  await expect(page.getByRole('slider', { name: 'Temperature' })).toHaveValue('1.45')
   // The closed trigger shows the same number, which is how the row says that
   // something is on the wire without the popup being open.
   await page.keyboard.press('Escape')
