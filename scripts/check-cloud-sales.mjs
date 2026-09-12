@@ -419,3 +419,22 @@ assert.equal(
   `planPays requires an account that has paid, so no LU column may promise a free Flash path: ${freePathOffences.length} claim(s) on ${freePathPages} page(s) [${freePathOffences.join(', ')}]`,
 )
 console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 comparison pages, and planPays still requires an account that has paid.')
+
+// ── Das Handbuch spricht dem Paketkunden nichts ab ──────────────────
+//
+// planPays ist true, sobald Geld angekommen ist: ein Paketkauf schreibt eine
+// starter-Lizenz und setzt paidBefore, also zahlt das Konto. Die Bedingung ist
+// "hat je gezahlt", nicht "haelt einen Plan". Solange die Regel so lautet, darf
+// das Handbuch dem Paketkunden die Freimenge nicht absprechen.
+const handbookText = readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')
+if (flashNeedsPaidAccount) {
+  assert.ok(
+    !/pack without a plan does not get it/i.test(handbookText),
+    'docs/guide/cloud/index.html: planPays counts a paid pack, so the handbook may not exclude it',
+  )
+  assert.ok(
+    /an account that has never paid does not get it/i.test(handbookText),
+    'docs/guide/cloud/index.html: the condition planPays really applies is missing',
+  )
+}
+console.log('Handbook guard passed: the Flash condition reads as planPays writes it, paid once rather than plan held.')
