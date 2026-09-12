@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>What LU Cloud costs, and what you actually get</title>
-  <meta name="description" content="Three plans, three credit packs, one catalogue. 27 of the 46 measured chat models answer without refusing, Flash chat is unmetered on a paid plan up to 500,000 tokens a day, and adult media runs once you turn your own filter off.">
+  <meta name="description" content="Three plans, three credit packs, one catalogue. 24 of the 46 cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark. Flash chat is unmetered on an active paid plan up to 500,000 tokens a day, and adult media runs once you turn your own filter off.">
   <link rel="canonical" href="https://locallyuncensored.com/pricing/">
   <link rel="icon" href="/favicon.png">
   <link rel="stylesheet" href="/assets/lu.css">
@@ -20,7 +20,7 @@
 
     <h2>What you get on every plan</h2>
     <ul>
-      <li><strong><span data-unfiltered-count="27">27</span> of the <span data-measured-count="46">46</span> chat models we measured answer without refusing.</strong> Measured on 2026-09-10 by asking each model directly, not guessed from its name. Those models carry a "No refusals" mark in the picker. The catalogue holds <span data-catalog-count="47">47</span> chat models; the one that joined after the run carries no mark until it is measured. We add no content filter of our own to text, on any plan.</li>
+      <li><strong><span data-unfiltered-count="24">24</span> of the <span data-measured-count="46">46</span> cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark.</strong> Measured on 2026-09-10 by asking each model directly, not guessed from its name. The mark sits in the model picker. The catalogue holds <span data-catalog-count="47">47</span> chat models; the one that joined after the run carries no mark until it is measured. We add no content filter of our own to text, on any plan.</li>
       <li><strong>Flash chat runs unmetered</strong> inside the apps, up to <span data-flash-limit="500000">500,000 combined input and output tokens per account per day</span>. <span data-flash-model-count="12">12</span> models are in that class. It resets at 00:00 UTC.</li>
       <li><strong>Adult image and video</strong> once you turn your own filter off in the account settings, after confirming you are 18 or older. Six video endpoints and three image models run without a built-in content restriction.</li>
       <li>The same 10 image models and the same video catalogue on every plan, plus music, speech and character training.</li>
@@ -50,9 +50,24 @@
     <p>A pack has no subscription behind it and no monthly commitment. Paying more per pack gets you more credits per euro: 46,000 on the small pack, 46,500 on the middle one and 47,000 on the large one. A Hosted month works out at 47,368, so the plan still buys the better rate.</p>
     <p><a class="cta-btn" href="https://lu-labs.ai/pricing?tab=credits&amp;src=luc-pricing">Buy a credit pack</a></p>
 
+    <h2>Adult video: the six models and what a clip costs</h2>
+    <p>Six video endpoints run without a built-in content restriction. You see them once you turn your own filter off in the account settings, after confirming you are 18 or older. Each one starts from a picture, and each one renders a clip of five seconds; there is no eight second option on these six. The clip is paid from the same credit balance as everything else, at the rate the catalogue carries.</p>
+    <table>
+      <thead><tr><th scope="col">Model</th><th scope="col">Credits per clip</th></tr></thead>
+      <tbody>
+        <tr data-adult-video-row><th scope="row"><span data-adult-model-id="wan-2.2-spicy">Wan 2.2 Open</span></th><td data-clip-credits="15000">15,000</td></tr>
+        <tr data-adult-video-row><th scope="row"><span data-adult-model-id="ltx-2.3-spicy">LTX 2.3 Open</span></th><td data-clip-credits="10000">10,000</td></tr>
+        <tr data-adult-video-row><th scope="row"><span data-adult-model-id="wan-2.6-spicy">Wan 2.6 Open</span></th><td data-clip-credits="50000">50,000</td></tr>
+        <tr data-adult-video-row><th scope="row"><span data-adult-model-id="wan-2.7-spicy">Wan 2.7 Open</span></th><td data-clip-credits="50000">50,000</td></tr>
+        <tr data-adult-video-row><th scope="row"><span data-adult-model-id="minimax-h3-spicy">MiniMax H3 Open</span></th><td data-clip-credits="20000">20,000</td></tr>
+        <tr data-adult-video-row><th scope="row"><span data-adult-model-id="seedance-1.5-pro-spicy">Seedance 1.5 Pro Open</span></th><td data-clip-credits="26000">26,000</td></tr>
+      </tbody>
+    </table>
+    <p>Three image models run without a built-in restriction on the same setting. All of this renders on hosted endpoints, so the work leaves your machine; the desktop app renders locally instead, at no cost.</p>
+
     <h2>What is not included</h2>
     <ul>
-      <li><strong>Unmetered Flash is a paid benefit.</strong> An account that has never paid keeps its starting credits and pays credits for Flash exactly like for any other model. There is no free tier and no trial allowance.</li>
+      <li><strong>Unmetered Flash needs an active paid plan.</strong> Accounts without an active plan keep paying credits for Flash exactly like for any other model. There is no free tier and no trial allowance.</li>
       <li><strong>API keys always pay credits</strong>, including on Flash models. The unmetered path is the app, not the endpoint.</li>
       <li><strong>Cloud is not local privacy.</strong> Hosted requests leave your machine and run at external inference providers. If that matters for a piece of work, run it locally: the desktop app does that for free.</li>
       <li><strong>Two lines no setting moves.</strong> Material involving minors is refused on every request. You may not upload a photograph of a real, identifiable person without their consent.</li>

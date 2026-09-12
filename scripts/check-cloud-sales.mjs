@@ -150,11 +150,27 @@ const unfilteredFull = catalog.filter((row) => row.unfiltered === 'full').length
 // Eine Seite allein zu aendern war bisher moeglich, weil nur die Preisseite
 // geprueft wurde.
 const zahlenseiten = [['docs/pricing/index.html', pricing], ['docs/cloud/index.html', page]]
+// Entscheid David R6-5 vom 12.09.2026: die Marke traegt nur, was in BEIDEN
+// Laeufen nach der strengen Regel `full` war. Das sind 24, hergeleitet in
+// e2e/6-nachlauf/marken-nachmessung.md, Abschnitt 13.2 und Zeile "Sicher
+// `full` nach strenger Regel in beiden Laeufen | 24". Die Zahl steht hier
+// ausgeschrieben, weil sie ein Entscheid ist und keine Ableitung; abgeleitet
+// wird, was sie darf.
+const MARKED_MODELS = 24
+// Strenger lesen kann die Menge nur verkleinern: ein Modell, das die lockere
+// Regel schon durchfallen liess, kommt unter der strengen nicht dazu. Sinkt
+// `unfiltered: 'full'` im Katalog unter die Entscheidzahl, ist der Entscheid
+// ueberholt und diese Zeile rot, statt dass die Seite mehr verspricht als
+// die Messung hergibt.
+assert.ok(
+  MARKED_MODELS <= unfilteredFull,
+  `the mark decision claims ${MARKED_MODELS} models, the catalogue only carries ${unfilteredFull} unfiltered ones`,
+)
 for (const [name, doc] of zahlenseiten) {
   const claimed = doc.querySelector('[data-unfiltered-count]')
   assert.ok(claimed, `${name}: unfiltered count anchor missing`)
-  assert.equal(Number(claimed.dataset.unfilteredCount), unfilteredFull, `${name}: unfiltered count drift`)
-  assert.equal(claimed.textContent, String(unfilteredFull), `${name}: unfiltered count text drift`)
+  assert.equal(Number(claimed.dataset.unfilteredCount), MARKED_MODELS, `${name}: unfiltered count drift`)
+  assert.equal(claimed.textContent, String(MARKED_MODELS), `${name}: unfiltered count text drift`)
   const claimedTotal = doc.querySelector('[data-catalog-count]')
   assert.ok(claimedTotal, `${name}: catalog count anchor missing`)
   assert.equal(Number(claimedTotal.dataset.catalogCount), catalogSize, `${name}: catalog size drift`)
@@ -172,7 +188,35 @@ for (const [name, doc] of zahlenseiten) {
   assert.equal(Number(claimedMeasured.dataset.measuredCount), measuredSize, `${name}: measured size drift`)
   assert.equal(claimedMeasured.textContent, String(measuredSize), `${name}: measured size text drift`)
 }
-console.log(`Denominator guard passed: ${unfilteredFull} of ${measuredSize} measured and ${catalogSize} in the catalogue, identical on ${zahlenseiten.length} sales pages.`)
+// Ein Satz, ueberall zeichengleich. Die Zahlen darin kommen aus dem Entscheid
+// und aus der Messtabelle, der Wortlaut aus dem Entscheid selbst. Geprueft
+// wird gegen den Text OHNE Auszeichnung, damit die Anker den Vergleich nicht
+// verstecken: jede Stelle in docs/, die ein Verhaeltnis von Chatmodellen
+// nennt, muss genau dieser Satz sein.
+const MARK_SENTENCE =
+  `${MARKED_MODELS} of the ${measuredSize} cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark.`
+// Die Beschreibung im Kopf ist Kundentext wie der Fliesstext, steht aber IN
+// einem Element. Ohne das Herausziehen faellt sie beim Entfernen der
+// Auszeichnung weg, und genau dort stand der Satz mit der alten Zahl.
+const plainText = (raw) =>
+  raw.replace(/<meta[^>]*content="([^"]*)"[^>]*>/g, ' $1 ').replace(/<[^>]+>/g, '').replace(/&quot;/g, '"')
+const markRatio = /\b\d+ (?:of the \d+ )?(?:cloud )?(?:measured )?chat models (?:we measured |that )?answer[^.]*\./g
+const markOffences = []
+for (const file of docsFiles(docsRoot)) {
+  for (const hit of plainText(readFileSync(file, 'utf8')).match(markRatio) ?? []) {
+    if (hit !== MARK_SENTENCE) markOffences.push(`${file.slice(docsRoot.length - 4)}: ${hit}`)
+  }
+}
+assert.equal(
+  markOffences.length,
+  0,
+  `every mark ratio in docs/ has to read as the decision writes it: ${markOffences.length} deviation(s) [${markOffences.join(' | ')}]`,
+)
+const markSentences = docsFiles(docsRoot)
+  .map((file) => (plainText(readFileSync(file, 'utf8')).match(markRatio) ?? []).length)
+  .reduce((a, b) => a + b, 0)
+assert.ok(markSentences >= 3, `the mark sentence stands in ${markSentences} place(s) in docs/, expected at least 3`)
+console.log(`Denominator guard passed: ${MARKED_MODELS} of ${measuredSize} measured and ${catalogSize} in the catalogue, identical on ${zahlenseiten.length} sales pages, and the mark sentence is word-identical in ${markSentences} place(s).`)
 // ── Der Wolkenschalter im Desktop ────────────────────────────────────
 //
 // Die Oberflaeche zeigt diese Zahlen, BEVOR jemand angemeldet ist, also bevor
@@ -216,6 +260,59 @@ assert.equal(pitch.videoModels, countKind('video'), 'pitch: video model count dr
 console.log(`Cloud switch guard passed: ${pitch.unfilteredChatModels}/${pitch.chatModels} chat, ${pitch.flashModels} flash, ${pitch.imageModels} image and ${pitch.videoModels} video match the web catalogue.`)
 
 console.log(`Pricing guard passed: ${tiers.filter((t) => typeof t.monthlyEUR === 'number').length} plans, ${packs.length} packs, ${unfilteredFull}/${catalogSize} models and the ${daily.toLocaleString('en-US')} token ceiling match the web source.`)
+
+// ── Die sechs Erwachsenen-Videomodelle auf der LUC-Preisseite ────────
+//
+// Entscheid David (R3-8, 12.09.2026): die sechs Endpunkte ohne eingebaute
+// Inhaltsbeschraenkung stehen mit Namen und Credit-Preis je Clip auf der
+// LUC-Preisseite. lu-labs.ai bleibt unberuehrt; dort haelt keptOffThisDomain
+// sie weiter von der Zahlungsdomain fern, und genau deshalb darf diese Seite
+// nicht von der Kaufseite abgeschrieben werden. Namen und Preise kommen aus
+// dem Katalog: cloud-models.ts liefert Id und Etikett, credits.ts den
+// Dollarsatz und den Credit-Kurs. Eine Tokenmenge je Geld steht nirgends.
+const mediaText = mediaSource.getFullText()
+const adultVideo = mediaText.split('\n')
+  .filter((line) => /kind: 'video'/.test(line) && /adult: true/.test(line) && !/ops: \[/.test(line))
+  .map((line) => ({ id: /id: '([^']+)'/.exec(line)?.[1], label: /label: '([^']+)'/.exec(line)?.[1] }))
+assert.ok(adultVideo.length > 0 && adultVideo.every((row) => row.id && row.label), 'adult video rows unreadable')
+const creditsText = readWeb('apps/web/lib/billing/credits.ts')
+const creditUsd = Number(/export const CREDIT_USD = ([0-9.e-]+)/.exec(creditsText)?.[1])
+assert.ok(creditUsd > 0, 'CREDIT_USD not found in credits.ts')
+const priceTable = /export const MEDIA_MODEL_USD[^{]*\{([\s\S]*?)\n\}/.exec(creditsText)?.[1]
+assert.ok(priceTable, 'MEDIA_MODEL_USD not found in credits.ts')
+const clipPrice = (id) => {
+  const hit = new RegExp(`'${id.replaceAll('.', '\\.')}': \\{ base: ([0-9.]+)(, long: ([0-9.]+))?`).exec(priceTable)
+  assert.ok(hit, `no base price for ${id} in MEDIA_MODEL_USD`)
+  return { base: Number(hit[1]), long: hit[3] === undefined ? undefined : Number(hit[3]) }
+}
+const adultRows = [...pricing.querySelectorAll('[data-adult-video-row]')]
+assert.equal(
+  adultRows.length,
+  adultVideo.length,
+  `docs/pricing/index.html: the page lists ${adultRows.length} adult video models, the catalogue has ${adultVideo.length}`,
+)
+adultVideo.forEach((model, index) => {
+  const row = adultRows[index]
+  const name = row.querySelector('[data-adult-model-id]')
+  assert.ok(name, `docs/pricing/index.html: adult video row ${index + 1} carries no model anchor`)
+  assert.equal(name.dataset.adultModelId, model.id, `docs/pricing/index.html: adult video id drift in row ${index + 1}`)
+  assert.equal(name.textContent, model.label, `docs/pricing/index.html: adult video label drift for ${model.id}`)
+  const cell = row.querySelector('[data-clip-credits]')
+  assert.ok(cell, `docs/pricing/index.html: no clip price anchor for ${model.id}`)
+  const price = clipPrice(model.id)
+  const credits = Math.ceil(price.base / creditUsd)
+  assert.equal(Number(cell.dataset.clipCredits), credits, `docs/pricing/index.html: clip price drift for ${model.id}`)
+  assert.equal(cell.textContent, credits.toLocaleString('en-US'), `docs/pricing/index.html: clip price text drift for ${model.id}`)
+  // Der Satz daneben sagt "five seconds, no eight second option". Er haengt
+  // daran, dass die sechs in der Preistabelle keinen 8-Sekunden-Satz haben;
+  // clipLengths blendet den Knopf genau daran aus (R3-8).
+  assert.equal(price.long, undefined, `docs/pricing/index.html: ${model.id} now has an 8s rate, the five-second sentence is stale`)
+})
+assert.ok(
+  /renders a clip of five seconds/.test(pricingRaw),
+  'docs/pricing/index.html: the adult video block no longer states the clip length it prices',
+)
+console.log(`Adult video guard passed: ${adultRows.length} endpoints with catalogue names and ${adultRows.map((r) => r.querySelector('[data-clip-credits]').dataset.clipCredits).join('/')} credits per five second clip, all from the web source.`)
 // ── Die zwoelf Motoren, Name fuer Name ──────────────────────────────
 //
 // Die Anzahl stimmte schon, der zwoelfte Name nicht: die Sprachmodell-Dateien
@@ -456,24 +553,58 @@ assert.equal(
 )
 console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 comparison pages, and planPays still requires an account that has paid.')
 
-// ── Das Handbuch spricht dem Paketkunden nichts ab ──────────────────
+// ── Entscheid V3: die Freimenge haengt an einem laufenden Abo ───────
 //
-// planPays ist true, sobald Geld angekommen ist: ein Paketkauf schreibt eine
-// starter-Lizenz und setzt paidBefore, also zahlt das Konto. Die Bedingung ist
-// "hat je gezahlt", nicht "haelt einen Plan". Solange die Regel so lautet, darf
-// das Handbuch dem Paketkunden die Freimenge nicht absprechen.
+// Entscheid David vom 12.09.2026 zum Zusatzfund V3: ein einmaliger Pack von
+// 5 Euro oeffnet die Freimenge NICHT auf Dauer. Die Bedingung heisst kuenftig
+// "laufendes bezahltes Abo", nicht "hat je einmal gezahlt".
+//
+// Geprueft wird hier der Wortlaut und nicht die Regel, weil der Code im Web
+// nachzieht und nicht mir gehoert: `planPays` haengt heute noch an
+// `paidBefore` (apps/web/lib/pricing.ts), also an "je gezahlt". Sobald W-API
+// das laufende Abo verlangt, wird aus der Wortlautschranke wieder eine
+// Codeschranke, eine Zeile. Bis dahin ist die alte Formulierung in docs/
+// verboten und die neue an vier Flaechen Pflicht, damit keine Seite den
+// Paketkunden weiter zur Freimenge einlaedt.
 const handbookText = readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')
-if (flashNeedsPaidAccount) {
+const cloudRaw = readFileSync(new URL('../docs/cloud/index.html', import.meta.url), 'utf8')
+const homeRaw = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
+const staleFlashWording = docsFiles(docsRoot).filter((path) =>
+  /never paid|paid-plan benefit|is a paid benefit/i.test(readFileSync(path, 'utf8')),
+)
+assert.equal(
+  staleFlashWording.length,
+  0,
+  `the Flash allowance needs an active plan now, so "has never paid" may not stand in docs/: ${staleFlashWording.length} page(s) [${staleFlashWording.map((path) => path.slice(docsRoot.length + 1)).join(', ')}]`,
+)
+for (const [name, raw] of [
+  ['docs/guide/cloud/index.html', handbookText],
+  ['docs/pricing/index.html', pricingRaw],
+  ['docs/cloud/index.html', cloudRaw],
+  ['docs/index.html', homeRaw],
+]) {
   assert.ok(
-    !/pack without a plan does not get it/i.test(handbookText),
-    'docs/guide/cloud/index.html: planPays counts a paid pack, so the handbook may not exclude it',
+    /accounts without an active plan keep paying credits/i.test(raw),
+    `${name}: the condition an account without an active plan really meets is missing`,
   )
-  assert.ok(
-    /an account that has never paid does not get it/i.test(handbookText),
-    'docs/guide/cloud/index.html: the condition planPays really applies is missing',
-  )
+  assert.ok(/on an active paid plan/.test(raw), `${name}: the Flash allowance is not tied to an active plan`)
 }
-console.log('Handbook guard passed: the Flash condition reads as planPays writes it, paid once rather than plan held.')
+assert.ok(
+  !/pack without a plan does not get it/i.test(handbookText),
+  'docs/guide/cloud/index.html: say what a pack does instead of only what it does not',
+)
+assert.ok(
+  /a credit pack on its own does not open it/i.test(handbookText),
+  'docs/guide/cloud/index.html: the handbook has to say that a pack alone does not open the allowance',
+)
+// Die Wortlautschranke haengt trotzdem an einer Codeaussage: faellt die
+// Zahlungsbedingung ganz aus planPays heraus, ist der ganze Absatz falsch.
+assert.ok(flashNeedsPaidAccount, 'planPays no longer requires a paying account at all, the whole Flash wording is stale')
+assert.ok(
+  /never paid/i.test(readWeb('apps/web/lib/pricing.ts')),
+  'planPays seems to have moved to an active plan: tie this guard back to the code',
+)
+console.log('Handbook guard passed: 0 pages in docs/ promise the allowance to an account that paid once, and 4 surfaces name the active plan.')
 
 // ── Das Wort Flash ist kein Kriterium ───────────────────────────────
 //
@@ -496,6 +627,42 @@ if (flashByNameOnly.length > 0) {
   )
 }
 console.log(`Flash-class guard passed: the handbook names the class and not the word, with ${flashByNameOnly.length} catalogue entry carrying Flash in the name without the class.`)
+
+// ── Die Marke der Flash-Klasse heisst wieder "No credits" ───────────
+//
+// Entscheid David vom 12.09.2026 zum Wortlaut, den der Verfasser der
+// Logikkontrolle selbst gesetzt hatte: das Etikett heisst nicht "Included",
+// sondern wieder "No credits", weil "Included" nicht sagt, worin etwas
+// enthalten ist, und der Tooltip daneben ohnehin "No credits" sagte.
+//
+// Die Doku geht voran, die beiden Apps ziehen nach: FLASH_MARK_LABEL steht in
+// src/lib/flash-entitlement.ts und gehoert D-UI, das Web-Gegenstueck W-UI.
+// Geprueft wird deshalb, dass docs/ das alte Etikett nirgends mehr in
+// Anfuehrungszeichen fuehrt (die Vergleichsseite darf "Included usage" eines
+// Wettbewerbers weiter nennen, das ist kein Etikett von uns) und dass das
+// Handbuch an beiden Stellen die Entscheidform traegt. Der laufende Wert der
+// Apps wird mitgedruckt, damit ein Auseinanderlaufen sichtbar ist, statt
+// still zu bleiben; sobald beide Apps nachgezogen sind, wird aus der Zeile
+// eine Gleichheitspruefung, eine Zeile.
+const FLASH_MARK_DECISION = 'No credits'
+const markLabelSource = readFileSync(new URL('../src/lib/flash-entitlement.ts', import.meta.url), 'utf8')
+const markLabel = /FLASH_MARK_LABEL = '([^']+)'/.exec(markLabelSource)?.[1]
+assert.ok(markLabel, 'FLASH_MARK_LABEL not found in src/lib/flash-entitlement.ts')
+const labelOffences = docsFiles(docsRoot).filter((path) => /"Included"|&quot;Included&quot;/.test(readFileSync(path, 'utf8')))
+assert.equal(
+  labelOffences.length,
+  0,
+  `the Flash mark is called "${FLASH_MARK_DECISION}" now: ${labelOffences.length} page(s) still quote "Included" [${labelOffences.map((path) => path.slice(docsRoot.length + 1)).join(', ')}]`,
+)
+assert.ok(
+  handbookText.includes(`The picker marks them with "${FLASH_MARK_DECISION}".`),
+  `docs/guide/cloud/index.html: the picker mark is not named as "${FLASH_MARK_DECISION}"`,
+)
+assert.ok(
+  handbookText.includes(`<li>"${FLASH_MARK_DECISION}", with the tooltip`),
+  `docs/guide/cloud/index.html: the mark list does not lead with "${FLASH_MARK_DECISION}"`,
+)
+console.log(`Flash-mark guard passed: the handbook calls the mark "${FLASH_MARK_DECISION}" twice and 0 pages in docs/ quote "Included" (the desktop app still ships "${markLabel}", D-UI and W-UI pull it).`)
 
 // ── Das Datum der Messung, einmal ───────────────────────────────────
 //
@@ -577,3 +744,41 @@ for (const datei of ['llms.txt', 'llms-full.txt']) {
   assert.equal(angaben.length, 1, `docs/${datei}: ${angaben.length} current-version statements, expected exactly one`)
 }
 console.log(`Version guard passed: every current-version claim on the home page and in the language-model files says ${appVersion}, the version package.json carries.`)
+
+// ── Der Changelog-Abschnitt der laufenden Version ────────────────────
+//
+// CHANGELOG.md wird auf GitHub gespiegelt und endete bis zum 12.09.2026 bei
+// 2.6.9, obwohl alle fuenf Manifeste auf 3.0.0 stehen. Der Abschnitt haengt
+// jetzt an denselben Quellen wie die Verkaufsseiten, damit er nicht die
+// zweite, freie Fassung derselben Zahlen wird.
+//
+// Geprueft wird ohne Zeilenumbrueche, weil der Changelog auf 80 Zeichen
+// umgebrochen ist und ein Satz deshalb ueber drei Zeilen laeuft. Ein
+// getippter Zeilenumbruch darf einen Wortlaut nicht durchrutschen lassen.
+const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8')
+const changelogSection = changelog.split(/^## \[/m).find((part) => part.startsWith(`${appVersion}]`))
+assert.ok(changelogSection, `CHANGELOG.md carries no section for ${appVersion}, the version package.json says`)
+const flat = changelogSection.replace(/\s+/g, ' ')
+// Der Satz zur Freimenge, Entscheid V3, zeichengleich.
+const FLASH_SENTENCE =
+  `${flashInCatalog} of the ${catalogSize} models in the catalogue cost no credits at all in chat on an active paid plan, up to ${daily.toLocaleString('en-US')} input and output tokens per day. API keys keep paying credits, and accounts without an active plan keep paying credits too.`
+assert.ok(flat.includes(FLASH_SENTENCE), `CHANGELOG.md ${appVersion}: the Flash sentence does not read as the decision writes it`)
+// Der Satz zur Marke, Entscheid R6-5, derselbe wie in docs/.
+assert.ok(flat.includes(MARK_SENTENCE), `CHANGELOG.md ${appVersion}: the mark sentence does not read as the decision writes it`)
+// Keine veraltete Schwelle, keine alte Bedingung, kein altes Etikett.
+for (const [pattern, why] of [
+  [/\b27 of the\b/, 'the old mark threshold'],
+  [/never paid/i, 'the old Flash condition'],
+  [/"Included"/, 'the old Flash mark label'],
+  [/welcome credits/i, 'the welcome credits, which are switched off'],
+]) {
+  assert.ok(!pattern.test(flat), `CHANGELOG.md ${appVersion}: ${why} is still in the section`)
+}
+// Keine Gedankenstriche in dem Abschnitt. Der Altbestand der aelteren
+// Abschnitte bleibt unberuehrt, Entscheid David zu R6-21.
+const changelogDashes = changelogSection.match(/[–—]|&[mn]dash;/g) ?? []
+assert.equal(changelogDashes.length, 0, `CHANGELOG.md ${appVersion}: ${changelogDashes.length} typographic dash(es) in the new section`)
+// Nirgends, wie viele Tokens Geld kauft. Dieselbe Regel wie auf den Seiten.
+const tokensForMoney = /(EUR|USD|euro|credits?)[^.]{0,60}\b(buys?|gets?|worth)\b[^.]{0,40}tokens/i
+assert.ok(!tokensForMoney.test(flat), `CHANGELOG.md ${appVersion}: a sentence says how many tokens money buys`)
+console.log(`Changelog guard passed: the ${appVersion} section carries the mark sentence and the Flash sentence word for word, with 0 typographic dashes and 0 token-per-money claims.`)

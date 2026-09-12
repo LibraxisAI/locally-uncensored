@@ -127,7 +127,7 @@
 <tr><td>Credits</td><td>The unit LU Cloud meters in. One shared wallet pays for chat, images and clips at each model's rate. Plans refill it monthly; packs add to it once and never expire.</td></tr>
 <tr><td>CUDA, ROCm, Vulkan</td><td>Three ways software drives a graphics card. CUDA is NVIDIA's; ROCm is AMD's; Vulkan is a standard every vendor supports. The LU Engine uses Vulkan. ComfyUI's PyTorch uses CUDA on NVIDIA and ROCm on AMD where a build exists.</td></tr>
 <tr><td>Embedding model</td><td>A small model that turns text into numbers so matching passages can be found. Document chat needs one (nomic-embed-text). It never writes an answer.</td></tr>
-<tr><td>Flash</td><td>A class of hosted chat models that answer without credits on a paid plan, inside the apps, up to a published daily token ceiling, one request at a time. Chapter 8.</td></tr>
+<tr><td>Flash</td><td>A class of hosted chat models that answer without credits on an active paid plan, inside the apps, up to a published daily token ceiling, one request at a time. Chapter 8.</td></tr>
 <tr><td>GGUF</td><td>The file format of the models the LU Engine, Ollama and LM Studio run. A GGUF file carries the model and its metadata in one file. A GGUF that does not start with the GGUF marker is a broken download.</td></tr>
 <tr><td>GPU layers, offload</td><td>A model is a stack of layers. The engine puts as many as fit on the card ("offload") and the rest on the processor. "GPU layers" under LU Engine (expert) overrides the choice: -1 all, 0 none, N a number.</td></tr>
 <tr><td>KV cache</td><td>The memory where the model keeps the conversation while it works. It grows with the context length, which is why a large context needs a large card.</td></tr>

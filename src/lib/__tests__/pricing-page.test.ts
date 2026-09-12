@@ -42,8 +42,14 @@ it('names the switch in the same breath as the capability behind it', () => {
   expect(text()).toMatch(/18 or older/i)
 })
 
-it('says that unmetered is a paid benefit, not a free tier', () => {
-  expect(text()).toMatch(/never paid/i)
+// Entscheid David vom 12.09.2026 zum Zusatzfund V3: ein einmaliger Pack
+// oeffnet die Freimenge nicht auf Dauer. Die Bedingung heisst seitdem
+// "laufendes bezahltes Abo" und nicht mehr "hat je gezahlt", also darf die
+// alte Formulierung hier auch nicht mehr verlangt werden.
+it('says that unmetered needs an active plan, not a euro once', () => {
+  expect(text()).toMatch(/needs an active paid plan/i)
+  expect(text()).toMatch(/accounts without an active plan keep paying credits/i)
+  expect(text()).not.toMatch(/never paid/i)
   expect(text()).toMatch(/no free tier/i)
   expect(text()).toMatch(/API keys always pay credits/i)
 })

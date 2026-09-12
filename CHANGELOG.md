@@ -2,6 +2,165 @@
 
 All notable changes to Locally Uncensored are documented here.
 
+## [3.0.0] - 2026-09-12
+
+Measured instead of promised, and Flash chat that costs nothing on an active
+plan. Every cloud chat model was asked the same question twice, only the ones
+that answered in full carry a mark, your account has a content policy setting
+of its own, and the sampling controls sit next to the prompt.
+
+**Known in this release:** a 2 GB card can still turn a small model into
+garbage. The layer count is measured against the card now, and the engine reads
+its own first answer and restarts itself if it looks wrong. That should help,
+but no such card exists in the house, so the report stays open.
+
+### Added
+
+- **A "No refusals" mark that comes from a measurement.** 24 of the 46 cloud
+  chat models we measured answer in full without refusing, and only those carry
+  the No refusals mark. Each model was asked the same question twice and judged
+  on what came back, not on whether the reply started with a refusal sentence.
+  The catalogue holds 47 chat models; the one that joined after the run carries
+  no mark until it is measured. The mark sits in the model picker and above the
+  prompt, and it never comes from the model name.
+- **A Flash class that costs nothing inside the apps.** 12 of the 47 models in
+  the catalogue cost no credits at all in chat on an active paid plan, up to
+  500,000 input and output tokens per day. API keys keep paying credits, and
+  accounts without an active plan keep paying credits too. The ceiling resets at
+  00:00 UTC, one free request runs at a time, and the picker marks those models
+  with "No credits".
+- **A content policy setting in your account:** Strict, Standard, or off after
+  you confirm in the same step that you are 18 or older. It applies to cloud
+  image and video, the server stamps the confirmation itself, and switching back
+  to another option clears it, so re-opening asks again. The setting reads the
+  same in the desktop app and in the browser because it is one setting behind
+  one route, not two copies.
+- **Six video models and three image models without a built-in content
+  restriction.** Every one of the video ones starts from a picture, so in the
+  browser studio a finished image has an Animate button that carries it straight
+  over.
+- **Sampling controls next to the model picker:** temperature, top P and answer
+  length. They open as a small window above the prompt row, with an x to close
+  it, so nothing you are typing moves out from under you; Escape and a click
+  beside it close it too. The current temperature is visible on the closed
+  button, and one reset covers all of them. A help line says that reasoning
+  models accept these and react less to them, instead of hiding the control. Top
+  K stays on the settings page, next to the backends that read it.
+- **The context window of a custom OpenAI-compatible backend is asked for, not
+  guessed.** The number carries a label saying where it came from, the context
+  picker is available for your own backend, and no guessed budget is sent as a
+  maximum answer length any more.
+- **A beginner handbook on locallyuncensored.com:** a hub plus ten chapters,
+  from what it is and installing through chat, agent, code, create, cloud,
+  settings and a glossary. Every fact in it comes from the code.
+
+### Changed
+
+- **The default persona has a real role again.** It used to be an empty system
+  prompt, and an empty prompt is not neutral: the model falls back to whatever it
+  was trained to be. It now states the role and nothing else, no content rule in
+  either direction, and Chat, Agent and Coding all send that same baseline.
+- **The old "(unrestricted)" suffix is gone from model names.** It was
+  inherited, it was wrong on at least two models, and a name is not evidence.
+- **The Cloud switch says what it is for, with real numbers.** Hovering it gives
+  three lines in a fixed order: 24 of the 46 chat models we measured answer
+  without refusing, 12 of the 47 in the catalogue cost no credits at all in chat
+  up to 500,000 tokens a day on an active paid plan, and 47 chat, 10 image and 11
+  video models run on our GPUs. Every number is tied to its source by a test, so
+  the switch cannot promise a number the catalogue no longer has.
+- **Your memories are two separate collections now,** one on this machine and
+  one on your signed-in account, and they stay apart. A memory can be marked
+  sensitive and is then left out of requests to a model, a memory can carry a
+  project so it is only used inside it, and an answer shows which memories it
+  used. Syncing the account collection stays off until you tick two boxes that
+  are never ticked for you, nothing syncs in the background, and a sync run can
+  be cancelled. Marking a memory sensitive does not remove copies that already
+  went to the cloud, and the panel says so.
+- **Remote Access starts, stops and restarts in order.** The commands no longer
+  overlap, stopping withdraws access straight away, and a changed memory
+  invalidates the sessions that were built on it.
+- **The package descriptions say what the app needs and what it does on the
+  network**, instead of promising a zero-setup, device-only install.
+- **The refusal message for cloud media names the setting and where to find
+  it.** It used to say hosted rendering cannot do this at all, which sent people
+  to a local backend for something that was a setting.
+- **Models under 7B carry a plain warning in the catalogue** and are no longer
+  offered as a starting pick for chat.
+- **The pricing page lists the credit packs before the plans.**
+- **locallyuncensored.com no longer promises a Mac build**, and two
+  documentation pages give the video model count of the current catalogue.
+
+### Fixed
+
+- **Every start checks for updates again, and the sentence about being up to
+  date carries its date.** The check on startup ran into the six-hour cap and
+  was swallowed on a machine that was already current, so someone who restarts
+  the app often never got an automatic check at all. The tester started LU three
+  times in a row and nothing went out. Startup now forces a check once the last
+  one is more than fifteen minutes old, and the settings panel prints "Last
+  checked 3m ago" next to the sentence about being up to date, so you can see
+  whether anyone looked.
+- **The Dismiss button on the stale model banner tells the truth.** It used to
+  say the notice would come back on the next launch, and it has not worked that
+  way since 2.5.9. It now reads "Dismiss. It comes back only when a different
+  model goes stale.", which is what the code does.
+- **Training a character LoRA no longer dies with the libuv error on Windows.**
+  The trainer started a distributed launcher that switched to multi-GPU mode on
+  machines with two cards; it now runs the training script directly, on one
+  card. The error text of a failed run is readable, scrollable and can be
+  copied.
+- **When the engine exits before it serves, the log file says why:** the full
+  command line, the exit code, the memory the card reported and the number of
+  layers it was given. A card that is too small for the model gets a measured
+  layer count instead of all of them, and if the first start still fails the
+  second runs on the processor and says so, in the status line and in the engine
+  details.
+- **The engine checks its own first answer and restarts itself if it is
+  garbage.** Right after the health probe it answers one fixed question on this
+  machine only, and a classifier judges the shape of the reply. If it looks
+  wrong the engine restarts, and the app says which step it took.
+- **Stop means stop.** A finished background agent no longer wakes the main
+  agent into a hidden turn, a stop between two loop passes ends the loop, and a
+  shell command the agent started is killed with it.
+- **The agent can leave a workspace folder.** The x on the folder pill drops it
+  and forgets the remembered default with it, in new chats and in old ones, and
+  the agent falls back to ~/agent-workspace until you pick a new one. That is
+  what made changing the folder feel useless before. Remembered folders are
+  checked before they are used, the folder lock names Stop as the way out and
+  only holds during a real run, and one folder is one entry in the list.
+- **The Code tab says why a folder was refused** instead of accepting it and
+  then failing on every file. A turn cut off at the token limit now says so in
+  the answer, with the plan step it stopped on, instead of ending without a
+  word, and the Agent tab reports a cut-off turn the same way.
+- **The Expert section in Create is hidden when it has nothing to show** for the
+  current lane, instead of being shown empty, and in local mode it keeps its
+  controls.
+- **The image install that finished at the promised size with two empty folders
+  is repaired.** The installer now reads the file list and the required set from
+  the repository itself, spots missing, empty, stale and truncated files,
+  refetches only the broken one and checks it. This is GitHub 127.
+- **The Get button asks the running image backend where its models go**, so a
+  download lands in the folder the picker actually reads, including installs
+  that were started with their own base directory.
+- **Repairing the image backend proves the start instead of claiming it.** After
+  the packages it runs the card through one real operation and then the
+  backend's own quick test, and a failure reports the real error line rather
+  than success.
+- **The refusal when a model site needs an API key points at the right screen**,
+  naming the exact settings section that holds the key field.
+- **A LAN OpenAI slot is no longer treated as a paid provider**, so its answers
+  are not capped as if they cost money.
+- **Linux: the window workarounds only run under Wayland now**, X11 is left
+  alone, and the console names the off switch for each one. A local copy of the
+  window library on the system is preferred over the bundled one.
+- **The runaway question mark output from the local engine has a stop.**
+- **A visible notice that personas travel from PC to phone and not back**, and
+  workspace security wording that describes the real boundary instead of a
+  stronger one.
+- **One typographic dash removed from shipped interface text**, plus two small
+  English fixes: the button text in the Local API panel, and the Remote Access
+  help text, which said three switches where there are four.
+
 ## [2.6.9] - 2026-09-08
 
 ### Fixed
