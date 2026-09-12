@@ -67,6 +67,11 @@ export interface CloudMe {
     /** Launch gate (Max-only closed beta): false = licensed but not yet
      *  allowed in. Absent on older servers = allowed. */
     access?: boolean
+    /** Has this account actually paid? The server runs the very function it
+     *  runs before billing a Flash turn, so the marks on screen cannot promise
+     *  what the invoice contradicts. Absent on older servers = unknown, which
+     *  every surface reads as "promise nothing". */
+    paidPlan?: boolean
   }
 }
 

@@ -5,11 +5,21 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { FlashChatNotice } from '../FlashChatNotice'
 import { useModelStore } from '../../../stores/modelStore'
 import { captureFlashGeneration, clearFlashNotices, parseFlashPolicy, recordFlashResponse, useFlashBillingStore } from '../../../lib/flash-ui'
+import { FLASH_UNPAID_NOTICE } from '../../../lib/flash-entitlement'
+import { useCloudAuthStore } from '../../../stores/cloudAuthStore'
 
 const wire = { daily_tokens: 50000, default_max_output: 8192, request_seconds: 240, sessions_only: true, concurrent_requests: 1 }
 const policy = parseFlashPolicy(wire, 'flash', 'test-endpoint|model')!
+const signIn = (paidPlan: boolean | null) =>
+  useCloudAuthStore.getState().setSignedIn(
+    { id: 'u1' },
+    { licenseActive: true, tier: 'hosted', access: true, quota: null, paidPlan },
+  )
+
 beforeEach(() => {
   useFlashBillingStore.setState({ entries: {} })
+  // Die bestehenden Faelle beschreiben das zahlende Konto.
+  signIn(true)
   useModelStore.setState({ activeModel: 'test-model', models: [{
     name: 'test-model', model: 'test-model', size: 0, type: 'text', provider: 'openai', providerName: 'Test', flash: policy,
   }] })
@@ -80,5 +90,44 @@ describe('visible flash policy and billing', () => {
     expect(parseFlashPolicy(wire, 'anything', 'key')).toBeUndefined()
     recordFlashResponse(policy.billingKey, new Response('', { headers: { 'x-lu-chat-billing': 'credits' } }))
     expect(useFlashBillingStore.getState().entries).toEqual({})
+  })
+})
+
+/**
+ * R5-18: der stehende Satz versprach die Freimenge ohne jede Bedingung. T7 hat
+ * am 11.09.2026 das Gegenteil gemessen: dieselbe Zusage wie beim Planbesitzer,
+ * und ein Credit war weg. Drei Zustaende, drei Ausgaben, wie im Web.
+ */
+describe('was der Satz ueber das Konto sagt', () => {
+  it('reads one honest sentence on an account that pays for these models', () => {
+    signIn(false)
+    render(createElement(FlashChatNotice))
+    expect(screen.getByTestId('flash-chat-notice').textContent).toBe(FLASH_UNPAID_NOTICE)
+    expect(screen.queryByText(/50,000 input and output tokens/)).toBeNull()
+  })
+
+  it('says nothing at all while the account probe has not answered', () => {
+    signIn(null)
+    render(createElement(FlashChatNotice))
+    expect(screen.queryByTestId('flash-chat-notice')).toBeNull()
+  })
+
+  it('keeps the full allowance text for a paid plan', () => {
+    signIn(true)
+    render(createElement(FlashChatNotice))
+    expect(screen.getByText(/50,000 input and output tokens/)).toBeTruthy()
+    expect(screen.queryByText(FLASH_UNPAID_NOTICE)).toBeNull()
+  })
+
+  it('stays silent for a model without the free class, whatever the plan', () => {
+    const row = useModelStore.getState().models[0]
+    if (!('flash' in row)) throw new Error('Expected the flash model fixture')
+    useModelStore.setState({ models: [{ ...row, flash: undefined }] })
+    for (const plan of [true, false, null] as const) {
+      cleanup()
+      signIn(plan)
+      render(createElement(FlashChatNotice))
+      expect(screen.queryByTestId('flash-chat-notice')).toBeNull()
+    }
   })
 })

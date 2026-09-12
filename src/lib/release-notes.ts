@@ -77,7 +77,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         items: [
           `The cloud chat models in the catalogue were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} answer in full. Four answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet. We have measured it since.`,
           'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
-          'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number.',
+          'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "Included" for the Flash class with its real daily number. The second one only shows on a plan that pays for it, because on any other account those models cost credits.',
           'Chroma, Prefect Pony XL, Neta Lumina and the six new video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.',
         ],
       },
