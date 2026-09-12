@@ -538,3 +538,42 @@ assert.equal(
   `lu-labs.ai publishes a smaller video count, so no blog sentence may link a count to its pricing page: ${linkedCountClaims.length} sentence(s) [${linkedCountClaims.join(', ')}]`,
 )
 console.log('Blog guard passed: 0 video-model counts linked to the lu-labs.ai pricing page, where keptOffThisDomain publishes a smaller set.')
+
+// ── Eine Stelle haelt die Version, alle anderen werden geprueft ─────
+//
+// package.json ist die Wahrheit. Die Seiten sind statisch, also darf die Zahl
+// dort stehen, aber keine Seite darf sie aus dem Gedaechtnis tragen. Geprueft
+// werden genau die Stellen, die eine AUSSAGE ueber die laufende Version sind;
+// historische Versionen in den Blogzeilen und in der Aenderungsliste bleiben
+// unangetastet.
+const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const versionClaims = [
+  /"softwareVersion":"([^"]+)"/g,
+  /&middot; (\d+\.\d+\.\d+)</g,
+  /New in (\d+\.\d+\.\d+)/g,
+  /full (\d+\.\d+\.\d+) changelog/g,
+  /Current [Vv]ersion: v?(\d+\.\d+\.\d+)/g,
+  /^- Version: v?(\d+\.\d+\.\d+)/gm,
+]
+const versionDrift = []
+for (const datei of ['index.html', 'llms.txt', 'llms-full.txt']) {
+  const text = readFileSync(new URL(`../docs/${datei}`, import.meta.url), 'utf8')
+  for (const muster of versionClaims) {
+    for (const treffer of text.matchAll(muster)) {
+      if (treffer[1] !== appVersion) versionDrift.push(`${datei}: ${treffer[0].trim()}`)
+    }
+  }
+}
+assert.equal(
+  versionDrift.length,
+  0,
+  `package.json says ${appVersion}, so every current-version claim says it: ${versionDrift.length} stale claim(s) [${versionDrift.join(', ')}]`,
+)
+// Genau eine Angabe je Datei, damit sich nicht zwei Stellen widersprechen
+// koennen, wie llms-full.txt es zehn Zeilen auseinander tat.
+for (const datei of ['llms.txt', 'llms-full.txt']) {
+  const text = readFileSync(new URL(`../docs/${datei}`, import.meta.url), 'utf8')
+  const angaben = [...text.matchAll(/Current [Vv]ersion: v?\d+\.\d+\.\d+/g), ...text.matchAll(/^- Version: v?\d+\.\d+\.\d+/gm)]
+  assert.equal(angaben.length, 1, `docs/${datei}: ${angaben.length} current-version statements, expected exactly one`)
+}
+console.log(`Version guard passed: every current-version claim on the home page and in the language-model files says ${appVersion}, the version package.json carries.`)
