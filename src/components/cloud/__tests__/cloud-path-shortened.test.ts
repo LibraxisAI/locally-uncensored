@@ -60,33 +60,98 @@ describe('the example-video stage is gone', () => {
   })
 })
 
-describe('the in-app login survives wherever Get LU Cloud leads', () => {
-  it('the sign-in entry appears on the intro step, not only on plans', () => {
-    // Two occurrences: one per signed-out step. One occurrence means the intro
-    // step lost it again, which is the regression this file is here for.
-    const entries = gate.match(/Already got an account\? Sign in/g) ?? []
-    expect(entries.length, 'sign-in entry must be on BOTH signed-out steps').toBe(2)
+/**
+ * Dieselbe Absicht, neue Form (David, 13.09.2026).
+ *
+ * Der abgemeldete Weg hatte drei Schritte (Hero, Plaene, Anmeldung) und der
+ * Waechter verlangte den Anmeldeeinstieg auf ZWEI davon, weil er auf dem
+ * mittleren allein zu leicht verschwand. Seit dem Verkaufs-Panel gibt es nur
+ * noch zwei Schritte: das Panel und die Anmeldung. Der Zwischenschritt ist
+ * geloescht, also kann der Einstieg auch nur noch einmal vorkommen.
+ *
+ * Was der Waechter schuetzt, bleibt damit unveraendert: wer schon zahlt, muss
+ * von der ersten Flaeche aus in die Anmeldung kommen, ohne vorher auf etwas zu
+ * klicken, das nach Kaufen aussieht. Nur die Stelle, an der das geprueft wird,
+ * ist mitgewandert. Die Zahl 2 durch 1 zu ersetzen und sonst nichts waere die
+ * faule Variante gewesen: sie haette auch dann noch gegriffen, wenn der
+ * Einstieg in den Kaufknopf gerutscht waere.
+ */
+describe('the in-app login survives wherever the sales panel leads', () => {
+  it('the sign-in entry sits on the sales panel, exactly once', () => {
+    const entries = gate.match(/Already subscribed\? Sign in/g) ?? []
+    expect(entries.length, 'sign-in entry must be on the sales panel').toBe(1)
+    // Der alte Wortlaut darf nicht danebenstehen bleiben.
+    expect(gate).not.toMatch(/Already got an account/)
   })
 
-  it('both entries actually reach the login step', () => {
-    const toLogin = gate.match(/setStep\('login'\)/g) ?? []
-    expect(toLogin.length).toBeGreaterThanOrEqual(2)
-  })
-
-  it('the intro step carries one of them', () => {
-    // Cut the intro branch out at the plans branch, so the assertion cannot
-    // pass on the plans copy.
-    const start = gate.indexOf("step === 'intro' ? (")
-    const end = gate.indexOf("step === 'plans' ?")
-    expect(start, 'intro branch not found').toBeGreaterThan(-1)
-    expect(end, 'plans branch not found').toBeGreaterThan(start)
-    const intro = gate.slice(start, end)
-    expect(intro).toMatch(/Already got an account\? Sign in/)
-    expect(intro).toMatch(/setStep\('login'\)/)
-  })
-
-  it('the login step is still reachable back from plans', () => {
+  it('it reaches the login step', () => {
+    expect(gate).toMatch(/setStep\('login'\)/)
     expect(gate).toMatch(/step === 'login'/)
-    expect(gate).toMatch(/Back to plans/)
+  })
+
+  it('the entry is inside the sales panel, not somewhere else in the file', () => {
+    // Aus dem Panel herausgeschnitten, damit die Zusicherung nicht an einer
+    // Kopie irgendwo sonst im Tor vorbeigeht.
+    // Ende am Kommentar der naechsten Funktion, nicht an deren Kopf: der
+    // Kommentar von `CloudHero` traegt einen Gedankenstrich aus der Zeit, als
+    // die noch erlaubt waren, und der faellt sonst dem Panel zur Last.
+    const start = gate.indexOf('function CloudSalesPanel(')
+    const end = gate.indexOf('/** The LU monogram')
+    expect(start, 'sales panel not found').toBeGreaterThan(-1)
+    expect(end, 'the monogram comment no longer follows the panel').toBeGreaterThan(start)
+    const panel = gate.slice(start, end)
+    expect(panel).toMatch(/Already subscribed\? Sign in/)
+    expect(panel).toMatch(/onSignIn/)
+  })
+
+  it('the login step still has a way back, and it points at the panel', () => {
+    // Hiess "Back to plans" und zeigte auf den geloeschten Zwischenschritt.
+    expect(gate).toMatch(/setStep\('sales'\)/)
+    expect(gate, 'the deleted step is still referenced').not.toMatch(/Back to plans/)
+    expect(gate, "the deleted step's branch is back").not.toMatch(/step === 'plans'/)
+  })
+})
+
+/**
+ * Das Verkaufs-Panel selbst: was es sagen MUSS, und was es nicht sagen darf.
+ *
+ * Quelltext-Waechter wie die uebrigen in dieser Datei; den Klickweg misst
+ * `e2e/cloud-sales-panel.spec.ts` im laufenden Programm.
+ */
+describe('the sales panel argues before it asks for a login', () => {
+  const panel = gate.slice(gate.indexOf('function CloudSalesPanel('), gate.indexOf('/** The LU monogram'))
+  /** JSX bricht einen Satz ueber mehrere Zeilen um; der Leser sieht trotzdem
+   *  einen Satz. Geprueft wird deshalb gegen den geglaetteten Quelltext, sonst
+   *  misst der Waechter die Einrueckung statt den Wortlaut. */
+  const flach = panel.replace(/\s+/g, ' ')
+
+  it('carries the kicker, the headline, the subtitle and the footnote', () => {
+    expect(flach).toContain('Cloud')
+    expect(flach).toContain('Run uncensored models in the cloud, no GPU needed.')
+    expect(flach).toContain('Turn on Cloud to reach the full catalogue from any machine.')
+    expect(flach).toContain('Your local models keep working exactly as they do now.')
+    expect(flach).toContain('Cancel anytime. Local mode stays free and offline.')
+  })
+
+  it('takes the three lines and the price from the constants, never typed', () => {
+    expect(panel).toContain('cloudSalesLines()')
+    expect(panel).toContain('CLOUD_PITCH.hostedMonthlyEUR')
+    expect(panel).toContain('CLOUD_SUBSCRIBER_LINE')
+    // Negativkontrolle: keine getippte Zahl im Kaufknopf. Genau so ist der
+    // Nenner des Blatts einmal veraltet stehen geblieben.
+    expect(panel, 'the price is typed into the button').not.toMatch(/for 19 EUR/)
+    expect(panel, 'a model count is typed into the panel').not.toMatch(/\b(24|10|6|3) (chat|uncensored)/)
+  })
+
+  it('sends the purchase to the browser, never into the app', () => {
+    expect(panel).toMatch(/openExternal\(`\$\{CLOUD_BASE\}\/pricing`\)/)
+    // Die App hat nie Stripe angefasst.
+    expect(panel).not.toMatch(/stripe|checkout\/start/i)
+  })
+
+  it('is plain: no gradient, no glow, no emoji', () => {
+    expect(panel).not.toMatch(/bg-gradient|shadow-\[|animate-|drop-shadow/)
+    expect(panel, 'emoji in a UI string').not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u)
+    expect(panel).not.toMatch(/[–—]/u)
   })
 })
