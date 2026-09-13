@@ -81,6 +81,41 @@ export interface CloudPitchNumbers {
    * Katalogliste, nicht gegen die Kaufseite.
    */
   videoModels: number
+  /**
+   * Bildmodelle OHNE eingebaute Inhaltsschranke: die `adult: true`-Zeilen mit
+   * `kind: 'image'` in `apps/web/lib/render/cloud-models.ts`.
+   *
+   * Das Flag markiert, was ein Modell KANN, und entscheidet nichts; was
+   * durchgeht, entscheidet die Kontoeinstellung beim Absenden. Die Zeile im
+   * Verkaufs-Panel sagt deshalb, was im Katalog liegt, und verspricht keinem
+   * Konto ein Ergebnis.
+   */
+  openImageModels: number
+  /**
+   * Videomodelle ohne eingebaute Inhaltsschranke.
+   *
+   * Gezaehlt wird, was einen Clip ERZEUGT: `adult: true` mit `kind: 'video'`
+   * und ohne `ops`. Das Verlaengerungs-Werkzeug `wan-2.2-spicy-extend` traegt
+   * dasselbe Flag, setzt aber einen vorhandenen Clip fort und ist deshalb
+   * kein Modell, das man waehlt. Es faellt aus dieser Zahl heraus.
+   *
+   * ACHTUNG BEIM ZAEHLEN: der Katalog wurde am 13.09.2026 umgebaut. Auf
+   * `release/3.0.0` stehen noch sechs, auf dem umgebauten Katalogzweig zehn.
+   * Die Zehn ist der Sollwert; `scripts/check-cloud-sales.mjs` zaehlt sie im
+   * Web-Repo nach, statt sie zu glauben, und steht so lange rot, bis der
+   * Katalog im geprueften Baum nachgezogen ist.
+   */
+  openVideoModels: number
+  /**
+   * Der Monatspreis des guenstigsten bezahlten Plans, in Euro.
+   *
+   * Quelle: `apps/web/lib/pricing.ts`, Eintrag `hosted`. Steht hier, weil der
+   * Knopf den Preis nennt, BEVOR jemand angemeldet ist, es also nichts zu
+   * lesen gibt. Getippt stand er bis 3.0.0 dreimal in `CloudGateModal.tsx`.
+   */
+  hostedMonthlyEUR: number
+  /** Monatsguthaben desselben Plans. `TIER_CREDITS.hosted` im Web-Repo. */
+  hostedCredits: number
 }
 
 export const CLOUD_PITCH: CloudPitchNumbers = {
@@ -92,7 +127,34 @@ export const CLOUD_PITCH: CloudPitchNumbers = {
   flashDailyTokens: 500_000,
   imageModels: 10,
   videoModels: 11,
+  openImageModels: 3,
+  openVideoModels: 10,
+  hostedMonthlyEUR: 19,
+  hostedCredits: 900_000,
 }
+
+/**
+ * Um wie viel weiter ein Euro auf einem Abo reicht als auf dem besten
+ * Guthabenpaket.
+ *
+ * STEHT HIER ALS ZAHL und nicht als Rechnung, Entscheid vom 13.09.2026: die
+ * Paketstufen werden gerade neu gesetzt und gehoeren dem Web-Repo. Ein
+ * Desktop, der sie mitfuehrt, haette sie an zwei Orten, und der zweite waere
+ * immer der veraltete. Diese Datei fuehrt deshalb KEINE Packgroessen.
+ *
+ * Gehalten wird die Zahl trotzdem zweifach:
+ *
+ *   * `__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts` haelt sie
+ *     gegen einen ausgeschriebenen Wert. Wer sie aendert, aendert sie zweimal,
+ *     und die zweite Aenderung ist die Stelle, an der er es merkt.
+ *   * `scripts/check-cloud-sales.mjs` TEILT sie vor jedem Release aus den
+ *     lebenden Tabellen des Web-Repos (`TOPUP_PACKS`, `TIER_CREDITS`,
+ *     `pricing.ts`) und faellt, wenn sie herausgelaufen ist.
+ *
+ * Geteilt wird dort gegen das BESTE Paket, damit der Satz untertreibt statt zu
+ * schmeicheln: gegen das kleinste waere der Abstand groesser.
+ */
+export const SUBSCRIBER_CREDIT_FACTOR = 1.5
 
 const n = (v: number) => v.toLocaleString('en-US')
 
@@ -110,3 +172,45 @@ export function cloudPitchLines(p: CloudPitchNumbers = CLOUD_PITCH): string[] {
     `${p.chatModels} chat, ${p.imageModels} image and ${p.videoModels} video models on our GPUs, including the ones your own machine cannot run.`,
   ]
 }
+
+/**
+ * Die drei Zeilen des Verkaufs-Panels, das der Wolkenschalter OHNE Sitzung
+ * zeigt (David, 13.09.2026).
+ *
+ * Kuerzer als `cloudPitchLines` und mit Absicht: der Schalter-Hinweis erklaert
+ * einem Benutzer, der schon da ist, was hinter dem Schalter liegt. Diese drei
+ * Zeilen stehen vor einem Menschen, der die App zum ersten Mal in die Wolke
+ * schieben soll und noch nichts gekauft hat. Drei Zahlen, drei Zeilen, kein
+ * Nebensatz.
+ *
+ * Jede Zahl kommt aus `CLOUD_PITCH`, keine ist getippt.
+ */
+export function cloudSalesLines(p: CloudPitchNumbers = CLOUD_PITCH): string[] {
+  return [
+    `${p.unfilteredChatModels} chat models with no refusals`,
+    `${p.openVideoModels} uncensored video models`,
+    `${p.openImageModels} uncensored image models`,
+  ]
+}
+
+/** Credits je Euro. Die einzige Kennzahl, die Abo und Paket vergleichbar macht. */
+export const HOSTED_CREDITS_PER_EUR =
+  CLOUD_PITCH.hostedCredits / CLOUD_PITCH.hostedMonthlyEUR
+
+/**
+ * Der Satz unter dem Kaufknopf, an einer Stelle, damit Panel, Versionsblatt,
+ * CHANGELOG und der Dialog beim leeren Beutel ihn zeichengleich tragen.
+ *
+ * Zeichengleich mit dem Web-Repo, wo derselbe Satz aus
+ * `apps/web/lib/billing/subscriber-rate.ts` auf vier Oberflaechen steht
+ * (Paketkarten, Kontobereich, Dialog beim leeren Beutel, Kaufrueckkehr). Zwei
+ * Repos, ein Wortlaut, und auf beiden Seiten aus Konstanten gerechnet.
+ *
+ * Der Faktor traegt nur, solange ein Paket deutlich unter dem Abo-Kurs liegt.
+ * Mit der Pakettabelle vom 10.09.2026 waere er 1,0 gewesen, und der Satz
+ * haette nicht geschrieben werden duerfen. Welche Stufen gerade gelten, weiss
+ * allein das Web-Repo; `scripts/check-cloud-sales.mjs` rechnet den Faktor vor
+ * jedem Release dort nach, statt ihn hier zu glauben.
+ */
+export const CLOUD_SUBSCRIBER_LINE =
+  `Subscribers get about ${SUBSCRIBER_CREDIT_FACTOR.toFixed(1)}x more credits per euro and ${n(CLOUD_PITCH.flashDailyTokens)} free Flash tokens a day.`

@@ -29,7 +29,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { CLOUD_PITCH } from '../cloud-pitch'
+import { CLOUD_PITCH, SUBSCRIBER_CREDIT_FACTOR } from '../cloud-pitch'
 
 /**
  * Die sechs von Hand gehaltenen Felder, ausgeschrieben. Die zwei aus der
@@ -43,7 +43,34 @@ const ERWARTET = {
   flashDailyTokens: 500_000,
   imageModels: 10,
   videoModels: 11,
+  // 13.09.2026, Verkaufs-Panel: die zwei Teilmengen ohne eingebaute
+  // Inhaltsschranke (`adult: true` im Medienkatalog des Web-Repos) und die
+  // zwei Zahlen des Einstiegsabos, die der Kaufknopf und der Abo-Satz nennen.
+  //
+  // Gezaehlt wird, was ERZEUGT: `adult: true`, `kind` passend, ohne `ops`.
+  // Das Verlaengerungs-Werkzeug traegt dasselbe Flag und zaehlt nicht mit,
+  // sonst waere die Videozahl um eins zu gross.
+  //
+  // Die Zehn stammt aus dem am 13.09.2026 umgebauten Katalog. Ein Baum, der
+  // den Umbau noch nicht hat, zaehlt sechs; dann steht
+  // `scripts/check-cloud-sales.mjs` rot, und das ist der gewollte Zustand,
+  // bis der Katalog nachgezogen ist.
+  openImageModels: 3,
+  openVideoModels: 10,
+  hostedMonthlyEUR: 19,
+  hostedCredits: 900_000,
 } as const
+
+/**
+ * Der Abo-Faktor, ausgeschrieben wie die Zahlen darueber.
+ *
+ * Er steht nicht in `CLOUD_PITCH`, also faellt er nicht unter die
+ * Feldpruefung unten und braucht seine eigene Zeile. Die Packstufen, aus
+ * denen er sich ergibt, fuehrt der Desktop bewusst NICHT: sie gehoeren dem
+ * Web-Repo, und `scripts/check-cloud-sales.mjs` teilt den Faktor vor jedem
+ * Release dort nach.
+ */
+const ERWARTETER_ABO_FAKTOR = 1.5
 
 /** Die Felder, deren Wert aus der Messdatei gezaehlt wird statt hier zu stehen. */
 const AUS_DER_MESSDATEI = ['unfilteredChatModels', 'heldBackChatModels'] as const
@@ -82,6 +109,10 @@ describe('die Zahlen des Wolkentors', () => {
       .toEqual([])
   })
 
+  it('und der Abo-Faktor steht auf dem Stand, den jemand von Hand gesetzt hat', () => {
+    expect(SUBSCRIBER_CREDIT_FACTOR).toBe(ERWARTETER_ABO_FAKTOR)
+  })
+
   it('bleiben in sich stimmig', () => {
     expect(CLOUD_PITCH.unfilteredChatModels).toBeLessThanOrEqual(ERWARTET.measuredChatModels)
     expect(ERWARTET.measuredChatModels).toBeLessThanOrEqual(ERWARTET.chatModels)
@@ -100,6 +131,60 @@ describe('die Zahlen des Wolkentors', () => {
       .toBe(zeilen.filter(zeile => zeile.marke === 'full').length)
     expect(CLOUD_PITCH.heldBackChatModels, 'heldBackChatModels gegen die partial-Zeilen')
       .toBe(zeilen.filter(zeile => zeile.marke === 'partial').length)
+  })
+
+  /**
+   * Die Verweigerungsquote wird GEZAEHLT, nicht getippt.
+   *
+   * Derselbe Bau wie bei der Markenzahl darueber: die Quelle ist der
+   * Datenblock in `no-refusals-measurement.md`, und dieser Waechter rechnet
+   * ihn nach, statt eine zweite Zahl danebenzustellen. Eine getippte Quote
+   * kann nicht laut falsch sein; sie sitzt einfach da.
+   *
+   * Der Block wurde am 13.09.2026 aus den Rohdaten beider Laeufe ausgezaehlt
+   * (`marken-nachmessung-rohdaten/`), nicht aus der Prosa des Berichts.
+   */
+  it('und die Verweigerungsquote kommt aus der Messdatei, nicht von hier', () => {
+    const datei = readFileSync(resolve(__dirname, '..', 'no-refusals-measurement.md'), 'utf8')
+    const zahl = (etikett: string): number => {
+      const treffer = new RegExp(`\\|\\s*${etikett}\\s*\\|\\s*([\\d]+)\\s*\\|`).exec(datei)
+      expect(treffer, `Zeile "${etikett}" fehlt im Datenblock`).not.toBeNull()
+      return Number(treffer![1])
+    }
+
+    const verweigert = zahl('refused')
+    const gewertet = zahl('answers scored')
+
+    // Die Einzelurteile muessen die Gesamtzahl ergeben, sonst ist unterwegs
+    // eine Antwort verloren gegangen und jede Quote daraus ist erfunden.
+    const summe = ['answered', 'deflected', 'refused', 'provider error', 'indeterminate']
+      .map(zahl)
+      .reduce((a, b) => a + b, 0)
+    expect(summe, 'die Einzelurteile ergeben nicht die gewerteten Antworten').toBe(gewertet)
+
+    // 47 Modelle mal 2 Prompts mal 2 Laeufe. Eine andere Zahl heisst, dass der
+    // Block nicht mehr diese Messung beschreibt.
+    expect(gewertet, 'die Grundgesamtheit ist nicht mehr 47 x 2 x 2').toBe(188)
+
+    const quote = Math.round((verweigert / gewertet) * 1000) / 10
+    expect(quote, 'gerechnete Quote').toBe(4.8)
+    // Und der ausgeschriebene Satz derselben Datei sagt dieselbe Zahl.
+    expect(datei, 'der Satz und die Tabelle sagen Verschiedenes')
+      .toContain(`**Refusal rate: ${quote}%.**`)
+
+    // Negativkontrolle: die Rechnung erkennt eine andere Quote als andere.
+    expect(Math.round((21 / 192) * 1000) / 10).toBe(10.9)
+    expect(Math.round((21 / 192) * 1000) / 10).not.toBe(quote)
+  })
+
+  it('und kein oeffentlicher Text behauptet eine Quote, die nicht gezaehlt ist', () => {
+    // Solange kein Satz darueber beschlossen ist, darf auch keiner dastehen.
+    // Faellt dieser Waechter, hat jemand eine Quote in einen Kundentext
+    // geschrieben, ohne sie hier zu verankern.
+    for (const datei of ['release-notes.ts']) {
+      const src = readFileSync(resolve(__dirname, '..', datei), 'utf8')
+      expect(src, `${datei} nennt eine Verweigerungsquote`).not.toMatch(/refusal rate/i)
+    }
   })
 
   it('und kein Kommentar verspricht eine Automatik, die es nicht gibt', () => {

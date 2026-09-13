@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Zap } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { CREDITS_EXHAUSTED_EVENT, PRICING_URL } from '../../lib/credits-exhausted'
+import { CLOUD_SUBSCRIBER_LINE } from '../../lib/cloud-pitch'
 import { openExternal } from '../../api/backend'
 
 /**
@@ -31,6 +32,14 @@ export function CreditsExhaustedModal() {
           Your plan credits for this billing period are used up. They refill on
           your next renewal date. Top-up credits are one-time, never expire, and
           are only used after your plan credits.
+        </p>
+        {/* Hier werden gleich Pakete angeboten, also steht daneben, was ein Abo
+            je Euro mehr bringt. Zeichengleich mit dem Verkaufs-Panel, dem
+            Versionsblatt und dem CHANGELOG, aus einer Konstante, deren Faktor
+            aus den Pack- und Plantabellen geteilt wird (lib/cloud-pitch.ts).
+            Dasselbe tut das Web-Repo auf seinen vier Paketflaechen. */}
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {CLOUD_SUBSCRIBER_LINE}
         </p>
         <div className="flex flex-col gap-2">
           <button

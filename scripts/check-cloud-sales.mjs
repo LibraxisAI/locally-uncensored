@@ -791,3 +791,84 @@ assert.equal(changelogDashes.length, 0, `CHANGELOG.md ${appVersion}: ${changelog
 const tokensForMoney = /(EUR|USD|euro|credits?)[^.]{0,60}\b(buys?|gets?|worth)\b[^.]{0,40}tokens/i
 assert.ok(!tokensForMoney.test(flat), `CHANGELOG.md ${appVersion}: a sentence says how many tokens money buys`)
 console.log(`Changelog guard passed: the ${appVersion} section carries the mark sentence and the Flash sentence word for word, with 0 typographic dashes and 0 token-per-money claims.`)
+
+// ── Die Zahlen des Verkaufs-Panels am Wolkenschalter ─────────────────
+//
+// David, 13.09.2026: der Schalter zeigt ohne Sitzung ein Verkaufs-Panel mit
+// drei gezaehlten Zeilen und einem Preis. Die Zahlen stehen in
+// `src/lib/cloud-pitch.ts`, weil sie gebraucht werden, BEVOR jemand angemeldet
+// ist. Hier werden sie gegen den Katalog im Web-Repo gezaehlt.
+//
+// Gezaehlt wird, was ERZEUGT: `adult: true` mit der passenden Gattung und ohne
+// `ops`. Ein Eintrag mit `ops` ist ein Werkzeug auf einem vorhandenen Ergebnis
+// (`wan-2.2-spicy-extend` verlaengert einen Clip) und kein Modell, das jemand
+// im Waehler auswaehlt. Ohne diesen Ausschluss waere die Videozahl um eins zu
+// gross.
+const mediaSrc = readWeb('apps/web/lib/render/cloud-models.ts')
+function openModels(kind) {
+  let found = 0
+  for (const match of mediaSrc.matchAll(/\{[^{}]*\}/g)) {
+    const row = match[0]
+    if (!/\bid:\s*'/.test(row)) continue
+    if (!new RegExp(`kind:\\s*'${kind}'`).test(row)) continue
+    if (!/adult:\s*true/.test(row)) continue
+    if (/\bops:\s*\[/.test(row)) continue
+    found++
+  }
+  return found
+}
+
+const pitchSrc = readFileSync(new URL('../src/lib/cloud-pitch.ts', import.meta.url), 'utf8')
+function pitchNumber(field) {
+  const match = new RegExp(`\\b${field}:\\s*([\\d_]+),`).exec(pitchSrc)
+  assert.ok(match, `CLOUD_PITCH.${field} carries no number`)
+  return Number(match[1].replaceAll('_', ''))
+}
+
+const openImage = openModels('image')
+const openVideo = openModels('video')
+assert.equal(pitchNumber('openImageModels'), openImage,
+  `open image models: the panel says ${pitchNumber('openImageModels')}, the catalogue holds ${openImage}`)
+assert.equal(pitchNumber('openVideoModels'), openVideo,
+  `open video models: the panel says ${pitchNumber('openVideoModels')}, the catalogue holds ${openVideo}`)
+
+// Der Preis auf dem Kaufknopf und das Guthaben dahinter.
+const hostedTier = tiers.find((row) => row.id === 'hosted')
+assert.ok(hostedTier, 'pricing.ts carries no hosted tier')
+assert.equal(pitchNumber('hostedMonthlyEUR'), hostedTier.monthlyEUR, 'the buy button quotes a stale price')
+assert.equal(pitchNumber('hostedCredits'), tierCredits.hosted, 'the entry plan credit budget drifted')
+
+// Der Abo-Satz, aus den lebenden Tabellen des Web-Repos geteilt, genau wie
+// dort in `apps/web/lib/billing/subscriber-rate.ts`. Gegen das BESTE Paket,
+// damit der Satz untertreibt statt zu schmeicheln.
+//
+// Der Desktop fuehrt KEINE Packgroessen: sie werden im Web-Repo gesetzt und
+// haetten hier nur eine zweite, immer aeltere Fassung. Er fuehrt allein den
+// fertigen Faktor, und der wird hier nachgeteilt.
+const webPacks = objects(source('apps/web/lib/billing/topup.ts'))
+  .filter((row) => typeof row.credits === 'number' && typeof row.eurCents === 'number')
+  .map((row) => ({ credits: row.credits, eurCents: row.eurCents }))
+const bestPackRate = Math.max(...webPacks.map((p) => p.credits / (p.eurCents / 100)))
+const hostedRate = tierCredits.hosted / hostedTier.monthlyEUR
+const factor = Math.round((hostedRate / bestPackRate) * 10) / 10
+assert.ok(factor >= 1.4 && factor <= 1.6,
+  `the subscriber advantage is ${factor}x, outside the 1.4 to 1.6 the sentence claims`)
+// Und die Zahl, die der Desktop von Hand fuehrt, ist genau diese.
+const desktopFactorMatch = /SUBSCRIBER_CREDIT_FACTOR = ([\d.]+)/.exec(pitchSrc)
+assert.ok(desktopFactorMatch, 'SUBSCRIBER_CREDIT_FACTOR carries no number')
+assert.equal(Number(desktopFactorMatch[1]), factor,
+  `the desktop carries ${desktopFactorMatch[1]}x, the live web tables divide out to ${factor}x`)
+const SUBSCRIBER_LINE =
+  `Subscribers get about ${factor.toFixed(1)}x more credits per euro and ${daily.toLocaleString('en-US')} free Flash tokens a day.`
+assert.ok(flat.includes(SUBSCRIBER_LINE),
+  `CHANGELOG.md ${appVersion}: the subscriber sentence does not read as the live tables compute it`)
+
+// Und die drei Zeilen des Panels, im Changelog mit `open` statt `uncensored`.
+for (const [claim, why] of [
+  [`${MARKED_MODELS} chat models with no refusals`, 'the mark count'],
+  [`${openVideo} open video models`, 'the open video count'],
+  [`${openImage} open image models`, 'the open image count'],
+]) {
+  assert.ok(flat.includes(claim), `CHANGELOG.md ${appVersion}: ${why} does not match the catalogue (${claim})`)
+}
+console.log(`Cloud panel guard passed: ${MARKED_MODELS} marked chat models, ${openVideo} open video and ${openImage} open image models counted in the catalogue, EUR ${hostedTier.monthlyEUR} on the button, and a subscriber advantage of ${factor}x divided out of the live pack and plan tables.`)

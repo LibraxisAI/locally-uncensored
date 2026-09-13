@@ -1,13 +1,21 @@
 // The gate in front of the global Cloud mode. Opened by the header's purple
 // Cloud switch whenever the cloud axis isn't usable yet.
 //
-// David 2026-07-11 redesign: a CENTERED, STEPPED flow instead of one crowded
-// screen. Signed-out walks: (1) a "LU Cloud" hero with the hosted-GPU pitch,
-// (2) the three plans to pick + "Stay on Local", with "Already got an account?"
-// underneath → (3) the in-app sign-in. Every no-subscription state still offers
-// back-to-Local or a plan (Hosted / Pro / Max → lu-labs.ai/pricing). The moment
-// deriveCloudAvailable passes, the mode flips (via the one-time onboarding on
-// the first flip). Payment stays on lu-labs.ai — the app never touches Stripe.
+// David 2026-09-13: OHNE Sitzung steht hier das Verkaufs-Panel, nicht mehr ein
+// Anmeldefenster. Der abgemeldete Weg hat seitdem zwei Schritte statt drei:
+//
+//   (1) `CloudSalesPanel`. Was hinter dem Schalter liegt, in drei gezaehlten
+//       Zeilen, mit dem Preis auf dem Knopf. Der Knopf geht in den Browser.
+//   (2) die App-Anmeldung, erreichbar ueber den Textlink darunter, fuer den,
+//       der schon zahlt.
+//
+// Der Zwischenschritt mit den drei Planknoepfen ist geloescht; sein Klick ging
+// ohnehin auf dieselbe Preisseite. `PlanGrid` lebt weiter, denn ein
+// ANGEMELDETES Konto ohne Plan sieht die Plaene unveraendert.
+//
+// Jeder Zustand ohne Abo bietet weiter den Weg zurueck auf Local. Sobald
+// deriveCloudAvailable durchgeht, kippt der Modus. Bezahlt wird auf
+// lu-labs.ai, die App fasst Stripe nicht an.
 
 import { useEffect, useState } from 'react'
 import { ExternalLink, HardDrive, RefreshCw, ArrowLeft, ArrowRight, Check } from 'lucide-react'
@@ -20,7 +28,7 @@ import { AccountPanel } from '../auth/AccountPanel'
 import { CLOUD_BASE } from '../../api/cloud/config'
 import { openExternal } from '../../api/backend'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
-import { cloudPitchLines } from '../../lib/cloud-pitch'
+import { CLOUD_PITCH, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
 
 const PLANS = [
   { anchor: 'hosted', name: 'Hosted', price: '€19' },
@@ -63,6 +71,85 @@ function StayLocalButton({ onLocal }: { onLocal: () => void }) {
   )
 }
 
+// Die drei Knopfformen des Tors. Standen bis 3.0.0 im Rumpf der Komponente und
+// mussten hoch, als das Verkaufs-Panel eine eigene Komponente wurde: zwei
+// Knopfstile nebeneinander waeren genau der Stilbruch, den der Auftrag
+// ausschliesst.
+const primaryBtn =
+  'w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[0.72rem] font-medium bg-lu-cloud text-white hover:opacity-90 transition-opacity'
+const ghostBtn =
+  'w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[0.72rem] font-medium border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors'
+const linkRow =
+  'flex items-center justify-center gap-1 text-[0.68rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 transition-colors'
+
+/**
+ * Das Verkaufs-Panel, das der Wolkenschalter OHNE Sitzung zeigt (David,
+ * 13.09.2026).
+ *
+ * Bis hierher zeigte derselbe Klick ein Login-Fenster. Das ist die falsche
+ * Frage an dieser Stelle: wer noch nichts gekauft hat, kann sich nicht
+ * anmelden, und ein Anmeldefeld sagt ihm nicht, wofuer. Das Panel beantwortet
+ * zuerst, was hinter dem Schalter liegt, und laesst die Anmeldung als
+ * Nebenweg fuer den stehen, der schon Kunde ist.
+ *
+ * Gekauft wird im Browser, nicht hier: der Knopf oeffnet `/pricing`. Die App
+ * hat nie Stripe angefasst und faengt damit auch jetzt nicht an.
+ *
+ * Schlicht mit Absicht (Auftrag): dieselben Tailwind-Marken wie die uebrigen
+ * Dialoge, derselbe Knopfstil, kein Verlauf, kein Leuchten, kein Emoji.
+ */
+function CloudSalesPanel({ onSignIn }: { onSignIn: () => void }) {
+  return (
+    <div className="space-y-5 pt-2" data-testid="cloud-sales-panel">
+      <div className="flex flex-col items-center text-center gap-2">
+        <span className="text-[0.6rem] font-semibold uppercase tracking-widest text-lu-cloud dark:text-lu-cloud-lift">
+          Cloud
+        </span>
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white max-w-xs">
+          Run uncensored models in the cloud, no GPU needed.
+        </h2>
+        <p className="text-[12px] leading-relaxed text-gray-600 dark:text-gray-400 max-w-xs">
+          Turn on Cloud to reach the full catalogue from any machine. Your local
+          models keep working exactly as they do now.
+        </p>
+      </div>
+      {/* Drei Zahlen, drei Zeilen. Jede kommt aus lib/cloud-pitch.ts und haengt
+          ueber scripts/check-cloud-sales.mjs am Katalog im Web-Repo. */}
+      <ul className="space-y-1.5 max-w-xs mx-auto" data-testid="cloud-sales-lines">
+        {cloudSalesLines().map((line) => (
+          <li
+            key={line}
+            className="flex items-start gap-2 text-[0.72rem] leading-snug text-gray-600 dark:text-gray-400"
+          >
+            <Check size={12} className="mt-[2px] shrink-0 text-lu-cloud" />
+            <span>{line}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="space-y-2 max-w-xs mx-auto">
+        <button
+          onClick={() => void openExternal(`${CLOUD_BASE}/pricing`)}
+          className={primaryBtn}
+        >
+          Start Cloud for {CLOUD_PITCH.hostedMonthlyEUR} EUR / month
+        </button>
+        <p className="text-[0.62rem] leading-relaxed text-center text-gray-500 dark:text-gray-400">
+          {CLOUD_SUBSCRIBER_LINE}
+        </p>
+        {/* Der Weg fuer den, der schon zahlt. Er fuehrt in denselben
+            Anmeldeschritt wie vorher, nur heisst der Einstieg jetzt, was er
+            ist. */}
+        <button onClick={onSignIn} className={linkRow + ' w-full pt-1'}>
+          Already subscribed? Sign in <ArrowRight size={11} />
+        </button>
+        <p className="text-[0.6rem] leading-relaxed text-center text-gray-400 dark:text-gray-500">
+          Cancel anytime. Local mode stays free and offline.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 /** The LU monogram that headlines every step (David 2026-07-13: the stock
  *  cloud glyph is gone from this flow — the black/white mark stands on its
  *  own, matching the one-time intro popup). */
@@ -85,7 +172,16 @@ function CloudHero({ subtitle }: { subtitle?: string }) {
   )
 }
 
-type Step = 'intro' | 'plans' | 'login'
+/**
+ * Der abgemeldete Weg hat seit 3.0.0 ZWEI Schritte, nicht drei.
+ *
+ * Der mittlere Schritt ("plans") zeigte die drei Plaene als Knopfreihe im
+ * Fenster und schickte den Klick dann doch auf `/pricing`. Das Verkaufs-Panel
+ * geht direkt dorthin, also war der Schritt nur noch eine Station, die nichts
+ * entscheidet. Er ist geloescht, nicht auskommentiert. `PlanGrid` selbst bleibt:
+ * die Zustaende fuer ein angemeldetes Konto ohne Plan zeigen es weiter.
+ */
+type Step = 'sales' | 'login'
 
 export function CloudGateModal() {
   const open = useUIStore((s) => s.cloudGateOpen)
@@ -106,11 +202,11 @@ export function CloudGateModal() {
   // documented "adjust state while rendering" shape. As an effect it was a
   // cascading render (React 19 `set-state-in-effect`) that landed after paint,
   // so a re-open showed one frame of the step the gate was last left on.
-  const [step, setStep] = useState<Step>('intro')
+  const [step, setStep] = useState<Step>('sales')
   const [wasOpen, setWasOpen] = useState(open)
   if (wasOpen !== open) {
     setWasOpen(open)
-    if (open) setStep('intro')
+    if (open) setStep('sales')
   }
 
   // The moment the account clears every gate — already provisioned when the
@@ -153,72 +249,24 @@ export function CloudGateModal() {
     if (open) void refresh()
   }, [open, refresh])
 
-  const primaryBtn =
-    'w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[0.72rem] font-medium bg-lu-cloud text-white hover:opacity-90 transition-opacity'
-  const ghostBtn =
-    'w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[0.72rem] font-medium border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors'
-  const linkRow =
-    'flex items-center justify-center gap-1 text-[0.68rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 transition-colors'
-
   const signedOut = status === 'signed-out' || !user
 
   return (
     <Modal open={open} onClose={close} title="LU Cloud" hideHeader>
       {signedOut ? (
-        step === 'intro' ? (
-          <div className="space-y-5 pt-2">
-            <CloudHero subtitle="Image, video, chat, code. On LU's hosted GPUs." />
-            {/* Der Schalter hatte bis 3.0.0 kein Argument. Hier steht es, in
-                fester Reihenfolge und mit echten Zahlen aus dem Katalog
-                (lib/cloud-pitch.ts, gebunden an das Web-Repo). */}
-            <ul className="space-y-1.5 max-w-xs mx-auto" data-testid="cloud-pitch">
-              {cloudPitchLines().map((line) => (
-                <li key={line} className="flex items-start gap-2 text-[0.72rem] leading-snug text-gray-600 dark:text-gray-400">
-                  <Check size={12} className="mt-[2px] shrink-0 text-lu-cloud" />
-                  <span>{line}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="space-y-2 max-w-xs mx-auto">
-              <button onClick={() => setStep('plans')} className={primaryBtn}>
-                Get LU Cloud <ArrowRight size={13} />
-              </button>
-              <StayLocalButton onLocal={stayLocal} />
-              {/* 2.6.3 B5: the sign-in entry used to exist ONLY on the plans
-                  step, so a returning subscriber had to click a button that
-                  reads like "buy" before finding a way to log in. It also made
-                  the whole login path depend on that one step surviving any
-                  change to where "Get LU Cloud" leads. It lives on both steps
-                  now, which costs one link and removes that dependency. */}
-              <button onClick={() => setStep('login')} className={linkRow + ' w-full pt-1'}>
-                Already got an account? Sign in <ArrowRight size={11} />
-              </button>
-            </div>
-          </div>
-        ) : step === 'plans' ? (
-          <div className="space-y-5 pt-2">
-            <CloudHero subtitle="Pick a plan on lu-labs.ai. Payment stays in the browser." />
-            <div className="space-y-3 max-w-xs mx-auto">
-              <PlanGrid />
-              <StayLocalButton onLocal={stayLocal} />
-              <div className="pt-1 flex items-center gap-2">
-                <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
-                <span className="text-[0.6rem] text-gray-400 dark:text-gray-600">or</span>
-                <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
-              </div>
-              <button onClick={() => setStep('login')} className={linkRow + ' w-full'}>
-                Already got an account? Sign in <ArrowRight size={11} />
-              </button>
-            </div>
-          </div>
+        step === 'sales' ? (
+          <CloudSalesPanel onSignIn={() => setStep('login')} />
         ) : (
           /* step === 'login' */
           <div className="space-y-4 pt-2">
             <CloudHero subtitle="Sign in with the account you subscribed with." />
             <div className="max-w-xs mx-auto">
               <AccountPanel />
-              <button onClick={() => setStep('plans')} className={linkRow + ' w-full mt-3'}>
-                <ArrowLeft size={11} /> Back to plans
+              {/* Zurueck fuehrt an die einzige Stelle, von der man hierher
+                  kommt. Bis 3.0.0 zeigte diese Beschriftung auf den
+                  Zwischenschritt, den es nicht mehr gibt. */}
+              <button onClick={() => setStep('sales')} className={linkRow + ' w-full mt-3'}>
+                <ArrowLeft size={11} /> Back
               </button>
             </div>
           </div>

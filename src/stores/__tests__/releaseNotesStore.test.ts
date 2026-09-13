@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
 import { RELEASE_NOTES, releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
-import { CLOUD_PITCH } from '../../lib/cloud-pitch'
+import { CLOUD_PITCH, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
@@ -366,6 +366,59 @@ describe('the notes table', () => {
       expect(s.items.length, `${s.title}: items`).toBeGreaterThanOrEqual(3)
       for (const i of s.items) expect(i.trim().length, `${s.title}: empty item`).toBeGreaterThan(0)
     }
+  })
+
+  /**
+   * David, 13.09.2026: das Blatt fuehrt mit dem Cloud-Block.
+   *
+   * Der Block ist die einzige Stelle, an der ein BESTEHENDER Kunde nach einer
+   * Aktualisierung vom Angebot erfaehrt, also steht er vor allem anderen und
+   * faellt staerker aus als der Rest. Seine Zahlen sind dieselben Konstanten
+   * wie im Verkaufs-Panel am Schalter; zwei Fassungen derselben drei Zahlen
+   * waeren genau der Fund, den dieser Waechter seit R2-11 fernhaelt.
+   */
+  it('the sheet leads with the Cloud block, and it is read, never typed', () => {
+    const note = releaseNoteFor('3.0.0')
+    expect(note?.cloud, 'the 3.0.0 sheet carries no Cloud block').toBeDefined()
+    expect(note!.cloud!.lines, 'the block writes its own version of the three lines')
+      .toEqual(cloudSalesLines())
+    expect(note!.cloud!.note, 'the subscriber sentence is not the shared one')
+      .toBe(CLOUD_SUBSCRIBER_LINE)
+
+    const src = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../lib/release-notes.ts'), 'utf8',
+    )
+    expect(src).toContain('lines: cloudSalesLines()')
+    expect(src).toContain('note: CLOUD_SUBSCRIBER_LINE')
+
+    const modal = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../components/release/ReleaseNotesModal.tsx'),
+      'utf8',
+    )
+    expect(modal).toContain('release-cloud-block')
+    expect(modal, 'the block has no way into the cloud').toContain('Turn on Cloud')
+    // Vor allem anderen: der Block steht im Quelltext vor der Ueberschrift
+    // des Blatts, und die Ueberschrift ist das erste, was sonst kam.
+    //
+    // Gegen die gerenderte Ueberschrift, nicht gegen die Zeichenkette: die
+    // Datei beginnt mit einem Kommentar, der "What is new" ebenfalls nennt,
+    // und gegen den stand der Block immer hinten.
+    expect(modal.indexOf('release-cloud-block'))
+      .toBeLessThan(modal.indexOf('What is new</h3>'))
+    // Der Knopf faellt auf denselben Weg zurueck wie der Schalter im Kopf.
+    expect(modal).toContain('setCloudGateOpen(true)')
+    expect(modal).toContain("updateSettings({ appMode: 'cloud' })")
+  })
+
+  it('and the rest of the sheet is unchanged, to the character', () => {
+    // Der Cloud-Block ist ein eigenes Feld und darf NICHT in die Prosa
+    // gerutscht sein: sonst haette er die Anker oben verschoben, und die
+    // bestehenden Saetze waeren nicht mehr zeichengleich.
+    const prose = proseOf('3.0.0')
+    expect(prose, 'the Cloud block leaked into the sheet prose')
+      .not.toContain('chat models with no refusals')
+    expect(prose, 'the subscriber sentence leaked into the sheet prose')
+      .not.toContain('more credits per euro')
   })
 
   it('the modal renders the expander and the sections', () => {
