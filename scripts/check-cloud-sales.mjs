@@ -104,7 +104,13 @@ for (const cell of pricing.querySelectorAll('[data-plan-id]')) {
 assert.equal(pricing.querySelectorAll('[data-plan-id]').length, tiers.filter((t) => typeof t.monthlyEUR === 'number').length,
   'Every paid plan must appear on the pricing page, and nothing else')
 
-const packs = objects(source('apps/web/lib/billing/topup.ts')).filter((row) => typeof row.credits === 'number' && typeof row.eurCents === 'number')
+// Nur was VERKAUFT wird. topup.ts fuehrt daneben RETIRED_PACKS: Stufen, die
+// es einmal gab und die lesbar bleiben muessen, damit eine alte Buchung nicht
+// ins Leere zeigt. Wer sie mitzaehlt, verlangt von der Preisseite, dass sie
+// eingestellte Pakete anbietet, und rechnet sie unten in den Abo-Faktor.
+const verkaeuflich = (row) =>
+  typeof row.credits === 'number' && typeof row.eurCents === 'number' && row.retiredOn === undefined
+const packs = objects(source('apps/web/lib/billing/topup.ts')).filter(verkaeuflich)
 for (const span of pricing.querySelectorAll('[data-pack-id]')) {
   const entry = packs.find((row) => row.id === span.dataset.packId)
   assert.ok(entry, `Pack missing from topup.ts: ${span.dataset.packId}`)
@@ -846,7 +852,7 @@ assert.equal(pitchNumber('hostedCredits'), tierCredits.hosted, 'the entry plan c
 // haetten hier nur eine zweite, immer aeltere Fassung. Er fuehrt allein den
 // fertigen Faktor, und der wird hier nachgeteilt.
 const webPacks = objects(source('apps/web/lib/billing/topup.ts'))
-  .filter((row) => typeof row.credits === 'number' && typeof row.eurCents === 'number')
+  .filter(verkaeuflich)
   .map((row) => ({ credits: row.credits, eurCents: row.eurCents }))
 const bestPackRate = Math.max(...webPacks.map((p) => p.credits / (p.eurCents / 100)))
 const hostedRate = tierCredits.hosted / hostedTier.monthlyEUR

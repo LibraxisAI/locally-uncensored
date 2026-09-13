@@ -7,8 +7,10 @@
  * ausgechecktes Web-Repo und laeuft deshalb NICHT in `npm test`. Ein Preis
  * konnte hier also still veralten, bis jemand den Release-Waechter von Hand
  * anwarf; genau das ist am 10.09.2026 passiert, als die Packs neu bepreist
- * wurden und diese Seite die alten Zahlen weiter nannte. Darum stehen die
- * sechs Betraege unten als Literale, die bei jedem Testlauf anschlagen.
+ * wurden und diese Seite die alten Zahlen weiter nannte. Am 13.09.2026 ist dieselbe Leiter ein zweites Mal
+ * neu gesetzt worden, diesmal auf fuenf Stufen mit neuen Ids; die alten drei
+ * sind stillgelegt und werden nicht mehr verkauft. Darum stehen die acht
+ * Betraege unten als Literale, die bei jedem Testlauf anschlagen.
  *
  * Sonst steht hier, was die Seite SAGEN muss und was sie nicht sagen darf:
  * sie nimmt kein Geld an, sie verspricht nichts, was hinter einem Schalter
@@ -81,9 +83,11 @@ it('is discoverable, canonical and free of dashes', () => {
 // mit, und scripts/check-cloud-sales.mjs beweist vor dem Release, dass beide
 // Seiten dieselbe nennen. Diese Literale sind die Reissleine dazwischen.
 const PACKS = [
-  { id: 'small', eurCents: 500, credits: 230_000 },
-  { id: 'medium', eurCents: 1000, credits: 465_000 },
-  { id: 'large', eurCents: 2500, credits: 1_175_000 },
+  { id: 'pack-15', eurCents: 1500, credits: 450_000 },
+  { id: 'pack-35', eurCents: 3500, credits: 1_100_000 },
+  { id: 'pack-75', eurCents: 7500, credits: 2_400_000 },
+  { id: 'pack-125', eurCents: 12_500, credits: 4_050_000 },
+  { id: 'pack-300', eurCents: 30_000, credits: 9_750_000 },
 ] as const
 
 const PLANS = [
@@ -92,7 +96,7 @@ const PLANS = [
   { id: 'hosted-max', monthlyEUR: 99, annualEUR: 990, credits: 5_000_000 },
 ] as const
 
-it('names the three credit packs the web repo actually sells', () => {
+it('names the five credit packs the web repo actually sells', () => {
   const spans = [...page.querySelectorAll<HTMLElement>('[data-pack-id]')]
   expect(spans).toHaveLength(PACKS.length)
   for (const pack of PACKS) {
@@ -195,7 +199,7 @@ it('points the two old release articles at the browser studio instead', () => {
 it('never says how many tokens a euro or a pack buys, on any page', () => {
   // Davids Ansage vom 10.09.2026, hier fuer die ganze Seite. Erlaubt bleibt
   // die Rate: "0.085 credits per output token", "285,000 credits per million
-  // tokens". Verboten ist die Menge neben dem Geld: "a 5 EUR pack is 230,000
+  // tokens". Verboten ist die Menge neben dem Geld: "a 15 EUR pack is 450,000
   // tokens". Das Wort "per" im Treffer trennt die beiden Faelle, und der
   // Abstand von 60 Zeichen haelt Tabellenzellen auseinander, die ohne Punkt
   // aneinanderstossen.
