@@ -150,6 +150,20 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
     }
   })
 
+  it('beschriftet die offenen Sonderendpunkte wie das Web', () => {
+    // Die Endpunkte mit `ops` stehen in keiner klassischen Liste, aber sehr
+    // wohl im Waehler ihrer Kategorie. wan-2.2-spicy-extend hiess im Desktop
+    // noch "Wan 2.2 Spicy Extend", im Web laengst "Wan 2.2 Open Extend".
+    const sonder = webKatalog().filter((m) => m.ops && m.id.includes('spicy'))
+    expect(sonder.length).toBeGreaterThan(0)
+    for (const w of sonder) {
+      const s = CLOUD_MODEL_SEED.find((m) => m.id === w.id)
+      expect(s, w.id).toBeDefined()
+      expect(s!.label, w.id).toBe(w.label)
+      expect(s!.ops, w.id).toBeDefined()
+    }
+  })
+
   it('kennt dieselben offenen Bildmodelle wie das Web', () => {
     // Der Desktop traegt die Marke nicht selbst (die Katalogroute liefert das
     // Feld nicht). Welche Bildmodelle offen sind, sagt also das Web, und der

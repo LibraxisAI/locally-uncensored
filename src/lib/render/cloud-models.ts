@@ -103,7 +103,7 @@ export const CLOUD_MODEL_SEED: CloudModel[] = [
   { id: 'ace-step', label: 'ACE-Step (fast)', kind: 'audio', ops: ['music'], credits: { base: 1200, per_s: 20 } },
   { id: 'ace-step-1.5', label: 'ACE-Step 1.5', kind: 'audio', ops: ['music'], lyrics: true, credits: { base: 1800, per_s: 30 } },
   { id: 'sonilo-music', label: 'Sonilo Music', kind: 'audio', ops: ['music'], credits: { base: 15000, per_s: 250 } },
-  { id: 'wan-2.2-spicy-extend', label: 'Wan 2.2 Spicy Extend', kind: 'video', ops: ['extend'], t2v: false, i2v: false },
+  { id: 'wan-2.2-spicy-extend', label: 'Wan 2.2 Open Extend', kind: 'video', ops: ['extend'], t2v: false, i2v: false },
   { id: 'ltx-2-extend', label: 'LTX-2 Extend', kind: 'video', ops: ['extend'], t2v: false, i2v: false },
   { id: 'pixverse-extend', label: 'Pixverse Extend (fast)', kind: 'video', ops: ['extend'], t2v: false, i2v: false },
   { id: 'wan-2.2-animate', label: 'Wan 2.2 Animate', kind: 'video', ops: ['motion'], t2v: false, i2v: false },

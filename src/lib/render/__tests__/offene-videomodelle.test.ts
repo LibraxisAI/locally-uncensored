@@ -44,6 +44,15 @@ describe('offene Videomodelle im Seed', () => {
     }
   })
 
+  it('und keine einzige Beschriftung im Seed tut es, auch nicht hinter einem ops-Eintrag', () => {
+    // wan-2.2-spicy-extend steht nicht in `offeneVideo`, weil es ueber `ops`
+    // laeuft. Seine Beschriftung steht trotzdem im Waehler der Fortsetzung,
+    // und sie hiess bis 13.09.2026 "Wan 2.2 Spicy Extend".
+    for (const m of CLOUD_MODEL_SEED) {
+      expect(m.label, m.id).not.toMatch(/spicy|uncensored|nsfw|adult|nude|porn/i)
+    }
+  })
+
   it('quotiert einen Preis und keinen 8-Sekunden-Knopf', () => {
     // Der Anbieter nennt fuer diese Routen nur den 5-Sekunden-Grundpreis. Ein
     // 8-Sekunden-Knopf haette eine Laenge versprochen, die der Worker nicht
