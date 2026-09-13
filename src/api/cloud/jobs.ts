@@ -235,6 +235,14 @@ export type ContentPolicy = 'strict' | 'soft' | 'off'
 export interface ContentPolicyState {
   policy: ContentPolicy
   ageConfirmedAt: string | null
+  /**
+   * Ob der Server fuer 'off' eine Altersbestaetigung verlangt.
+   *
+   * Die Stellung steht im Server (AGE_CONFIRMATION_REQUIRED, lib/launch.ts im
+   * Web-Repo) und kommt mit der GET-Antwort mit. Die App haelt keine eigene
+   * Kopie davon, die abweichen koennte von der, die wirklich geprueft wird.
+   */
+  ageConfirmationRequired: boolean
 }
 
 /**
@@ -248,10 +256,26 @@ export interface ContentPolicyState {
  */
 export async function getContentPolicy(): Promise<ContentPolicyState> {
   const res = await cloudFetch('/api/account/content-policy')
-  const data = await jsonOrError<{ policy?: string; ageConfirmedAt?: string | null }>(res)
+  const data = await jsonOrError<{
+    policy?: string
+    ageConfirmedAt?: string | null
+    ageConfirmationRequired?: unknown
+  }>(res)
   return {
     policy: data.policy === 'strict' || data.policy === 'off' ? data.policy : 'soft',
     ageConfirmedAt: data.ageConfirmedAt ?? null,
+    /*
+     * Fehlt das Feld, wird gefragt.
+     *
+     * Ein aelterer Server kennt es nicht, und eine unvollstaendige Antwort darf
+     * keine Altersschranke abraeumen. Einmal zu viel fragen ist ein Aergernis,
+     * eine still verlorene Schranke ist es nicht. Deshalb gilt hier NICHT das
+     * `=== true` des Webs: dort ist die Vorgabe "kein Schritt", weil das PUT
+     * derselben Herkunft ohnehin abgewiesen wird. Der Desktop haengt an einem
+     * fremden Server und kennt dessen Stand nur aus dieser Antwort.
+     */
+    ageConfirmationRequired:
+      typeof data.ageConfirmationRequired === 'boolean' ? data.ageConfirmationRequired : true,
   }
 }
 
@@ -259,7 +283,13 @@ export async function setContentPolicy(policy: ContentPolicy, ageConfirmed = fal
   const res = await cloudFetch('/api/account/content-policy', {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ policy, ageConfirmed }),
+    /*
+     * `ageConfirmed` geht nur mit, wenn wirklich jemand bestaetigt hat. Wo der
+     * Server keinen Schritt verlangt, behauptet die App auch keinen: ein fest
+     * mitgeschicktes `false` waere harmlos, ein fest mitgeschicktes `true`
+     * waere eine Bestaetigung, die niemand gegeben hat.
+     */
+    body: JSON.stringify(ageConfirmed ? { policy, ageConfirmed: true } : { policy }),
   })
   const data = await jsonOrError<{ policy?: string }>(res)
   return data.policy === 'strict' || data.policy === 'off' ? data.policy : 'soft'

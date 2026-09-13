@@ -3,11 +3,24 @@ import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { getContentPolicy, setContentPolicy, type ContentPolicy } from '../../api/cloud/jobs'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
 
-const OPTIONS: { value: ContentPolicy; label: string; hint: string }[] = [
-  { value: 'strict', label: 'Strict', hint: 'The tightest filter we have. Choose this if others use your screen.' },
-  { value: 'soft', label: 'Standard', hint: 'The default for every account.' },
-  { value: 'off', label: 'Off', hint: 'No filter beyond the legal limits below. Requires an age confirmation.' },
-]
+/*
+ * Der Zusatz am Off-Hinweis haengt am Schalter des Servers. Ein Satz, der eine
+ * Bestaetigung ankuendigt, die nicht mehr kommt, verspricht genau das, was die
+ * Oberflaeche nicht mehr tut. Gleicher Bau wie im Web.
+ */
+function options(bestaetigungNoetig: boolean): { value: ContentPolicy; label: string; hint: string }[] {
+  return [
+    { value: 'strict', label: 'Strict', hint: 'The tightest filter we have. Choose this if others use your screen.' },
+    { value: 'soft', label: 'Standard', hint: 'The default for every account.' },
+    {
+      value: 'off',
+      label: 'Off',
+      hint: bestaetigungNoetig
+        ? 'No filter beyond the legal limits below. Requires an age confirmation.'
+        : 'No filter beyond the legal limits below.',
+    },
+  ]
+}
 
 /**
  * Die Inhaltsrichtlinie des Kontos, hier und in der Webanwendung dieselbe.
@@ -23,6 +36,12 @@ export function ContentPolicySettings() {
   const signedIn = useCloudAuthStore((s) => s.status === 'signed-in')
   const [policy, setPolicy] = useState<ContentPolicy>('soft')
   const [confirmedAt, setConfirmedAt] = useState<string | null>(null)
+  /*
+   * Vorsichtiger Standard: bis der Server widerspricht, wird gefragt. Siehe die
+   * Begruendung in api/cloud/jobs.ts; eine Antwort, die nicht ankommt, darf die
+   * Schranke nicht abraeumen.
+   */
+  const [requiresAge, setRequiresAge] = useState(true)
   const [pending, setPending] = useState<ContentPolicy | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -31,7 +50,12 @@ export function ContentPolicySettings() {
     if (!signedIn) return
     let live = true
     getContentPolicy()
-      .then((s) => { if (live) { setPolicy(s.policy); setConfirmedAt(s.ageConfirmedAt) } })
+      .then((s) => {
+        if (!live) return
+        setPolicy(s.policy)
+        setConfirmedAt(s.ageConfirmedAt)
+        setRequiresAge(s.ageConfirmationRequired)
+      })
       .catch(() => { /* signed out or offline: the default stands */ })
     return () => { live = false }
   }, [signedIn])
@@ -85,7 +109,7 @@ export function ContentPolicySettings() {
         your own machine is.
       </p>
 
-      {OPTIONS.map((o) => (
+      {options(requiresAge).map((o) => (
         <label key={o.value} className="flex cursor-pointer items-start gap-2">
           <input
             type="radio"
@@ -94,7 +118,10 @@ export function ContentPolicySettings() {
             value={o.value}
             checked={policy === o.value}
             disabled={busy}
-            onChange={() => { if (o.value === 'off') setPending('off'); else void save(o.value, false) }}
+            onChange={() => {
+              if (o.value === 'off' && requiresAge) setPending('off')
+              else void save(o.value, false)
+            }}
           />
           <span>
             <span className="text-[0.7rem] text-gray-700 dark:text-gray-300">{o.label}</span>
@@ -129,7 +156,10 @@ export function ContentPolicySettings() {
         </div>
       )}
 
-      {policy === 'off' && confirmedAt && (
+      {/* Auch der Rueckblick haengt am Schalter. Ein Konto kann einen Stempel
+          aus der Zeit tragen, in der bestaetigt wurde; ohne diese Bedingung
+          spraeche die Zeile von einem Schritt, den es nicht mehr gibt. */}
+      {policy === 'off' && requiresAge && confirmedAt && (
         <p className="text-[0.6rem] text-gray-500">
           Age confirmed on {new Date(confirmedAt).toLocaleDateString()}. Switching to another
           option clears that confirmation.
