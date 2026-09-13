@@ -47,7 +47,7 @@ const ERWARTET = {
   flashModels: 12,
   flashDailyTokens: 500_000,
   imageModels: 10,
-  videoModels: 11,
+  videoModels: 15,
   // 13.09.2026, Verkaufs-Panel: die zwei Teilmengen ohne eingebaute
   // Inhaltsschranke (`adult: true` im Medienkatalog des Web-Repos) und die
   // zwei Zahlen des Einstiegsabos, die der Kaufknopf und der Abo-Satz nennen.

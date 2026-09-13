@@ -138,7 +138,7 @@ export const CLOUD_PITCH: CloudPitchNumbers = {
   flashModels: 12,
   flashDailyTokens: 500_000,
   imageModels: 10,
-  videoModels: 11,
+  videoModels: 15,
   openImageModels: 3,
   openVideoModels: 10,
   hostedMonthlyEUR: 19,
