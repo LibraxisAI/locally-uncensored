@@ -5,8 +5,9 @@ All notable changes to Locally Uncensored are documented here.
 ## [3.0.0] - 2026-09-13
 
 **Cloud: 24 chat models with no refusals, 10 open video models, 3 open image
-models. Subscribers get about 1.5x more credits per euro and 500,000 free Flash
-tokens a day. Start at lu-labs.ai/pricing.**
+models. We measured refusals in 5% of answers. Subscribers get about 1.5x more
+credits per euro and 500,000 free Flash tokens a day. Start at
+lu-labs.ai/pricing.**
 
 Measured instead of promised, and Flash chat that costs nothing on an active
 plan. Every cloud chat model was asked the same question twice, only the ones

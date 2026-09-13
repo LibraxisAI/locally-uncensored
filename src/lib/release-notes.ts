@@ -14,7 +14,7 @@
  * changes expander, grouped into sections (Local, Cloud), and may be long.
  */
 
-import { CLOUD_PITCH, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from './cloud-pitch'
+import { CLOUD_PITCH, CLOUD_REFUSAL_LINE, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from './cloud-pitch'
 
 /**
  * The two model numbers the 3.0.0 sheet quotes, in one place and read, never
@@ -92,6 +92,11 @@ export interface ReleaseNote {
   cloud?: {
     /** Die drei gezaehlten Zeilen. */
     lines: string[]
+    /**
+     * Der Messsatz zur Verweigerungsquote, zeichengleich mit dem CHANGELOG.
+     * Die Zahl darin ist aus der Messdatei gerechnet, nicht getippt.
+     */
+    measured: string
     /** Der Abo-Satz, zeichengleich mit Panel, CHANGELOG und Guthaben-Dialog. */
     note: string
   }
@@ -116,6 +121,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     // Fehler, den der Waechter unter diesem Blatt seit R2-11 verhindert.
     cloud: {
       lines: cloudSalesLines(),
+      measured: CLOUD_REFUSAL_LINE,
       note: CLOUD_SUBSCRIBER_LINE,
     },
     lines: [

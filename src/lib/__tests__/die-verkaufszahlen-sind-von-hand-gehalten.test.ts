@@ -29,7 +29,12 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { CLOUD_PITCH, SUBSCRIBER_CREDIT_FACTOR } from '../cloud-pitch'
+import {
+  CLOUD_PITCH,
+  CLOUD_REFUSAL_LINE,
+  REFUSAL_RATE_PERCENT,
+  SUBSCRIBER_CREDIT_FACTOR,
+} from '../cloud-pitch'
 
 /**
  * Die sechs von Hand gehaltenen Felder, ausgeschrieben. Die zwei aus der
@@ -73,7 +78,12 @@ const ERWARTET = {
 const ERWARTETER_ABO_FAKTOR = 1.5
 
 /** Die Felder, deren Wert aus der Messdatei gezaehlt wird statt hier zu stehen. */
-const AUS_DER_MESSDATEI = ['unfilteredChatModels', 'heldBackChatModels'] as const
+const AUS_DER_MESSDATEI = [
+  'unfilteredChatModels',
+  'heldBackChatModels',
+  'refusedAnswers',
+  'scoredAnswers',
+] as const
 
 /**
  * Die Zeilen der Messtabelle, eine je Modell.
@@ -177,13 +187,85 @@ describe('die Zahlen des Wolkentors', () => {
     expect(Math.round((21 / 192) * 1000) / 10).not.toBe(quote)
   })
 
-  it('und kein oeffentlicher Text behauptet eine Quote, die nicht gezaehlt ist', () => {
-    // Solange kein Satz darueber beschlossen ist, darf auch keiner dastehen.
-    // Faellt dieser Waechter, hat jemand eine Quote in einen Kundentext
-    // geschrieben, ohne sie hier zu verankern.
-    for (const datei of ['release-notes.ts']) {
-      const src = readFileSync(resolve(__dirname, '..', datei), 'utf8')
-      expect(src, `${datei} nennt eine Verweigerungsquote`).not.toMatch(/refusal rate/i)
+  /**
+   * Nachtrag a, Entscheid David vom 13.09.2026.
+   *
+   * Bis heute stand hier das Gegenteil: KEIN Kundentext durfte eine Quote
+   * nennen, weil keine beschlossen war. Beschlossen ist sie jetzt, also wird
+   * aus dem Verbot eine Pruefung. Das Verbot ist geloescht und nicht
+   * auskommentiert; was von ihm bleibt, ist die Bedingung, unter der es stand:
+   * die Zahl im Satz muss gezaehlt sein.
+   */
+  it('und der oeffentliche Messsatz traegt die gerundete Zahl aus der Messdatei', () => {
+    const datei = readFileSync(resolve(__dirname, '..', 'no-refusals-measurement.md'), 'utf8')
+    const zahl = (etikett: string): number => {
+      const treffer = new RegExp(`\\|\\s*${etikett}\\s*\\|\\s*([\\d]+)\\s*\\|`).exec(datei)
+      expect(treffer, `Zeile "${etikett}" fehlt im Datenblock`).not.toBeNull()
+      return Number(treffer![1])
+    }
+    const verweigert = zahl('refused')
+    const gewertet = zahl('answers scored')
+
+    // Die zwei Felder der Konstante sind die Messdatei, nicht eine zweite
+    // Fassung davon. Die Oberflaeche kann die Datei nicht lesen, der Waechter
+    // schon, also haengt sie hier.
+    expect(CLOUD_PITCH.refusedAnswers, 'refusedAnswers gegen die Messdatei').toBe(verweigert)
+    expect(CLOUD_PITCH.scoredAnswers, 'scoredAnswers gegen die Messdatei').toBe(gewertet)
+
+    // Kaufmaennisch gerundet: 9 von 188 sind 4,787 Prozent, oeffentlich 5.
+    const kaufmaennisch = Math.round((verweigert / gewertet) * 100)
+    expect(kaufmaennisch, 'die gerundete Quote').toBe(5)
+    expect(REFUSAL_RATE_PERCENT, 'die Konstante rundet anders als der Waechter').toBe(kaufmaennisch)
+    expect(CLOUD_REFUSAL_LINE).toBe('We measured refusals in 5% of answers.')
+
+    // Und beide Kundentexte tragen ihn, zeichengleich und je genau einmal.
+    const changelog = readFileSync(resolve(__dirname, '..', '..', '..', 'CHANGELOG.md'), 'utf8')
+      .replace(/\s+/g, ' ')
+    expect(changelog, 'der CHANGELOG traegt den Messsatz nicht').toContain(CLOUD_REFUSAL_LINE)
+    expect(changelog.match(/We measured refusals in \d+% of answers\./g), 'zwei Fassungen desselben Satzes')
+      .toHaveLength(1)
+    const blatt = readFileSync(resolve(__dirname, '..', 'release-notes.ts'), 'utf8')
+    expect(blatt, 'das Blatt tippt den Satz statt ihn zu lesen').toContain('measured: CLOUD_REFUSAL_LINE')
+    const modal = readFileSync(
+      resolve(__dirname, '..', '..', 'components', 'release', 'ReleaseNotesModal.tsx'), 'utf8',
+    )
+    expect(modal, 'der Cloud-Block des Blatts zeigt den Satz nicht an').toContain('note.cloud.measured')
+  })
+
+  /**
+   * NEGATIVKONTROLLE zum Messsatz.
+   *
+   * Ohne sie waere auch ein Lauf gruen, der nie etwas gerechnet hat, und ein
+   * Satz, der mehr behauptet als eine Messung.
+   */
+  it('und der Messsatz behauptet nichts, was niemand gemessen hat', () => {
+    const satzAus = (verweigert: number, gewertet: number) =>
+      `We measured refusals in ${Math.round((verweigert / gewertet) * 100)}% of answers.`
+
+    // Die Zahlen des urspruenglichen Auftrags ergeben einen ANDEREN Satz.
+    // Genau deshalb ist er nicht gebaut worden: 21 von 192 sind 11 Prozent,
+    // und auf 21 Verweigerungen kommt keine Lesart der Rohdaten.
+    expect(satzAus(21, 192)).toBe('We measured refusals in 11% of answers.')
+    expect(satzAus(21, 192)).not.toBe(CLOUD_REFUSAL_LINE)
+    // Und eine Rechnung, die alles als Verweigerung liest, ergibt 100.
+    expect(satzAus(188, 188)).toBe('We measured refusals in 100% of answers.')
+    expect(satzAus(188, 188)).not.toBe(CLOUD_REFUSAL_LINE)
+    // Die echte Rechnung ergibt genau den Satz, der dasteht.
+    expect(satzAus(CLOUD_PITCH.refusedAnswers, CLOUD_PITCH.scoredAnswers)).toBe(CLOUD_REFUSAL_LINE)
+
+    // Was der Satz nicht sagen darf: kein Vorher-Nachher, keine Ursache, kein
+    // Wort ueber andere Anbieter, keine 11 und keine 100 Prozent. Alle drei
+    // Vorbehalte stehen im Messbericht selbst (Abschnitt 13.4 und 13.5).
+    const changelog = readFileSync(resolve(__dirname, '..', '..', '..', 'CHANGELOG.md'), 'utf8')
+      .replace(/\s+/g, ' ')
+    const abschnitt = changelog.split('## [')[1] ?? ''
+    for (const [muster, warum] of [
+      [/refusals in (11|100)% of answers/, 'eine Quote, die niemand gezaehlt hat'],
+      [/managed to drop|dropped refusals|drop refusal rates/i, 'eine Ursachenbehauptung'],
+      [/down from \d|used to refuse|fewer refusals than before/i, 'ein Vorher-Nachher'],
+      [/than (other|competing|rival) (providers?|services?)/i, 'ein Satz ueber andere Anbieter'],
+    ] as const) {
+      expect(muster.test(abschnitt), `der Cloud-Block traegt ${warum}`).toBe(false)
     }
   })
 

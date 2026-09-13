@@ -99,6 +99,7 @@ export function ReleaseNotesModal() {
                       </li>
                     ))}
                   </ul>
+                  <p className="text-[0.62rem] leading-relaxed text-gray-300">{note.cloud.measured}</p>
                   <p className="text-[0.62rem] leading-relaxed text-gray-300">{note.cloud.note}</p>
                   <button
                     onClick={turnOnCloud}

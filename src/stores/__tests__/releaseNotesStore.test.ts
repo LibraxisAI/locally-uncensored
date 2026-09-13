@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
 import { RELEASE_NOTES, releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
-import { CLOUD_PITCH, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
+import { CLOUD_PITCH, CLOUD_REFUSAL_LINE, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
@@ -382,6 +382,10 @@ describe('the notes table', () => {
     expect(note?.cloud, 'the 3.0.0 sheet carries no Cloud block').toBeDefined()
     expect(note!.cloud!.lines, 'the block writes its own version of the three lines')
       .toEqual(cloudSalesLines())
+    // Nachtrag a: der Messsatz steht im selben Block wie im CHANGELOG, aus
+    // derselben Konstante, damit die zwei Flaechen nicht auseinanderlaufen.
+    expect(note!.cloud!.measured, 'the sheet carries no measured refusal sentence')
+      .toBe(CLOUD_REFUSAL_LINE)
     expect(note!.cloud!.note, 'the subscriber sentence is not the shared one')
       .toBe(CLOUD_SUBSCRIBER_LINE)
 

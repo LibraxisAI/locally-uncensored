@@ -58,6 +58,16 @@ export interface CloudPitchNumbers {
   /** Davon gemessen mit Zurueckhaltung: sie antworten, gehen aber nicht ganz
    *  mit, und tragen deshalb keine Marke. `partial`-Zeilen derselben Datei. */
   heldBackChatModels: number
+  /**
+   * Verweigerte Antworten im Messlauf, gezaehlt im Block "Refusals per answer"
+   * von `no-refusals-measurement.md`.
+   *
+   * Die Quote wird aus dieser und der naechsten Zahl GERECHNET, nie getippt.
+   * Eine getippte Quote kann nicht laut falsch sein; sie sitzt einfach da.
+   */
+  refusedAnswers: number
+  /** Gewertete Antworten desselben Laufs: 47 Modelle mal 2 Prompts mal 2 Laeufe. */
+  scoredAnswers: number
   /** Modelle der Flash-Klasse, die im Chat keine Credits kosten. */
   flashModels: number
   /** Taegliche Obergrenze der Flash-Klasse, Ein- und Ausgabe zusammen. */
@@ -123,6 +133,8 @@ export const CLOUD_PITCH: CloudPitchNumbers = {
   measuredChatModels: 46,
   unfilteredChatModels: 24,
   heldBackChatModels: 19,
+  refusedAnswers: 9,
+  scoredAnswers: 188,
   flashModels: 12,
   flashDailyTokens: 500_000,
   imageModels: 10,
@@ -214,3 +226,30 @@ export const HOSTED_CREDITS_PER_EUR =
  */
 export const CLOUD_SUBSCRIBER_LINE =
   `Subscribers get about ${SUBSCRIBER_CREDIT_FACTOR.toFixed(1)}x more credits per euro and ${n(CLOUD_PITCH.flashDailyTokens)} free Flash tokens a day.`
+
+/**
+ * Die Verweigerungsquote in ganzen Prozent, kaufmaennisch gerundet.
+ *
+ * Gerechnet, nicht getippt: 9 verweigerte von 188 gewerteten Antworten sind
+ * 4,8 Prozent, oeffentlich also 5. Beide Zahlen stehen als Datenblock in
+ * `no-refusals-measurement.md`, und der Waechter in
+ * `__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts` liest sie dort,
+ * addiert die Einzelurteile gegen die Gesamtzahl und rundet selbst nach.
+ *
+ * Was der Satz NICHT sagen darf, und warum (alles drei aus dem Messbericht
+ * selbst, Abschnitt 13.4 und 13.5): kein Vorher-Nachher, weil der Bericht den
+ * Rueckgang ausdruecklich nicht uns zurechnet; keine Ursache, weil der
+ * Grundtext nur bei einem von drei nachgeprueften Modellen half; kein Wort
+ * ueber andere Anbieter, weil dazu nichts gemessen wurde. Er nennt eine
+ * Messung, sonst nichts.
+ */
+export const REFUSAL_RATE_PERCENT = Math.round(
+  (CLOUD_PITCH.refusedAnswers / CLOUD_PITCH.scoredAnswers) * 100,
+)
+
+/**
+ * Der Messsatz, zeichengleich im CHANGELOG und auf dem Was-ist-neu-Blatt
+ * (David, 13.09.2026). Die Zahl darin kommt aus der Rechnung darueber.
+ */
+export const CLOUD_REFUSAL_LINE =
+  `We measured refusals in ${REFUSAL_RATE_PERCENT}% of answers.`
