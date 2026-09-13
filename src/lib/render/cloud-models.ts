@@ -65,10 +65,18 @@ export const CLOUD_MODEL_SEED: CloudModel[] = [
   { id: 'ltx-2.3', label: 'LTX 2.3', kind: 'video', t2v: true, i2v: true, clip: CLIP },
 
   // Image-to-video endpoints the provider ships with its own filter off
-  // (2026-09-13, mirroring uselu apps/web/lib/render/cloud-models.ts). None of
-  // them has a text-to-video twin at the provider, hence t2v: false — the path
-  // is an image first, then one of these. CLIP does not fit here: the provider
-  // quotes only a 5 s rate for them, so there is no 8s button to offer.
+  // (mirroring uselu apps/web/lib/render/cloud-models.ts). None of them has a
+  // text-to-video twin at the provider, hence t2v: false: the path is an image
+  // first, then one of these. CLIP does not fit here, the provider quotes only
+  // a 5 s rate for them, so there is no 8s button to offer.
+  // 2026-09-10:
+  { id: 'wan-2.2-spicy', label: 'Wan 2.2 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 15000 } },
+  { id: 'ltx-2.3-spicy', label: 'LTX 2.3 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 10000 } },
+  { id: 'wan-2.6-spicy', label: 'Wan 2.6 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 50000 } },
+  { id: 'wan-2.7-spicy', label: 'Wan 2.7 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 50000 } },
+  { id: 'minimax-h3-spicy', label: 'MiniMax H3 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 20000 } },
+  { id: 'seedance-1.5-pro-spicy', label: 'Seedance 1.5 Pro Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 26000 } },
+  // 2026-09-13:
   { id: 'seedance-2.5-spicy', label: 'Seedance 2.5 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 90000 } },
   { id: 'seedance-2.0-spicy', label: 'Seedance 2.0 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 60000 } },
   { id: 'seedance-2.0-fast-spicy', label: 'Seedance 2.0 Fast Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 50000 } },
