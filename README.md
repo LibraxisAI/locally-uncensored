@@ -41,7 +41,7 @@ Take the latest build from [Releases](https://github.com/PurpleDoubleD/locally-u
 
 Some antivirus engines flag unsigned NSIS installers that download other binaries, which is a false positive. The installer is built by GitHub Actions from the public source on `master`, and the update channel is signed against a public minisign key, so you can verify both: see [SECURITY.md](SECURITY.md#antivirus--browser-false-positives).
 
-Current release: **v2.6.9** (September 2026). Every change since 1.0.0 is in [CHANGELOG.md](CHANGELOG.md).
+Current release: **v3.0.0** (September 2026). Every change since 1.0.0 is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Three steps
 
@@ -81,6 +81,8 @@ npm run tauri build  # desktop binary
 ## Optional: LU Labs Cloud
 
 Some models are larger than any desktop card. Flip the Cloud switch in the same app and those run on hosted GPUs instead, with the heavy Create lanes alongside them. The same account works in the browser at [lu-labs.ai](https://lu-labs.ai), on a plan or on credit packs that do not expire. The local app stays free either way, and switching back to local costs nothing: [plans and prices](https://lu-labs.ai/pricing).
+
+Since 3.0.0 the catalogue says what it can back up. Every cloud chat model was asked the same two questions twice and judged on the answer: 24 of the 46 we measured answer in full, and only those carry a No refusals mark in the picker. Across all measured answers, 5% were refusals. 12 models cost no credits at all in chat on an active plan, up to 500,000 input and output tokens per day. For images and video, 10 video and 3 image models run without a built-in content restriction and carry Spicy in the name, and your account decides what they may produce.
 
 ## How it compares
 
