@@ -64,6 +64,16 @@ export const CLOUD_MODEL_SEED: CloudModel[] = [
   { id: 'hunyuan-video', label: 'HunyuanVideo 1.5', kind: 'video', t2v: true, i2v: true, negative_prompt: true, clip: CLIP },
   { id: 'ltx-2.3', label: 'LTX 2.3', kind: 'video', t2v: true, i2v: true, clip: CLIP },
 
+  // Image-to-video endpoints the provider ships with its own filter off
+  // (2026-09-13, mirroring uselu apps/web/lib/render/cloud-models.ts). None of
+  // them has a text-to-video twin at the provider, hence t2v: false — the path
+  // is an image first, then one of these. CLIP does not fit here: the provider
+  // quotes only a 5 s rate for them, so there is no 8s button to offer.
+  { id: 'seedance-2.5-spicy', label: 'Seedance 2.5 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 90000 } },
+  { id: 'seedance-2.0-spicy', label: 'Seedance 2.0 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 60000 } },
+  { id: 'seedance-2.0-fast-spicy', label: 'Seedance 2.0 Fast Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 50000 } },
+  { id: 'vidu-q3-spicy', label: 'Vidu Q3 Open', kind: 'video', t2v: false, i2v: true, clip: { short: 5 }, credits: { base: 35000 } },
+
   // ── 2.5.8 op-specialized fleet (Character-Studio / lipsync / voice / music /
   // extend / motion). `ops` keeps them out of every classic picker; the live
   // catalog (?v=2) is the pricing truth. Face-swap is banned from this list. ──

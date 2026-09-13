@@ -161,12 +161,18 @@ describe('cloudCatalogStore', () => {
       ],
     }
 
-    it('every classic seed clip model does both t2v and i2v', () => {
+    it('every classic seed clip model animates an image; the open ones do only that', () => {
       // Op-specialized 2.5.8 entries (lipsync/extend/motion/trainer) are not
       // clip-generation models and are hard-false on both flags.
       const vids = CLOUD_MODEL_SEED.filter((m) => m.kind === 'video' && !m.ops)
       expect(vids.length).toBeGreaterThan(0)
-      expect(vids.every((m) => m.t2v !== false && m.i2v !== false)).toBe(true)
+      expect(vids.every((m) => m.i2v !== false)).toBe(true)
+      // Text-to-video is what splits the list since 2026-09-13: the provider
+      // ships no text-to-video twin for the open endpoints, so exactly those
+      // carry t2v: false and every other clip model still does both.
+      expect(vids.filter((m) => m.t2v === false).map((m) => m.id))
+        .toEqual(vids.filter((m) => m.id.includes('spicy')).map((m) => m.id))
+      expect(vids.filter((m) => m.t2v !== false).length).toBeGreaterThan(0)
       const specialized = CLOUD_MODEL_SEED.filter((m) => m.kind === 'video' && m.ops)
       expect(specialized.length).toBeGreaterThan(0)
       expect(specialized.every((m) => m.t2v === false && m.i2v === false)).toBe(true)
