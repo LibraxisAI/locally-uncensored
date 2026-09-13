@@ -199,7 +199,7 @@ describe('the notes table', () => {
     for (const anchor of [
       'without refusing', 'we asked them', 'carries no mark yet',
       'no credits', '500,000', 'api keys always pay',
-      'content policy', '18 or older', 'animate button', 'sampling controls',
+      'content policy', 'decided by the server', 'animate button', 'sampling controls',
       'libuv', 'exit code', 'runs on the cpu', 'stop means stop',
       'why a folder was refused', 'cut off at the token limit',
       'real context window', 'no guessed budget', '2 gb card',

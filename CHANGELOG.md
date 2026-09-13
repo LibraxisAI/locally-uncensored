@@ -34,12 +34,10 @@ but no such card exists in the house, so the report stays open.
   accounts without an active plan keep paying credits too. The ceiling resets at
   00:00 UTC, one free request runs at a time, and the picker marks those models
   with "No credits".
-- **A content policy setting in your account:** Strict, Standard, or off after
-  you confirm in the same step that you are 18 or older. It applies to cloud
-  image and video, the server stamps the confirmation itself, and switching back
-  to another option clears it, so re-opening asks again. The setting reads the
-  same in the desktop app and in the browser because it is one setting behind
-  one route, not two copies.
+- **A content policy setting in your account:** Strict, Standard, or off. It
+  applies to cloud image and video. The setting reads the same in the desktop
+  app and in the browser because it is one setting behind one route, not two
+  copies.
 - **Six video models and three image models without a built-in content
   restriction.** Every one of the video ones starts from a picture, so in the
   browser studio a finished image has an Animate button that carries it straight

@@ -136,7 +136,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       // Box gemessen, dass Blatt und Tor deshalb verschiedene Bezugspunkte
       // trugen. Beide nennen jetzt denselben.
       `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on an active paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and accounts without an active plan keep paying credits too.`,
-      'A content policy setting in your account: Strict, Standard, or off after you confirm you are 18 or older. It applies to cloud image and video. Text was never filtered by us.',
+      'A content policy setting in your account: Strict, Standard, or off. It applies to cloud image and video. Text was never filtered by us.',
       `${CLOUD_PITCH.openVideoModels} video models and ${CLOUD_PITCH.openImageModels} image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.`,
       'Sampling controls sit next to the prompt: temperature, top P and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
     ],
@@ -163,7 +163,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         title: 'Content policy',
         items: [
           'The setting lives in your LU Cloud account and reads the same in the desktop app and in the browser, because it is one setting behind one route, not two copies.',
-          'Off requires an age confirmation in the same step, and the server stamps the time itself. Switching back to another option clears that confirmation, so re-opening it asks again.',
+          'Whether Off asks you to confirm your age is decided by the server, and in this release it does not ask. The app shows that step only when the server asks for it.',
           'Two lines no setting moves: material involving minors is refused on every request, and you may not upload a photograph of a real, identifiable person without their consent.',
           'The refusal message used to say cloud rendering cannot do this at all, which sent people to a local backend for something that was a setting. It now names the setting and where it is.',
         ],

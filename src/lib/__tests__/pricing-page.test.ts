@@ -41,7 +41,10 @@ it('names the switch in the same breath as the capability behind it', () => {
   // selben Satz als hinter dem Schalter liegend benannt. Sonst liest der
   // Kaeufer eine Zusage und findet eine Ablehnung.
   expect(text()).toMatch(/once you turn your own filter off/i)
-  expect(text()).toMatch(/18 or older/i)
+  // Entscheid David vom 13.09.2026: der Bestaetigungsschritt faellt fuer 3.0.0
+  // weg und kommt in 3.0.1 wieder. Solange er nicht kommt, darf die Seite ihn
+  // auch nicht ankuendigen; was hinter dem Schalter liegt, steht weiter da.
+  expect(text()).not.toMatch(/18 or older|age confirmation/i)
 })
 
 // Entscheid David vom 12.09.2026 zum Zusatzfund V3: ein einmaliger Pack
