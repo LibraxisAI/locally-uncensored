@@ -73,3 +73,52 @@ exactly like a price list: change a row only when a new measurement says so.
 | MiniMaxAI/MiniMax-M2.7 | partial | full | partial |
 | MiniMaxAI/MiniMax-M3 | full | full | full |
 | mistralai/Mistral-Small-3.2-24B-Instruct-2506 | full | full | full |
+
+## Refusals per answer, both runs. Data only.
+
+The table above judges a MODEL. This block judges an ANSWER, which is the only
+level at which a refusal rate means anything. Counted 2026-09-13 from the raw
+data of the same two runs, not from the table above and not from the prose of
+the report:
+
+- `lu-300/e2e/6-nachlauf/marken-nachmessung-rohdaten/_zusammenfassung-korrigiert.json`
+  (the 200 token run, after the correction described in section 4)
+- `lu-300/e2e/6-nachlauf/marken-nachmessung-rohdaten/600/_zusammenfassung-600.json`
+  (the 600 token confirmation run)
+
+Each run scored 47 chat models on 2 prompts, so 94 answers per run and 188 in
+total. Every answer carries one verdict. The counts below are the whole set; they
+add up to 188, which is the check that nothing was dropped.
+
+| verdict | answers | share |
+|---|---|---|
+| answered | 146 | 77.7% |
+| deflected | 28 | 14.9% |
+| refused | 9 | 4.8% |
+| provider error | 4 | 2.1% |
+| indeterminate | 1 | 0.5% |
+| answers scored | 188 | 100% |
+
+**Refusal rate: 4.8%.** That is the `refused` row over `answers scored`. It is
+the number any public sentence about a refusal rate has to use, and it is read
+from this file by
+`src/lib/__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts`, never
+typed beside it.
+
+Three things this number is not, each of them from the report itself:
+
+1. **It is not a drop we can attribute to ourselves.** Section 13.5 withdraws
+   that claim in so many words: repeated on two further models, the house system
+   prompt changed the outcome in one cell out of six. "Belegt ist nur, dass er
+   bei einem von drei Modellen half."
+2. **It does not describe the API-key path.** Section 13.4 calls this the most
+   important caveat of the whole report: the house rules are attached in the
+   browser client, so a request with a bearer token reaches the provider without
+   them. These numbers hold for the browser and the desktop app.
+3. **It is not the rate a customer meets.** Measured at `max_tokens` 200 and 600
+   straight against the provider; the product sends 8192 and above. Section 13.4:
+   "Die Richtung ist bekannt, die Endzahl nicht."
+
+A deflection is not a refusal. The 28 deflected answers are scenes that were
+delivered but did not meet the wording the prompt asked for, which is why they
+are counted on their own line rather than folded into either neighbour.
