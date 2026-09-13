@@ -381,8 +381,15 @@ fn looks_like_lfs_pointer(path: &Path, len: u64) -> bool {
 /// `SF_DATALESS`. Apple documents the flag as internal and refuses to let user
 /// space set or clear it, so the constant is carried here rather than read
 /// from a crate.
+///
+/// Nur macOS: das Flag steht in `st_flags`, und an `st_flags` kommt allein
+/// `std::os::macos::fs::MetadataExt`. Ohne dieses `cfg` bleiben Konstante und
+/// Pruefung auf Linux und Windows uebrig, wo sie niemand lesen kann, und
+/// `-D warnings` macht aus dem toten Posten einen Fehler.
+#[cfg(target_os = "macos")]
 const SF_DATALESS: u32 = 0x4000_0000;
 
+#[cfg(target_os = "macos")]
 fn is_dataless(flags: u32) -> bool {
     flags & SF_DATALESS != 0
 }
@@ -1332,6 +1339,10 @@ mod tests {
         assert_eq!(drop_orphaned_partials(&snap, digest), 0);
     }
 
+    // Geht mit der Pruefung selbst auf macOS: ohne dieses `cfg` griffe der
+    // Test auf Linux und Windows nach Posten, die es dort nicht mehr gibt, und
+    // `cargo test` scheiterte schon am Uebersetzen statt an einer Lint-Regel.
+    #[cfg(target_os = "macos")]
     #[test]
     fn an_icloud_placeholder_is_not_a_downloaded_file() {
         // The flag cannot be set from user space, so the predicate is proved
