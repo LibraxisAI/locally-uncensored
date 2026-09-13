@@ -61,11 +61,15 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 /// question, and `folders_of` answers it by refusing to ask a remote engine at
 /// all: those paths are on the other machine.
 fn looks_absolute(raw: &str) -> bool {
-    let p = std::path::Path::new(raw);
-    if p.is_absolute() {
+    let b = raw.as_bytes();
+    // A POSIX root. This is the half `is_absolute` got wrong in the other
+    // direction: on Windows it calls `/srv/ai/vae` relative, and ComfyUI hands
+    // us exactly that whenever the engine runs on Linux, in WSL or in a
+    // container while LU runs on Windows. Also covers the `//server/share`
+    // spelling of a share.
+    if b.first() == Some(&b'/') {
         return true;
     }
-    let b = raw.as_bytes();
     // A UNC share, or a drive letter followed by a separator.
     raw.starts_with("\\\\")
         || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
