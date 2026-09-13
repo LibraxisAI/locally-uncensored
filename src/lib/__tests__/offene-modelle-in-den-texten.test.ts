@@ -23,6 +23,21 @@ import { CLOUD_PITCH } from '../cloud-pitch'
 const WURZEL = resolve(__dirname, '..', '..', '..')
 const lies = (pfad: string) => readFileSync(resolve(WURZEL, pfad), 'utf8')
 const SEITEN = ['docs/index.html', 'docs/cloud/index.html', 'docs/pricing/index.html'] as const
+
+/**
+ * Der CHANGELOG zaehlt mit, aber nur sein 3.0.0-Abschnitt: aeltere Abschnitte
+ * duerfen "six" sagen, sie beschreiben einen aelteren Katalog. Die Datei nannte
+ * oben "10 open video models" und dreissig Zeilen tiefer "Six video models",
+ * also zweimal dieselbe Menge mit zwei Zahlen.
+ */
+const CHANGELOG = 'CHANGELOG.md'
+const abschnitt300 = () => {
+  const text = lies(CHANGELOG)
+  const start = text.indexOf('## [3.0.0]')
+  expect(start, 'im CHANGELOG fehlt der 3.0.0-Abschnitt').toBeGreaterThanOrEqual(0)
+  const ende = text.indexOf('\n## [', start + 1)
+  return ende === -1 ? text.slice(start) : text.slice(start, ende)
+}
 const ZAHLWORT: Record<number, string> = { 3: 'three', 6: 'six', 10: 'ten', 15: 'fifteen' }
 
 /**
@@ -43,6 +58,7 @@ describe('die Zahl der offenen Modelle', () => {
     for (const seite of SEITEN) {
       expect(nenntSechsModelle(alsText(lies(seite))), `${seite} zaehlt noch sechs`).toBe(false)
     }
+    expect(nenntSechsModelle(abschnitt300()), `${CHANGELOG} zaehlt noch sechs`).toBe(false)
   })
 
   it('steht auf jeder Verkaufsflaeche als das gezaehlte Zahlwort', () => {
@@ -52,6 +68,8 @@ describe('die Zahl der offenen Modelle', () => {
       expect(alsText(lies(seite)), `${seite} nennt die offene Videozahl nicht`)
         .toMatch(new RegExp(`\\b${wort}\\b[^.]{0,40}\\b(?:video|image-to-video)`, 'i'))
     }
+    expect(abschnitt300(), `${CHANGELOG} nennt die offene Videozahl nicht`)
+      .toMatch(new RegExp(`\\b${wort}\\b[^.]{0,40}\\b(?:video|image-to-video)`, 'i'))
   })
 
   it('und die Preisseite fuehrt jede offene Videozeile genau einmal', () => {

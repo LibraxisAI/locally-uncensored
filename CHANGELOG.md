@@ -38,7 +38,7 @@ but no such card exists in the house, so the report stays open.
   applies to cloud image and video. The setting reads the same in the desktop
   app and in the browser because it is one setting behind one route, not two
   copies.
-- **Six video models and three image models without a built-in content
+- **Ten video models and three image models without a built-in content
   restriction.** Every one of the video ones starts from a picture, so in the
   browser studio a finished image has an Animate button that carries it straight
   over.
