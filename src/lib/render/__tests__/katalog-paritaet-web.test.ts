@@ -26,8 +26,11 @@ import { CLOUD_MODEL_SEED } from '../cloud-models'
 
 const KANDIDATEN = [
   ...(process.env.LU_WEB_REPO?.trim() ? [resolve(process.env.LU_WEB_REPO.trim())] : []),
-  resolve(process.cwd(), '../lu-300-web-katalog'),
+  // Der Release-Checkout zuerst. Daneben liegen Worktrees einzelner Zweige,
+  // die hinter dem Kopf stehen koennen; sie zuerst zu nehmen hiess, die
+  // Paritaet gegen einen aelteren Katalog zu pruefen und das nicht zu merken.
   resolve(process.cwd(), '../lu-300-web'),
+  resolve(process.cwd(), '../lu-300-web-katalog'),
 ]
 const WEB = KANDIDATEN.find((p) => existsSync(resolve(p, 'apps/web/lib/render/cloud-models.ts')))
 if (!WEB) {
@@ -112,14 +115,14 @@ const credits = (usd: number) => Math.ceil(usd / CREDIT_USD)
  * 13.09.2026. Er kehrt den Entscheid vom 12.09. um: "Open" versteht kein
  * Kunde, also heissen sie wieder "Spicy".
  *
- * Der Desktop geht dabei voran. Das Web fuehrt zum Stand c5d9d2cd noch "Open"
- * und zieht nach. Verglichen wird deshalb der STAMM des Namens, also alles
- * ausser dem Markenwort: Reihenfolge, Ids, Preise, Faehigkeiten und der Rest
- * der Beschriftung haengen weiter Zeichen fuer Zeichen am Web, und allein das
- * eine Wort haengt am Entscheid. Zieht das Web nach, aendert sich hier nichts.
+ * Der Desktop ging voran, das Web hat mit acaa0c9d nachgezogen: vierzehn
+ * Eintraege tragen das Wort, elf Videoeintraege per Ersetzung von "Open" und
+ * die drei Bildmodelle per Suffix. Der Namensstamm-Behelf ist damit weg,
+ * verglichen wird wieder Zeichen fuer Zeichen. Das Markenwort wird zusaetzlich
+ * gegen den Entscheid geprueft, damit ein Rueckfall des Webs auf "Open" nicht
+ * als blosse Abweichung durchgeht, sondern benennt, welche Seite recht hat.
  */
 const MARKENWORT = 'Spicy'
-const stamm = (label: string) => label.replace(/\b(Open|Spicy)\b/g, '*')
 
 describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
   const klassischWeb = () => webKatalog().filter((m) => !m.ops)
@@ -136,20 +139,20 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
     const web = klassischWeb().filter((m) => m.kind === 'image')
     const seed = klassischSeed.filter((m) => m.kind === 'image')
     expect(seed.map((m) => m.id)).toEqual(web.map((m) => m.id))
-    expect(seed.map((m) => stamm(m.label))).toEqual(web.map((m) => stamm(m.label)))
+    expect(seed.map((m) => m.label)).toEqual(web.map((m) => m.label))
   })
 
   it('fuehrt dieselben Videomodelle, in derselben Reihenfolge und mit denselben Namen', () => {
     const web = klassischWeb().filter((m) => m.kind === 'video')
     const seed = klassischSeed.filter((m) => m.kind === 'video')
     expect(seed.map((m) => m.id)).toEqual(web.map((m) => m.id))
-    expect(seed.map((m) => stamm(m.label))).toEqual(web.map((m) => stamm(m.label)))
+    expect(seed.map((m) => m.label)).toEqual(web.map((m) => m.label))
   })
 
   it('traegt bei den erwachsenenfaehigen Endpunkten das entschiedene Markenwort', () => {
-    // Die andere Haelfte des Vergleichs darueber: der Stamm haengt am Web, das
-    // Markenwort am Entscheid. Ohne diesen Fall koennte im Seed irgendein Wort
-    // stehen, solange es nur Open oder Spicy heisst.
+    // Der Vergleich darueber haengt am Web. Dieser Fall haengt am Entscheid:
+    // zoege das Web auf "Open" zurueck, waere der Vergleich oben gruen zu
+    // machen, indem der Desktop mitzieht. Hier steht, welche Seite recht hat.
     const offen = CLOUD_MODEL_SEED.filter((m) => m.id.includes('spicy'))
     expect(offen.length).toBeGreaterThan(0)
     for (const m of offen) {
@@ -185,7 +188,7 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
     for (const w of sonder) {
       const s = CLOUD_MODEL_SEED.find((m) => m.id === w.id)
       expect(s, w.id).toBeDefined()
-      expect(stamm(s!.label), w.id).toBe(stamm(w.label))
+      expect(s!.label, w.id).toBe(w.label)
       expect(s!.label, w.id).toContain(MARKENWORT)
       expect(s!.ops, w.id).toBeDefined()
     }
@@ -220,6 +223,10 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
       expect(s, w.id).toBeDefined()
       expect(s!.kind, w.id).toBe('image')
       expect(s!.ops, w.id).toBeUndefined()
+      // Seit acaa0c9d tragen auch sie das Markenwort, per Suffix statt per
+      // Ersetzung: aus "Neta Lumina (anime)" wurde "Neta Lumina (anime) Spicy".
+      expect(s!.label, w.id).toContain(MARKENWORT)
+      expect(s!.label, w.id).not.toMatch(/\bOpen\b/)
     }
   })
 })

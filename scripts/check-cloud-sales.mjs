@@ -299,18 +299,17 @@ assert.equal(
 )
 // Entscheid David vom 13.09.2026, er kehrt den Entscheid vom 12.09. um: die
 // Anzeigenamen dieser Endpunkte heissen wieder "Spicy". Der Desktop und die
-// LUC-Seiten gehen voran, das Web fuehrt zum Stand c5d9d2cd noch "Open" und
-// zieht nach. Verglichen wird deshalb der Stamm des Namens; das Markenwort
-// selbst wird gegen den Entscheid geprueft, nicht gegen das Web. Auf der
-// Zahlungsdomain taucht keiner dieser Endpunkte auf (Entscheid dbf663fe).
+// LUC-Seiten gingen voran, das Web hat mit acaa0c9d nachgezogen. Verglichen
+// wird deshalb wieder die volle Beschriftung; das Markenwort wird zusaetzlich
+// gegen den Entscheid geprueft, nicht nur gegen das Web. Auf der Zahlungsdomain
+// taucht keiner dieser Endpunkte auf (Entscheid dbf663fe).
 const MARKENWORT = 'Spicy'
-const stamm = (label) => label.replace(/\b(Open|Spicy)\b/g, '*')
 adultVideo.forEach((model, index) => {
   const row = adultRows[index]
   const name = row.querySelector('[data-adult-model-id]')
   assert.ok(name, `docs/pricing/index.html: adult video row ${index + 1} carries no model anchor`)
   assert.equal(name.dataset.adultModelId, model.id, `docs/pricing/index.html: adult video id drift in row ${index + 1}`)
-  assert.equal(stamm(name.textContent), stamm(model.label),
+  assert.equal(name.textContent, model.label,
     `docs/pricing/index.html: adult video label drift for ${model.id}`)
   assert.ok(name.textContent.includes(MARKENWORT),
     `docs/pricing/index.html: ${model.id} does not carry the decided word ${MARKENWORT}`)

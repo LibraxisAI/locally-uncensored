@@ -80,9 +80,12 @@ export interface CloudPitchNumbers {
    * ACHTUNG, gewollte Abweichung: die Kaufseite auf lu-labs.ai nennt eine
    * KLEINERE Zahl. Sie zaehlt nicht den Katalog, sondern was sie auf dieser
    * Domain zeigen darf: `apps/web/app/(marketing)/pricing/pricing-detail.ts`
-   * filtert ueber `keptOffThisDomain` und `CLAIM_IN_NAME`, der Entscheid dazu
-   * steht in `apps/web/lib/marketing/public-copy.ts` (10.09.2026). Der Desktop
-   * haengt an keiner Zahlungsdomain und nennt deshalb den ganzen Katalog.
+   * filtert ueber `keptOffThisDomain`, der Entscheid dazu steht in
+   * `apps/web/lib/marketing/public-copy.ts` (10.09.2026). Seit acaa0c9d haengt
+   * diese Auswahl am Katalogfeld `adult` statt am Namen, `CLAIM_IN_NAME` ist
+   * dort geloescht: die Umbenennung auf "Spicy" aendert die Zahl der
+   * Zahlungsdomain deshalb nicht. Der Desktop haengt an keiner Zahlungsdomain
+   * und nennt deshalb den ganzen Katalog.
    *
    * Beide Zahlen sind je fuer sich bewacht, aber nirgends stand, dass sie
    * absichtlich verschieden sind (R5-47). Ob der Desktop weiter die groessere

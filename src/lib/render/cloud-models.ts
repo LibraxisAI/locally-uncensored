@@ -58,9 +58,9 @@ export const CLOUD_MODEL_SEED: CloudModel[] = [
   { id: 'hidream', label: 'HiDream', kind: 'image' },
   { id: 'hunyuan-image', label: 'HunyuanImage 2.1', kind: 'image' },
   { id: 'z-image-turbo', label: 'Z-Image Turbo (fast)', kind: 'image' },
-  { id: 'chroma', label: 'Chroma', kind: 'image' },
-  { id: 'prefect-pony', label: 'Prefect Pony XL', kind: 'image' },
-  { id: 'neta-lumina', label: 'Neta Lumina (anime)', kind: 'image' },
+  { id: 'chroma', label: 'Chroma Spicy', kind: 'image' },
+  { id: 'prefect-pony', label: 'Prefect Pony XL Spicy', kind: 'image' },
+  { id: 'neta-lumina', label: 'Neta Lumina (anime) Spicy', kind: 'image' },
   // Every hosted clip model does both t2v + i2v, so both flags are true. They're
   // the enforced contract (Video/Animate pickers + submit filter on them), not a
   // note — a future t2v-only or i2v-only model MUST set the flag it lacks to
