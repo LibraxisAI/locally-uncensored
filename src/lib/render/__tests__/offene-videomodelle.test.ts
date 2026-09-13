@@ -64,6 +64,23 @@ describe('offene Videomodelle im Seed', () => {
     }
   })
 
+  it('fuehrt den LoRA-Satz nur dort, wo er wirklich hoeher liegt', () => {
+    // Ein Lauf mit eigener Figur geht beim Anbieter auf die `-lora`-Route,
+    // einen anderen Endpunkt zu einem anderen Preis. Der Satz ersetzt den
+    // Grundsatz, er addiert sich nicht, und er steht nur da, wo der Grundsatz
+    // die teurere Route nicht deckt.
+    const mitLora = CLOUD_MODEL_SEED.filter((m) => m.credits?.lora !== undefined)
+    // Positivkontrolle: ohne einen einzigen Satz pruefte die Schleife nichts.
+    expect(mitLora.length).toBeGreaterThan(0)
+    for (const m of mitLora) {
+      expect(m.credits!.lora!, m.id).toBeGreaterThan(m.credits!.base)
+      // Ein Modell mit langem Satz UND LoRA-Satz braeuchte eine dritte Zahl
+      // fuer den langen LoRA-Lauf. Die gibt es nicht, also gibt es die
+      // Kombination auch nicht.
+      expect(m.credits!.long, m.id).toBeUndefined()
+    }
+  })
+
   it('steht im Animate-Waehler und in keinem anderen', () => {
     useCloudCatalogStore.setState({ models: CLOUD_MODEL_SEED })
     const animate = i2vModels().map((m) => m.id)

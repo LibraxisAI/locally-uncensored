@@ -164,6 +164,24 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
     }
   })
 
+  it('rechnet den LoRA-Satz mit denselben Zahlen wie das Web, und nur dort', () => {
+    const preise = webPreise()
+    const webMitLora = Object.entries(preise).filter(([, p]) => p.lora !== undefined)
+    expect(webMitLora.length).toBeGreaterThan(0)
+    for (const [id, p] of webMitLora) {
+      const s = CLOUD_MODEL_SEED.find((m) => m.id === id)
+      expect(s, id).toBeDefined()
+      expect(s!.credits?.base, id).toBe(credits(p.base))
+      expect(s!.credits?.lora, id).toBe(credits(p.lora!))
+    }
+    // Und in die andere Richtung: kein erfundener Satz im Seed.
+    for (const m of CLOUD_MODEL_SEED) {
+      if (m.credits?.lora === undefined) continue
+      expect(preise[m.id]?.lora, m.id).toBeDefined()
+      expect(m.credits.lora, m.id).toBe(credits(preise[m.id].lora!))
+    }
+  })
+
   it('kennt dieselben offenen Bildmodelle wie das Web', () => {
     // Der Desktop traegt die Marke nicht selbst (die Katalogroute liefert das
     // Feld nicht). Welche Bildmodelle offen sind, sagt also das Web, und der
