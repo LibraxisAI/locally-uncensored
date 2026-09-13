@@ -1285,6 +1285,10 @@ mod tests {
         assert!(repair_plan(&clean.defects).0.is_empty());
     }
 
+    // Symlinks legt dieser Test mit `std::os::unix` an, das es unter Windows
+    // nicht gibt. Dasselbe `cfg` tragen die vier Geschwister in filesystem.rs,
+    // engine.rs und gpu.rs; hier hat es gefehlt.
+    #[cfg(unix)]
     #[test]
     fn a_dangling_snapshot_link_reads_as_unreadable_and_takes_its_blob_with_it() {
         let temp = tempfile::tempdir().unwrap();
