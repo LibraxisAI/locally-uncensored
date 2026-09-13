@@ -138,10 +138,12 @@ but no such card exists in the house, so the report stays open.
 - **The Expert section in Create is hidden when it has nothing to show** for the
   current lane, instead of being shown empty, and in local mode it keeps its
   controls.
-- **The image install that finished at the promised size with two empty folders
-  is repaired.** The installer now reads the file list and the required set from
-  the repository itself, spots missing, empty, stale and truncated files,
-  refetches only the broken one and checks it. This is GitHub 127.
+- **The MLX image install that finished at the promised size with two empty
+  folders: the fix is in the source, not in this release.** The installer reads
+  the file list and the required set from the repository itself, spots missing,
+  empty, stale and truncated files, refetches only the broken one and checks it.
+  This is GitHub 127. MLX runs on macOS only, and 3.0.0 builds Windows and
+  Linux, so no download from this release carries it.
 - **The Get button asks the running image backend where its models go**, so a
   download lands in the folder the picker actually reads, including installs
   that were started with their own base directory.
