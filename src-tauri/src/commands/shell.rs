@@ -213,10 +213,16 @@ pub(crate) fn kill_tree(root: u32) {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 _ => {
-                    // Only the helper is killed here. Never broaden the target
+                    // Stop WAITING, never stop the teardown. `taskkill /T /F`
+                    // does not need a minder: it finishes the tree on its own
+                    // once it is started. Killing the helper here ended the
+                    // process that was doing the work, so on a slow box the
+                    // tree survived and its children kept the output pipes
+                    // open, which is the one thing this function exists to
+                    // prevent. The deadline stays a bound on how long the
+                    // CALLER waits for confirmation, nothing more.
+                    // Never broaden the target
                     // to an image name or another process if termination fails.
-                    let _ = killer.kill();
-                    let _ = killer.wait();
                     break;
                 }
             }
