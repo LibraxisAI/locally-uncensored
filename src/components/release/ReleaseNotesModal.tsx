@@ -9,6 +9,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { X, Sparkles, ChevronDown } from 'lucide-react'
 import { version as currentVersion } from '../../../package.json'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useCloudAuthStore, deriveCloudAvailable } from '../../stores/cloudAuthStore'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../../stores/releaseNotesStore'
 import { releaseNoteFor } from '../../lib/release-notes'
 
@@ -16,11 +18,31 @@ export function ReleaseNotesModal() {
   const lastNotesVersion = useReleaseNotesStore((s) => s.lastNotesVersion)
   const markNotesSeen = useReleaseNotesStore((s) => s.markNotesSeen)
   const onboardingDone = useSettingsStore((s) => s.settings.onboardingDone)
+  const updateSettings = useSettingsStore((s) => s.updateSettings)
+  const setCloudGateOpen = useUIStore((s) => s.setCloudGateOpen)
+  const cloudAvailable = useCloudAuthStore(deriveCloudAvailable)
   const [expanded, setExpanded] = useState(false)
 
   const open = shouldShowReleaseNotes(currentVersion, lastNotesVersion, onboardingDone)
   const note = releaseNoteFor(currentVersion)
   const close = () => markNotesSeen(currentVersion)
+
+  /**
+   * Der Knopf des Cloud-Blocks.
+   *
+   * Er tut genau das, was der Wolkenschalter im Kopf der App tut, und faellt
+   * darum auf dieselbe Unterscheidung zurueck: ein Konto, das die Wolke nutzen
+   * darf, wird umgeschaltet; jedes andere bekommt das Verkaufs-Panel. Kein
+   * zweiter Weg in die Wolke, nur ein zweiter Ausloeser.
+   *
+   * Das Blatt schliesst sich dabei, sonst laege es ueber dem, was es gerade
+   * geoeffnet hat. Es gilt danach als gelesen, denn der Kunde hat es gelesen.
+   */
+  const turnOnCloud = () => {
+    close()
+    if (cloudAvailable) updateSettings({ appMode: 'cloud' })
+    else setCloudGateOpen(true)
+  }
   useDismissOnEscape(open && !!note, close)
 
   return (
@@ -54,6 +76,38 @@ export function ReleaseNotesModal() {
             </div>
 
             <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+              {/* Vor allem anderen und fetter als der Rest (David, 13.09.2026):
+                  wer aktualisiert, liest dieses Blatt einmal, und das Angebot
+                  gehoert an dessen Anfang statt zwischen die Fehlerbehebungen.
+                  Die drei Zeilen und der Satz kommen aus lib/cloud-pitch.ts,
+                  wortgleich mit dem Panel am Schalter. */}
+              {note.cloud && (
+                <div
+                  data-testid="release-cloud-block"
+                  className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3 space-y-2"
+                >
+                  <p className="text-[0.55rem] font-semibold uppercase tracking-widest text-violet-300/80">
+                    Cloud
+                  </p>
+                  {/* 0.7rem, nicht 0.75: die Typo-Leiter hat sieben Werte
+                      abgebaut, und 0.75rem ist einer davon. Fett und weiss
+                      gegen grau tragen den Unterschied ohne neue Groesse. */}
+                  <ul className="space-y-1">
+                    {note.cloud.lines.map((line) => (
+                      <li key={line} className="text-[0.7rem] font-semibold leading-snug text-white">
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[0.62rem] leading-relaxed text-gray-300">{note.cloud.note}</p>
+                  <button
+                    onClick={turnOnCloud}
+                    className="w-full flex items-center justify-center h-8 rounded-lg bg-white text-black text-[0.7rem] font-semibold hover:bg-gray-200 transition-colors"
+                  >
+                    Turn on Cloud
+                  </button>
+                </div>
+              )}
               <div className="flex items-center gap-2">
                 <Sparkles size={14} className="text-violet-300" />
                 <h3 className="text-[0.85rem] font-semibold text-white">What is new</h3>

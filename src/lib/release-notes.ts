@@ -14,7 +14,7 @@
  * changes expander, grouped into sections (Local, Cloud), and may be long.
  */
 
-import { CLOUD_PITCH } from './cloud-pitch'
+import { CLOUD_PITCH, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from './cloud-pitch'
 
 /**
  * The two model numbers the 3.0.0 sheet quotes, in one place and read, never
@@ -76,6 +76,25 @@ export interface ReleaseNote {
   version: string
   /** One line the user reads first. */
   headline: string
+  /**
+   * Der Cloud-Block, der VOR allem anderen auf dem Blatt steht (David,
+   * 13.09.2026).
+   *
+   * Dieselben drei Zeilen und derselbe Abo-Satz wie im Verkaufs-Panel am
+   * Wolkenschalter, aus denselben Konstanten. Das Blatt ist die einzige
+   * Stelle, an der ein bestehender Kunde nach einer Aktualisierung etwas
+   * erfaehrt, also steht das Angebot dort oben und nicht zwischen den
+   * Fehlerbehebungen.
+   *
+   * Optional: nur das Blatt der laufenden Version traegt ihn. Eine alte Notiz
+   * bekommt rueckwirkend kein Angebot.
+   */
+  cloud?: {
+    /** Die drei gezaehlten Zeilen. */
+    lines: string[]
+    /** Der Abo-Satz, zeichengleich mit Panel, CHANGELOG und Guthaben-Dialog. */
+    note: string
+  }
   /** Two to five short lines. Anything longer goes into `details`. */
   lines: string[]
   /** The full list behind the expander, grouped into sections. */
@@ -92,6 +111,13 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
+    // Gelesen, nicht getippt: dieselben Funktionen, die das Verkaufs-Panel
+    // fuellen. Eine zweite Fassung derselben drei Zahlen waere genau der
+    // Fehler, den der Waechter unter diesem Blatt seit R2-11 verhindert.
+    cloud: {
+      lines: cloudSalesLines(),
+      note: CLOUD_SUBSCRIBER_LINE,
+    },
     lines: [
       `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark. The catalogue holds ${SHEET_CATALOGUE_MODELS} chat models. We asked them, twice each, and counted only the ones that answered both times. The mark comes from that measurement, never from the model name.`,
       // Der Bezugspunkt der 12 steht ausgeschrieben, nie als Rueckverweis.
