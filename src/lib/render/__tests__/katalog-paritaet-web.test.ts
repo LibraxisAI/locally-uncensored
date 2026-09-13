@@ -107,6 +107,20 @@ function webPreise(): Record<string, { base: number; long?: number; lora?: numbe
 
 const credits = (usd: number) => Math.ceil(usd / CREDIT_USD)
 
+/**
+ * Das Markenwort der erwachsenenfaehigen Endpunkte, Entscheid David vom
+ * 13.09.2026. Er kehrt den Entscheid vom 12.09. um: "Open" versteht kein
+ * Kunde, also heissen sie wieder "Spicy".
+ *
+ * Der Desktop geht dabei voran. Das Web fuehrt zum Stand c5d9d2cd noch "Open"
+ * und zieht nach. Verglichen wird deshalb der STAMM des Namens, also alles
+ * ausser dem Markenwort: Reihenfolge, Ids, Preise, Faehigkeiten und der Rest
+ * der Beschriftung haengen weiter Zeichen fuer Zeichen am Web, und allein das
+ * eine Wort haengt am Entscheid. Zieht das Web nach, aendert sich hier nichts.
+ */
+const MARKENWORT = 'Spicy'
+const stamm = (label: string) => label.replace(/\b(Open|Spicy)\b/g, '*')
+
 describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
   const klassischWeb = () => webKatalog().filter((m) => !m.ops)
   const klassischSeed = CLOUD_MODEL_SEED.filter((m) => !m.ops)
@@ -122,14 +136,26 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
     const web = klassischWeb().filter((m) => m.kind === 'image')
     const seed = klassischSeed.filter((m) => m.kind === 'image')
     expect(seed.map((m) => m.id)).toEqual(web.map((m) => m.id))
-    expect(seed.map((m) => m.label)).toEqual(web.map((m) => m.label))
+    expect(seed.map((m) => stamm(m.label))).toEqual(web.map((m) => stamm(m.label)))
   })
 
   it('fuehrt dieselben Videomodelle, in derselben Reihenfolge und mit denselben Namen', () => {
     const web = klassischWeb().filter((m) => m.kind === 'video')
     const seed = klassischSeed.filter((m) => m.kind === 'video')
     expect(seed.map((m) => m.id)).toEqual(web.map((m) => m.id))
-    expect(seed.map((m) => m.label)).toEqual(web.map((m) => m.label))
+    expect(seed.map((m) => stamm(m.label))).toEqual(web.map((m) => stamm(m.label)))
+  })
+
+  it('traegt bei den erwachsenenfaehigen Endpunkten das entschiedene Markenwort', () => {
+    // Die andere Haelfte des Vergleichs darueber: der Stamm haengt am Web, das
+    // Markenwort am Entscheid. Ohne diesen Fall koennte im Seed irgendein Wort
+    // stehen, solange es nur Open oder Spicy heisst.
+    const offen = CLOUD_MODEL_SEED.filter((m) => m.id.includes('spicy'))
+    expect(offen.length).toBeGreaterThan(0)
+    for (const m of offen) {
+      expect(m.label, m.id).toContain(MARKENWORT)
+      expect(m.label, m.id).not.toMatch(/\bOpen\b/)
+    }
   })
 
   it('gibt den offenen Videomodellen dieselben Faehigkeiten und denselben Preis', () => {
@@ -159,7 +185,8 @@ describe.skipIf(!WEB)('Katalogparitaet Desktop gegen Web', () => {
     for (const w of sonder) {
       const s = CLOUD_MODEL_SEED.find((m) => m.id === w.id)
       expect(s, w.id).toBeDefined()
-      expect(s!.label, w.id).toBe(w.label)
+      expect(stamm(s!.label), w.id).toBe(stamm(w.label))
+      expect(s!.label, w.id).toContain(MARKENWORT)
       expect(s!.ops, w.id).toBeDefined()
     }
   })

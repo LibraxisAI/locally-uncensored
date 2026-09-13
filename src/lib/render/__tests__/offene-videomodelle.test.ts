@@ -34,23 +34,31 @@ describe('offene Videomodelle im Seed', () => {
     }
   })
 
-  it('nennt keines nach dem, was es kann', () => {
-    // Die Beschriftung steht im Waehler und damit auf einer Oberflaeche, die
-    // an der Zahlungsbeziehung haengt. Die Id darf heissen, wie der Anbieter
-    // sie nennt, die Beschriftung nicht.
+  it('nennt keines nach dem, was es kann, und traegt das entschiedene Markenwort', () => {
+    // Entscheid David vom 13.09.2026, er kehrt den Entscheid vom 12.09. um:
+    // die Anzeigenamen heissen wieder "Spicy", weil "Open" kein Kunde
+    // versteht. Die Ids bleiben unberuehrt, sie tragen ohnehin `-spicy`.
+    //
+    // Was NICHT zurueckkommt: eine Beschriftung, die die Faehigkeit ausspricht.
+    // uncensored, nsfw, adult, nude und porn bleiben verboten, und diese
+    // Endpunkte stehen weiter gar nicht auf der Zahlungsdomain (Entscheid
+    // dbf663fe), weshalb "Spicy" dort auch nichts beruehrt.
     for (const m of offeneVideo) {
-      expect(m.label, m.id).not.toMatch(/spicy|uncensored|nsfw|adult|nude|porn/i)
-      expect(m.label, m.id).toMatch(/ Open$/)
+      expect(m.label, m.id).not.toMatch(/uncensored|nsfw|adult|nude|porn/i)
+      expect(m.label, m.id).toMatch(/ Spicy$/)
+      expect(m.label, m.id).not.toMatch(/\bOpen\b/)
     }
   })
 
-  it('und keine einzige Beschriftung im Seed tut es, auch nicht hinter einem ops-Eintrag', () => {
+  it('und keine einzige Beschriftung im Seed spricht die Faehigkeit aus, auch nicht hinter einem ops-Eintrag', () => {
     // wan-2.2-spicy-extend steht nicht in `offeneVideo`, weil es ueber `ops`
-    // laeuft. Seine Beschriftung steht trotzdem im Waehler der Fortsetzung,
-    // und sie hiess bis 13.09.2026 "Wan 2.2 Spicy Extend".
+    // laeuft. Seine Beschriftung steht trotzdem im Waehler der Fortsetzung und
+    // heisst seit dem Entscheid vom 13.09.2026 wieder "Wan 2.2 Spicy Extend".
     for (const m of CLOUD_MODEL_SEED) {
-      expect(m.label, m.id).not.toMatch(/spicy|uncensored|nsfw|adult|nude|porn/i)
+      expect(m.label, m.id).not.toMatch(/uncensored|nsfw|adult|nude|porn/i)
     }
+    const fortsetzung = CLOUD_MODEL_SEED.find((m) => m.id === 'wan-2.2-spicy-extend')
+    expect(fortsetzung?.label).toBe('Wan 2.2 Spicy Extend')
   })
 
   it('quotiert einen Preis und keinen 8-Sekunden-Knopf', () => {
