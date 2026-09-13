@@ -2,7 +2,7 @@
 
 All notable changes to Locally Uncensored are documented here.
 
-## [3.0.0] - 2026-09-12
+## [3.0.0] - 2026-09-13
 
 Measured instead of promised, and Flash chat that costs nothing on an active
 plan. Every cloud chat model was asked the same question twice, only the ones
