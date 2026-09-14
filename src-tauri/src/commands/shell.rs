@@ -205,28 +205,69 @@ pub(crate) fn kill_tree(root: u32) {
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     crate::process_util::suppress_window(&mut command);
     if let Ok(mut killer) = command.spawn() {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            match killer.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                _ => {
-                    // Stop WAITING, never stop the teardown. `taskkill /T /F`
-                    // does not need a minder: it finishes the tree on its own
-                    // once it is started. Killing the helper here ended the
-                    // process that was doing the work, so on a slow box the
-                    // tree survived and its children kept the output pipes
-                    // open, which is the one thing this function exists to
-                    // prevent. The deadline stays a bound on how long the
-                    // CALLER waits for confirmation, nothing more.
-                    // Never broaden the target
-                    // to an image name or another process if termination fails.
-                    break;
-                }
+        finish_tree_kill(&mut killer);
+    }
+}
+
+#[cfg(windows)]
+fn finish_tree_kill(killer: &mut std::process::Child) {
+    // Der Aufrufer toetet danach die Shell als Rueckfall. Kehrt diese Stelle
+    // vor taskkill zurueck, verschwindet dessen Wurzel vor der Baumsuche und
+    // das Kind ueberlebt. Den Helfer weiterlaufen zu lassen reicht nicht:
+    // sein Ende muss vor dem Rueckfall liegen. Auf der Box mit einem um
+    // 2,5 Sekunden verzoegerten Helfer samt Gegenprobe nachgewiesen.
+    let _ = killer.wait();
+}
+
+#[cfg(all(test, windows))]
+mod windows_stop_tests {
+    use super::*;
+    use crate::test_support::{is_alive, worker_descendants_of};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_slow_tree_killer_finishes_before_the_shell_fallback() {
+        let mut shell = Command::new("powershell.exe");
+        shell.args(["-NoProfile", "-NonInteractive", "-Command", "ping -n 31 127.0.0.1"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        crate::process_util::suppress_window(&mut shell);
+        let mut shell = shell.spawn().expect("start test shell");
+        let (_, out_done) = drain(shell.stdout.take().unwrap());
+        let (_, err_done) = drain(shell.stderr.take().unwrap());
+        let ready = Instant::now();
+        let children = loop {
+            let children = worker_descendants_of(shell.id());
+            if !children.is_empty() { break children; }
+            if ready.elapsed() >= Duration::from_secs(30) {
+                kill_tree(shell.id());
+                let _ = shell.wait();
+                panic!("test shell did not start its child");
             }
-        }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(children.iter().all(|pid| is_alive(*pid)));
+
+        // Ein echter PID-begrenzter taskkill, nur sein Start liegt sicher
+        // hinter der alten Zwei-Sekunden-Frist. Keine globale PATH-Aenderung.
+        let mut killer = Command::new("powershell.exe");
+        killer.args(["-NoProfile", "-NonInteractive", "-Command", &format!(
+            "Start-Sleep -Milliseconds 2500; & $env:SystemRoot\\System32\\taskkill.exe /PID {} /T /F",
+            shell.id(),
+        )]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        crate::process_util::suppress_window(&mut killer);
+        let mut killer = killer.spawn().expect("start delayed tree killer");
+        finish_tree_kill(&mut killer);
+        let _ = shell.kill();
+        let _ = shell.wait();
+        let _ = killer.wait();
+        settle(&out_done, &err_done, Duration::from_millis(500));
+        let survivors: Vec<_> = children.into_iter().filter(|pid| is_alive(*pid)).collect();
+        let drained = out_done.load(Ordering::Acquire) && err_done.load(Ordering::Acquire);
+
+        // Auch die rote Gegenprobe raeumt ausschliesslich ihre Kinder ab.
+        for pid in &survivors { kill_tree(*pid); }
+        assert!(survivors.is_empty(), "shell fallback orphaned children: {survivors:?}");
+        assert!(drained, "cancelled tree retained an output pipe");
     }
 }
 

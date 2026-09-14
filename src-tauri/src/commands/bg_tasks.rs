@@ -149,6 +149,20 @@ async fn sweep_isolation() -> tokio::sync::MutexGuard<'static, ()> {
     SWEEP_ISOLATION.lock().await
 }
 
+#[cfg(test)]
+async fn finish_test_task(id: &str) {
+    // Eine Abbruchanforderung ist noch kein ausgefuehrter Abbruch.
+    // Endet die Testlaufzeit vorher, verwirft Tokio den Empfaenger und wartet
+    // unter Windows auf dessen blockierende Pipe-Leser bis zum Prozessende.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let status = shell_task_status_impl(&json!({ "id": id })).await.unwrap();
+        if status["running"] == false { return; }
+        assert!(std::time::Instant::now() < deadline, "test left a background task running");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Start arguments for a task that keeps a CHILD process of its own alive —
 /// the shape every teardown test needs, because a task with a deep tree is the
 /// reason this module exists (`pnpm install`, `cargo build`).
@@ -435,7 +449,12 @@ pub(crate) async fn shell_task_start_impl(args: &Value) -> CmdResult {
                 // for the foreground shell tool. The Windows job object does not
                 // help here either: it fires when LU dies, not on a cancel.
                 if let Some(pid) = pid {
-                    crate::commands::shell::kill_tree(pid);
+                    // Der Baumabbau wartet auf das Betriebssystem. Dabei muss
+                    // der asynchrone Lauf weiter seine Ausgabepipes lesen und
+                    // andere Aufgaben bedienen koennen, auf jeder Plattform.
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::commands::shell::kill_tree(pid);
+                    }).await;
                 }
                 let _ = child.kill().await;
                 break (None, true);
@@ -744,6 +763,8 @@ mod tests {
         let pos1 = ids.iter().position(|s| *s == id1).unwrap();
         let pos2 = ids.iter().position(|s| *s == id2).unwrap();
         assert!(pos2 < pos1, "newer task should appear first");
+        super::finish_test_task(&id1).await;
+        super::finish_test_task(&id2).await;
     }
 
     #[cfg(windows)]
@@ -959,6 +980,7 @@ mod shutdown_sweep_tests {
 
         // Do not leave a minute of ping behind for the rest of the run.
         let _ = shell_task_kill_impl(&json!({ "id": id })).await;
+        super::finish_test_task(&id).await;
     }
 
     /// The window the reaping fix closes.
@@ -1066,7 +1088,7 @@ mod cwd_default_tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let st = shell_task_status_impl(&json!({ "id": id })).await.unwrap();
             seen = st["output_tail"].as_str().unwrap_or("").to_string();
-            if !seen.trim().is_empty() {
+            if !seen.trim().is_empty() && st["running"] == false {
                 break;
             }
         }
@@ -1098,6 +1120,7 @@ mod cwd_default_tests {
     /// the model started "in the project" ran somewhere else.
     #[tokio::test]
     async fn a_task_without_an_explicit_cwd_lands_in_the_workspace() {
+        let _isolation = super::sweep_isolation().await;
         // `os_paths::test_dir` statt eines handgebauten `temp_dir().join(…)`:
         // das Aufräumen hängt am `Drop` und läuft auch dann, wenn das
         // `assert!` unten panickt — die letzte Zeile des Tests tat das nicht.
@@ -1120,6 +1143,7 @@ mod cwd_default_tests {
     /// An explicit cwd from the caller still wins over the derived default.
     #[tokio::test]
     async fn an_explicit_cwd_still_wins() {
+        let _isolation = super::sweep_isolation().await;
         // Siehe oben: beide Verzeichnisse räumen sich beim Verlassen selbst
         // ab, auch über die drei `assert!` hinweg.
         let a = crate::os_paths::test_dir("bg-a");
