@@ -88,18 +88,16 @@ const tierCredits = objects(source('apps/web/lib/billing/credits.ts'))
   .find((row) => typeof row.hosted === 'number' && typeof row['hosted-max'] === 'number')
 assert.ok(tierCredits, 'TIER_CREDITS not found in credits.ts')
 
-for (const cell of pricing.querySelectorAll('[data-plan-id]')) {
-  const tier = tiers.find((row) => row.id === cell.dataset.planId)
-  assert.ok(tier, `Plan missing from pricing.ts: ${cell.dataset.planId}`)
-  assert.equal(Number(cell.dataset.monthlyEur), tier.monthlyEUR, `${tier.id}: monthly price drift`)
-  assert.equal(cell.textContent, `EUR ${tier.monthlyEUR}`)
-  const row = cell.closest('[data-plan-row]')
-  const annual = row.querySelector('[data-annual-eur]')
-  assert.equal(Number(annual.dataset.annualEur), tier.annualEUR, `${tier.id}: annual price drift`)
-  assert.equal(annual.textContent, `EUR ${tier.annualEUR}`)
-  const credits = row.querySelector('[data-plan-credits]')
-  assert.equal(Number(credits.dataset.planCredits), tierCredits[cell.dataset.planId], `${tier.id}: credit drift`)
-  assert.equal(credits.textContent, tierCredits[cell.dataset.planId].toLocaleString('en-US'))
+for (const card of pricing.querySelectorAll('[data-plan-id]')) {
+  const tier = tiers.find((row) => row.id === card.dataset.planId)
+  assert.ok(tier, `Plan missing from pricing.ts: ${card.dataset.planId}`)
+  assert.equal(Number(card.dataset.monthlyEur), tier.monthlyEUR, `${tier.id}: monthly price drift`)
+  assert.equal(Number(card.dataset.annualEur), tier.annualEUR, `${tier.id}: annual price drift`)
+  assert.equal(Number(card.dataset.planCredits), tierCredits[card.dataset.planId], `${tier.id}: credit drift`)
+  assert.match(card.textContent, new RegExp(`€${tier.monthlyEUR}(?:\\D|$)`), `${tier.id}: monthly price text drift`)
+  assert.ok(card.textContent.includes(`€${tier.annualEUR}/year`), `${tier.id}: annual price text drift`)
+  assert.ok(card.textContent.includes(`${tierCredits[card.dataset.planId].toLocaleString('en-US')} credits/month`),
+    `${tier.id}: credit text drift`)
 }
 assert.equal(pricing.querySelectorAll('[data-plan-id]').length, tiers.filter((t) => typeof t.monthlyEUR === 'number').length,
   'Every paid plan must appear on the pricing page, and nothing else')
@@ -111,12 +109,13 @@ assert.equal(pricing.querySelectorAll('[data-plan-id]').length, tiers.filter((t)
 const verkaeuflich = (row) =>
   typeof row.credits === 'number' && typeof row.eurCents === 'number' && row.retiredOn === undefined
 const packs = objects(source('apps/web/lib/billing/topup.ts')).filter(verkaeuflich)
-for (const span of pricing.querySelectorAll('[data-pack-id]')) {
-  const entry = packs.find((row) => row.id === span.dataset.packId)
-  assert.ok(entry, `Pack missing from topup.ts: ${span.dataset.packId}`)
-  assert.equal(Number(span.dataset.eurCents), entry.eurCents)
-  assert.equal(Number(span.dataset.credits), entry.credits)
-  assert.equal(span.textContent, `EUR ${entry.eurCents / 100} for ${entry.credits.toLocaleString('en-US')} credits`)
+for (const card of pricing.querySelectorAll('[data-pack-id]')) {
+  const entry = packs.find((row) => row.id === card.dataset.packId)
+  assert.ok(entry, `Pack missing from topup.ts: ${card.dataset.packId}`)
+  assert.equal(Number(card.dataset.eurCents), entry.eurCents)
+  assert.equal(Number(card.dataset.credits), entry.credits)
+  assert.ok(card.textContent.includes(`€${entry.eurCents / 100}`), `${entry.id}: pack price text drift`)
+  assert.ok(card.textContent.includes(`${entry.credits.toLocaleString('en-US')} credits`), `${entry.id}: pack credit text drift`)
 }
 assert.equal(pricing.querySelectorAll('[data-pack-id]').length, packs.length, 'Every pack must appear, and nothing else')
 
@@ -313,7 +312,8 @@ assert.equal(
 // taucht keiner dieser Endpunkte auf (Entscheid dbf663fe).
 const MARKENWORT = 'Spicy'
 adultVideo.forEach((model, index) => {
-  const row = adultRows[index]
+  const row = adultRows.find((candidate) => candidate.querySelector('[data-adult-model-id]')?.dataset.adultModelId === model.id)
+  assert.ok(row, `docs/pricing/index.html: adult video row missing for ${model.id}`)
   const name = row.querySelector('[data-adult-model-id]')
   assert.ok(name, `docs/pricing/index.html: adult video row ${index + 1} carries no model anchor`)
   assert.equal(name.dataset.adultModelId, model.id, `docs/pricing/index.html: adult video id drift in row ${index + 1}`)
@@ -601,6 +601,17 @@ console.log('Comparison guard passed: 0 free-path claims in the LU column of 9 c
 const handbookText = readFileSync(new URL('../docs/guide/cloud/index.html', import.meta.url), 'utf8')
 const cloudRaw = readFileSync(new URL('../docs/cloud/index.html', import.meta.url), 'utf8')
 const homeRaw = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
+const homeDoc = new JSDOM(homeRaw).window.document
+assert.equal(homeDoc.querySelector('.he-cta')?.getAttribute('href'), '/pricing/',
+  'docs/index.html: the Cloud button must open the LUC pricing page')
+for (const slug of ['uncensored-ai-image-generator-online', 'uncensored-ai-video-generator-online']) {
+  const generated = new JSDOM(readFileSync(new URL(`../docs/${slug}/index.html`, import.meta.url), 'utf8')).window.document
+  assert.equal(generated.querySelector('.cta-btn')?.getAttribute('href'), '/pricing/',
+    `docs/${slug}/index.html: Choose Hosted must open the LUC pricing page`)
+}
+assert.equal(pricing.querySelectorAll('a.cta[href^="https://lu-labs.ai/pricing"]').length, 3,
+  'docs/pricing/index.html: all three plan checkout buttons must use the neutral LU Labs checkout')
+console.log('Cloud-link guard passed: LUC Cloud buttons open /pricing/, and the three plan checkouts continue on lu-labs.ai.')
 const staleFlashWording = docsFiles(docsRoot).filter((path) =>
   /never paid|paid-plan benefit|is a paid benefit/i.test(readFileSync(path, 'utf8')),
 )
