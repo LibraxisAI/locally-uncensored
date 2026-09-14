@@ -1,0 +1,183 @@
+{
+  "updated": "2026-09-14",
+  "monthly_eur": 19,
+  "monthly_credits": 900000,
+  "flash_daily_tokens": 500000,
+  "flash_models_by_tier": {
+    "hosted": 11,
+    "hosted-pro": 12,
+    "hosted-max": 12
+  },
+  "included_flash_models": {
+    "hosted": [
+      "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+      "inclusionAI/Ling-3.0-flash",
+      "google/gemma-4-26B-A4B-it",
+      "openai/gpt-oss-120b",
+      "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "Qwen/Qwen3-32B",
+      "Qwen/Qwen3.5-9B",
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      "google/gemma-4-31B-it-turbo",
+      "openai/gpt-oss-20b",
+      "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    ],
+    "hosted-pro": [
+      "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+      "inclusionAI/Ling-3.0-flash",
+      "google/gemma-4-26B-A4B-it",
+      "zai-org/GLM-5.3-Flash",
+      "openai/gpt-oss-120b",
+      "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "Qwen/Qwen3-32B",
+      "Qwen/Qwen3.5-9B",
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      "google/gemma-4-31B-it-turbo",
+      "openai/gpt-oss-20b",
+      "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    ],
+    "hosted-max": [
+      "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+      "inclusionAI/Ling-3.0-flash",
+      "google/gemma-4-26B-A4B-it",
+      "zai-org/GLM-5.3-Flash",
+      "openai/gpt-oss-120b",
+      "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "Qwen/Qwen3-32B",
+      "Qwen/Qwen3.5-9B",
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      "google/gemma-4-31B-it-turbo",
+      "openai/gpt-oss-20b",
+      "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    ]
+  },
+  "api_keys_always_metered": true,
+  "models": [
+    {
+      "id": "chroma",
+      "name": "Chroma Spicy",
+      "kind": "image",
+      "credits_per_run": 1500,
+      "full_wallet_runs": 600,
+      "seconds": null,
+      "specialized": false
+    },
+    {
+      "id": "prefect-pony",
+      "name": "Prefect Pony XL Spicy",
+      "kind": "image",
+      "credits_per_run": 1500,
+      "full_wallet_runs": 600,
+      "seconds": null,
+      "specialized": false
+    },
+    {
+      "id": "neta-lumina",
+      "name": "Neta Lumina (anime) Spicy",
+      "kind": "image",
+      "credits_per_run": 1000,
+      "full_wallet_runs": 900,
+      "seconds": null,
+      "specialized": false
+    },
+    {
+      "id": "wan-2.2-spicy",
+      "name": "Wan 2.2 Spicy",
+      "kind": "video",
+      "credits_per_run": 15000,
+      "full_wallet_runs": 60,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "ltx-2.3-spicy",
+      "name": "LTX 2.3 Spicy",
+      "kind": "video",
+      "credits_per_run": 10000,
+      "full_wallet_runs": 90,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "wan-2.6-spicy",
+      "name": "Wan 2.6 Spicy",
+      "kind": "video",
+      "credits_per_run": 50000,
+      "full_wallet_runs": 18,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "wan-2.7-spicy",
+      "name": "Wan 2.7 Spicy",
+      "kind": "video",
+      "credits_per_run": 50000,
+      "full_wallet_runs": 18,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "minimax-h3-spicy",
+      "name": "MiniMax H3 Spicy",
+      "kind": "video",
+      "credits_per_run": 20000,
+      "full_wallet_runs": 45,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "seedance-1.5-pro-spicy",
+      "name": "Seedance 1.5 Pro Spicy",
+      "kind": "video",
+      "credits_per_run": 26000,
+      "full_wallet_runs": 34,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "seedance-2.5-spicy",
+      "name": "Seedance 2.5 Spicy",
+      "kind": "video",
+      "credits_per_run": 90000,
+      "full_wallet_runs": 10,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "seedance-2.0-spicy",
+      "name": "Seedance 2.0 Spicy",
+      "kind": "video",
+      "credits_per_run": 60000,
+      "full_wallet_runs": 15,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "seedance-2.0-fast-spicy",
+      "name": "Seedance 2.0 Fast Spicy",
+      "kind": "video",
+      "credits_per_run": 50000,
+      "full_wallet_runs": 18,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "vidu-q3-spicy",
+      "name": "Vidu Q3 Spicy",
+      "kind": "video",
+      "credits_per_run": 35000,
+      "full_wallet_runs": 25,
+      "seconds": 5,
+      "specialized": false
+    },
+    {
+      "id": "wan-2.2-spicy-extend",
+      "name": "Wan 2.2 Spicy Extend",
+      "kind": "video",
+      "credits_per_run": 15000,
+      "full_wallet_runs": 60,
+      "seconds": 5,
+      "specialized": true
+    }
+  ]
+}

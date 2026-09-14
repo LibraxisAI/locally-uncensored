@@ -138,10 +138,18 @@ for (const doc of [pricing, page, handbookCloud]) {
 }
 // Die Anzahl der Flash-Modelle war als Wort getippt und von nichts bewacht.
 const flashInCatalog = catalog.filter((row) => row.usageClass === 'flash').length
-const flashCount = pricing.querySelector('[data-flash-model-count]')
-assert.ok(flashCount, 'docs/pricing/index.html: the Flash model count carries no anchor')
-assert.equal(Number(flashCount.dataset.flashModelCount), flashInCatalog, 'flash model count drift')
-assert.equal(flashCount.textContent, String(flashInCatalog), 'flash model count text drift')
+const tierSource = readWeb('apps/web/lib/chat/tier-models.ts')
+for (const flashCount of pricing.querySelectorAll('[data-flash-model-count]')) {
+  const tier = flashCount.dataset.flashTier
+  assert.ok(tier, 'Every Flash count must name its tier')
+  const count = tierSource.split('\n').filter(line => {
+    if (!line.includes("usageClass: 'flash',")) return false
+    const list = /flashTiers: \[([^\]]+)\]/.exec(line)?.[1] ?? ''
+    return list.includes(`'${tier}'`)
+  }).length
+  assert.equal(Number(flashCount.dataset.flashModelCount), count, 'tier Flash count drift')
+  assert.equal(flashCount.textContent, String(count))
+}
 assert.ok(
   !/\b(Twelve|Eleven|Thirteen) models are in that class/i.test(pricingRaw),
   'docs/pricing/index.html: the Flash model count is typed out again instead of anchored',
