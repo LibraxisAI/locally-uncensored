@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LU Cloud in Locally Uncensored: Account, Credits, Flash Chat, Content Policy, API Keys</title>
+<meta name="description" content="How LU Cloud works from the desktop app: the account, plans and credit packs, the Flash chat allowance, the No refusals mark, the content policy setting, API keys and the OpenAI compatible endpoint.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0a0a0a">
+<link rel="canonical" href="https://locallyuncensored.com/guide/cloud/">
+<meta property="og:title" content="LU Cloud in Locally Uncensored: Account, Credits, Flash Chat, Content Policy, API Keys">
+<meta property="og:description" content="How LU Cloud works from the desktop app: the account, plans and credit packs, the Flash chat allowance, the No refusals mark, the content policy setting, API keys and the OpenAI compatible endpoint.">
+<meta property="og:url" content="https://locallyuncensored.com/guide/cloud/">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://locallyuncensored.com/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"TechArticle","headline":"LU Cloud in Locally Uncensored: Account, Credits, Flash Chat, Content Policy, API Keys","description":"How LU Cloud works from the desktop app: the account, plans and credit packs, the Flash chat allowance, the No refusals mark, the content policy setting, API keys and the OpenAI compatible endpoint.","url":"https://locallyuncensored.com/guide/cloud/","dateModified":"2026-09-11","inLanguage":"en","author":{"@type":"Person","name":"PurpleDoubleD","url":"https://github.com/PurpleDoubleD"},"publisher":{"@type":"Organization","name":"Locally Uncensored","url":"https://locallyuncensored.com/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://locallyuncensored.com/guide/cloud/"},"isPartOf":{"@type":"WebPage","name":"Locally Uncensored Handbook: Install, Chat, Agent, Code, Create, Cloud","url":"https://locallyuncensored.com/guide/"},"about":{"@type":"SoftwareApplication","name":"Locally Uncensored","operatingSystem":"Windows, Linux","applicationCategory":"UtilitiesApplication"}}
+</script>
+<link rel="icon" href="/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/lu.css">
+<script defer src="/assets/lu.js"></script>
+  <script data-goatcounter="https://lu-uncensored.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+</head>
+<body>
+<nav class="lu-nav">
+  <a class="lu-nav-brand" href="/" aria-label="Locally Uncensored">
+    <span class="lu-mono" data-mono="nav" data-size="40" aria-hidden="true"></span>
+    <span class="lu-nav-word">Locally <span class="accent">Uncensored</span></span>
+  </a>
+  <div class="lu-nav-links" id="lu-nav-links">
+    <a class="lu-nav-link" href="/">Home</a>
+    <a class="lu-nav-link" href="/blog/">Blog</a>
+    <a class="lu-nav-link" href="/guide/">Guide</a>
+    <a class="lu-nav-link" href="/remote-access/">Remote</a>
+  </div>
+  <div class="lu-nav-right">
+    <a class="lu-nav-icon" href="https://github.com/PurpleDoubleD/locally-uncensored" title="GitHub" aria-label="GitHub"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58 0-.29-.01-1.04-.02-2.05-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.6-.01 2.9-.01 3.29 0 .32.21.7.82.58A12.01 12.01 0 0 0 24 12.5C24 5.87 18.63.5 12 .5Z"/></svg><span class="lu-nav-badge">1400+&#8202;⭐</span></a>
+    <a class="lu-nav-icon discord" href="https://locallyuncensored.com/discord" target="_blank" rel="noopener" title="Discord" aria-label="Discord"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.32 4.37A19.8 19.8 0 0 0 15.45 3c-.2.36-.44.85-.6 1.23a18.3 18.3 0 0 0-5.7 0c-.16-.38-.4-.87-.6-1.23a19.7 19.7 0 0 0-4.87 1.37C.55 8.9-.32 13.3.11 17.63a19.9 19.9 0 0 0 6 3.03c.48-.66.9-1.36 1.27-2.1-.7-.26-1.36-.58-1.99-.96.17-.12.33-.25.49-.38a14.2 14.2 0 0 0 12.24 0c.16.13.32.26.49.38-.63.38-1.3.7-2 .96.37.74.8 1.44 1.27 2.1a19.8 19.8 0 0 0 6-3.03c.5-5.03-.85-9.39-3.55-13.26ZM8.02 15c-1.18 0-2.15-1.09-2.15-2.42 0-1.34.95-2.43 2.15-2.43 1.2 0 2.17 1.09 2.15 2.43 0 1.33-.95 2.42-2.15 2.42Zm7.96 0c-1.18 0-2.15-1.09-2.15-2.42 0-1.34.95-2.43 2.15-2.43 1.2 0 2.17 1.09 2.15 2.43 0 1.33-.94 2.42-2.15 2.42Z"/></svg><span class="lu-nav-badge">700+&#8202;<span style="font-size:0.715em">🟢</span></span></a>
+    <span class="lu-nav-sep"></span>
+    <div class="switch" id="theme-switch" role="button" aria-label="Toggle theme"></div>
+    <a class="lu-nav-dl" href="https://github.com/PurpleDoubleD/locally-uncensored/releases/latest"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Download</a>
+    <button type="button" class="lu-nav-toggle" aria-label="Menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  </div>
+</nav>
+<article class="lu-doc" data-handbook-chapter="cloud">
+<div class="breadcrumb"><a href="/">Home</a> &rsaquo; <a href="/guide/">Handbook</a> &rsaquo; LU Cloud</div>
+<h1>LU Cloud</h1>
+<p class="subtitle">The same app, with the heavy work on hosted GPUs. This chapter covers the account, what a plan and a credit pack are, the Flash chat allowance, the marks in the picker, the content policy setting and the API key.</p>
+<nav class="toc">
+<div class="toc-title">In this chapter</div>
+<a href="#what">What LU Cloud is</a>
+<a href="#account">The account</a>
+<a href="#switch">Switching to Cloud and back</a>
+<a href="#credits">Plans, packs and credits</a>
+<a href="#flash">Flash chat: the daily allowance</a>
+<a href="#marks">The marks in the picker</a>
+<a href="#policy">The content policy setting</a>
+<a href="#api">API keys and the endpoint</a>
+<a href="#browser">The same account in a browser</a>
+<a href="#wrong">When it goes wrong</a>
+</nav>
+
+<h2 id="what">What LU Cloud is</h2>
+
+<p>LU Cloud is the same app with the heavy work moved to GPUs that LU Labs rents. Chat runs on a hosted catalogue of open weight models, the Create lanes render on hosted cards, and the two lanes that never run locally (Upscale and Erase Object) run there. You use it when your card is too small, when a model is too big for any desktop, or on a machine with no card at all, and you can mix: local for chat, hosted for video, whichever way round you like.</p>
+
+<p>Local features never need an account. Settings says so under LU Cloud Account: "Sign in to render images, video and chat on LU's cloud GPUs. Local features never need an account."</p>
+
+<h2 id="account">The account</h2>
+
+<div class="step">
+<span class="step-num">1</span>
+<span class="step-title">Create the account</span>
+<div class="step-body">
+<p>Open Settings, General, LU Cloud Account and click "Create account" (or "Sign in" if you have one). Both open your browser on lu-labs.ai. An account is free and needs an email address and a password, or a Google or GitHub login. The desktop app waits with "Waiting for the browser…" and a "Cancel" button; after the login the browser page says "Signed in" and the app picks the session up on its own.</p>
+</div>
+</div>
+
+<div class="step">
+<span class="step-num">2</span>
+<span class="step-title">Read the account card</span>
+<div class="step-body">
+<p>Signed in, the card shows "Plan: (name)" or "No active plan", and "Cloud credits (this billing period)" with the numbers. "Manage subscription" or "View plans" opens the account page on lu-labs.ai, where the plan, the payment method, the invoices and the cancellation live; the desktop app never handles payment itself.</p>
+</div>
+</div>
+
+<h2 id="switch">Switching to Cloud and back</h2>
+
+<p>The switch sits in the header next to the model picker. Clicking "Cloud" once turns it into "Switch to Cloud?" with the note "Click again to move the whole app to Cloud. Answers are then billed to your lu-labs.ai credits." A second click within six seconds moves the whole app: the picker shows hosted models, the Create lanes render hosted, and the composer carries a "Cloud" chip so you can see which side you are on. The Benchmark and Models entries leave the top bar, because they are local tools. One click on the switch brings you back to Local.</p>
+
+<p>Going to Cloud also releases your local models from memory, the same as closing the window to the tray does, so the card is free while you work hosted. They load again on first use after you come back.</p>
+
+<h2 id="credits">Plans, packs and credits</h2>
+
+<p>Hosted work is metered in credits. Every request draws from one shared wallet: chat at each model's own rate per token, images and clips at each model's rate per picture or per second. There are two ways to fill the wallet:</p>
+
+<ul>
+<li>A monthly plan (Hosted, Hosted Pro or Hosted Max) grants a credit budget every month, and every plan carries every hosted model; a bigger plan buys a bigger budget, never more models.</li>
+<li>A credit pack is a one time purchase with no subscription behind it. Pack credits never expire and are spent only after the month's plan credits are used up. A pack alone, with no plan, reaches the same catalogue.</li>
+</ul>
+
+<p>What the plans and the packs cost, and how many credits each carries, is on the <a href="/pricing/">pricing page</a>, which reads those numbers from the same source as the checkout. This handbook does not repeat them, because they can change and a stale number here would be worse than a link.</p>
+
+<p>The account card in Settings shows what is left this period, and the same figure sits on the account page at lu-labs.ai with a "Buy more credits" link when it runs low. When the wallet is empty a request is refused with a sentence that says so and points at the credits tab of the pricing page; nothing is billed beyond what you loaded.</p>
+
+<h2 id="flash">Flash chat: the daily allowance</h2>
+
+<p>Some hosted chat models belong to a Flash class that costs no credits inside the apps on an active paid plan, up to a published daily ceiling of <span data-flash-limit="500000">500,000 input and output tokens per account per day</span>, which resets at 00:00 UTC. The picker marks them with "No credits". The word Flash in a model name does not decide it. The notice in the app reads "Flash: <span data-flash-limit="500000">500,000</span> input and output tokens per UTC day without credits" and adds "API keys always use credits."</p>
+
+<p>The conditions, as the app and the pricing page state them: it needs an active paid plan, so accounts without an active plan keep paying credits, and a credit pack on its own does not open it; only one free request can run at a time per account, and a second one is refused rather than billed ("One free chat request is already running on this account. Wait for it to finish or stop it first."); a request whose budget would exceed what is left of the day's allowance runs at normal credit pricing, with a notice in the app; and a request through an API key always uses credits, Flash or not. The current list of Flash models is on the <a href="/pricing/">pricing page</a>.</p>
+
+<h2 id="marks">The marks in the picker</h2>
+
+<p>In Cloud mode the model picker carries two small marks next to some models:</p>
+
+<ul>
+<li>"No refusals", with the tooltip "Measured: this model answers without refusing. Your account's content policy still applies." The mark comes from a measurement, not a promise: every hosted chat model was asked an explicit adult fiction request, and the ones that answered in full carry the mark. The number that did, out of the number measured, is on the <a href="/cloud/">cloud page</a>.</li>
+<li>"No credits", with the tooltip "No credits, up to <span data-flash-limit="500000">500,000</span> tokens per day on an active paid plan. Chat only, one request at a time." That is the Flash allowance above.</li>
+</ul>
+
+<h2 id="policy">The content policy setting</h2>
+
+<p>Settings, General, Content policy has three options, and the text above them reads "Applies to images and video rendered in the cloud. Text is unaffected, and nothing on your own machine is." Signed out, the section reads "Sign in to your LU Cloud account to change this setting."</p>
+
+<table>
+<tr><th>Option</th><th>Hint in the app</th></tr>
+<tr><td>Strict</td><td>"The tightest filter we have. Choose this if others use your screen."</td></tr>
+<tr><td>Standard</td><td>"The default for every account."</td></tr>
+<tr><td>Off</td><td>"No filter beyond the legal limits below."</td></tr>
+</table>
+
+<p>Under all three options one paragraph stays: "Material involving minors, and photographs of real people uploaded without their consent, are refused on every request whatever this is set to, and reported."</p>
+
+<p>So: hosted text is never filtered by this setting, local work is never touched by it, and the two fixed lines apply everywhere.</p>
+
+<h2 id="api">API keys and the endpoint</h2>
+
+<p>Your plan's chat models can be used from other programs. Settings, General, Cloud API Keys reads: "Use the chat models of your plan from Aider, LibreChat or any OpenAI-compatible tool. Base URL https://lu-labs.ai/api/inference/v1, your key as the API key. A key spends plan tokens only; it can never read or change the account." The button "Generate API key on lu-labs.ai" opens the account page, where the section "Cloud API keys" has "Create API key". The key is shown once ("Copy this key now. It will never be shown again."), starts with <code>lu_</code>, and up to five keys can be active; "Revoke this key" ends one.</p>
+
+<p>The endpoint speaks the OpenAI chat API: <code>GET /api/inference/v1/models</code> lists the catalogue, <code>POST /api/inference/v1/chat/completions</code> answers, streaming by default, with the key as a Bearer token. Requests through a key spend credits at the model's rate, Flash or not. The endpoint has a burst limit of 60 requests per minute per account.</p>
+
+<h2 id="browser">The same account in a browser</h2>
+
+<p>Everything hosted also runs in a browser at <a href="https://lu-labs.ai/app">lu-labs.ai/app</a> with the same account, the same credits and the same studios, on any computer including a Mac. That is the way to use it on a machine where the desktop app does not run. The <a href="https://lu-labs.ai/guide">hosted handbook</a> covers that side.</p>
+
+<h2 id="wrong">When it goes wrong</h2>
+
+<p><strong>The Cloud switch does nothing.</strong> It needs two clicks within six seconds. The first turns it into "Switch to Cloud?", the second switches.</p>
+
+<p><strong>"Cloud mode shows hosted models only"</strong> in the picker. That is what Cloud mode does. Switch back to Local for your own models.</p>
+
+<p><strong>The request is refused for credits.</strong> The wallet is empty for this period: "You're out of credits for this month." followed by where to load up. Buy a pack or wait for the plan to refill on its renewal date; the account card shows both.</p>
+
+<p><strong>"One free chat request is already running on this account. Wait for it to finish or stop it first."</strong> Flash allows one free request at a time. Stop the running one (the "Agents · N" panel from chapter 5 lists background agents that may be the one running), or wait.</p>
+
+<p><strong>A Flash model spent credits.</strong> One of three reasons: the day's allowance was used up (the app shows a notice), the request came through an API key, or the account has no active paid plan.</p>
+
+<p><strong>A hosted image or video came back refused.</strong> Check Settings, General, Content policy. Standard is the default. The two fixed lines apply regardless.</p>
+
+<p><strong>"Sign-in was cancelled in the browser."</strong> or the app keeps "Waiting for the browser…". Finish the login in the browser tab the app opened; if that tab is gone, press "Cancel" and "Sign in" again.</p>
+
+<p><strong>A hosted result is gone from the gallery.</strong> Hosted results are stored for 7 days and then deleted. Download what you want to keep.</p>
+
+<hr>
+<p class="small">Previous chapter: <a href="/guide/create/">Create</a>. Next chapter: <a href="/guide/settings-and-troubleshooting/">Settings and troubleshooting</a>. Back to the <a href="/guide/">handbook overview</a>.</p>
+</article>
+<footer>
+  <div class="footer-row footer-meta"><span>&copy; 2026 &middot; Locally Uncensored &middot; AGPL-3.0</span></div>
+  <div class="footer-row footer-links">
+    <a href="https://locallyuncensored.com/blog/">Blog</a>
+    <a href="https://locallyuncensored.com/guide/">Guide</a>
+    <a href="https://locallyuncensored.com/remote-access/">Remote access</a>
+    <a href="https://locallyuncensored.com/discord" target="_blank" rel="noopener">Discord</a>
+    <a href="https://github.com/PurpleDoubleD/locally-uncensored">GitHub</a>
+    <a href="https://github.com/PurpleDoubleD/locally-uncensored/discussions">Discussions</a>
+    <a href="https://github.com/PurpleDoubleD/locally-uncensored/issues">Issues</a>
+    <a href="https://reddit.com/user/GroundbreakingMall54">Reddit</a>
+    <a href="https://www.linkedin.com/in/david-drobnitza-locallyuncensored/" rel="me noopener" target="_blank">LinkedIn</a>
+  </div>
+</footer>
+<!-- LU-CLOUD-FACTS:START -->
+<section><h2>Current Hosted offer</h2><p>Hosted includes 11 Flash models; Pro and Max include 12. Up to 500,000 combined input and output tokens per account per UTC day in app sessions. GLM 5.3 Flash uses credits on Hosted and joins the daily allowance on Pro and Max. API keys always use credits.</p><p>EUR 19/month, 900,000 shared monthly credits: up to 900 Neta Lumina Spicy images or 90 five-second LTX 2.3 Spicy clips. Every output spends the same wallet.</p><p>Each maximum spends the entire shared monthly wallet on one model. These are alternatives, not separate allowances. Input-image generation, character training, LoRA routes and additional operations cost extra. Spicy video uses an input image and five-second clips. Failed jobs and changing catalog prices can affect results.</p><p><a href="/uncensored-ai-image-generator-online/">Image models and exact quantities</a> · <a href="/uncensored-ai-video-generator-online/">Video models and exact quantities</a> · <a href="/vs/venice/">Venice comparison</a> · <a href="/cloud-facts.json">Current facts JSON</a></p></section>
+<!-- LU-CLOUD-FACTS:END -->
+</body>
+</html>
