@@ -612,6 +612,36 @@ for (const slug of ['uncensored-ai-image-generator-online', 'uncensored-ai-video
 assert.equal(pricing.querySelectorAll('a.cta[href^="https://lu-labs.ai/pricing"]').length, 3,
   'docs/pricing/index.html: all three plan checkout buttons must use the neutral LU Labs checkout')
 console.log('Cloud-link guard passed: LUC Cloud buttons open /pricing/, and the three plan checkouts continue on lu-labs.ai.')
+const allModelLinks = [...pricing.querySelectorAll('[data-all-model-link]')]
+assert.equal(allModelLinks.length, 2, 'docs/pricing/index.html: subscriptions and credit packs each need an all-models link')
+assert.ok(allModelLinks.every((link) => link.getAttribute('href') === '#all-models'),
+  'docs/pricing/index.html: both all-models links must open the complete catalog')
+const currentChatModels = catalog.filter((row) => typeof row.inM === 'number' && typeof row.outM === 'number')
+const currentCreateModels = mediaSource.getFullText().split('\n')
+  .filter((line) => /\{ id: '[^']+'.*label: '[^']+'.*kind: '(image|video|audio)'/.test(line))
+  .map((line) => ({
+    id: /id: '([^']+)'/.exec(line)[1],
+    label: /label: '([^']+)'/.exec(line)[1],
+  }))
+const expectedAllModels = [...currentChatModels, ...currentCreateModels]
+const listedAllModels = [...pricing.querySelectorAll('[data-all-model-id]')]
+assert.equal(listedAllModels.length, expectedAllModels.length,
+  'docs/pricing/index.html: the complete model catalog count drifted')
+for (const model of expectedAllModels) {
+  const listed = listedAllModels.find((item) => item.dataset.allModelId === model.id)
+  assert.ok(listed, `docs/pricing/index.html: ${model.id} is missing from the complete model catalog`)
+  assert.equal(listed.textContent, model.label, `docs/pricing/index.html: label drift for ${model.id}`)
+}
+assert.equal(new Set(listedAllModels.map((item) => item.dataset.allModelId)).size, listedAllModels.length,
+  'docs/pricing/index.html: duplicate model in the complete catalog')
+assert.equal(Number(pricing.querySelector('#all-models')?.dataset.allModelCount), expectedAllModels.length,
+  'docs/pricing/index.html: complete model count badge drifted')
+assert.equal(
+  pricing.querySelector('.lu-nav-icon path')?.getAttribute('d'),
+  homeDoc.querySelector('.lu-nav-icon path')?.getAttribute('d'),
+  'docs/pricing/index.html: the GitHub icon path differs from the working home-page icon',
+)
+console.log(`Full-catalog guard passed: both purchase paths open the same ${currentChatModels.length} chat + ${currentCreateModels.length} Create model list, and the GitHub icon is intact.`)
 const staleFlashWording = docsFiles(docsRoot).filter((path) =>
   /never paid|paid-plan benefit|is a paid benefit/i.test(readFileSync(path, 'utf8')),
 )

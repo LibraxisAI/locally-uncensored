@@ -25,6 +25,9 @@
 .luc-plan.popular .cta{background:var(--accent);border-color:var(--accent);color:#fff}
 .luc-plan .cta:hover{filter:brightness(1.12)}
 .luc-checkout-note{text-align:center;color:var(--fg-50);font-size:.78rem;margin:0 0 64px}
+.luc-model-jump{text-align:center;margin:18px 0 14px}
+.luc-model-jump a{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border:1px solid rgba(139,92,246,.42);border-radius:999px;background:rgba(139,92,246,.09);color:var(--accent-soft);font-size:.8rem;font-weight:650;transition:background .15s,border-color .15s,transform .15s}
+.luc-model-jump a:hover{background:rgba(139,92,246,.16);border-color:rgba(139,92,246,.7);transform:translateY(-1px)}
 .luc-section{margin:64px 0}
 .luc-section-head{max-width:760px;margin-bottom:24px}
 .luc-section-kicker{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-soft);margin-bottom:9px}
@@ -45,9 +48,23 @@
 .luc-pack .price{font-family:var(--display);font-size:2rem;color:var(--fg);margin:12px 0}
 .luc-pack p{font-size:.78rem;color:var(--fg-50);line-height:1.55;margin:0 0 15px}
 .luc-pack a{color:var(--accent-soft);font-size:.78rem;font-weight:600}
+.luc-model-catalog{scroll-margin-top:82px}
+.luc-model-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.luc-model-group{border:1px solid var(--line-subtle);border-radius:var(--radius-xl);background:var(--panel);overflow:hidden}
+.luc-model-group:first-child{grid-column:1/-1}
+.luc-model-group summary{position:relative;display:flex;align-items:center;gap:9px;padding:18px 48px 18px 20px;color:var(--fg);font-weight:650;cursor:pointer;list-style:none;user-select:none}
+.luc-model-group summary::-webkit-details-marker{display:none}
+.luc-model-group summary span{display:inline-flex;align-items:center;justify-content:center;min-width:25px;height:20px;padding:0 7px;border-radius:999px;background:rgba(139,92,246,.14);color:var(--accent-soft);font-family:var(--mono);font-size:.67rem}
+.luc-model-group summary:after{content:'+';position:absolute;right:20px;color:var(--fg-50);font-family:var(--mono);font-size:1.1rem}
+.luc-model-group[open] summary:after{content:'−'}
+.luc-model-group[open] summary{border-bottom:1px solid var(--rule)}
+.luc-model-group ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;margin:0;padding:10px 20px 18px;list-style:none}
+.luc-model-group:first-child ul{grid-template-columns:repeat(3,minmax(0,1fr))}
+.luc-model-group li{padding:8px 10px 8px 15px;border-bottom:1px solid var(--rule);color:var(--fg-70);font-size:.78rem;line-height:1.4;overflow-wrap:anywhere}
+.luc-model-group li:before{content:'·';margin-left:-10px;margin-right:7px;color:var(--accent-soft)}
 .luc-fineprint{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:58px}
 .luc-fineprint article{padding:22px;border:1px solid var(--line-subtle);border-radius:var(--radius-xl);background:var(--fill-faint)}
 .luc-fineprint h3{color:var(--fg);font-size:.95rem;margin:0 0 8px}
 .luc-fineprint p{font-size:.82rem;color:var(--fg-50);line-height:1.65;margin:0}
-@media(max-width:900px){.luc-plan-grid{grid-template-columns:1fr}.luc-plan{max-width:620px;width:100%;margin:0 auto}.luc-packs{grid-template-columns:repeat(2,1fr)}.luc-fineprint{grid-template-columns:1fr}.luc-pricing-hero{padding-top:58px}}
-@media(max-width:540px){.luc-pricing-wrap,.luc-pricing-hero{padding-left:16px;padding-right:16px}.luc-packs{grid-template-columns:1fr}.luc-pricing-trust{gap:10px 16px}.luc-plan{padding:25px 20px}}
+@media(max-width:900px){.luc-plan-grid{grid-template-columns:1fr}.luc-plan{max-width:620px;width:100%;margin:0 auto}.luc-packs{grid-template-columns:repeat(2,1fr)}.luc-model-groups{grid-template-columns:1fr}.luc-model-group:first-child{grid-column:auto}.luc-model-group:first-child ul{grid-template-columns:repeat(2,minmax(0,1fr))}.luc-fineprint{grid-template-columns:1fr}.luc-pricing-hero{padding-top:58px}}
+@media(max-width:540px){.luc-pricing-wrap,.luc-pricing-hero{padding-left:16px;padding-right:16px}.luc-packs{grid-template-columns:1fr}.luc-pricing-trust{gap:10px 16px}.luc-plan{padding:25px 20px}.luc-model-group ul,.luc-model-group:first-child ul{grid-template-columns:1fr}.luc-model-group summary{padding-left:16px}.luc-model-group ul{padding-left:14px;padding-right:14px}}
