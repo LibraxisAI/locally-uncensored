@@ -2,6 +2,23 @@
   "updated": "2026-09-14",
   "monthly_eur": 19,
   "monthly_credits": 900000,
+  "plans": {
+    "hosted": {
+      "monthly_eur": 19,
+      "annual_eur": 190,
+      "monthly_credits": 900000
+    },
+    "hosted-pro": {
+      "monthly_eur": 49,
+      "annual_eur": 490,
+      "monthly_credits": 2350000
+    },
+    "hosted-max": {
+      "monthly_eur": 99,
+      "annual_eur": 990,
+      "monthly_credits": 5000000
+    }
+  },
   "flash_daily_tokens": 500000,
   "flash_models_by_tier": {
     "hosted": 11,
@@ -59,6 +76,11 @@
       "kind": "image",
       "credits_per_run": 1500,
       "full_wallet_runs": 600,
+      "runs_by_plan": {
+        "hosted": 600,
+        "hosted-pro": 1566,
+        "hosted-max": 3333
+      },
       "seconds": null,
       "specialized": false
     },
@@ -68,6 +90,11 @@
       "kind": "image",
       "credits_per_run": 1500,
       "full_wallet_runs": 600,
+      "runs_by_plan": {
+        "hosted": 600,
+        "hosted-pro": 1566,
+        "hosted-max": 3333
+      },
       "seconds": null,
       "specialized": false
     },
@@ -77,6 +104,11 @@
       "kind": "image",
       "credits_per_run": 1000,
       "full_wallet_runs": 900,
+      "runs_by_plan": {
+        "hosted": 900,
+        "hosted-pro": 2350,
+        "hosted-max": 5000
+      },
       "seconds": null,
       "specialized": false
     },
@@ -86,6 +118,11 @@
       "kind": "video",
       "credits_per_run": 15000,
       "full_wallet_runs": 60,
+      "runs_by_plan": {
+        "hosted": 60,
+        "hosted-pro": 156,
+        "hosted-max": 333
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -95,6 +132,11 @@
       "kind": "video",
       "credits_per_run": 10000,
       "full_wallet_runs": 90,
+      "runs_by_plan": {
+        "hosted": 90,
+        "hosted-pro": 235,
+        "hosted-max": 500
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -104,6 +146,11 @@
       "kind": "video",
       "credits_per_run": 50000,
       "full_wallet_runs": 18,
+      "runs_by_plan": {
+        "hosted": 18,
+        "hosted-pro": 47,
+        "hosted-max": 100
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -113,6 +160,11 @@
       "kind": "video",
       "credits_per_run": 50000,
       "full_wallet_runs": 18,
+      "runs_by_plan": {
+        "hosted": 18,
+        "hosted-pro": 47,
+        "hosted-max": 100
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -122,6 +174,11 @@
       "kind": "video",
       "credits_per_run": 20000,
       "full_wallet_runs": 45,
+      "runs_by_plan": {
+        "hosted": 45,
+        "hosted-pro": 117,
+        "hosted-max": 250
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -131,6 +188,11 @@
       "kind": "video",
       "credits_per_run": 26000,
       "full_wallet_runs": 34,
+      "runs_by_plan": {
+        "hosted": 34,
+        "hosted-pro": 90,
+        "hosted-max": 192
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -140,6 +202,11 @@
       "kind": "video",
       "credits_per_run": 90000,
       "full_wallet_runs": 10,
+      "runs_by_plan": {
+        "hosted": 10,
+        "hosted-pro": 26,
+        "hosted-max": 55
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -149,6 +216,11 @@
       "kind": "video",
       "credits_per_run": 60000,
       "full_wallet_runs": 15,
+      "runs_by_plan": {
+        "hosted": 15,
+        "hosted-pro": 39,
+        "hosted-max": 83
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -158,6 +230,11 @@
       "kind": "video",
       "credits_per_run": 50000,
       "full_wallet_runs": 18,
+      "runs_by_plan": {
+        "hosted": 18,
+        "hosted-pro": 47,
+        "hosted-max": 100
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -167,6 +244,11 @@
       "kind": "video",
       "credits_per_run": 35000,
       "full_wallet_runs": 25,
+      "runs_by_plan": {
+        "hosted": 25,
+        "hosted-pro": 67,
+        "hosted-max": 142
+      },
       "seconds": 5,
       "specialized": false
     },
@@ -176,6 +258,11 @@
       "kind": "video",
       "credits_per_run": 15000,
       "full_wallet_runs": 60,
+      "runs_by_plan": {
+        "hosted": 60,
+        "hosted-pro": 156,
+        "hosted-max": 333
+      },
       "seconds": 5,
       "specialized": true
     }
