@@ -21,6 +21,84 @@ pub fn cache_dir() -> PathBuf {
         .join("lu-labs")
 }
 
+/// Pure resolution of the heavy-models root: `models_root` from the raw
+/// config.json text wins over the `LU_MODELS_ROOT` env var; empty/whitespace
+/// values and unparseable config fall through. Split out of
+/// `configured_models_root` so unit tests don't touch the real config file
+/// or process env.
+fn resolve_models_root(config_raw: Option<&str>, env: Option<&str>) -> Option<PathBuf> {
+    if let Some(raw) = config_raw {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(m) = v.get("models_root").and_then(|x| x.as_str()) {
+                let trimmed = m.trim();
+                if !trimmed.is_empty() {
+                    return Some(PathBuf::from(trimmed));
+                }
+            }
+        }
+    }
+    env.map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Root for LU's heavy model storage (MLX image/video weights, built-in
+/// GGUFs). Priority: `models_root` in config.json → `LU_MODELS_ROOT` env →
+/// `None` (callers then fall back to their per-feature default dirs, so a
+/// missing override keeps every existing path byte-identical). Same
+/// resolution pattern as `state::load_ollama_base` — config beats env beats
+/// default. Read fresh on every call: the value only changes via config
+/// edits, and a global cache would make unit tests order-dependent. This is
+/// how the ~100 GB of MLX weights moves off the system disk onto an external
+/// volume (GOAL-mac-local, David 2026-09-14).
+pub fn configured_models_root() -> Option<PathBuf> {
+    let config_raw = dirs::config_dir().and_then(|d| {
+        std::fs::read_to_string(d.join("locally-uncensored").join("config.json")).ok()
+    });
+    let env = std::env::var("LU_MODELS_ROOT").ok();
+    resolve_models_root(config_raw.as_deref(), env.as_deref())
+}
+
+#[cfg(test)]
+mod models_root_tests {
+    use super::resolve_models_root;
+    use std::path::PathBuf;
+
+    #[test]
+    fn config_wins_over_env() {
+        let r = resolve_models_root(
+            Some(r#"{"models_root": "/workspace/lu-models"}"#),
+            Some("/elsewhere"),
+        );
+        assert_eq!(r, Some(PathBuf::from("/workspace/lu-models")));
+    }
+
+    #[test]
+    fn env_is_used_when_config_has_no_key() {
+        let r = resolve_models_root(Some(r#"{"comfyui_port": 8188}"#), Some("/Volumes/X/models"));
+        assert_eq!(r, Some(PathBuf::from("/Volumes/X/models")));
+    }
+
+    #[test]
+    fn env_is_used_when_config_is_garbage() {
+        let r = resolve_models_root(Some("not json{"), Some("/Volumes/X/models"));
+        assert_eq!(r, Some(PathBuf::from("/Volumes/X/models")));
+    }
+
+    #[test]
+    fn blank_values_fall_through_to_none() {
+        assert_eq!(resolve_models_root(Some(r#"{"models_root": "  "}"#), Some(" ")), None);
+        assert_eq!(resolve_models_root(None, None), None);
+        assert_eq!(resolve_models_root(None, Some("")), None);
+    }
+
+    #[test]
+    fn values_are_trimmed() {
+        let r = resolve_models_root(Some(r#"{"models_root": "  /Volumes/X/models  "}"#), None);
+        assert_eq!(r, Some(PathBuf::from("/Volumes/X/models")));
+    }
+}
+
 /// Locate a usable Python interpreter. Returns the absolute path to the
 /// binary, or `None` if no real Python is on the system.
 ///

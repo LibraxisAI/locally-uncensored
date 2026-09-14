@@ -179,10 +179,17 @@ fn catalog_lookup(id: &str) -> Option<&'static CatalogEntry> {
 // ── Filesystem layout ─────────────────────────────────────────────────
 
 fn models_root() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("lu-labs")
-        .join("mlx-video")
+    // Configured models root (config.json `models_root` / LU_MODELS_ROOT)
+    // wins — video weights are tens of GB and belong on the external volume
+    // next to the image models. Default unchanged otherwise.
+    crate::os_paths::configured_models_root()
+        .map(|r| r.join("mlx-video"))
+        .unwrap_or_else(|| {
+            dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("lu-labs")
+                .join("mlx-video")
+        })
 }
 
 pub(crate) fn outputs_root() -> PathBuf {

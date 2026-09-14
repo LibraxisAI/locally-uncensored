@@ -5,7 +5,9 @@
 //!   venv/             — dedicated Python venv we own
 //!   server.py         — FastAPI sidecar (embedded via include_str!)
 //!   requirements.txt  — pip dependencies (embedded via include_str!)
-//!   cache/            — HF_HOME for model weights
+//!   cache/            — HF_HOME for model weights (default; moves to
+//!                       <models_root>/hf-home when config.json sets
+//!                       `models_root` or LU_MODELS_ROOT is exported)
 //!
 //! Install flow (`install_mlx_diffusion`):
 //!   1. Locate Python ≥ 3.11. Fail with a brew hint if missing.
@@ -39,6 +41,18 @@ fn mlx_root() -> PathBuf {
 
 fn venv_python() -> PathBuf {
     mlx_root().join("venv/bin/python")
+}
+
+/// HF_HOME for the MLX sidecar and every model download: under the
+/// configured models root (`models_root` in config.json / `LU_MODELS_ROOT`)
+/// when set — that is how the ~100 GB of weights lives on an external
+/// volume — otherwise the app-local `mlx/cache` as before. The venv stays
+/// put either way: its pip scripts carry absolute shebangs, so it must
+/// never move with the weights.
+fn hf_home() -> PathBuf {
+    crate::os_paths::configured_models_root()
+        .map(|r| r.join("hf-home"))
+        .unwrap_or_else(|| mlx_root().join("cache"))
 }
 
 fn image_engine_is_installed(root: &std::path::Path) -> bool {
@@ -270,7 +284,7 @@ fn install_mlx_steps(slot: &crate::install_state::InstallSlot) -> Result<(), Str
     let mut prefetch_cmd = Command::new(venv_python());
     prefetch_cmd
         .args(["-c", prefetch])
-        .env("HF_HOME", mlx_root().join("cache"));
+        .env("HF_HOME", hf_home());
     apply_hf_token(&mut prefetch_cmd);
     let out = prefetch_cmd
         .output()
@@ -524,10 +538,9 @@ fn image_catalog_lookup(id: &str) -> Option<&'static ImageCatalogEntry> {
 }
 
 /// HF hub cache dir for a repo inside our HF_HOME
-/// (`cache/hub/models--org--name`).
+/// (`<hf_home>/hub/models--org--name`).
 fn image_model_cache_dir(repo: &str) -> PathBuf {
-    mlx_root()
-        .join("cache")
+    hf_home()
         .join("hub")
         .join(format!("models--{}", repo.replace('/', "--")))
 }
@@ -678,7 +691,7 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
         );
         let mut cmd = Command::new(&python);
         cmd.args(["-c", &script])
-            .env("HF_HOME", mlx_root().join("cache"));
+            .env("HF_HOME", hf_home());
         apply_hf_token(&mut cmd);
         if let Err(e) = crate::commands::video::run_streamed(&slot2, &mut cmd) {
             slot2.fail(e);
@@ -865,7 +878,7 @@ pub fn mlx_start(_state: &AppState, _args: &Value) -> CmdResult {
     server_cmd
         .arg(&server)
         .env("LU_MLX_PORT", MLX_PORT.to_string())
-        .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_HOME", hf_home())
         .stdout(stdout)
         .stderr(stderr);
     apply_hf_token(&mut server_cmd);
@@ -1018,6 +1031,18 @@ mod tests {
         let p = venv_python();
         let s = p.to_string_lossy();
         assert!(s.ends_with("venv/bin/python"));
+    }
+
+    #[test]
+    fn image_model_cache_dir_uses_hf_hub_layout() {
+        // Root-independent: whether HF_HOME is the default mlx/cache or an
+        // external models_root, the repo dir always follows the hub layout.
+        let p = image_model_cache_dir("stabilityai/sd-turbo");
+        let s = p.to_string_lossy();
+        assert!(
+            s.ends_with("hub/models--stabilityai--sd-turbo"),
+            "unexpected cache dir layout: {s}"
+        );
     }
 
     #[test]
