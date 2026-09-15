@@ -97,7 +97,25 @@ describe('the top-up wallet is exempt from the video sub-budget', () => {
   })
 })
 
-describe('character trainings are a count, not a budget', () => {
+describe('character trainings use included runs or paid credits', () => {
+  it('lets a credit-only buyer train without any included runs', () => {
+    const q = hosted({
+      remaining: { credits: 450_000 },
+      topup: { credits: 450_000 },
+      trainings: { limit: 0, used: 0, remaining: 0 },
+    })
+    expect(meterState(q, 100_000, 'image', 'lora-train')).toMatchObject({ kind: 'ok', runsLeft: 4 })
+  })
+
+  it('requires enough paid credits for the complete selected trainer', () => {
+    const q = hosted({
+      topup: { credits: 100_000 },
+      trainings: { limit: 2, used: 2, remaining: 0 },
+    })
+    expect(meterState(q, 100_000, 'image', 'lora-train')).toMatchObject({ kind: 'ok' })
+    expect(meterState(q, 125_000, 'image', 'lora-train')).toEqual({ kind: 'no-trainings' })
+  })
+
   it('refuses the training when the monthly count is spent', () => {
     const q = hosted({ trainings: { limit: 2, used: 2, remaining: 0 } })
     expect(meterState(q, 100_000, 'image', 'lora-train')).toEqual({ kind: 'no-trainings' })

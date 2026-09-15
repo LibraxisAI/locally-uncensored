@@ -89,7 +89,7 @@ export function CreditsMeter() {
       'credits',
     )
   }
-  if (state.kind === 'no-trainings') return upsell('No trainings left this month, upgrade')
+  if (state.kind === 'no-trainings') return upsell('No included trainings left, top up', 'credits')
   if (state.kind === 'no-video-budget') return upsell('Video budget used up, top up', 'credits')
 
   const noun = op === 'lora-train' ? 'training' : kind === 'video' ? 'clip' : kind === 'audio' ? 'track' : 'image'
@@ -100,7 +100,7 @@ export function CreditsMeter() {
       : ''
   const trainingTail =
     op === 'lora-train' && quota.trainings
-      ? ` (${quota.trainings.remaining} of ${quota.trainings.limit} trainings left)`
+      ? ` (${quota.trainings.remaining} of ${quota.trainings.limit} included trainings left)`
       : ''
 
   return (
