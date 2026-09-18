@@ -1,17 +1,11 @@
 use crate::os_error;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::process::Stdio;
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::state::AppState;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Base directory for all agent workspaces. Per-chat subfolders are
 /// created lazily by `agent_workspace(chat_id)` on the first write.
@@ -459,14 +453,12 @@ pub(crate) fn execute_code_blocking(
                 .to_string(),
         );
     }
-    let mut cmd = Command::new(&python_bin);
+    let mut cmd = crate::python::python_command(&python_bin);
     cmd.arg(&script_path)
         .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
     let mut child = cmd.spawn()
         .map_err(|e| format!("Spawn Python: {}", os_error::english(&e)))?;
 

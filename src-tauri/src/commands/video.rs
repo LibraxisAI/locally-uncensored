@@ -244,7 +244,7 @@ fn python_for(state: &AppState) -> Option<String> {
 }
 
 fn mlx_video_installed(python: &str) -> bool {
-    Command::new(python)
+    crate::python::python_command(python)
         .args(["-c", "import mlx_video"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -254,7 +254,7 @@ fn mlx_video_installed(python: &str) -> bool {
 }
 
 fn python_has_module(python: &str, module: &str) -> bool {
-    Command::new(python)
+    crate::python::python_command(python)
         .args(["-c", &format!("import {module}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -278,7 +278,7 @@ pub(crate) fn ensure_python_module(
         return Ok(());
     }
     slot.log(format!("installing {pip_spec} (one-time)"));
-    let mut cmd = Command::new(python);
+    let mut cmd = crate::python::python_command(python);
     cmd.args(["-m", "pip", "install", "--upgrade", pip_spec]);
     run_streamed(slot, &mut cmd)
         .map_err(|e| format!("pip install {pip_spec}: {e}"))?;
@@ -291,7 +291,7 @@ pub(crate) fn ensure_python_module(
 }
 
 fn mlx_video_version(python: &str) -> Option<String> {
-    let out = Command::new(python)
+    let out = crate::python::python_command(python)
         .args([
             "-c",
             "import importlib.metadata as m; print(m.version('mlx-video'))",
@@ -407,7 +407,7 @@ pub fn video_install_mlx(state: &AppState, _args: &Value) -> CmdResult {
     slot.start();
     let slot2 = slot.clone();
     std::thread::spawn(move || {
-        let mut cmd = Command::new(&python);
+        let mut cmd = crate::python::python_command(&python);
         cmd.args([
             "-m",
             "pip",
@@ -532,7 +532,7 @@ fn install_model_steps(
         r = entry.repo,
         t = download_to.to_string_lossy(),
     );
-    let mut cmd = Command::new(python);
+    let mut cmd = crate::python::python_command(python);
     cmd.args(["-c", &script])
         .env("HF_HOME", hf_home_dir())
         .env("HF_XET_CACHE", hf_home_dir().join("xet"));
@@ -548,7 +548,7 @@ fn install_model_steps(
 
     let out_dir = weights_dir(entry);
     slot.log(format!("converting {} to MLX (one-time)", entry.name));
-    let mut convert = Command::new(python);
+    let mut convert = crate::python::python_command(python);
     convert
         .arg("-m")
         .arg("mlx_video.models.wan_2.convert")
@@ -642,7 +642,7 @@ pub fn video_generate(state: &AppState, args: &Value) -> CmdResult {
     // Blaizzy/mlx-video):
     //   ltx_2 → --model-repo <dir> --pipeline <p> -o <out> -n <frames>
     //   wan_2 → --model-dir <dir> --num-frames (4n+1) --output-path <out>
-    let mut cmd = Command::new(&python);
+    let mut cmd = crate::python::python_command(&python);
     cmd.arg("-m")
         .arg(format!("mlx_video.models.{}.generate", entry.family))
         .arg("--prompt")
