@@ -36,9 +36,13 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, act } from '@testing-library/react'
+import { renderHook } from '@testing-library/react'
 import { ChatInput } from '../ChatInput'
 import { composerBusy } from '../../../lib/composer-busy'
+import { useCodex } from '../../../hooks/useCodex'
+import { useGenerationStore } from '../../../stores/generationStore'
+import { useChatStore } from '../../../stores/chatStore'
 
 const src = (rel: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), rel), 'utf8')
@@ -154,18 +158,39 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
    * Unterhaltungswechsel NICHT neu montiert wird (`ChatView.tsx` gibt ihm kein
    * `key`). Ein Lauf in A, Wechsel nach B, Stop gedrueckt: A war tot.
    */
+  /**
+   * Runde 3 (review-lanes.md): dieser Test war bis hierher ein reiner
+   * Quelltextpin auf `abortConvRef`, dem Griff, den Nachbesserung 5 dieser
+   * Runde aus useCodex.ts entfernt hat (der Ref war seit B2 Commit 3 tote
+   * Duplikation neben dem echten, identitaetsgeprueften Abbrecher im
+   * generationStore, siehe useCodex.ts). Der Pin wurde rot, weil der Griff,
+   * den er beschrieb, nicht mehr existiert, nicht weil Stop kaputt ist. Statt
+   * den Pin auf den neuen Namen (`activeCodexRuns`) umzuschreiben, beweist
+   * dieser Test jetzt das eigentliche Verhalten: `stopCodex` bricht den
+   * echten Abbrecher NUR der genannten Unterhaltung ab.
+   */
   it('useCodex bricht den Controller der Instanz nur fuer die eigene Unterhaltung ab', () => {
-    const codex = src('../../../hooks/useCodex.ts')
-    expect(codex).toMatch(/const abortConvRef = useRef<string \| null>\(null\)/)
-    expect(codex).toMatch(/if \(abortConvRef\.current === stoppedConvId\) \{/)
-    // Und der Ref wird gesetzt UND geleert, sonst bricht Stop nie etwas ab
-    // oder bricht einen laengst beendeten Lauf ab.
-    expect(codex).toMatch(/abortConvRef\.current = convId/)
-    expect(codex).toMatch(/abortConvRef\.current = null/)
-    // Der richtige Griff je Unterhaltung liegt weiter davor und bleibt
-    // bedingungslos: er trifft genau die gemeinte Unterhaltung.
-    expect(codex).toMatch(/stopRun\(stoppedConvId\)/)
-    expect(codex).toMatch(/abortConversation\(stoppedConvId\)/)
+    const convA = 'stop-test-conv-a'
+    const convB = 'stop-test-conv-b'
+    useChatStore.setState({ conversations: [], activeConversationId: convA })
+    useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
+
+    let abortedA = 0
+    let abortedB = 0
+    useGenerationStore.getState().registerAborter(convA, () => { abortedA++ })
+    useGenerationStore.getState().registerAborter(convB, () => { abortedB++ })
+
+    const { result } = renderHook(() => useCodex())
+    act(() => { result.current.stopCodex(convA) })
+
+    expect(abortedA).toBe(1)
+    expect(abortedB).toBe(0)
+
+    // COUNTER-CHECK auf den Test selbst: stoppt man die andere Unterhaltung,
+    // trifft es auch wirklich nur sie.
+    act(() => { result.current.stopCodex(convB) })
+    expect(abortedB).toBe(1)
+    expect(abortedA).toBe(1)
   })
 
   it('und CodexView wird beim Unterhaltungswechsel wirklich nicht neu montiert', () => {
