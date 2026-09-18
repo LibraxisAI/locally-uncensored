@@ -236,7 +236,21 @@ jobs:
       # a passing run here is evidence the $ORIGIN-relative RPATH (and, for
       # the exe, LD_LIBRARY_PATH) actually carries the layout, not that the
       # build directory happened to still be around.
-      - name: Boot-smoke from a moved directory (K1, BLOCKER B3)
+      #
+      # BLOCKER B6 (review-sidecar.md, Runde 2): this used to run
+      # `--version`. At the pin (common/arg.cpp:1215-1222) the --version
+      # handler prints two lines and calls exit(0) BEFORE
+      # ggml_backend_load_all() ever runs, so that call proved only that the
+      # dynamic loader could resolve the exe's own DT_NEEDED entries (via
+      # the LD_LIBRARY_PATH this very step sets by hand); it could never go
+      # red no matter how many ggml-cpu-*/ggml-vulkan companions were
+      # missing or broken, which was the entire point of this step. Fixed by
+      # actually starting the server with a tiny model and polling /health,
+      # which only comes up after ggml_backend_load_all() has found and
+      # loaded a CPU backend (same proof shape sidecar-windows.yml already
+      # uses for the Windows lane). A run with every ggml-cpu-*.so removed
+      # from $moved/llama would now correctly fail here.
+      - name: Boot-smoke from a moved directory (K1, BLOCKER B3/B6)
         if: matrix.sidecar_triple == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
@@ -248,8 +262,73 @@ jobs:
           cp -r "src-tauri/resources/llama/${{ matrix.sidecar_triple }}" "$moved/llama"
           chmod +x "$moved/lu-llama-server-${{ matrix.sidecar_triple }}"
           export LD_LIBRARY_PATH="$moved/llama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          ( cd "$moved/llama" && "$moved/lu-llama-server-${{ matrix.sidecar_triple }}" --version )
-          echo "OK: sidecar boots from $moved, nowhere near the build directory it was compiled in"
+          bin="$moved/lu-llama-server-${{ matrix.sidecar_triple }}"
+          # --list-devices also calls ggml_backend_load_all(), so run it
+          # first: cheap, and its own log line names every backend that
+          # loaded (useful when the model-load step below fails and the
+          # reason is "which backend" rather than "did anything load").
+          ( cd "$moved/llama" && "$bin" --list-devices )
+          # Tiny (~1.2 MB) public GGUF so /health proves a real model load
+          # (and therefore a real CPU-backend load), not just the HTTP
+          # layer or the exe's own DT_NEEDED resolution.
+          model="$RUNNER_TEMP/stories260K.gguf"
+          [ -f "$model" ] || curl -fsSL --retry 3 -o "$model" \
+            "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+          ( cd "$moved/llama" && "$bin" --host 127.0.0.1 --port 8129 -m "$model" >/tmp/boot-smoke.log 2>&1 ) &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -fsS "http://127.0.0.1:8129/health" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 0.3
+          done
+          kill "$pid" 2>/dev/null || true
+          trap - EXIT
+          if [ -z "$ok" ]; then
+            echo "---- llama-server output ----"
+            cat /tmp/boot-smoke.log || true
+            echo "------------------------------"
+            echo "FAIL: llama-server /health never came up from $moved (nowhere near the build directory it was compiled in)" >&2
+            exit 1
+          fi
+          echo "OK: sidecar boots from $moved, loads a real model, /health answers, nowhere near the build directory it was compiled in"
+
+      # Nachbesserung N5 (review-sidecar.md, Runde 2): before this step,
+      # release.yml had no real model-load proof for EITHER platform (the
+      # only place that existed was sidecar-windows.yml, a different
+      # workflow, not part of a release build). Windows has no RPATH
+      # concept, so it does not need the "moved directory" framing B3/B6
+      # are about, but it deserves the same real-model-plus-/health proof
+      # the Linux lane above now has, in the SAME workflow that ships the
+      # release artifact.
+      - name: "Boot-smoke: real model load plus /health (K1, Nachbesserung N5)"
+        if: matrix.sidecar_triple == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $bin = (Resolve-Path "src-tauri\bin\lu-llama-server-${{ matrix.sidecar_triple }}.exe").Path
+          $runDir = (Resolve-Path "src-tauri\resources\llama\${{ matrix.sidecar_triple }}").Path
+          Push-Location $runDir
+          & $bin --list-devices
+          if ($LASTEXITCODE -ne 0) { throw "llama-server --list-devices exited $LASTEXITCODE (run from $runDir)" }
+          Pop-Location
+          $model = "$env:RUNNER_TEMP\stories260K.gguf"
+          if (-not (Test-Path $model)) {
+            curl.exe -fsSL --retry 3 -o $model `
+              "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+            if ($LASTEXITCODE -ne 0) { throw "smoke model download failed" }
+          }
+          $proc = Start-Process -FilePath $bin -ArgumentList "--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow
+          $ok = $false
+          foreach ($i in 1..40) {
+            Start-Sleep -Milliseconds 400
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8129/health" -TimeoutSec 2 | Out-Null
+              $ok = $true; break
+            } catch { }
+          }
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "llama-server /health never came up" }
+          Write-Host "OK - sidecar boots from the resource layout, loads a model and answers /health"
 
       # ── App build ────────────────────────────────────────────────────────
       - name: Install npm dependencies
