@@ -52,7 +52,17 @@ const CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// The engine is either there or it is not; a folder list is not worth a long
 /// wait in front of a download.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+///
+/// Review Runde 2, R1-4: `delete_comfy_model` and `check_download_space`
+/// became `async` and now `.await` this on the FIRST click of a session,
+/// before the 30 s cache above has anything in it. At the old 3 s this made
+/// the delete button feel broken on a cold ComfyUI (not running, or slow to
+/// answer) with no progress indicator in front of it. A LOCAL loopback
+/// request that is going to succeed at all answers in milliseconds; 3 full
+/// seconds was really a "ComfyUI is not running" ceiling wearing a network-
+/// timeout's clothes. 1 s keeps comfortably more headroom than any healthy
+/// local server needs while cutting the worst-case stall to a third.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Is this an absolute path anywhere, not only on the platform this build runs
 /// on? The answer comes from ComfyUI, so a Windows answer has to read as
