@@ -14,7 +14,7 @@
  * vollstaendiges "jede Unterhaltung darf gleichzeitig senden" hing an den
  * geteilten Stream-Puffern in useChat.ts (contentRef, thinkingRef, abortRef)
  * und useAgentChat.ts, rund 110 Zugriffe, und daran, dass `runInLane` aus
- * lib/run-slot.ts bis heute keinen Aufrufer in der Produktion hat: ohne
+ * lib/run-slot.ts damals keinen Aufrufer in der Produktion hatte: ohne
  * Warteschlange liefen zwei lokale Laeufe gegen einen llama-server mit einem
  * einzigen Slot. useChat.ts hat seine Haelfte seit B2 Commit 1/2
  * (ChatRun-Objekt statt Refs, generationStore statt abortRef): siehe
@@ -22,8 +22,11 @@
  * Haelfte seit B2 NEUER FUND (AgentRunState-Objekt statt Refs,
  * activeAgentRuns statt abortRef/abortConvRef/runningRef, Wiedereintritts-
  * Riegel je Unterhaltung statt app-weit): siehe
- * useAgentChat-zwei-agentenlaeufe-vermischen-nicht.test.ts. Die
- * Warteschlange (`runInLane`) steht weiter aus, die Oberflaeche unten haelt
+ * useAgentChat-zwei-agentenlaeufe-vermischen-nicht.test.ts. Runde 4
+ * (review-lanes.md Blocker 1+6) hat `runInLane` seither in alle drei
+ * Sendewege verdrahtet: siehe useChat-lokale-spur-reiht-zweite-sendung-ein,
+ * useAgentChat-lokale-spur-reiht-zweiten-agentenlauf-ein und
+ * useCodex-lokale-spur-reiht-zweiten-lauf-ein. Die Oberflaeche unten haelt
  * die App-weite Fahne fuer Regenerate/Edit deshalb bewusst, nicht mehr wegen
  * geteilter Puffer. Was hier steht, ist das, was schon vorher richtig wurde:
  * der laufende Chat behaelt Stop und bricht nur sich selbst ab, der andere
@@ -205,8 +208,14 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
   it('der Komposer liest nicht mehr die app-weite Fahne', () => {
     const view = src('../ChatView.tsx')
     const composer = view.slice(view.indexOf('<ChatInput'), view.indexOf('composerActions='))
-    expect(composer).toContain('isGenerating={busy.thisChat}')
+    // Runde 4 (review-lanes.md Blocker 1+6): `isGenerating` traegt jetzt auch
+    // den Warteschlangen-Fall (`queuedForLocalLane`), damit der Stop-Knopf
+    // schon waehrend des Wartens auf die lokale Spur steht, nicht erst wenn
+    // der Strom beginnt. Die Aussage dieses Tests bleibt dieselbe: kein
+    // app-weites `isGenerating`, alles hier ist je-Unterhaltung.
+    expect(composer).toContain('isGenerating={busy.thisChat || queuedForLocalLane}')
     expect(composer).toContain('busyElsewhere={busy.otherChat}')
+    expect(composer).toContain('waitingForLocalLane={queuedForLocalLane}')
     expect(composer).not.toContain('isGenerating={isGenerating}')
     // Die MessageList behaelt die app-weite Fahne mit Absicht: Regenerate und
     // Edit STARTEN einen Lauf, und solange die Stream-Puffer geteilt sind,

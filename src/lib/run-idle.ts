@@ -57,6 +57,7 @@
  *     so a deleted coding chat leaves its thread behind — and its status keeps
  *     voting in `anyRunActive` below.
  */
+import { useSyncExternalStore } from 'react'
 import { useGenerationStore } from '../stores/generationStore'
 import { useCodexStore } from '../stores/codexStore'
 import { isRunStopped } from './run-stop'
@@ -186,6 +187,23 @@ export function runStatusFrom(
  */
 export function isRunActive(conversationId: string | null | undefined): boolean {
   return isActiveCodexStatus(runStatusOf(conversationId))
+}
+
+/**
+ * React hook: is THIS conversation waiting in the local lane's queue right
+ * now (Runde 4, review-lanes.md Blocker 1+6)?
+ *
+ * ChatView and CodexView both need this for the same two things: showing the
+ * Stop button (not Send) while a send is queued, and the "waiting for the
+ * local model" line. `useSyncExternalStore` with `subscribeRunLanes` is the
+ * plain React wrapper around the module state `lib/run-lanes.ts` already
+ * keeps and already wakes on — no second copy of "is it queued", the two
+ * view components just read the same one fact reactively instead of via
+ * `getState()`-equivalent calls that would not trigger a re-render when a
+ * run gets promoted out of the queue.
+ */
+export function useIsQueuedForLocalLane(conversationId: string | null | undefined): boolean {
+  return useSyncExternalStore(subscribeRunLanes, () => isRunQueued(conversationId))
 }
 
 /**

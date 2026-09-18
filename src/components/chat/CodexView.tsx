@@ -46,6 +46,7 @@ import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { stripModelNoise } from '../../lib/strip-model-noise'
 import { composerBusy } from '../../lib/composer-busy'
+import { useIsQueuedForLocalLane } from '../../lib/run-idle'
 
 // Code always drives a tool loop, so the aggressive tier applies here.
 const stripChannelTags = (text: string) => stripModelNoise(text, { aggressive: true })
@@ -103,6 +104,10 @@ export function CodexView() {
   // review flagged: a Chat send is blocked mid-Code-run, a Code send was not
   // blocked mid-Chat-run.
   const busy = composerBusy(isRunning || codexGenerating, generatingMap, activeConversationId)
+  // Runde 4 (review-lanes.md Blocker 1+6): same fold-in as ChatView.tsx. A
+  // queued send has no `generating` entry yet, so composerBusy alone cannot
+  // show it.
+  const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
 
   // G8-3 (David): "sobald er fertig gedacht hat, hakt das so komisch ab und
   // zoomt irgendwo ganz anders hin." The hand-rolled pin here only fired on
@@ -646,8 +651,9 @@ export function CodexView() {
           // the old instance's loop is still running, which offered a second
           // parallel send and no Stop button. The generating flag follows the
           // conversation, not the hook instance.
-          isGenerating={isRunning || codexGenerating}
+          isGenerating={isRunning || codexGenerating || queuedForLocalLane}
           busyElsewhere={busy.otherChat}
+          waitingForLocalLane={queuedForLocalLane}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}
           // No plan lives here. The prompt window is the prompt window

@@ -42,6 +42,7 @@ import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { composerBusy } from '../../lib/composer-busy'
+import { useIsQueuedForLocalLane } from '../../lib/run-idle'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { displayModelName } from '../../api/providers'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -123,6 +124,11 @@ export function ChatView() {
   const generatingMap = useGenerationStore((s) => s.generating)
   const activeGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const busy = composerBusy(isGenerating, generatingMap, activeConversationId)
+  // Runde 4 (review-lanes.md Blocker 1+6): THIS conversation's own send is
+  // queued behind another local run. Not part of `generatingMap` (no stream
+  // is flowing yet), so `composerBusy` cannot see it — folded in here so the
+  // composer shows Stop instead of Send while it waits.
+  const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
 
   const docCount = useRAGStore((s) =>
     activeConversationId ? (s.documents[activeConversationId] || []).length : 0
@@ -630,8 +636,9 @@ export function ChatView() {
             <ChatInput
               onSend={sendMessage}
               onStop={stopGeneration}
-              isGenerating={busy.thisChat}
+              isGenerating={busy.thisChat || queuedForLocalLane}
               busyElsewhere={busy.otherChat}
+              waitingForLocalLane={queuedForLocalLane}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}

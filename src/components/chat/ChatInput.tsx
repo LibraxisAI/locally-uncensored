@@ -31,6 +31,16 @@ interface Props {
    * and the composer says in one line why it is waiting.
    */
   busyElsewhere?: boolean
+  /**
+   * THIS conversation's send is queued behind another local run (Runde 4,
+   * review-lanes.md Blocker 1+6): the built-in engine runs one slot, so a
+   * second local send waits its turn instead of racing the first one for it.
+   * Distinct from `isGenerating` (no stream is flowing yet) and from
+   * `busyElsewhere` (that one is a FOREIGN chat; this one is this chat's own
+   * send, just not admitted yet) — the composer shows Stop, same as while
+   * generating, and a line explains why nothing is happening yet.
+   */
+  waitingForLocalLane?: boolean
   pendingApproval?: AgentToolCall | null
   onApprove?: () => void
   onReject?: () => void
@@ -98,7 +108,7 @@ function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   })
 }
 
-export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
+export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, waitingForLocalLane, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -277,7 +287,7 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
   const sendLockRef = useRef(0)
   const handleSend = () => {
     const trimmed = input.trim()
-    if ((!trimmed && images.length === 0) || isGenerating || busyElsewhere || disabled) return
+    if ((!trimmed && images.length === 0) || isGenerating || busyElsewhere || waitingForLocalLane || disabled) return
     if (!passSendLock(sendLockRef)) return
     onSend(trimmed || '(image)', images.length > 0 ? images : undefined)
     setInput('')
@@ -451,6 +461,20 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
             <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-busy-elsewhere">
               <span className="flex-1 min-w-0">
                 Another chat is still answering. This app runs one answer at a time, so wait for it to finish or stop it in that chat.
+              </span>
+            </div>
+          )}
+          {/* Runde 4 (review-lanes.md Blocker 1+6): the built-in engine runs a
+              single slot, so a second local send queues instead of failing or
+              hanging silently. This is THIS chat's own send, already accepted,
+              just not admitted yet — Stop above already works on it (the store
+              aborter is registered the moment the run is admitted to the
+              queue, before the queue promotes it), this line only says why
+              nothing is streaming yet. Disappears the moment the run starts. */}
+          {!busyElsewhere && waitingForLocalLane && (
+            <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-waiting-local-lane">
+              <span className="flex-1 min-w-0">
+                Waiting for the local model to finish another answer.
               </span>
             </div>
           )}
