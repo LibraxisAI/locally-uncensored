@@ -22,6 +22,8 @@ import { streamOllamaChatWithTools } from '../lib/ollama-stream-tools'
 import { useChatStore } from '../stores/chatStore'
 import { endTurnDurably } from '../stores/durability'
 import { useGenerationStore } from '../stores/generationStore'
+import { runInLane } from '../lib/run-slot'
+import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
 import { useModelStore } from '../stores/modelStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useRAGStore } from '../stores/ragStore'
@@ -411,6 +413,24 @@ export function useAgentChat() {
     // same meaning as before now that more than one CAN be in flight at
     // once. The only early return before the try (no conv) undoes both.
     setIsAgentRunning(true)
+
+    // Lane admission (Runde 4, review-lanes.md Blocker 1+6): everything from
+    // here to the end of this call (RAG, memory, the tool loop, the /loop
+    // driver) runs inside runInLane's body, so a local turn that has to wait
+    // for the built-in engine's one llama-server slot has not yet touched the
+    // chat store when it is queued — nothing has been added that a cancelled
+    // wait would need to unwind. The re-entry guard above already claimed
+    // activeAgentRuns/isAgentRunning synchronously, before any await, so a
+    // second send on the SAME conversation is refused before it ever reaches
+    // the lane; a wait here is always a DIFFERENT conversation's turn.
+    //
+    // 'cancelled-while-queued' means Stop was pressed while this run was
+    // still in the waiting room: the body (and its own finally below) never
+    // ran, so the guard this call claimed above has to be freed here instead.
+    const lane = laneOf(activeModel, currentLaneFacts())
+    const laneOutcome = await runInLane(
+      { conversationId: convId, lane, abort: () => abort.abort() },
+      async () => {
 
     // Z36 finding 2: an agent turn carries the tool catalogue and outgrows
     // the built-in engine's 8192 start default, and llama-server's ctx is a
@@ -2708,6 +2728,18 @@ export function useAgentChat() {
           }, loopState.intervalMs))
         }
       }
+    }
+      },
+    )
+    if (laneOutcome === 'cancelled-while-queued' && activeAgentRuns.get(convId) === runState) {
+      // Stop pulled this run out of the local lane's waiting room before its
+      // own finally ever ran (that finally lives inside the body above), so
+      // the guard this call claimed synchronously at the top has to be freed
+      // here instead. Nothing else needs undoing: the body never started, so
+      // it never added a message, registered its own aborter, or booked a
+      // loop timer.
+      activeAgentRuns.delete(convId)
+      setIsAgentRunning(activeAgentRuns.size > 0)
     }
   }, [])
 
