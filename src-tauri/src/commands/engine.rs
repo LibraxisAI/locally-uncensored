@@ -1258,12 +1258,21 @@ fn log_cpu_features_once() {
 }
 
 /// The MEASURED names of the instruction sets this CPU is missing, out of
-/// the four the bundled sidecar's build requires (AVX, AVX2, FMA, F16C):
-/// pure, so `start_failure_message` can name exactly what was found lacking
-/// instead of a generic "for example AVX2" that may not even be the one
-/// this machine is missing. Runde 2 review, Punkt D: the review specifically
-/// rejected the old wording for guessing rather than reading the same data
-/// `log_cpu_features_once` already gathers.
+/// the six the bundled sidecar's build actually requires (AVX, AVX2, BMI2,
+/// FMA, F16C, SSE4.2): pure, so `start_failure_message` can name exactly
+/// what was found lacking instead of a generic "for example AVX2" that may
+/// not even be the one this machine is missing. Runde 2 review, Punkt D:
+/// the review specifically rejected the old wording for guessing rather
+/// than reading the same data `log_cpu_features_once` already gathers.
+///
+/// Runde 3, Nachbesserung 4: the review measured the build's OWN
+/// requirement directly (`scripts/build-llama.sh` passes `-DGGML_NATIVE=OFF`
+/// and nothing else CPU-specific, and ggml's own CMakeLists.txt turns
+/// `GGML_SSE42`, `GGML_AVX`, `GGML_AVX2`, `GGML_BMI2`, `GGML_FMA` and
+/// `GGML_F16C` all ON by default whenever `GGML_NATIVE` is OFF) and found
+/// BMI2 and SSE4.2 missing from the four this used to probe: a CPU missing
+/// only one of those two got the generic sentence instead of the measured
+/// one, exactly the imprecision Punkt 3 of the review existed to remove.
 ///
 /// Empty on a non-x86_64 build (nothing here applies) or when every flag the
 /// probe can see is present; the caller falls back to a plainer sentence in
@@ -1274,8 +1283,10 @@ pub(crate) fn missing_cpu_features() -> Vec<&'static str> {
         missing_cpu_features_from(
             is_x86_feature_detected!("avx"),
             is_x86_feature_detected!("avx2"),
+            is_x86_feature_detected!("bmi2"),
             is_x86_feature_detected!("fma"),
             is_x86_feature_detected!("f16c"),
+            is_x86_feature_detected!("sse4.2"),
         )
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -1290,7 +1301,8 @@ pub(crate) fn missing_cpu_features() -> Vec<&'static str> {
 /// runner has AVX2, so a test asserting on the real probe could never
 /// exercise the branch that names it missing).
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
-fn missing_cpu_features_from(avx: bool, avx2: bool, fma: bool, f16c: bool) -> Vec<&'static str> {
+#[allow(clippy::too_many_arguments)]
+fn missing_cpu_features_from(avx: bool, avx2: bool, bmi2: bool, fma: bool, f16c: bool, sse42: bool) -> Vec<&'static str> {
     let mut missing = Vec::new();
     if !avx {
         missing.push("AVX");
@@ -1298,11 +1310,17 @@ fn missing_cpu_features_from(avx: bool, avx2: bool, fma: bool, f16c: bool) -> Ve
     if !avx2 {
         missing.push("AVX2");
     }
+    if !bmi2 {
+        missing.push("BMI2");
+    }
     if !fma {
         missing.push("FMA");
     }
     if !f16c {
         missing.push("F16C");
+    }
+    if !sse42 {
+        missing.push("SSE4.2");
     }
     missing
 }
@@ -5903,17 +5921,32 @@ mod tests {
 
     #[test]
     fn missing_cpu_features_from_names_exactly_the_flags_that_are_false() {
-        assert_eq!(missing_cpu_features_from(true, true, true, true), Vec::<&str>::new());
-        assert_eq!(missing_cpu_features_from(true, false, true, true), vec!["AVX2"]);
+        // Argument order: avx, avx2, bmi2, fma, f16c, sse42.
+        assert_eq!(missing_cpu_features_from(true, true, true, true, true, true), Vec::<&str>::new());
+        assert_eq!(missing_cpu_features_from(true, false, true, true, true, true), vec!["AVX2"]);
         assert_eq!(
-            missing_cpu_features_from(false, false, false, false),
-            vec!["AVX", "AVX2", "FMA", "F16C"]
+            missing_cpu_features_from(false, false, false, false, false, false),
+            vec!["AVX", "AVX2", "BMI2", "FMA", "F16C", "SSE4.2"]
         );
-        // Negative control: a single true flag among four false ones must
-        // not appear in the list; a function that just returned all four
-        // names unconditionally would pass every assertion above except
+        // Negative control: a single true flag among the rest false ones
+        // must not appear in the list; a function that just returned every
+        // name unconditionally would pass every assertion above except
         // this one.
-        assert!(!missing_cpu_features_from(true, false, false, false).contains(&"AVX"));
+        assert!(!missing_cpu_features_from(true, false, false, false, false, false).contains(&"AVX"));
+    }
+
+    /// Runde 3, Nachbesserung 4: the whole point of measuring BMI2 and
+    /// SSE4.2 too is that a CPU missing ONLY one of those two must not fall
+    /// back to the generic sentence, the exact imprecision the review named
+    /// for AVX2 in Runde 2 (Punkt 3/6). Both checked on their own, plus a
+    /// negative control that neither shows up when everything is present.
+    #[test]
+    fn a_cpu_missing_only_bmi2_or_only_sse42_is_named_precisely() {
+        assert_eq!(missing_cpu_features_from(true, true, false, true, true, true), vec!["BMI2"]);
+        assert_eq!(missing_cpu_features_from(true, true, true, true, true, false), vec!["SSE4.2"]);
+        let all_present = missing_cpu_features_from(true, true, true, true, true, true);
+        assert!(!all_present.contains(&"BMI2"));
+        assert!(!all_present.contains(&"SSE4.2"));
     }
 
     #[test]
@@ -5924,7 +5957,7 @@ mod tests {
         // missing_cpu_features(), the real probe, in production; this test
         // exercises the same wording logic by constructing the sentence the
         // same way missing_cpu_features_from's result feeds it).
-        let missing = missing_cpu_features_from(true, false, true, true);
+        let missing = missing_cpu_features_from(true, false, true, true, true, true);
         assert_eq!(missing, vec!["AVX2"]);
         let sentence = if missing.len() == 1 {
             format!("This CPU is missing the {} instruction set", missing[0])
