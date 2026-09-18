@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Cpu, Sparkles, ImageDown, Maximize2, Download, Wand2, MonitorOff, AudioLines } from 'lucide-react'
+import { Cpu, Sparkles, ImageDown, Maximize2, Download, Wand2, MonitorOff, AudioLines, Film } from 'lucide-react'
 import { coldLoadHint } from '../../../lib/cold-load-notice'
 import { useCreateStore, type GalleryItem, type ProgressPhase } from '../../../stores/createStore'
 import { backendCall, downloadComfyFile, isTauri } from '../../../api/backend'
@@ -104,6 +104,12 @@ interface ResultProps {
   item: GalleryItem
   onFullscreen: () => void
   onSendToEditor?: () => void
+  /** C1: adopt this finished image as the Animate intent's source, matching
+   *  web's OutputView (apps/web/components/create/experimental/OutputView.tsx,
+   *  createStore.animateFrom). Absent where the Animate lane cannot actually
+   *  run (see isIntentAvailable('animate', ...) in Stage's caller), same gating
+   *  pattern as onSendToEditor above it. */
+  onAnimate?: () => void
 }
 
 function extFor(contentType: string, kind: 'image' | 'video' | 'audio'): string {
@@ -217,7 +223,7 @@ function reconcileDims(item: GalleryItem, w: number, h: number) {
   }
 }
 
-export function ResultView({ item, onFullscreen, onSendToEditor }: ResultProps) {
+export function ResultView({ item, onFullscreen, onSendToEditor, onAnimate }: ResultProps) {
   const { src: url, onError } = useComfyMedia(item)
   const download = () => void downloadGalleryItem(item)
   const isVideo = item.type === 'video'
@@ -263,6 +269,9 @@ export function ResultView({ item, onFullscreen, onSendToEditor }: ResultProps) 
         <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           {onSendToEditor && item.type === 'image' && !item.unavailable && (
             <IconBtn title="Edit with mask" onClick={onSendToEditor}><Wand2 size={14} /></IconBtn>
+          )}
+          {onAnimate && item.type === 'image' && !item.unavailable && (
+            <IconBtn title="Animate this image" onClick={onAnimate}><Film size={14} /></IconBtn>
           )}
           <IconBtn
             title={item.unavailable ? 'Download needs the local engine' : 'Download'}
