@@ -92,6 +92,65 @@ fn check_account(account: &str) -> Result<(), String> {
     ))
 }
 
+// ── R9: parked keys for a displaced OpenAI-compatible backend's key ────────
+//
+// When one OpenAI-compatible-slot backend takes over the slot from another
+// (openai-slot-handover.ts, chat branch), the displaced backend's API key had
+// nowhere safe to go: ALLOWED_ACCOUNTS above is a fixed six-entry list with no
+// room for "whichever backend just lost the slot", and letting the caller
+// name an arbitrary vault account here would reopen exactly what T-61 closed.
+// This adds a narrow second door instead: one fixed prefix, plus a backend id
+// that must pass a strict pattern, never a free-form account name and never a
+// path (review 2026-09-18, R9).
+//
+// The prefix and the pattern together also rule out collisions: no
+// ALLOWED_ACCOUNTS entry contains ':', and the internal chunk-shape suffix
+// (`account#N`, chunked::chunk_account) uses '#', which the pattern below
+// forbids in a backend id, so a parked account string can never be mistaken
+// for a plain account or a chunk fragment, and vice versa.
+
+/// Fixed prefix for a parked key's vault account name.
+const PARKED_PREFIX: &str = "parked-key:";
+
+/// Longest backend id accepted. Generous for any real provider slug
+/// ("lmstudio", "openai-compatible", "local-vllm", ...); short enough that
+/// this cannot be used to smuggle large data through an "id".
+const MAX_BACKEND_ID_LEN: usize = 64;
+
+/// Lowercase ascii letters, digits and hyphen only, never uppercase (so a
+/// case-varied near-miss cannot alias a real id), never '/', '\\', ':', '.'
+/// or whitespace (so this can never be read as a path or collide with the
+/// prefix separator or the chunk-shape suffix).
+fn is_valid_backend_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_BACKEND_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Build the vault account name for a parked key, or reject the id. The ONLY
+/// place a parked account string is constructed, so every command below runs
+/// through the same check, same shape as `check_account` above, deliberately
+/// kept separate from it because a parked id is not drawn from a fixed list.
+///
+/// Logs only the id's length, never the id or any secret value: the id itself
+/// is not secret, but a refusal log is not the place to start making that
+/// judgment call per caller.
+fn parked_account(backend_id: &str) -> Result<String, String> {
+    if !is_valid_backend_id(backend_id) {
+        tracing::warn!(
+            backend_id_len = backend_id.len(),
+            "refused a parked-key operation for a backend id that failed validation"
+        );
+        return Err(
+            "refused: backend id must be 1-64 lowercase letters, digits and hyphens only"
+                .to_string(),
+        );
+    }
+    Ok(format!("{PARKED_PREFIX}{backend_id}"))
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod chunked {
     use super::SERVICE;
@@ -335,6 +394,44 @@ pub async fn secret_delete(account: String) -> Result<(), String> {
     run_keychain(move || chunked::delete(&account)).await
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[tauri::command]
+pub async fn secret_park_set(backend_id: String, value: String) -> Result<(), String> {
+    let account = parked_account(&backend_id)?;
+    if keychain_disabled() {
+        return Err("keychain unavailable (LU_NO_KEYCHAIN test mode)".into());
+    }
+    run_keychain(move || {
+        // Same "empty means delete" rule as secret_set: a cleared parked key
+        // never lingers in the vault.
+        if value.is_empty() {
+            return chunked::delete(&account);
+        }
+        chunked::set(&account, &value)
+    })
+    .await
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[tauri::command]
+pub async fn secret_park_get(backend_id: String) -> Result<Option<String>, String> {
+    let account = parked_account(&backend_id)?;
+    if keychain_disabled() {
+        return Err("keychain unavailable (LU_NO_KEYCHAIN test mode)".into());
+    }
+    run_keychain(move || chunked::get(&account)).await
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[tauri::command]
+pub async fn secret_park_delete(backend_id: String) -> Result<(), String> {
+    let account = parked_account(&backend_id)?;
+    if keychain_disabled() {
+        return Err("keychain unavailable (LU_NO_KEYCHAIN test mode)".into());
+    }
+    run_keychain(move || chunked::delete(&account)).await
+}
+
 // ── Non-keychain platforms (Linux desktop) ──────────────────────────────
 // The commands still exist so `invoke('secret_get', …)` resolves, but they
 // report unsupported. The frontend treats any error here as "no keychain" and
@@ -358,6 +455,27 @@ pub fn secret_get(account: String) -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn secret_delete(account: String) -> Result<(), String> {
     check_account(&account)?;
+    Err("keychain unsupported on this platform".into())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[tauri::command]
+pub fn secret_park_set(backend_id: String, _value: String) -> Result<(), String> {
+    parked_account(&backend_id)?;
+    Err("keychain unsupported on this platform".into())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[tauri::command]
+pub fn secret_park_get(backend_id: String) -> Result<Option<String>, String> {
+    parked_account(&backend_id)?;
+    Err("keychain unsupported on this platform".into())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[tauri::command]
+pub fn secret_park_delete(backend_id: String) -> Result<(), String> {
+    parked_account(&backend_id)?;
     Err("keychain unsupported on this platform".into())
 }
 
@@ -517,16 +635,143 @@ mod account_allowlist_tests {
         }
     }
 
-    /// Every command body checks the name before it does anything else. Six
-    /// commands: three on the keychain platforms, three on the stub platforms.
+    /// Every command body checks the name before it does anything else.
+    /// Twelve commands total: the original three (account allowlist) plus
+    /// the three R9 parked-key commands (backend-id pattern), each present
+    /// once for the keychain platforms and once for the stub platforms.
     #[test]
     fn no_command_reaches_the_vault_without_the_check() {
         const SECRET_RS: &str = include_str!("secret.rs");
-        // Both needles are split so these two lines do not match themselves:
-        // the file being counted is this one.
+        // Needles are split so these lines do not match themselves: the file
+        // being counted is this one.
         let commands = SECRET_RS.matches(concat!("#[tauri", "::command]")).count();
-        let checks = SECRET_RS.matches(concat!("check_account", "(&account)?;")).count();
-        assert_eq!(commands, 6, "command count changed — recount the checks");
-        assert_eq!(checks, commands, "a secret command runs without the name check");
+        let account_checks = SECRET_RS
+            .matches(concat!("check_account", "(&account)?;"))
+            .count();
+        let parked_checks = SECRET_RS
+            .matches(concat!("parked_account", "(&backend_id)?;"))
+            .count();
+        assert_eq!(commands, 12, "command count changed, recount the checks");
+        assert_eq!(
+            account_checks, 6,
+            "a plain secret command runs without the account name check"
+        );
+        assert_eq!(
+            parked_checks, 6,
+            "a parked-key command runs without the backend-id check"
+        );
+    }
+}
+
+/// R9: the parked-key backend-id validation. Separate module from
+/// `account_allowlist_tests` above: that one is about a fixed, enumerable
+/// list; this one is about a pattern with no enumeration at all, so its
+/// negative cases are different in kind (path characters, length, case),
+/// not just different values.
+#[cfg(test)]
+mod parked_key_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_backend_ids_are_accepted() {
+        for id in ["lmstudio", "openai-compatible", "local-vllm", "a", "9-9-9"] {
+            assert!(
+                parked_account(id).is_ok(),
+                "'{id}' should be a valid backend id"
+            );
+        }
+    }
+
+    #[test]
+    fn the_account_string_carries_the_fixed_prefix_and_the_id_unchanged() {
+        assert_eq!(
+            parked_account("lmstudio").unwrap(),
+            "parked-key:lmstudio"
+        );
+    }
+
+    /// Negative control target: every one of these must be refused. Run with
+    /// `is_valid_backend_id` temporarily patched to `!id.is_empty()` only
+    /// (accepting almost everything) to confirm this test actually exercises
+    /// the validation and is not vacuously green (see rust2.md for the
+    /// genuinely-run negative control and the exact failures it produced).
+    #[test]
+    fn path_characters_are_rejected() {
+        for id in [
+            "../ollama",
+            "a/b",
+            "a\\b",
+            "lmstudio/../openai",
+            "C:\\lmstudio",
+            "/etc/passwd",
+        ] {
+            assert!(
+                parked_account(id).is_err(),
+                "'{id}' contains a path character and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_empty_string_is_rejected() {
+        assert!(parked_account("").is_err());
+    }
+
+    #[test]
+    fn an_overlength_id_is_rejected() {
+        let exactly_at_cap = "a".repeat(MAX_BACKEND_ID_LEN);
+        assert!(
+            parked_account(&exactly_at_cap).is_ok(),
+            "the cap itself must still be accepted"
+        );
+        let one_over = "a".repeat(MAX_BACKEND_ID_LEN + 1);
+        assert!(
+            parked_account(&one_over).is_err(),
+            "one character past the cap must be refused"
+        );
+    }
+
+    /// A foreign prefix embedded in the id itself must not let a caller reach
+    /// an unrelated vault entry by constructing the account string from the
+    /// inside, trying to walk into ALLOWED_ACCOUNTS' namespace or the
+    /// chunk-shape suffix by choosing an id that happens to contain them.
+    #[test]
+    fn ids_that_try_to_smuggle_another_namespace_are_rejected() {
+        for id in [
+            "ollama",       // valid pattern, but this test documents that a
+            // plain ALLOWED_ACCOUNTS name is still accepted as a backend id:
+            // it lands at "parked-key:ollama", never at the real "ollama"
+            // account, so no collision is possible; kept here as a witness,
+            // not a rejection case (checked explicitly right below).
+            "parked-key:ollama",   // colon: rejected by the pattern
+            "lmstudio#0",          // chunk-shape suffix: rejected
+            "LMSTUDIO",            // uppercase: rejected
+            "lm studio",           // whitespace: rejected
+        ] {
+            if id == "ollama" {
+                assert!(parked_account(id).is_ok());
+                assert_eq!(parked_account(id).unwrap(), "parked-key:ollama");
+                assert_ne!(parked_account(id).unwrap(), "ollama");
+                continue;
+            }
+            assert!(
+                parked_account(id).is_err(),
+                "'{id}' must be refused"
+            );
+        }
+    }
+
+    /// The refusal text must never echo a value that could be secret. The
+    /// backend id itself is not the secret (the stored key is), but the
+    /// error is still built from a fixed string plus the length only, never
+    /// the id or any value passed alongside it.
+    #[test]
+    fn the_refusal_never_echoes_the_rejected_id() {
+        let smuggled = "path/../../../etc/passwd";
+        let err = parked_account(smuggled).unwrap_err();
+        assert!(
+            !err.contains(smuggled),
+            "the refusal must not echo the rejected id back: {err}"
+        );
     }
 }
