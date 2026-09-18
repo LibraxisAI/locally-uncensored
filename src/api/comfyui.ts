@@ -1617,6 +1617,42 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
   return clips[0]
 }
 
+/**
+ * K2 (mrvideogame9829/sockenmonster, Discord "HELP WITH MODELS"/help-18,
+ * 2026-09-15/17): the Talking Character (lipsync) and Motion (animate)
+ * builders hardcoded `audio_encoder_name: 'wav2vec2_large_english_fp16.
+ * safetensors'` straight into AudioEncoderLoader, never checked against
+ * ComfyUI's live enum. A box that doesn't have that exact file (a different
+ * quant, a subfolder, or simply nothing installed) submitted it verbatim and
+ * ComfyUI's /prompt validator rejected the node with "Value not in list" —
+ * the same failure mode Bug C already fixed for CLIPLoader, just not carried
+ * over to the newer local lanes. Same no-silent-fallback rule as
+ * findMatchingVAE/findMatchingCLIP: resolve against the live list, throw an
+ * actionable "download <file>" message on a miss.
+ */
+export async function findMatchingAudioEncoder(): Promise<string> {
+  const encoders = await getAudioEncoderModels()
+  if (encoders.length === 0) {
+    throw new Error('No audio encoder models found. Download "wav2vec2_large_english_fp16.safetensors" from the Model Manager.')
+  }
+  const match = encoders.find((e) => e.toLowerCase().includes('wav2vec2'))
+  return match ?? encoders[0]
+}
+
+/**
+ * Same fix as findMatchingAudioEncoder, for CLIPVisionLoader. FramePack
+ * hardcoded `clip_name: 'sigclip_vision_patch14_384.safetensors'` unchecked;
+ * resolve against the live list instead.
+ */
+export async function findMatchingClipVision(): Promise<string> {
+  const models = await getCLIPVisionModels()
+  if (models.length === 0) {
+    throw new Error('No CLIP-Vision models found. Download "sigclip_vision_patch14_384.safetensors" from the Model Manager.')
+  }
+  const match = models.find((m) => m.toLowerCase().includes('sigclip'))
+  return match ?? models[0]
+}
+
 async function findAnimateDiffModel(): Promise<string> {
   const models = await getAnimateDiffModels()
   if (models.length === 0) throw new Error('No AnimateDiff motion models found. Install them via ComfyUI Manager.')

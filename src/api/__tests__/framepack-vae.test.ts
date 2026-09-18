@@ -60,7 +60,14 @@ const params = {
 function vaeEnum(list: string[]) {
   vi.mocked(localFetch).mockResolvedValue({
     ok: true,
-    json: async () => ({ VAELoader: { input: { required: { vae_name: [list] } } } }),
+    // K2: findMatchingClipVision() now also probes /object_info/CLIPVisionLoader
+    // (same live-list-first fix as the VAE above, for FramePack's clip_vision
+    // encoder). The mock answers every /object_info/<node> call with the same
+    // body regardless of which node was asked for, so it needs both keys.
+    json: async () => ({
+      VAELoader: { input: { required: { vae_name: [list] } } },
+      CLIPVisionLoader: { input: { required: { clip_name: [['sigclip_vision_patch14_384.safetensors']] } } },
+    }),
   } as never)
 }
 

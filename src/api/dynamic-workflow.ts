@@ -1,4 +1,7 @@
-import { classifyModel, findMatchingVAE, findMatchingCLIP, findFluxCLIPPair } from './comfyui'
+import {
+  classifyModel, findMatchingVAE, findMatchingCLIP, findFluxCLIPPair,
+  findMatchingAudioEncoder, findMatchingClipVision,
+} from './comfyui'
 import type { ModelType, GenerateParams, VideoParams } from './comfyui'
 import { log } from '../lib/logger'
 import { resolveRunSeed } from '../lib/run-seed'
@@ -679,6 +682,23 @@ export async function buildDynamicWorkflow(
   }
 
   if (params.vae && params.vae !== 'auto') {
+    // K2: this override used to go straight into VAELoader unchecked — a
+    // stale remembered pick (a name that existed in an older LU/ComfyUI
+    // install, a wrong path separator, a subfolder-qualified name ComfyUI's
+    // enum does not use) reached /prompt as-is and came back "Value not in
+    // list". `models.vaes` is the live VAELoader enum already read off this
+    // same /object_info response — validate against it before writing the
+    // node. Skip the check only when that enum came back empty (an older
+    // ComfyUI that answered a different schema): saying nothing is safer
+    // than a false rejection of a value we simply could not verify.
+    if (models.vaes.length > 0 && !models.vaes.includes(params.vae)) {
+      const list = models.vaes.slice(0, 12).join(', ')
+      throw new WorkflowUnavailableError(
+        `VAE "${params.vae}" is not installed in ComfyUI. Installed VAEs: ${list}. ` +
+        `Put the file into ComfyUI/models/vae and retry, or clear the VAE override.`,
+        strategy,
+      )
+    }
     const vaeId = String(n++)
     workflow[vaeId] = {
       class_type: 'VAELoader',
@@ -1453,8 +1473,19 @@ export function buildMusicWorkflow(params: LocalOpParams, seed: number, allNodes
  * the finished frames are muxed WITH the speech track (CreateVideo), because
  * a silent talking-head clip is useless. Uses the Wan 2.1 VAE + UMT5 encoder
  * (the S2V-14B pairing from the official release).
+ *
+ * K2 (mrvideogame9829/sockenmonster, Discord "HELP WITH MODELS"/help-18,
+ * 2026-09-15/17): the CLIP/VAE/audio-encoder filenames below used to be
+ * written straight into their loader nodes as literal strings, never checked
+ * against what ComfyUI actually has installed. Whichever one the box didn't
+ * have failed validation with "Value not in list" — Node 3 (VAELoader) in
+ * the reports, because that is the third node this builder creates. Resolve
+ * every one of them against the live enum first (same rule Bug C already
+ * applied to the FLUX/video lanes in buildDynamicWorkflow), so a mismatch is
+ * caught before /prompt submission with an actionable "download <file>"
+ * message instead of ComfyUI's opaque rejection.
  */
-export function buildS2VWorkflow(params: LocalOpParams, seed: number, allNodes: NodePresence): ComfyApiGraph {
+export async function buildS2VWorkflow(params: LocalOpParams, seed: number, allNodes: NodePresence): Promise<ComfyApiGraph> {
   const workflow: ComfyApiGraph = {}
   let n = 1
   requireNodes(
@@ -1470,12 +1501,18 @@ export function buildS2VWorkflow(params: LocalOpParams, seed: number, allNodes: 
   const height = snap16(params.height, 480)
   const length = snapWanLength(params.frames || 77)
 
+  const [wanClip, wanVae, audioEncoder] = await Promise.all([
+    findMatchingCLIP('wan', params.model),
+    findMatchingVAE('wan'),
+    findMatchingAudioEncoder(),
+  ])
+
   const unetId = String(n++)
   addUnetLoader(workflow, unetId, params.model, allNodes)
   const clipId = String(n++)
-  workflow[clipId] = { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } }
+  workflow[clipId] = { class_type: 'CLIPLoader', inputs: { clip_name: wanClip, type: 'wan', device: 'default' } }
   const vaeId = String(n++)
-  workflow[vaeId] = { class_type: 'VAELoader', inputs: { vae_name: 'wan_2.1_vae.safetensors' } }
+  workflow[vaeId] = { class_type: 'VAELoader', inputs: { vae_name: wanVae } }
   const posId = String(n++)
   workflow[posId] = { class_type: 'CLIPTextEncode', inputs: { text: params.prompt || 'a person talking naturally, natural expression', clip: [clipId, 0] } }
   const negId = String(n++)
@@ -1484,7 +1521,7 @@ export function buildS2VWorkflow(params: LocalOpParams, seed: number, allNodes: 
   const audioLoadId = String(n++)
   workflow[audioLoadId] = { class_type: 'LoadAudio', inputs: { audio: params.audioFile } }
   const audioEncLoadId = String(n++)
-  workflow[audioEncLoadId] = { class_type: 'AudioEncoderLoader', inputs: { audio_encoder_name: 'wav2vec2_large_english_fp16.safetensors' } }
+  workflow[audioEncLoadId] = { class_type: 'AudioEncoderLoader', inputs: { audio_encoder_name: audioEncoder } }
   const audioEncId = String(n++)
   workflow[audioEncId] = { class_type: 'AudioEncoderEncode', inputs: { audio_encoder: [audioEncLoadId, 0], audio: [audioLoadId, 0] } }
 
@@ -1527,8 +1564,11 @@ export function buildS2VWorkflow(params: LocalOpParams, seed: number, allNodes: 
  * DWPreprocessor from comfyui_controlnet_aux (one-click install; its CPU
  * onnxruntime path works on every Windows box, no GPU wheel roulette).
  * The driving clip's own audio is carried over into the result.
+ *
+ * K2: same live-list-first fix as buildS2VWorkflow above — CLIP/VAE were
+ * hardcoded literals here too.
  */
-export function buildMotionWorkflow(params: LocalOpParams, seed: number, allNodes: NodePresence): ComfyApiGraph {
+export async function buildMotionWorkflow(params: LocalOpParams, seed: number, allNodes: NodePresence): Promise<ComfyApiGraph> {
   const workflow: ComfyApiGraph = {}
   let n = 1
   requireNodes(allNodes, ['LoadVideo', 'GetVideoComponents'], 'Motion control')
@@ -1550,12 +1590,17 @@ export function buildMotionWorkflow(params: LocalOpParams, seed: number, allNode
   const height = snap16(params.height, 480)
   const length = snapWanLength(params.frames || 77)
 
+  const [wanClip, wanVae] = await Promise.all([
+    findMatchingCLIP('wan', params.model),
+    findMatchingVAE('wan'),
+  ])
+
   const unetId = String(n++)
   addUnetLoader(workflow, unetId, params.model, allNodes)
   const clipId = String(n++)
-  workflow[clipId] = { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } }
+  workflow[clipId] = { class_type: 'CLIPLoader', inputs: { clip_name: wanClip, type: 'wan', device: 'default' } }
   const vaeId = String(n++)
-  workflow[vaeId] = { class_type: 'VAELoader', inputs: { vae_name: 'wan_2.1_vae.safetensors' } }
+  workflow[vaeId] = { class_type: 'VAELoader', inputs: { vae_name: wanVae } }
   const posId = String(n++)
   workflow[posId] = { class_type: 'CLIPTextEncode', inputs: { text: params.prompt || 'a person moving naturally, high quality', clip: [clipId, 0] } }
   const negId = String(n++)
@@ -1630,8 +1675,8 @@ export async function buildLocalOpWorkflow(params: LocalOpParams): Promise<Comfy
   const seed = resolveRunSeed(params.seed)
   switch (params.op) {
     case 'music': return buildMusicWorkflow(params, seed, allNodes)
-    case 'lipsync': return buildS2VWorkflow(params, seed, allNodes)
-    case 'motion': return buildMotionWorkflow(params, seed, allNodes)
+    case 'lipsync': return await buildS2VWorkflow(params, seed, allNodes)
+    case 'motion': return await buildMotionWorkflow(params, seed, allNodes)
   }
 }
 
@@ -1661,7 +1706,10 @@ async function buildFramePackWorkflow(params: VideoParams, seed: number, nodes: 
   // DualCLIPLoader with type "hunyuan_video" — CLIPLoader type "wan" creates Llama2 with 128256 vocab
   // but llava_llama3 has 128320 tokens, causing state_dict size mismatch. DualCLIPLoader handles both correctly.
   workflow[clipId] = { class_type: 'DualCLIPLoader', inputs: { clip_name1: 'clip_l.safetensors', clip_name2: 'llava_llama3_fp8_scaled.safetensors', type: 'hunyuan_video' } }
-  workflow[clipVisionId] = { class_type: 'CLIPVisionLoader', inputs: { clip_name: 'sigclip_vision_patch14_384.safetensors' } }
+  // K2: was a hardcoded literal never checked against the live CLIPVisionLoader
+  // enum — same "Value not in list" failure mode as the VAE below, just for a
+  // different node. Resolved against the live list like the VAE already is.
+  workflow[clipVisionId] = { class_type: 'CLIPVisionLoader', inputs: { clip_name: await findMatchingClipVision() } }
   // FramePack is a HunyuanVideo 1.0 model. Its sampler allocates the history
   // buffer with 16 latent channels, and the HunyuanVideo 1.5 VAE encodes 32, so
   // pairing the two dies at the first section with "Expected size 32 but got
