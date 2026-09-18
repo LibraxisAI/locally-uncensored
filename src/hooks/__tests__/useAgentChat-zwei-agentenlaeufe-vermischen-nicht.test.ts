@@ -162,7 +162,7 @@ describe('two agent-mode runs on two conversations do not mix, and neither is dr
     const { result } = renderHook(() => useAgentChat())
 
     await act(async () => {
-      // Send in A, switch to B, send in B WHILE A IS STILL STREAMING — the
+      // Send in A, switch to B, send in B WHILE A IS STILL STREAMING: this is the
       // exact sequence the re-entry guard used to answer with silence.
       useChatStore.getState().setActiveConversation(convA)
       const runA = result.current.sendAgentMessage('task-A')
@@ -181,7 +181,7 @@ describe('two agent-mode runs on two conversations do not mix, and neither is dr
       await tick()
       // 'completed', not 'in_progress': an open plan item makes the agent
       // loop steer for another round (G16, lib/plan-reconcile.ts) before it
-      // lets a text-only turn end the run — unrelated to what this test is
+      // lets a text-only turn end the run; unrelated to what this test is
       // proving, and it would turn "2 model calls per conversation" into an
       // unpredictable number.
       streamA1.pushTool('call-A', { todos: [{ content: 'step-A', status: 'completed' }] })
@@ -192,7 +192,7 @@ describe('two agent-mode runs on two conversations do not mix, and neither is dr
 
       await Promise.all([runA, runB])
       // The final content write is a coalesced requestAnimationFrame flush
-      // (scheduleUIUpdate), not part of what the run's own promise awaits —
+      // (scheduleUIUpdate), not part of what the run's own promise awaits;
       // give it a tick to land before reading the store.
       await tick()
     })

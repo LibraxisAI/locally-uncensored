@@ -124,7 +124,7 @@ describe('stopAllBackgroundWork() beendet zwei gleichzeitig laufende Agentenlaeu
     // Round 1 (tool call, plan item left 'in_progress' so G16 plan-reconcile
     // drives a real round 2) and round 2 are BOTH hand-driven, per
     // conversation, so the test can stop each run exactly between the two
-    // requests — mid-loop, not mid-connect or after the run already ended on
+    // requests: mid-loop, not mid-connect or after the run already ended on
     // its own, which would make "no further request" true for free.
     const streamA1 = controllableSSE()
     const streamB1 = controllableSSE()
@@ -174,7 +174,7 @@ describe('stopAllBackgroundWork() beendet zwei gleichzeitig laufende Agentenlaeu
       await tick()
     })
 
-    // Round 2 has genuinely been requested for both — the loop is mid-run,
+    // Round 2 has genuinely been requested for both; the loop is mid-run,
     // not idle and not between messages.
     expect(callsA).toBe(2)
     expect(callsB).toBe(2)
@@ -189,7 +189,7 @@ describe('stopAllBackgroundWork() beendet zwei gleichzeitig laufende Agentenlaeu
     expect(isRunStopped(convB)).toBe(true)
 
     // Round 2 itself is let through to completion (a real connection
-    // in flight when Stop is pressed is not retroactively unsent) — the
+    // in flight when Stop is pressed is not retroactively unsent); the
     // question this test answers is whether the loop reaches for a THIRD
     // round afterwards. It must not: the third call throws in the mock
     // above, so a regression fails loudly here instead of just miscounting.
