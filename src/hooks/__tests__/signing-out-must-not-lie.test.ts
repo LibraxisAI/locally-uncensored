@@ -27,6 +27,8 @@ vi.mock('../../stores/settingsStore', () => ({
 
 import { signOutAccount } from '../useCloudAuth'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { useAgentTaskStore } from '../../stores/agentTaskStore'
+import { isRunStopped, __resetRunStopsForTests } from '../../lib/run-stop'
 
 const SESSION = { access_token: 'still-valid', refresh_token: 'r' }
 
@@ -40,6 +42,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('window', { dispatchEvent: vi.fn(), CustomEvent })
   signedIn()
+  useAgentTaskStore.setState({ byConv: {} })
+  __resetRunStopsForTests()
 })
 
 describe('a sign-out that worked', () => {
@@ -106,5 +110,46 @@ describe('a failure that still emptied this machine', () => {
 
     await expect(signOutAccount()).resolves.toBeUndefined()
     expect(useCloudAuthStore.getState().status).toBe('signed-out')
+  })
+})
+
+describe('B1 Nachbesserung 1 (Opus-Review) — Abmelden stoppt Hintergrundagenten', () => {
+  /**
+   * Vor dieser Nachbesserung liess signOutAccount() jeden laufenden
+   * delegate_task-Hintergrundagenten unangetastet — er feuerte nach dem
+   * Abmelden mit einem Konto weiter, das der Nutzer gerade verlassen hat.
+   * `stopAllBackgroundWork()` laeuft ueber ALLE Konversationen, nicht nur die
+   * gerade sichtbare — Abmelden trifft die ganze Sitzung.
+   */
+  it('a successful sign-out cancels every running background task, in any conversation', async () => {
+    signOut.mockResolvedValue({ error: null })
+    const ctrl = new AbortController()
+    useAgentTaskStore.getState().start({
+      id: 'task-1', convId: 'conv-other', goal: 'x', context: '', background: true,
+      startedAt: Date.now(), controller: ctrl,
+    })
+
+    await signOutAccount()
+
+    expect(ctrl.signal.aborted).toBe(true)
+    expect(isRunStopped('conv-other')).toBe(true)
+  })
+
+  it('a FAILED sign-out (session still survives) leaves background agents running', async () => {
+    // The account stays signed in here (the dangerous-half fix above), so
+    // stopping its background work would be the wrong side effect of a
+    // sign-out that did not actually happen.
+    signOut.mockRejectedValue(new Error('boom'))
+    getSession.mockResolvedValue({ data: { session: SESSION }, error: null })
+    const ctrl = new AbortController()
+    useAgentTaskStore.getState().start({
+      id: 'task-2', convId: 'conv-x', goal: 'x', context: '', background: true,
+      startedAt: Date.now(), controller: ctrl,
+    })
+
+    await signOutAccount().catch(() => {})
+
+    expect(ctrl.signal.aborted).toBe(false)
+    expect(isRunStopped('conv-x')).toBe(false)
   })
 })
