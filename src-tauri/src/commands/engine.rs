@@ -217,7 +217,23 @@ const MIB: u64 = 1024 * 1024;
 /// driver's own context plus llama.cpp's compute buffers. A CUDA context alone
 /// runs to a few hundred MiB and the compute buffer adds a few hundred more at
 /// the default batch sizes, so 512 MiB is the round number above both.
+///
+/// This is the reserve for a MEASURED-free reading (`nvidia-smi`'s
+/// `memory.free`, `VramReading.free == true`): the number already excludes
+/// whatever else is running, so only the driver and the compute buffers are
+/// left to hold back.
 const VRAM_OVERHEAD_BYTES: u64 = 512 * MIB;
+
+/// R1-3: the reserve for a reading that is NOT known to be free — the
+/// `detect_gpus` fallback (`VramReading.free == false`) reports the card's
+/// TOTAL size, not what is currently unused. A desktop compositor, a browser
+/// and whatever Create last rendered can all be sitting in that total already,
+/// same as the free-memory case this file's own header comment describes for
+/// `engine_vram_reading`. 512 MiB on top of a total-capacity number plans as
+/// if the card were otherwise empty; this takes a bigger, still round, bite
+/// out of it instead, so a start on this weaker signal fails toward "fewer
+/// layers than would have fit" rather than toward a start that dies.
+const VRAM_OVERHEAD_BYTES_UNMEASURED: u64 = 2048 * MIB;
 
 /// KV cache per offloaded layer per 1024 tokens of context.
 ///
@@ -262,6 +278,14 @@ pub(crate) struct OffloadInputs {
     /// The context this start will ask for, which is what the KV cache is
     /// sized from.
     pub ctx: u32,
+    /// R1-3: whether `vram_bytes` is a measured-free reading (`nvidia-smi`)
+    /// or a card's total capacity (`detect_gpus`, `VramReading.free`).
+    /// Meaningless when `vram_bytes` is `None`. Drives both the reserve
+    /// (`VRAM_OVERHEAD_BYTES` vs `VRAM_OVERHEAD_BYTES_UNMEASURED`) and the
+    /// wording of `why`: "are free" is simply false of a total-capacity
+    /// number, and the log line that started every start read that way
+    /// regardless of which kind of number backed it.
+    pub free: bool,
 }
 
 /// What the start should send as `-ngl`, and the sentence that explains it.
@@ -308,18 +332,26 @@ pub(crate) fn plan_offload(input: &OffloadInputs) -> OffloadPlan {
     // six, because the error has to point at reserving too much.
     let ctx_k = (input.ctx.max(1) as u64).div_ceil(1024);
     let kv_per_layer = KV_BYTES_PER_LAYER_PER_1K_CTX * ctx_k;
-    let whole = input.model_bytes + kv_per_layer * blocks as u64 + VRAM_OVERHEAD_BYTES;
+    // R1-3: a total-capacity reading is not a free-memory reading, and the
+    // reserve taken out of it has to be bigger for the same reason the
+    // sentence below has to say something different.
+    let overhead = if input.free { VRAM_OVERHEAD_BYTES } else { VRAM_OVERHEAD_BYTES_UNMEASURED };
+    let vram_clause = if input.free {
+        format!("{} MiB are free", mib(vram))
+    } else {
+        format!("the card holds {} MiB in total (actual free memory was not measured)", mib(vram))
+    };
+    let whole = input.model_bytes + kv_per_layer * blocks as u64 + overhead;
     if whole <= vram {
         return OffloadPlan {
             layers: None,
             why: format!(
-                "the model and its cache need about {} MiB and {} MiB are free, so every layer is requested",
-                mib(whole),
-                mib(vram)
+                "the model and its cache need about {} MiB and {vram_clause}, so every layer is requested",
+                mib(whole)
             ),
         };
     }
-    let usable = vram.saturating_sub(VRAM_OVERHEAD_BYTES);
+    let usable = vram.saturating_sub(overhead);
     let per_layer = input.model_bytes / blocks as u64 + kv_per_layer;
     // A layer that costs nothing cannot be divided into the budget, so that
     // case answers 0 layers instead of dividing by zero.
@@ -333,11 +365,10 @@ pub(crate) fn plan_offload(input: &OffloadInputs) -> OffloadPlan {
     OffloadPlan {
         layers: Some(layers),
         why: format!(
-            "the model and its cache need about {} MiB but only {} MiB are free, so {layers} of {counted} go on the card, at about {} MiB per layer and {} MiB held back for the driver and the compute buffers",
+            "the model and its cache need about {} MiB but {vram_clause}, so {layers} of {counted} go on the card, at about {} MiB per layer and {} MiB held back for the driver and the compute buffers",
             mib(whole),
-            mib(vram),
             mib(per_layer),
-            mib(VRAM_OVERHEAD_BYTES)
+            mib(overhead)
         ),
     }
 }
@@ -1952,6 +1983,7 @@ fn start_after_stop(
             block_count: header.block_count,
             vram_bytes: card.as_ref().map(|c| c.bytes),
             ctx: ctx_size,
+            free: card.as_ref().map(|c| c.free).unwrap_or(false),
         });
         tracing::info!(
             target: "engine",
@@ -3782,11 +3814,17 @@ mod tests {
     const CARD_12_GB: u64 = 12288 * 1024 * 1024;
 
     fn plan(model: u64, blocks: Option<u32>, vram: Option<u64>, ctx: u32) -> OffloadPlan {
+        plan_free(model, blocks, vram, ctx, true)
+    }
+
+    /// R1-3: same as `plan`, with the free-vs-total flag exposed.
+    fn plan_free(model: u64, blocks: Option<u32>, vram: Option<u64>, ctx: u32, free: bool) -> OffloadPlan {
         plan_offload(&OffloadInputs {
             model_bytes: model,
             block_count: blocks,
             vram_bytes: vram,
             ctx,
+            free,
         })
     }
 
@@ -3798,6 +3836,44 @@ mod tests {
         let p = plan(THREE_B_Q4, Some(THREE_B_BLOCKS), Some(CARD_12_GB), 8192);
         assert_eq!(p.layers, None, "{}", p.why);
         assert!(p.why.contains("every layer is requested"), "{}", p.why);
+    }
+
+    /// R1-3 table test: the SAME numbers, once with `free: true` (a measured
+    /// `nvidia-smi` reading) and once with `free: false` (`detect_gpus`'
+    /// total-capacity fallback). The sentence must differ and the total-
+    /// capacity run must never ask for MORE layers than the measured-free run
+    /// — a card that has not been shown to be empty is the case where asking
+    /// for too much costs the start.
+    #[test]
+    fn r1_3_a_total_capacity_reading_never_outbids_a_measured_free_one() {
+        let cases: &[(u64, Option<u32>, u64, u32)] = &[
+            (THREE_B_Q4, Some(THREE_B_BLOCKS), CARD_12_GB, 8192),
+            (TWELVE_B_IQ4, Some(TWELVE_B_BLOCKS), CARD_8_GB, 8192),
+            (THREE_B_Q4, Some(THREE_B_BLOCKS), CARD_2_GB, 8192),
+        ];
+        for &(model, blocks, vram, ctx) in cases {
+            let free = plan_free(model, blocks, Some(vram), ctx, true);
+            let total = plan_free(model, blocks, Some(vram), ctx, false);
+
+            assert_ne!(free.why, total.why, "the two readings must not read the same on screen");
+            assert!(free.why.contains("are free"), "{}", free.why);
+            assert!(
+                total.why.contains("in total (actual free memory was not measured)"),
+                "{}",
+                total.why
+            );
+
+            let free_layers = free.layers.unwrap_or(ALL_LAYERS);
+            let total_layers = total.layers.unwrap_or(ALL_LAYERS);
+            assert!(
+                total_layers <= free_layers,
+                "an unmeasured total-capacity reading asked for MORE layers ({total_layers}) than \
+                 the measured-free reading ({free_layers}) on the same {vram} bytes — \
+                 free: {}\ntotal: {}",
+                free.why,
+                total.why
+            );
+        }
     }
 
     #[test]
