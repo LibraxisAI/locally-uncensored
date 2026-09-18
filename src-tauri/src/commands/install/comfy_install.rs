@@ -477,16 +477,38 @@ pub fn install_comfyui(
         let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
 
         let effective_python = if let Some(venv_py) = existing_venv {
-            update(
-                "installing",
-                &format!(
-                    "This ComfyUI already has its own environment. Installing into {venv_py}."
-                ),
-            );
-            // An existing venv is not silently rebuilt here (it may carry
-            // custom nodes' own state): B1(b)'s auto-selection is for a
-            // venv this run is about to build, not one that already exists.
-            venv_py
+            // Runde 4, B3 (review Runde 3, Abschnitt 2): Runde 3 moved the
+            // whole preflight into the "no existing venv" branch below and
+            // left THIS branch with no check at all, a regression against
+            // Runde 2 and literally the Reddit reporter's case: an
+            // externally installed ComfyUI whose own venv sat on Python
+            // 3.14.7. Without this, LU would download 2 GB into that venv
+            // and fail with pip's generic error, again. The venv itself is
+            // still never rebuilt here (it may be hand-built, or carry
+            // custom nodes' own state), only checked before the download.
+            match super::torch::choose_torch_python(&venv_py, torch_index.as_deref(), &torch_package_refs) {
+                super::torch::TorchPythonDecision::Proceed => {
+                    update(
+                        "installing",
+                        &format!(
+                            "This ComfyUI already has its own environment. Installing into {venv_py}."
+                        ),
+                    );
+                    venv_py
+                }
+                super::torch::TorchPythonDecision::UseInstead(chosen_path) => {
+                    let current = super::torch::python_version_tuple(&venv_py)
+                        .unwrap_or((0, 0));
+                    let chosen = super::torch::python_version_tuple(&chosen_path)
+                        .unwrap_or((0, 0));
+                    update("error", &super::torch::existing_venv_needs_repair_message(current, &chosen_path, chosen));
+                    return;
+                }
+                super::torch::TorchPythonDecision::Blocked(msg) => {
+                    update("error", &msg);
+                    return;
+                }
+            }
         } else {
             // B1(b): LU picks the interpreter itself, no Settings picker.
             // Runs BEFORE `create_comfyui_venv`/PEP-668 detection so a
@@ -865,6 +887,35 @@ mod tests {
         }
     }
 
+    /// Runde 4, B3: an EXISTING, usable venv must still go through
+    /// `choose_torch_python` before the 2 GB torch download starts, exactly
+    /// as the freshly-built-venv path already does. Runde 3 moved the check
+    /// into the "no existing venv" branch and left this one with none at
+    /// all, the Reddit reporter's exact case (an externally installed
+    /// ComfyUI whose own venv sat on an unsupported Python). Read out of
+    /// the source like the sibling order guard above, needles split in
+    /// half so they cannot match themselves here.
+    #[test]
+    fn an_existing_venv_is_also_checked_before_the_torch_download() {
+        let src = include_str!("comfy_install.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let existing_venv_check = needle("choose_torch_python(&venv_py,", " torch_index.as_deref(), &torch_package_refs)");
+        let download_start = needle("Downloading PyTorch + Torchvision", " + Torchaudio (~2 GB total)");
+
+        let at_check = src.find(&existing_venv_check).expect("the existing-venv path no longer checks torch/Python compatibility");
+        let at_download = src.find(&download_start).expect("the download step marker is gone");
+
+        assert!(at_check < at_download, "the existing-venv preflight must run before the download starts");
+
+        for (what, n) in [("the existing-venv check", existing_venv_check), ("the download marker", download_start)] {
+            assert_eq!(
+                src.matches(&n).count(),
+                1,
+                "{what}: the search string finds itself in this test, so its .expect can never fire",
+            );
+        }
+    }
 }
 
 /// KF-28: der Doc-Kommentar über `check_install_disk_pressure` darf nur

@@ -461,6 +461,24 @@ pub fn python_interpreters() -> Vec<String> {
         if !path.exists() {
             return;
         }
+        // Runde 4, review Runde 3 "Kleinere Punkte zu B1": the `python3.*`
+        // glob patterns below also match `python3.13-config` and
+        // `python3.13-gdb.py`, siblings the real interpreter's own install
+        // drops next to it. Neither ever starts (execution fails, so
+        // `python_version_tuple` returns None), but both would still show
+        // up as "(version unknown)" ghost lines in the customer-facing
+        // preflight message, making it longer and more confusing than the
+        // interpreters actually found warrant. Only the bare `python3` or
+        // `python3.<digits>` shape is a real interpreter name.
+        let is_python_binary_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == "python" || n == "python3" || {
+                n.strip_prefix("python3.").is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+            });
+        if !is_python_binary_name {
+            return;
+        }
         let path = path.to_string_lossy().to_string();
         if !found.contains(&path) {
             found.push(path);

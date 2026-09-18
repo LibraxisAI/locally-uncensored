@@ -247,19 +247,45 @@ fn format_interpreter_lines(interpreters: &[(String, Option<(u32, u32)>)]) -> St
         .join("\n")
 }
 
-/// Runde 3, B1: the newest interpreter this machine has for which the live
-/// index actually serves a wheel, among the ones `python_interpreters`
-/// found; `None` when nothing qualifies. Pure over an already-resolved
-/// inventory so it is testable without spawning anything.
-pub(crate) fn pick_newest_supported_interpreter(
+/// A candidate interpreter LU is about to pick FOR the customer must itself
+/// be capable of the two things the venv path needs: `ssl` (pip talks to
+/// the index over https) and `venv` (`create_comfyui_venv` builds the venv
+/// with it). Review Runde 3, Abschnitt 2: `pyenv install 3.12` without
+/// OpenSSL headers passes the version check and, before this, would have
+/// been picked automatically, landing the customer on exactly
+/// `diagnose_python_ssl`'s "built without the ssl module" sentence
+/// (pip.rs:537) after LU chose that interpreter FOR them rather than the
+/// customer choosing it themselves. `foreign_system_command`, the same
+/// adapter `diagnose_python_ssl` itself uses, since this spawns a foreign
+/// interpreter, not one of LU's own.
+fn python_can_build_a_venv(python_bin: &str) -> bool {
+    let mut cmd = crate::process_util::foreign_system_command(python_bin);
+    cmd.args(["-c", "import ssl, venv"]);
+    matches!(cmd.output(), Ok(out) if out.status.success())
+}
+
+/// The newest interpreter this machine has for which the live index
+/// actually serves a wheel, among the ones `python_interpreters` found,
+/// AND that passes `probe` (in production, [`python_can_build_a_venv`]):
+/// `None` when nothing qualifies. A version match that fails `probe` is
+/// skipped in favor of the next-newest match rather than accepted anyway,
+/// so a broken pyenv build never wins just because it happens to be the
+/// newest version on the list.
+///
+/// `probe` is a parameter, not a direct call to `python_can_build_a_venv`,
+/// so the ordering/fallback logic is unit-testable with a fake instead of
+/// a real interpreter (review Runde 3: "Test mit Attrappe").
+pub(crate) fn pick_newest_working_interpreter(
     interpreters: &[(String, Option<(u32, u32)>)],
     supported: &std::collections::BTreeSet<(u32, u32)>,
+    mut probe: impl FnMut(&str) -> bool,
 ) -> Option<String> {
-    interpreters
+    let mut candidates: Vec<((u32, u32), String)> = interpreters
         .iter()
         .filter_map(|(path, v)| v.filter(|v| supported.contains(v)).map(|v| (v, path.clone())))
-        .max_by_key(|(v, _)| *v)
-        .map(|(_, path)| path)
+        .collect();
+    candidates.sort_by_key(|(v, _)| std::cmp::Reverse(*v));
+    candidates.into_iter().find(|(_, path)| probe(path)).map(|(_, path)| path)
 }
 
 /// The honest end of B1(c): no Settings claim (there is no picker), no
@@ -339,10 +365,37 @@ pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>,
         return TorchPythonDecision::Proceed;
     }
     let interpreters = interpreter_inventory();
-    match pick_newest_supported_interpreter(&interpreters, &supported) {
+    match pick_newest_working_interpreter(&interpreters, &supported, python_can_build_a_venv) {
         Some(path) => TorchPythonDecision::UseInstead(path),
         None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, &supported)),
     }
+}
+
+/// Runde 4, B3: the message for a venv that ALREADY EXISTS and is not
+/// silently rebuilt (it may be a venv the customer built by hand, or one
+/// carrying custom nodes' own state - B1(b)'s reasoning for never touching
+/// it without being asked). Unlike [`no_compatible_interpreter_message`],
+/// there IS a fix that does not require the customer to install anything:
+/// `python_bin`/`chosen` came from [`TorchPythonDecision::UseInstead`],
+/// meaning LU already found a working interpreter elsewhere on this
+/// machine. "Repair environment" (`repair_comfyui_env`) rebuilds the venv
+/// from LU's own interpreter choice without touching `models/` or
+/// `custom_nodes/`, so that is the concrete button this message can name,
+/// not a manual command.
+pub(crate) fn existing_venv_needs_repair_message(current: (u32, u32), chosen_path: &str, chosen: (u32, u32)) -> String {
+    format!(
+        "This ComfyUI's own Python is {cmaj}.{cmin}, and the PyTorch build LU needs for this \
+         machine does not ship wheels for that version. LU found a Python it CAN use on this \
+         machine already: {chosen_path} (Python {chmaj}.{chmin}).\n\n\
+         This venv is not rebuilt automatically here, since it may be one you built yourself or \
+         one holding custom nodes' own state. Press \"Repair environment\" in Settings: it \
+         rebuilds ComfyUI's venv from that interpreter and leaves models and custom nodes \
+         untouched, only the venv folder itself is replaced.",
+        cmaj = current.0,
+        cmin = current.1,
+        chmaj = chosen.0,
+        chmin = chosen.1,
+    )
 }
 
 #[cfg(test)]
@@ -545,13 +598,19 @@ mod tests {
         [(3, 10), (3, 11), (3, 12), (3, 13)].into_iter().collect()
     }
 
+    /// Always-true stand-in for `python_can_build_a_venv` where a test only
+    /// cares about version matching, not the ssl/venv probe.
+    fn always_works(_: &str) -> bool {
+        true
+    }
+
     /// Required test from the coordinator's Runde 3 instructions: only 3.14
     /// on the box, nothing torch serves today, message required.
     #[test]
     fn only_3_14_present_yields_no_pick_and_a_message() {
         let interpreters = vec![("/usr/bin/python3".to_string(), Some((3, 14)))];
         let supported = supported_3_10_through_13();
-        assert_eq!(pick_newest_supported_interpreter(&interpreters, &supported), None);
+        assert_eq!(pick_newest_working_interpreter(&interpreters, &supported, always_works), None);
         let msg = no_compatible_interpreter_message((3, 14), &interpreters, &supported);
         assert!(msg.contains("3.14"), "{msg}");
         assert!(msg.contains("3.10, 3.11, 3.12, 3.13"), "{msg}");
@@ -577,7 +636,7 @@ mod tests {
         ];
         let supported = supported_3_10_through_13();
         assert_eq!(
-            pick_newest_supported_interpreter(&interpreters, &supported),
+            pick_newest_working_interpreter(&interpreters, &supported, always_works),
             Some("/home/user/.pyenv/versions/3.12.7/bin/python3".to_string())
         );
     }
@@ -593,13 +652,13 @@ mod tests {
         ];
         let supported = supported_3_10_through_13();
         assert_eq!(
-            pick_newest_supported_interpreter(&interpreters, &supported),
+            pick_newest_working_interpreter(&interpreters, &supported, always_works),
             Some("/usr/local/bin/python3.13".to_string())
         );
     }
 
     /// An interpreter whose version could not be read (`None`) must never be
-    /// picked, and must never panic the max-by-key comparison.
+    /// picked, and must never panic the sort/comparison.
     #[test]
     fn an_interpreter_with_an_unknown_version_is_never_picked() {
         let interpreters = vec![
@@ -608,9 +667,55 @@ mod tests {
         ];
         let supported = supported_3_10_through_13();
         assert_eq!(
-            pick_newest_supported_interpreter(&interpreters, &supported),
+            pick_newest_working_interpreter(&interpreters, &supported, always_works),
             Some("/usr/bin/python3.12".to_string())
         );
+    }
+
+    /// Runde 4, Nachbesserung (review Runde 3, Abschnitt 2, "Test mit
+    /// Attrappe"): a version-matching candidate that fails the ssl/venv
+    /// probe (a pyenv build without OpenSSL, say) must be skipped in favor
+    /// of the next-newest match, not picked anyway just because its version
+    /// is newest. The fake probe stands in for `python_can_build_a_venv`.
+    #[test]
+    fn a_version_match_that_fails_the_ssl_venv_probe_is_skipped_for_the_next_newest() {
+        let interpreters = vec![
+            ("/home/user/.pyenv/versions/3.13.0/bin/python3".to_string(), Some((3, 13))),
+            ("/usr/bin/python3.11".to_string(), Some((3, 11))),
+        ];
+        let supported = supported_3_10_through_13();
+        // The dummy: the "newest" 3.13 build cannot import ssl/venv, so it
+        // must be rejected even though it is the highest version match.
+        let broken_pyenv_313 = "/home/user/.pyenv/versions/3.13.0/bin/python3";
+        let probe = |path: &str| path != broken_pyenv_313;
+        assert_eq!(
+            pick_newest_working_interpreter(&interpreters, &supported, probe),
+            Some("/usr/bin/python3.11".to_string())
+        );
+    }
+
+    /// Negative control: if EVERY version match fails the probe, nothing is
+    /// picked at all, same as no compatible interpreter existing.
+    #[test]
+    fn every_version_match_failing_the_probe_yields_no_pick() {
+        let interpreters = vec![("/broken/pyenv/python3.12".to_string(), Some((3, 12)))];
+        let supported = supported_3_10_through_13();
+        assert_eq!(pick_newest_working_interpreter(&interpreters, &supported, |_| false), None);
+    }
+
+    /// Runde 4, B3: the message for an EXISTING venv that is not rebuilt
+    /// automatically must name the button that actually fixes it
+    /// ("Repair environment"), not a manual command, since LU already found
+    /// a working interpreter elsewhere.
+    #[test]
+    fn existing_venv_message_names_repair_not_a_manual_command() {
+        let msg = existing_venv_needs_repair_message((3, 14), "/home/user/.pyenv/versions/3.12.7/bin/python3", (3, 12));
+        assert!(msg.contains("3.14"), "{msg}");
+        assert!(msg.contains("3.12"), "{msg}");
+        assert!(msg.contains("/home/user/.pyenv/versions/3.12.7/bin/python3"), "{msg}");
+        assert!(msg.contains("Repair environment"), "{msg}");
+        assert!(!msg.to_lowercase().contains("uv python install"), "{msg}");
+        assert!(!msg.to_lowercase().contains("settings, ai"), "{msg}");
     }
 
     #[test]
