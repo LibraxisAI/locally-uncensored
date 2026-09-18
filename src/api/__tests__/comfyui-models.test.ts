@@ -166,7 +166,7 @@ describe('MODEL_TYPE_DEFAULTS', () => {
 // ─── COMPONENT_REGISTRY ───
 
 describe('COMPONENT_REGISTRY', () => {
-  // K9/component-registry consolidation: krea2 and wan22 are included here —
+  // K9/component-registry consolidation: krea2 and wan22 are included here,
   // wan22 was the drift the two duplicate registries had already accumulated
   // (present in discover.ts's copy, missing from comfyui.ts's) before they
   // were merged into one file (component-registry.ts); a loop like this one

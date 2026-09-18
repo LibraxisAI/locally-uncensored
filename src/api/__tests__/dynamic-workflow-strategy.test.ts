@@ -210,7 +210,7 @@ describe('dynamic-workflow — determineStrategy', () => {
 
     // K9: an unrecognized architecture with UNET+CLIP+VAE but no checkpoint
     // loader used to fall through to 'unet_flux' on the unstated assumption
-    // that any UNET-only file is a FLUX model — silently applying FLUX's CLIP
+    // that any UNET-only file is a FLUX model, silently applying FLUX's CLIP
     // type and VAE match patterns to a model that might not be FLUX at all.
     // It must now say honestly that it would not guess, never fall back.
     it('unrecognized architecture (UNET+CLIP+VAE, no checkpoint loader) -> unavailable, never a guessed unet_flux', () => {

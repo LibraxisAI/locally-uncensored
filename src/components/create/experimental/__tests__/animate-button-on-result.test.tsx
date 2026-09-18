@@ -3,14 +3,14 @@
  * C1 (Desktop Create parity, web reference:
  * apps/web/components/create/experimental/OutputView.tsx +
  * createStore.animateFrom in lu-300-web): a finished image's result view had
- * no "Animate this image" affordance on Desktop — Edit-with-mask, Download
+ * no "Animate this image" affordance on Desktop: Edit-with-mask, Download
  * and Fullscreen were the only hover actions. Desktop's own createStore
  * already carries a correct `case 'animate':` in setIntent() (keeps
- * `source` — no ...dropAll) and a working setSource(), so the missing piece
+ * `source`, no ...dropAll) and a working setSource(), so the missing piece
  * was purely the button + its onClick wiring through ResultView.
  *
  * This test is scoped to ResultView itself (OutputView.tsx), the component
- * that actually renders the hover toolbar — it is the smallest unit where
+ * that actually renders the hover toolbar: it is the smallest unit where
  * "the button exists, is gated like Edit, and calls back" is observable
  * without standing up the whole CreateExperimental store wiring.
  *
@@ -57,7 +57,7 @@ describe('ResultView "Animate this image" action', () => {
     expect(onAnimate).toHaveBeenCalledTimes(1)
   })
 
-  it('is absent when the caller omits onAnimate (Animate lane unavailable — MLX Mac / locked intent)', () => {
+  it('is absent when the caller omits onAnimate (Animate lane unavailable: MLX Mac / locked intent)', () => {
     render(<ResultView item={makeItem()} onFullscreen={() => {}} />)
     expect(screen.queryByTitle('Animate this image')).toBeNull()
   })

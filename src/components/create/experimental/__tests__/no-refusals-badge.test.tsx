@@ -3,13 +3,13 @@
  * C2 (Desktop Create parity, web reference: apps/web/components/create/
  * experimental/ModelChip.tsx). Two pieces:
  *
- *  1. `adult` on the Desktop CloudModel type (src/lib/render/cloud-models.ts)
- *     — previously absent entirely, so every "Spicy" seed model looked
+ *  1. `adult` on the Desktop CloudModel type (src/lib/render/cloud-models.ts),
+ *     previously absent entirely, so every "Spicy" seed model looked
  *     identical to a filtered one. A live /api/jobs/catalog payload without
  *     the field (older server, pre web-fix) must read as "not adult", never
- *     throw or crash the picker — it's a plain optional boolean.
+ *     throw or crash the picker: it's a plain optional boolean.
  *  2. The "No refusals" badge in ModelChip's CloudModelChip, pale while the
- *     account's content policy still filters and vivid when it's 'off' —
+ *     account's content policy still filters and vivid when it's 'off',
  *     same rule as web, adapted to Desktop's own useContentPolicy hook
  *     (src/hooks/useContentPolicy.ts) instead of web's use-content-policy.
  *
@@ -46,7 +46,7 @@ describe('CloudModel.adult (seed data)', () => {
 describe('ModelChip "No refusals" badge', () => {
   const setup = (modelId: string) => {
     // videoSubMode 'i2v' derives the 'animate' intent (deriveIntent in
-    // createStore.ts) — the picker whose model filter (i2v !== false) actually
+    // createStore.ts): the picker whose model filter (i2v !== false) actually
     // keeps the i2v-only "Spicy" seed models in list, unlike the plain 'video'
     // (t2v) intent which filters them straight back out.
     useCreateStore.setState({

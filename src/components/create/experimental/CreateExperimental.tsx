@@ -213,7 +213,7 @@ function CreateExperimentalInner() {
   // C1: "Animate this image" on a finished result (web parity, createStore's
   // animateFrom / OutputView.tsx). setIntent('animate') already keeps the
   // current source in place (see createStore.ts's 'animate' case, which
-  // deliberately skips ...dropAll) — but a fresh t2i result was never adopted
+  // deliberately skips ...dropAll), but a fresh t2i result was never adopted
   // as `source` in the first place, so setSource still has to run after it,
   // exactly like editResultWithMask does for 'edit'. No mask step needed here.
   const animateResult = useCallback(async (item: GalleryItem) => {

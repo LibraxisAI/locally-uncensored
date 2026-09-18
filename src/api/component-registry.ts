@@ -1,18 +1,18 @@
 // ─── Component Registry: What each model type needs to work ───
 //
-// K9 (GH #136, atobo — Krea 2 classification): this table used to be typed
+// K9 (GH #136, atobo, Krea 2 classification): this table used to be typed
 // out TWICE, once in comfyui.ts (matchPatterns/downloadFilename/clipType,
 // read by findMatchingVAE/findMatchingCLIP and the workflow builders) and
 // once in discover.ts (patterns/downloadName/downloadUrl/subfolder, read by
 // the component-completion download path and the catalogAddresses live-URL
-// gate). Adding a new model type meant remembering to update both — Krea 2
-// only reached one of them, which is exactly the kind of gap that let #136
-// happen in the first place. Same shape as the Audit W-T2 fix that pulled
-// the bundle catalog out of comfyui.ts/discover.ts into model-bundles.ts:
-// shared data lives in its own file that both import, so there is exactly
-// one place to update and neither module has to reach into the other
-// (comfyui.ts ↔ discover.ts staying acyclic is deliberate — see the Audit
-// W-T2 comment at the top of comfyui.ts).
+// gate). Adding a new model type meant remembering to update both, and
+// Krea 2 only reached one of them, which is exactly the kind of gap that let
+// #136 happen in the first place. Same shape as the Audit W-T2 fix that
+// pulled the bundle catalog out of comfyui.ts/discover.ts into
+// model-bundles.ts: shared data lives in its own file that both import, so
+// there is exactly one place to update and neither module has to reach into
+// the other (comfyui.ts and discover.ts staying acyclic is deliberate, see
+// the Audit W-T2 comment at the top of comfyui.ts).
 
 /** One component (VAE or text encoder) a model type needs. */
 export interface ComponentSpec {
@@ -22,7 +22,7 @@ export interface ComponentSpec {
   downloadFilename: string
   /** Direct download address, when one is known and verified reachable
    *  (checked by `hf-catalog-addresses.live.test.ts`). Absent means "the app
-   *  cannot offer a one-click download for this component" — findMatchingVAE
+   *  cannot offer a one-click download for this component": findMatchingVAE
    *  / findMatchingCLIP still tell the user which file to get and where the
    *  Model Manager looks for it, they just cannot fetch it automatically. */
   downloadUrl?: string
@@ -60,7 +60,7 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRequirements> = {
   },
   // Krea 2 (K9, GH #136): companion VAE/CLIP filenames are not standardized
   // across CivitAI finetune authors (qwen_image_vae vs wan_2.1_vae;
-  // qwen3vl_4b_int8_convrot vs qwen3vl_4b_fp8_scaled — see the issue). No
+  // qwen3vl_4b_int8_convrot vs qwen3vl_4b_fp8_scaled, see the issue). No
   // verified direct-download address exists yet, so downloadUrl stays unset
   // rather than guessing one: findMatchingVAE/findMatchingCLIP still name
   // the exact file to fetch manually via the Model Manager.

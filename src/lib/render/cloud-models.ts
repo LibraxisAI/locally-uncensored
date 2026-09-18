@@ -21,7 +21,7 @@ export interface CloudModel {
   /** C2: the provider ships this endpoint with its own filter off, so it
    *  produces adult output when the account's content policy allows it (server
    *  migration 0042, uselu apps/web/lib/render/cloud-models.ts). Drives the
-   *  "No refusals" picker mark (ModelChip.tsx) and grants nothing on its own —
+   *  "No refusals" picker mark (ModelChip.tsx) and grants nothing on its own:
    *  the server re-checks the account's policy on every job, this field is
    *  display only. Optional and defaults to falsy: the live catalog
    *  (GET /api/jobs/catalog) only started emitting it once the web-side fix

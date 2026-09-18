@@ -5,7 +5,7 @@ import { getContentPolicy, type ContentPolicy } from '../api/cloud/jobs'
  * C2: the account's content policy, fetched once and shared across every
  * surface that only needs it for DISPLAY (today: ModelChip's "No refusals"
  * mark). Mirrors uselu apps/web/lib/render/use-content-policy.ts so the same
- * rule reads the same way on both sides — a small module-level cache plus a
+ * rule reads the same way on both sides: a small module-level cache plus a
  * listener set, instead of every mounted ModelChip firing its own GET.
  *
  * Read-only. The server re-checks the real policy on every render job
@@ -22,7 +22,7 @@ async function loadContentPolicy(): Promise<ContentPolicy> {
     inflight = getContentPolicy()
       .then((s) => {
         // A concurrent write (ContentPolicySettings' save()) may already have
-        // primed the cache while this GET was in flight — that newer value
+        // primed the cache while this GET was in flight, and that newer value
         // wins, this response must not overwrite it.
         if (cached) return cached
         cached = s.policy

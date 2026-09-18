@@ -5,24 +5,24 @@ import type { RouteMount } from './routes'
  * K7 (GH #135, eloieloie, `npm run dev` without Tauri): "Unknown backend
  * command: install_mlx_diffusion". The MLX image/video pipeline
  * (`src-tauri/src/commands/media_cmds.rs`) is an in-process Mac-only Rust
- * module — a Python sidecar Rust spawns directly — with no dev-server
+ * module, a Python sidecar Rust spawns directly, with no dev-server
  * equivalent, and unlike Remote Access (see remote-stubs.ts) it had NEITHER
  * a pre-guard in the frontend NOR a backstop stub here. Every call the
  * MLX/video Settings panel makes on mount (`mlxStatus`, `getVideoStatus`,
  * `listMlxImageModels`, `listVideoModels`) is unconditionally reached the
- * moment that panel renders on a Mac running the plain Vite dev server —
+ * moment that panel renders on a Mac running the plain Vite dev server,
  * confirmed by grepping every `invokeMedia('...')` call site in
  * src/api/mlx-image.ts and src/api/mlx-video.ts against endpointMap in
  * backend.ts, the same systematic check K7 asked for.
  *
  * Same shape as remote-stubs.ts: one honest HTTP 501 + JSON body per
  * command, so `backendCall` throws a clear actionable Error instead of
- * "Unknown backend command: X". The frontend already tolerates this —
+ * "Unknown backend command: X". The frontend already tolerates this:
  * status/list calls are wrapped in `.catch(() => null | [])` in
  * MlxMediaSettings' `refresh()`, and the install/generate/delete actions
  * run inside a try/catch that surfaces `e.message` directly as the on-screen
  * error, which is exactly why a plain string message (not a bespoke shape
- * per command) is enough here — same reasoning as install_tts in whisper.ts.
+ * per command) is enough here, same reasoning as install_tts in whisper.ts.
  *
  * `install_mlx_diffusion` / `install_mlx_diffusion_status` and
  * `video_install_mlx` / `video_install_mlx_status` share one path each,

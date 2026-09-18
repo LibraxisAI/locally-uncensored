@@ -11,10 +11,10 @@ const CLOUD_BADGE = { label: 'Cloud', color: 'bg-violet-500/15 text-violet-500 d
 // C2: the "No refusals" mark on models the provider ships with its own
 // filter off (CloudModel.adult, web parity: apps/web/components/create/
 // experimental/ModelChip.tsx). The mark says what the MODEL can do and
-// decides nothing itself — while the account's content policy still filters
-// (anything but 'off'), it stays pale: the account setting is the boundary,
-// not the model. No adult vocabulary here, this surface sits on the payment
-// domain.
+// decides nothing itself: while the account's content policy still filters
+// (anything but 'off'), it stays pale, since the account setting is the
+// boundary, not the model. No adult vocabulary here, this surface sits on
+// the payment domain.
 const NO_REFUSALS_COLOR = {
   filtering: 'text-gray-500 dark:text-gray-600',
   open: 'text-purple-600 dark:text-purple-300',
@@ -94,7 +94,7 @@ function CloudModelChip() {
     label: m.label,
     sublabel: modelCostHint(m, op, op === 'music' ? musicDuration : undefined),
     // adult models keep the standard Cloud badge everywhere EXCEPT the row
-    // itself, where "No refusals" is strictly more informative — matches web.
+    // itself, where "No refusals" is strictly more informative, matching web.
     badge: m.adult
       ? { label: 'No refusals', color: contentPolicy === 'off' ? NO_REFUSALS_COLOR.open : NO_REFUSALS_COLOR.filtering }
       : CLOUD_BADGE,

@@ -74,13 +74,13 @@ export function isComfyRunning(): Promise<boolean> {
 
 /**
  * K8 (GH #134, eloieloie): dev-mode proxy for the Rust side's
- * `is_comfyui_install_complete` (process.rs) — same QUESTION ("can this
+ * `is_comfyui_install_complete` (process.rs): same QUESTION ("can this
  * install actually run, or is it a half-cloned carcass"), a simpler answer.
  * The real check walks candidate python prefixes looking for an installed
  * torch; that is desktop/Tauri-only logic this dev server has no reason to
  * duplicate. A running ComfyUI is definitionally complete, and short of
  * that, an already-built venv/.venv next to main.py is the same signal the
- * dev launcher itself already keys off of (see getComfyPython above) — good
+ * dev launcher itself already keys off of (see getComfyPython above), good
  * enough for onboarding's dev-mode auto-detect not to get stuck on "Install
  * ComfyUI" when ComfyUI is right there and already running (the actual bug).
  */
@@ -239,11 +239,11 @@ export function registerComfyControlRoutes(routes: RouteMount, comfy: ComfyLaunc
   })
 
   // K8 (GH #134): `find_comfyui` is mapped in endpointMap (src/api/backend.ts)
-  // but had NO route here at all — onboarding's ComfyStep.tsx auto-detect
+  // but had NO route here at all, so onboarding's ComfyStep.tsx auto-detect
   // 404'd on both this AND its primary `detect_all_comfyui_installs` call
   // (also added below), fell through its own catch-all, and got stuck
   // showing "Install ComfyUI" even with ComfyUI already running on :8188.
-  // Independent of LAN/--host — this was broken under plain `npm run dev`.
+  // Independent of LAN/--host: this was broken under plain `npm run dev`.
   routes.use('/local-api/find-comfyui', async (_req, res) => {
     const comfyPath = findComfyUI()
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -259,7 +259,7 @@ export function registerComfyControlRoutes(routes: RouteMount, comfy: ComfyLaunc
   // K8: the primary auto-detect path ComfyStep.tsx tries first. The dev
   // server can only ever scan up to ONE install (findComfyUI has no
   // multi-install enumeration, unlike the Rust scan it mirrors), so this
-  // answers with 0 or 1 entries — the same shape the picker UI already
+  // answers with 0 or 1 entries, the same shape the picker UI already
   // handles as "no disambiguation needed", not a lie about capability.
   routes.use('/local-api/detect-all-comfyui-installs', async (_req, res) => {
     const comfyPath = findComfyUI()

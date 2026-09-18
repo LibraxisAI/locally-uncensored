@@ -20,19 +20,19 @@ import { postContentTypeAllowed, postContentTypeError } from '../src/lib/local-a
 /**
  * K8 (GH #134, eloieloie, `npm run dev --host`): a deliberate LAN-exposed dev
  * server rejected its OWN onboarding write requests with "403 Forbidden:
- * Invalid Origin (CSRF Protection)" — the page loaded from the machine's LAN
+ * Invalid Origin (CSRF Protection)": the page loaded from the machine's LAN
  * IP (e.g. `http://192.168.1.23:5273`), which is neither `tauri://localhost`
  * nor the loopback regex below, so every request from it hit the same wall
  * as a real cross-origin attacker.
  *
  * `getLanOrigins`, when given, is called PER REQUEST (not once at guard
  * creation) and must return only origins the SERVER itself resolved it is
- * bound to (see dev-server/index.ts — Vite's own `resolvedUrls.network`,
+ * bound to (see dev-server/index.ts: Vite's own `resolvedUrls.network`,
  * read after listen()), never anything derived from a request header. That
  * is the whole DNS-rebinding lesson above, applied here too: `--host` widens
  * what the guard accepts, but the widening still comes from the server's own
  * configuration, not from what a caller claims. Omitted (or empty) when
- * `--host` was not passed — the default stays loopback-and-Tauri-only.
+ * `--host` was not passed: the default stays loopback-and-Tauri-only.
  */
 export function createLocalApiGuard(
   port: number,
@@ -105,7 +105,7 @@ export function createLocalApiGuard(
         // der Ablehnung: „Invalid Origin" allein sagt nicht, was erwartet war.
         const allowedOrigins = ['tauri://localhost', 'http://tauri.localhost'];
         const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-        // K8: the server's own LAN origin(s) — see the doc comment on
+        // K8: the server's own LAN origin(s), see the doc comment on
         // getLanOrigins above. Read fresh on every request; [] when --host
         // is not active, so a plain `npm run dev` behaves exactly as before.
         const lanOrigins = getLanOrigins ? getLanOrigins() : [];

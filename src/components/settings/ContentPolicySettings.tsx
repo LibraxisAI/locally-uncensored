@@ -68,7 +68,7 @@ export function ContentPolicySettings() {
       const saved = await setContentPolicy(next, ageConfirmed)
       setPolicy(saved)
       // C2: the ModelChip badge reads a separate shared cache (useContentPolicy)
-      // so it does not fire its own GET per mount — push the fresh value in
+      // so it does not fire its own GET per mount, push the fresh value in
       // immediately instead of leaving it to catch up on the next reload.
       primeContentPolicyCache(saved)
       /*

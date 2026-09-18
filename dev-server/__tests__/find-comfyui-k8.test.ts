@@ -1,14 +1,14 @@
 /**
  * K8 (GH #134, eloieloie): `detect_all_comfyui_installs` / `find_comfyui`
- * had no dev-server route at all — `find_comfyui` was even mapped in
+ * had no dev-server route at all. `find_comfyui` was even mapped in
  * endpointMap (src/api/backend.ts) already, pointing at a path
  * `dev-server/comfy.ts` never registered. ComfyStep.tsx's auto-detect tried
  * both, got a 404 (an HTML page, not JSON) from each, and settled on
- * `{ found: false }` — onboarding stayed stuck on "Install ComfyUI" even
+ * `{ found: false }`, so onboarding stayed stuck on "Install ComfyUI" even
  * with ComfyUI installed and running on :8188. Independent of --host/LAN.
  *
  * Real filesystem (a throwaway COMFYUI_PATH), real handler
- * (registerComfyControlRoutes — the function dev-server/index.ts calls),
+ * (registerComfyControlRoutes, the function dev-server/index.ts calls),
  * real HTTP. `isComfyRunning()` is stubbed at the network boundary
  * (`fetch`) since "is a real ComfyUI answering on :8188" is not this test's
  * concern.

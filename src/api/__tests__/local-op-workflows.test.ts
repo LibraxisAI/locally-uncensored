@@ -17,7 +17,7 @@ import type { ComfyApiGraph, ComfyApiNode } from '../../types/comfy-graph'
 // K2: buildS2VWorkflow/buildMotionWorkflow now resolve CLIP/VAE/audio-encoder
 // against ComfyUI's live enum (findMatchingCLIP/findMatchingVAE/
 // findMatchingAudioEncoder) instead of writing hardcoded filenames straight
-// into the loader nodes — same fix Bug C already applied to the FLUX/video
+// into the loader nodes, same fix Bug C already applied to the FLUX/video
 // lanes. Mock the live-fetch boundary only; classifyModel/galleryTypeForFile/
 // resolveLocalOpPick stay real.
 vi.mock('../comfyui', async (importOriginal) => {

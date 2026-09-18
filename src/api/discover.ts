@@ -792,8 +792,8 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
 //
 // K9 (GH #136): this table used to be declared here a second time, with a
 // different field naming (patterns/downloadName vs comfyui.ts's
-// matchPatterns/downloadFilename) but the same per-model-type content — a
-// copy that both had to be remembered on every new architecture. Canonical
+// matchPatterns/downloadFilename) but the same per-model-type content, a
+// duplicate that both had to be remembered on every new architecture. Canonical
 // data now lives in component-registry.ts; re-exported here so existing
 // imports of `COMPONENT_REGISTRY` / `ComponentSpec` / `ComponentRequirements`
 // from './discover' keep working unchanged.

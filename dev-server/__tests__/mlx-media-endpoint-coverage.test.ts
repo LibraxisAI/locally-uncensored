@@ -2,7 +2,7 @@
  * K7 (GH #135, eloieloie): "Unknown backend command: install_mlx_diffusion"
  * in `npm run dev` without Tauri. Root cause: the MLX image/video Rust
  * module (`commands::media_cmds`) had no dev-server route, and unlike
- * Remote Access (remote-stubs.ts) no frontend pre-guard either — every
+ * Remote Access (remote-stubs.ts) no frontend pre-guard either, so every
  * `invokeMedia('...')` call in src/api/mlx-image.ts / mlx-video.ts is
  * unconditionally reached the moment MlxMediaSettings renders on a Mac.
  *
@@ -19,10 +19,10 @@
  * Deliberately NOT a check of all ~190 registered commands: most of them
  * (window management, OAuth loopback, keychain, native file dialogs, ...)
  * are legitimately Tauri-only and are never reached via backendCall/
- * invokeMedia from the browser dev surface at all — asserting endpointMap
+ * invokeMedia from the browser dev surface at all; asserting endpointMap
  * coverage for those would mean inventing dev-mode behavior for features
  * that were never broken in the first place. "Reachable" is measured, not
- * assumed — the whole point of this posten was not to guess.
+ * assumed: the whole point of this posten was not to guess.
  *
  * Run: npx vitest run dev-server/__tests__/mlx-media-endpoint-coverage.test.ts
  */
@@ -38,7 +38,7 @@ const REPO_ROOT = join(HERE, '..', '..')
 function rustCommands(): Set<string> {
   const mainRs = readFileSync(join(REPO_ROOT, 'src-tauri', 'src', 'main.rs'), 'utf-8')
   const m = mainRs.match(/\.invoke_handler\(tauri::generate_handler!\[([\s\S]*?)\n\s*\]\)/)
-  if (!m) throw new Error('Could not find tauri::generate_handler![...] block in main.rs — has the invoke_handler setup moved?')
+  if (!m) throw new Error('Could not find tauri::generate_handler![...] block in main.rs. Has the invoke_handler setup moved?')
   const names = new Set<string>()
   for (let line of m[1].split('\n')) {
     line = line.split('//')[0].trim().replace(/,$/, '')
@@ -70,13 +70,13 @@ function reachableCommands(): Set<string> {
   return names
 }
 
-/** endpointMap keys, read out of backend.ts rather than imported — the dev
+/** endpointMap keys, read out of backend.ts rather than imported: the dev
  *  branch of backendCall() only builds that object at call time, and this
  *  test wants the literal keys, not a live network round trip. */
 function endpointMapKeys(): Set<string> {
   const backendTs = readFileSync(join(REPO_ROOT, 'src', 'api', 'backend.ts'), 'utf-8')
   const m = backendTs.match(/const endpointMap: Record<string, \{ path: string; method\?: string \}> = \{([\s\S]*?)\n\s*\};/)
-  if (!m) throw new Error('Could not find endpointMap in backend.ts — has it moved or been renamed?')
+  if (!m) throw new Error('Could not find endpointMap in backend.ts. Has it moved or been renamed?')
   const keys = new Set<string>()
   for (const match of m[1].matchAll(/^\s*([a-zA-Z_][a-zA-Z0-9_]*):\s*\{/gm)) keys.add(match[1])
   return keys
@@ -110,7 +110,7 @@ describe('endpointMap covers every backendCall/invokeMedia site the frontend can
   })
 
   // K7 asked for a systematic check against ALL registered commands, which is
-  // exactly what reachableCommands()/rustCommands() do — but "the frontend
+  // exactly what reachableCommands()/rustCommands() do. But "the frontend
   // has a literal call site" is not the same claim as "this is broken in dev
   // mode": most of these are legitimately Tauri-only (keychain, native file
   // dialogs, OAuth loopback, window management, background shell tasks) and
@@ -118,17 +118,17 @@ describe('endpointMap covers every backendCall/invokeMedia site the frontend can
   // that this text-level scan cannot see, so they were never reachable from
   // `npm run dev` the way install_mlx_diffusion was. Fixing K7 meant
   // confirming and closing the MLX/video gap (the module the bug report
-  // named, and its siblings — see the test above), not inventing dev-mode
+  // named, and its siblings, see the test above), not inventing dev-mode
   // behavior for ~90 unrelated commands never reported broken.
   //
   // This list is the exact remaining measured gap as of this fix (K7,
-  // 2026-09-18) — kept explicit, not silently ignored, so a maintainer can
+  // 2026-09-18), kept explicit, not silently ignored, so a maintainer can
   // pick individual ones off it later (David/orchestrator to prioritize; a
   // few look like real drift worth a closer look on their own, e.g.
   // local_api_status/restart_remote_server/revoke_remote_memory landed in
   // main.rs after remote-stubs.ts's list was last updated). The test still
-  // fails the moment ANY command outside this list — including a brand new
-  // one — is called from the frontend without an endpointMap entry.
+  // fails the moment ANY command outside this list, including a brand new
+  // one, is called from the frontend without an endpointMap entry.
   const PRE_EXISTING_UNMAPPED_GAPS = new Set([
     'backup_rag_chunks', 'backup_stores', 'bundled_embed_status', 'bundled_engine_status',
     'cancel_character_training', 'cancel_comfyui_install', 'character_trainer_status',
@@ -160,6 +160,6 @@ describe('endpointMap covers every backendCall/invokeMedia site the frontend can
 
   it('the pre-existing exemption list has no stale entries (command removed, or since mapped)', () => {
     const stale = [...PRE_EXISTING_UNMAPPED_GAPS].filter((cmd) => !reachable.has(cmd) || !rust.has(cmd) || mapped.has(cmd)).sort()
-    expect(stale, `These no longer need the exemption — remove from PRE_EXISTING_UNMAPPED_GAPS: ${stale.join(', ')}`).toEqual([])
+    expect(stale, `These no longer need the exemption, remove from PRE_EXISTING_UNMAPPED_GAPS: ${stale.join(', ')}`).toEqual([])
   })
 })
