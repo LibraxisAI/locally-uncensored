@@ -436,7 +436,7 @@ pub fn is_trainer_arch(bits: u32, machine: &str) -> bool {
 /// 3.11/3.12 answers exactly like a normal one. Such an interpreter passes
 /// every check `trainer_base_python` runs, builds a venv that looks complete,
 /// and only dies once pip actually resolves torch, with "Could not find a
-/// version that satisfies the requirement torch" — which `pip_failure_kind`
+/// version that satisfies the requirement torch", which `pip_failure_kind`
 /// reads as `NoMatchingWheel` and reports as the wrong-Python-version
 /// message. The version was never the problem, so the button that message
 /// points at chose the same interpreter again on every retry.
@@ -956,7 +956,7 @@ mod tests {
     fn a_32_bit_interpreter_is_wrong_even_when_wow64_says_amd64() {
         // A 32-bit interpreter on 64-bit Windows still reports
         // platform.machine() == "AMD64" (that reads the OS, not the
-        // process) — struct.calcsize('P') is the one that catches it.
+        // process); struct.calcsize('P') is the one that catches it.
         assert!(!is_trainer_arch(32, "AMD64"));
     }
 

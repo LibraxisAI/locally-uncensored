@@ -231,7 +231,7 @@ fn active_comfy_dir(state: &AppState) -> Option<PathBuf> {
 /// `Accelerator.__init__` (`accelerate/accelerator.py` Z. 460-461) turns that
 /// into `kwargs["backend"] = "gloo"` and passes it on to `PartialState`.
 /// `_prepare_backend` (`state.py` Z. 735-804) finds no `LOCAL_RANK` and
-/// returns `("gloo", DistributedType.NO)` UNCHANGED — the backend name
+/// returns `("gloo", DistributedType.NO)` UNCHANGED: the backend name
 /// itself leaks through even though nothing distributed was ever set up.
 /// Back in `PartialState.__init__` (Z. 268-292), the branch that should read
 /// `if self.backend is None:` is then false, because `self.backend == "gloo"`,
@@ -249,7 +249,7 @@ fn active_comfy_dir(state: &AppState) -> Option<PathBuf> {
 /// A second, unused NVIDIA card the driver still enumerates would fit
 /// (Tesla P100 has no display output, so a Windows box built around one
 /// commonly has a second card for the screen), but that is a plausible read
-/// of the report, not a measurement — see the question drafted in
+/// of the report, not a measurement; see the question drafted in
 /// `lu-301/bau/trainer.md`.
 fn trainer_child_env(cmd: &mut Command) {
     cmd.env("PYTHONIOENCODING", "utf-8");
@@ -1324,7 +1324,7 @@ pub fn install_character_trainer(
     // Cloned here, resolved (nvidia-smi and all) inside the thread: the same
     // card the setup's own smoke test measures is the one training pins to
     // later, see `resolve_trainer_gpu`.
-    let gpu_selection = state.gpu_selection.lock().unwrap().clone();
+    let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
 
     std::thread::spawn(move || {
@@ -1415,7 +1415,7 @@ pub(crate) fn venv_create_args(action: VenvAction) -> &'static [&'static str] {
 /// what version was on the machine but not where LU looked or which install
 /// it was reading. gekiritz's rebuild loop (see `python_version_and_arch`)
 /// is exactly the case where two Pythons report the same version and only
-/// one of them is real — the path is what lets the customer, or us reading a
+/// one of them is real; the path is what lets the customer, or us reading a
 /// Discord paste, tell which is which.
 pub(crate) fn no_trainer_python_message(found: &[(String, String)], os: &str, winget_tried: bool) -> String {
     let have = if found.is_empty() {
@@ -1460,7 +1460,7 @@ fn trainer_base_python(
             }
             // K4: a 32-bit or ARM64 Python answers `sys.version_info` exactly
             // like a normal one, builds a venv that looks complete, and only
-            // dies once pip resolves torch — which reports as the wrong
+            // dies once pip resolves torch, which reports as the wrong
             // Python-version message and sends the customer back to the same
             // interpreter. Excluding it here, before the venv is ever built,
             // is what makes the retry pick a different one instead of
@@ -2260,7 +2260,7 @@ pub fn start_character_training(
     // Same reason, same pattern: resolved for real (nvidia-smi and all)
     // inside the thread, from the Hardware tab's own pick, so a repair mid
     // run and the training step after it measure and train the same card.
-    let gpu_selection = state.gpu_selection.lock().unwrap().clone();
+    let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
 
     std::thread::spawn(move || {
@@ -3088,7 +3088,7 @@ mod tests {
 
     /// K3, 2026-09-18, nachgebessert nach dem Opus-Review: `pin_trainer_gpu`,
     /// not `trainer_child_env`, is what keeps `torch.cuda.device_count() > 1`
-    /// from being true inside a trainer child — the review's finding that a
+    /// from being true inside a trainer child: the review's finding that a
     /// hardcoded index "0" is neither guaranteed to be the strong card nor
     /// respects the Hardware tab's own picker or a user-set
     /// `CUDA_VISIBLE_DEVICES`.

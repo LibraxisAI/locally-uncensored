@@ -38,7 +38,11 @@ describe('der LoRA-Stack ist auffindbar (#109)', () => {
     const src = lies('CreateContext.tsx')
     expect(src).toMatch(/refreshModelLists: \(\) => Promise<void>/)
     expect(src).toMatch(/const refreshModelLists = useCallback/)
-    expect(src).toMatch(/refreshModelLists\(\) \}, \[refreshModelLists\]\)/)
+    // Runde 2 (Opus review): der alte, separate `[refreshModelLists]`-Effekt
+    // ist raus, der Connect-Pfad laeuft jetzt ueber denselben Effekt wie der
+    // charactersVersion-Refresh weiter unten (ein Effekt statt zwei, kein
+    // doppelter Fetch mehr bei jedem Connect).
+    expect(src).not.toMatch(/refreshModelLists\(\) \}, \[refreshModelLists\]\)/)
   })
 
   it('ein Rescan liest wirklich frisch statt aus dem Node-Cache', () => {
