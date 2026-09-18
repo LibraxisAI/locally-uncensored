@@ -45,6 +45,7 @@ import { CodexConfirmDialog } from './CodexConfirmDialog'
 import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { stripModelNoise } from '../../lib/strip-model-noise'
+import { composerBusy } from '../../lib/composer-busy'
 
 // Code always drives a tool loop, so the aggressive tier applies here.
 const stripChannelTags = (text: string) => stripModelNoise(text, { aggressive: true })
@@ -94,6 +95,14 @@ export function CodexView() {
   const generatingMap = useGenerationStore((s) => s.generating)
   const codexGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const pendingConfirm = useCodexConfirmStore((s) => s.pending)
+  // Nachbesserung 9 (review-lanes.md): parity with ChatView.tsx. Before this,
+  // CodexView never asked composerBusy at all, so the Code tab could send
+  // while the Chat tab was still generating: the one path Blocker 1's
+  // Reichweite point actually noted as reachable today (Chat<->Code, not
+  // Chat<->Chat, which the composer lock already covers). Same asymmetry the
+  // review flagged: a Chat send is blocked mid-Code-run, a Code send was not
+  // blocked mid-Chat-run.
+  const busy = composerBusy(isRunning || codexGenerating, generatingMap, activeConversationId)
 
   // G8-3 (David): "sobald er fertig gedacht hat, hakt das so komisch ab und
   // zoomt irgendwo ganz anders hin." The hand-rolled pin here only fired on
@@ -638,6 +647,7 @@ export function CodexView() {
           // parallel send and no Stop button. The generating flag follows the
           // conversation, not the hook instance.
           isGenerating={isRunning || codexGenerating}
+          busyElsewhere={busy.otherChat}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}
           // No plan lives here. The prompt window is the prompt window
