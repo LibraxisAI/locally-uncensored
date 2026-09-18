@@ -61,11 +61,15 @@
  *   Schlange, aendert das keinen von beiden: der Dialog wartete auf die
  *   naechste fremde Aenderung.
  *
- * Deshalb gibt es `subscribeRunLanes` und eine Momentaufnahme mit STABILER
- * Identitaet. Das ist kein Spiegel des Zustands, sondern ein Fenster darauf:
- * gespeichert wird weiter nur hier, gelesen wird weiter nur hier. Ein
- * Spiegel waere genau der Grundfehler, gegen den `run-idle.ts` gebaut ist,
- * eine Tatsache an zwei Orten, die im Fenster dazwischen auseinanderlaufen.
+ * Deshalb gibt es `subscribeRunLanes`: der Weckruf fuer `useSyncExternalStore`,
+ * dessen zweites Argument dann eine der schmalen Fragen hier ist
+ * (`isRunQueued`, `runQueuePosition`). Eine gespeicherte Momentaufnahme mit
+ * eigener Identitaet braucht es dafuer nicht: jede dieser Fragen antwortet
+ * mit einem Boolean oder einer Zahl, und `===` vergleicht die schon richtig,
+ * ohne dass irgendwo ein Objekt zwischengehalten werden muesste. Gespeichert
+ * wird weiter nur hier, gelesen wird weiter nur hier. Ein Spiegel waere genau
+ * der Grundfehler, gegen den `run-idle.ts` gebaut ist, eine Tatsache an zwei
+ * Orten, die im Fenster dazwischen auseinanderlaufen.
  */
 
 /** Woran ein Lauf rechnet: an der Karte des Nutzers oder woanders. */
@@ -100,29 +104,10 @@ let halter: string | null = null
 /** Wer wartet, in der Reihenfolge des Anstellens. */
 const warteschlange: Wartend[] = []
 
-/** Die lokale Spur, so wie eine Anzeige sie braucht. */
-export interface RunLaneSnapshot {
-  /** Wer rechnet gerade auf der Karte, oder `null`, wenn sie frei ist. */
-  readonly holder: string | null
-  /** Wer wartet, der Naechste zuerst. */
-  readonly queued: readonly string[]
-}
-
 const beobachter = new Set<() => void>()
 
 /**
- * Die zuletzt ausgegebene Momentaufnahme, oder `null`, wenn sie ungueltig ist.
- *
- * Sie wird gehalten und nicht bei jedem Abruf neu gebaut, weil
- * `useSyncExternalStore` die Momentaufnahmen mit `===` vergleicht. Ein
- * frisches Objekt bei jedem Abruf ist dort kein Schoenheitsfehler, sondern
- * eine Endlosschleife im Render.
- */
-let momentaufnahme: RunLaneSnapshot | null = null
-
-/**
- * An der Spur hat sich etwas geaendert: Momentaufnahme verwerfen, Leser
- * wecken.
+ * An der Spur hat sich etwas geaendert: alle Leser wecken.
  *
  * Der Fehler eines Lesers wird verschluckt, und das ist hier keine
  * Bequemlichkeit. Die lokale Spur ist die gefaehrlichste Stelle der App: wer
@@ -131,7 +116,6 @@ let momentaufnahme: RunLaneSnapshot | null = null
  * halb durchlaufenes `release` waere genau das.
  */
 function veraendert(): void {
-  momentaufnahme = null
   for (const l of beobachter) {
     try { l() } catch { /* die Anzeige ist kaputt, die Spur bleibt heil */ }
   }
@@ -140,20 +124,12 @@ function veraendert(): void {
 /**
  * Bescheid sagen, wenn Halter oder Schlange sich aendern. Rueckgabe meldet ab.
  *
- * Gedacht als erstes Argument von `useSyncExternalStore`, zusammen mit
- * `localLaneSnapshot` als zweitem.
+ * Gedacht als erstes Argument von `useSyncExternalStore`, zusammen mit einer
+ * der schmalen Fragen unten (`isRunQueued`, `runQueuePosition`) als zweitem.
  */
 export function subscribeRunLanes(listener: () => void): () => void {
   beobachter.add(listener)
   return () => { beobachter.delete(listener) }
-}
-
-/** Halter und Wartende, mit stabiler Identitaet bis zur naechsten Aenderung. */
-export function localLaneSnapshot(): RunLaneSnapshot {
-  if (momentaufnahme === null) {
-    momentaufnahme = { holder: halter, queued: warteschlange.map((w) => w.convId) }
-  }
-  return momentaufnahme
 }
 
 /**
@@ -214,28 +190,6 @@ export function admit(lane: RunLane, convId: string, start: StartThunk): Admissi
   warteschlange.push({ convId, start })
   veraendert()
   return 'queued'
-}
-
-/**
- * Wuerde dieser Lauf sich JETZT anstellen muessen? Ohne ihn anzustellen.
- *
- * Fuer den Senden-Knopf, der "Einreihen" statt "Senden" anbieten soll, und
- * fuer das Warteplaettchen, das erklaeren soll, warum. Die naheliegende
- * Fassung in der Oberflaeche waere `lane === 'local' && localLaneHolder()`,
- * und die ist zweimal dieselbe Regel: einmal hier, einmal dort, eine davon
- * gepflegt. Beim ersten Sonderfall, den `admit` dazubekommt (der Halter, der
- * noch einmal fragt, ist schon einer), stuende an der Eingabe "Einreihen",
- * waehrend der Lauf sofort losliefe.
- *
- * Deshalb steht die Vorschau hier, unmittelbar neben der Entscheidung, und
- * ein Waechter vergleicht die beiden Fall fuer Fall.
- */
-export function wouldQueue(lane: RunLane, conversationId: string | null | undefined): boolean {
-  if (lane === 'cloud') return false
-  if (!conversationId) return false
-  if (halter === conversationId) return false
-  if (warteschlange.some((w) => w.convId === conversationId)) return true
-  return halter !== null
 }
 
 /**
@@ -306,7 +260,6 @@ export function queuedRunIds(): string[] {
 export function __resetRunLanesForTests(): void {
   halter = null
   warteschlange.length = 0
-  momentaufnahme = null
   // Die Beobachter bleiben stehen: sie gehoeren dem Test, der sie angemeldet
   // hat, und der meldet sie selbst wieder ab. Wer sie hier mit abraeumte,
   // naehme einem `beforeEach` still die Anmeldung aus dem Test davor weg.

@@ -45,7 +45,7 @@ import { CodexConfirmDialog } from './CodexConfirmDialog'
 import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { stripModelNoise } from '../../lib/strip-model-noise'
-import { useIsQueuedForLocalLane } from '../../lib/run-idle'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../lib/run-idle'
 
 // Code always drives a tool loop, so the aggressive tier applies here.
 const stripChannelTags = (text: string) => stripModelNoise(text, { aggressive: true })
@@ -104,6 +104,7 @@ export function CodexView() {
   // in ChatView.tsx, now that a local second send queues visibly instead of
   // racing the first one and a cloud second send just runs alongside it.
   const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
+  const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
 
   // G8-3 (David): "sobald er fertig gedacht hat, hakt das so komisch ab und
   // zoomt irgendwo ganz anders hin." The hand-rolled pin here only fired on
@@ -649,6 +650,7 @@ export function CodexView() {
           // conversation, not the hook instance.
           isGenerating={isRunning || codexGenerating || queuedForLocalLane}
           waitingForLocalLane={queuedForLocalLane}
+          localLaneQueuePosition={localLaneQueuePosition}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}
           // No plan lives here. The prompt window is the prompt window

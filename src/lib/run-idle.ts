@@ -61,7 +61,7 @@ import { useSyncExternalStore } from 'react'
 import { useGenerationStore } from '../stores/generationStore'
 import { useCodexStore } from '../stores/codexStore'
 import { isRunStopped } from './run-stop'
-import { anyRunQueued, isRunQueued, subscribeRunLanes } from './run-lanes'
+import { anyRunQueued, isRunQueued, runQueuePosition, subscribeRunLanes } from './run-lanes'
 import { isActiveCodexStatus, type CodexThreadStatus } from '../types/codex'
 
 /**
@@ -204,6 +204,23 @@ export function isRunActive(conversationId: string | null | undefined): boolean 
  */
 export function useIsQueuedForLocalLane(conversationId: string | null | undefined): boolean {
   return useSyncExternalStore(subscribeRunLanes, () => isRunQueued(conversationId))
+}
+
+/**
+ * React hook: which position does this conversation hold in the local
+ * lane's queue, if any? `null` when it is not waiting (running, or nothing
+ * booked at all). Same `subscribeRunLanes` wiring as
+ * `useIsQueuedForLocalLane`, kept as a separate hook rather than folded into
+ * it because most callers only need the boolean and would otherwise re-render
+ * on every position change of a queue they do not display a number for.
+ *
+ * Feeds the composer's waiting line with a real number instead of a bare "it
+ * is waiting": `lib/run-lanes.ts`'s `runQueuePosition` existed for exactly
+ * this since before Runde 4, wired up only now that a queue can actually
+ * form.
+ */
+export function useLocalLaneQueuePosition(conversationId: string | null | undefined): number | null {
+  return useSyncExternalStore(subscribeRunLanes, () => runQueuePosition(conversationId))
 }
 
 /**

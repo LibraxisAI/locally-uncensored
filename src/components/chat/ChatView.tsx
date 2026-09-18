@@ -42,7 +42,7 @@ import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { composerBusy } from '../../lib/composer-busy'
-import { useIsQueuedForLocalLane } from '../../lib/run-idle'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../lib/run-idle'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { displayModelName } from '../../api/providers'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -135,6 +135,7 @@ export function ChatView() {
   // it. Folded into `isGenerating` below so the composer shows Stop instead
   // of Send while it waits.
   const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
+  const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
 
   const docCount = useRAGStore((s) =>
     activeConversationId ? (s.documents[activeConversationId] || []).length : 0
@@ -644,6 +645,7 @@ export function ChatView() {
               onStop={stopGeneration}
               isGenerating={busy.thisChat || queuedForLocalLane}
               waitingForLocalLane={queuedForLocalLane}
+              localLaneQueuePosition={localLaneQueuePosition}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}

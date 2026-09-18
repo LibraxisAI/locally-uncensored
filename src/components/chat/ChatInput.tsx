@@ -37,6 +37,13 @@ interface Props {
    * queued, never for another one's.
    */
   waitingForLocalLane?: boolean
+  /**
+   * This conversation's position in the local lane's queue (1 = next up),
+   * when known. Purely cosmetic: enriches the waiting line with a real
+   * number instead of a bare "it is waiting". `undefined`/`null` falls back
+   * to the plain sentence.
+   */
+  localLaneQueuePosition?: number | null
   pendingApproval?: AgentToolCall | null
   onApprove?: () => void
   onReject?: () => void
@@ -104,7 +111,7 @@ function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   })
 }
 
-export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
+export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, localLaneQueuePosition, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -464,6 +471,9 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, p
             <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-waiting-local-lane">
               <span className="flex-1 min-w-0">
                 Waiting for the local model to finish another answer.
+                {!!localLaneQueuePosition && localLaneQueuePosition > 1 && (
+                  ` ${localLaneQueuePosition - 1} more chat${localLaneQueuePosition - 1 === 1 ? '' : 's'} ahead of this one.`
+                )}
               </span>
             </div>
           )}
