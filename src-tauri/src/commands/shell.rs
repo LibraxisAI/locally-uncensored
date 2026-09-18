@@ -598,7 +598,16 @@ fn shell_execute_sync(
     let (shell_bin, shell_args) =
         shell_argv(cfg!(target_os = "windows"), shell.as_deref(), &command);
 
-    let mut cmd = Command::new(&shell_bin);
+    // Runde 3, Nachbesserung 3: the background twin in bg_tasks.rs already
+    // runs the shell itself through `foreign_system_command_tokio` (K14
+    // Runde 2, Punkt 5/6) because it is a foreign program exactly like
+    // `git`/`python`, and an AppImage's poisoned LD_LIBRARY_PATH can break
+    // it the same way. This, the FOREGROUND twin using the identical
+    // `shell_argv`, was the gap the review named as the most visible one
+    // left: every `sh -c`/`bash -c` the coding agent runs here inherited
+    // the poisoned environment, and with it every `git`/`pip`/`python` the
+    // user types inside it.
+    let mut cmd = crate::process_util::foreign_system_command(&shell_bin);
     cmd.args(&shell_args);
 
     // Append extra args

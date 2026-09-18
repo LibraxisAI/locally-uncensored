@@ -1186,10 +1186,37 @@ mod command_new_coverage_guard {
         ("src/commands/install/lmstudio_install.rs", 0),
         ("src/commands/install/ollama.rs", 0),
         ("src/commands/install/children.rs", 0),
+        // Runde 3, Nachbesserung 3: the foreground shell spawn now goes
+        // through `foreign_system_command` too, matching its background
+        // twin (bg_tasks.rs). The remaining 1 is `taskkill.exe` at
+        // shell.rs:204, `#[cfg(windows)]`-gated and windows-only exactly
+        // like the review's own Ausnahmeliste for that file names.
+        ("src/commands/shell.rs", 1),
     ];
 
+    /// Runde 3, Nachbesserung 10: the review caught this before it bit
+    /// anyone (`review-engine.md` Runde 2 Abschnitt 2, letzter Absatz): a
+    /// file whose only test module is tagged `#[cfg(all(test, unix))]` (or
+    /// any other compound predicate with `test` as one of the conjuncts)
+    /// has NO literal `#[cfg(test)]` substring anywhere, so the plain
+    /// search used to fall through to "no test module, count the whole
+    /// file as shipping code". `process_util.rs`'s own `kill_tree_tests`
+    /// module only escaped that by luck: this file also happens to carry a
+    /// plain `#[cfg(test)]` later on. `shell.rs` does not have that luck
+    /// once `foreign_system_command` covers its foreground shell spawn
+    /// (Nachbesserung 3): its ONLY other test module is
+    /// `#[cfg(all(test, windows))]`, sitting ahead of its first plain
+    /// `#[cfg(test)]`, so the truncation point matters for real now, not
+    /// just in theory. This takes the EARLIEST of either shape.
     fn shipping_half(src: &str) -> &str {
-        match src.find("#[cfg(test)]") {
+        let plain = src.find("#[cfg(test)]");
+        let compound = src.find("#[cfg(all(test");
+        let at = match (plain, compound) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        };
+        match at {
             Some(at) => &src[..at],
             None => src,
         }
@@ -1229,6 +1256,19 @@ mod command_new_coverage_guard {
     #[test]
     fn the_guard_would_catch_a_real_regression() {
         let synthetic = "fn spawn_it() {\n    let _ = Command::new(\"lms\");\n}\n\n#[cfg(test)]\nmod tests {}\n";
+        assert_eq!(count_command_new(shipping_half(synthetic)), 1);
+    }
+
+    /// Runde 3, Nachbesserung 10: a file whose ONLY test module is tagged
+    /// `#[cfg(all(test, unix))]` (no bare `#[cfg(test)]` anywhere) must
+    /// still have its test-only `Command::new` excluded, not counted as
+    /// shipping code. Before this fix, `shipping_half` found no plain
+    /// `#[cfg(test)]` and returned the WHOLE file, silently double-counting
+    /// exactly the shape shell.rs now has.
+    #[test]
+    fn a_compound_cfg_test_predicate_is_also_recognized() {
+        let synthetic = "fn spawn_it() {\n    let _ = Command::new(\"lms\");\n}\n\n\
+                          #[cfg(all(test, unix))]\nmod tests {\n    fn t() { Command::new(\"x\"); }\n}\n";
         assert_eq!(count_command_new(shipping_half(synthetic)), 1);
     }
 
