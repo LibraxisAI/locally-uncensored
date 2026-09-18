@@ -155,12 +155,79 @@ pub(crate) fn plan_pytorch_install() -> (Vec<String>, String, Option<String>, Ve
 
 // ── Runde 2, Nachbesserung 12: torch/Python-version preflight ───────────────
 
+/// Runde 5, Folgeposten (review Runde 4, Abschnitt 4: "Probe-Timeout: FEHLT"):
+/// neither `python_version_tuple` nor `python_can_build_a_venv` had a
+/// deadline, a blank `.output()` each. A stale network-mounted interpreter,
+/// or a Homebrew stub waiting on something, blocks the install thread
+/// forever while the UI keeps showing "installing". The live network probe
+/// right below this already budgets 10 s connect / 20 s total; a local
+/// process that talks to nothing at all gets less.
+const PYTHON_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Run `cmd`, but kill it and return `None` if it has not finished within
+/// `timeout`. `stdin` is always `null` first (an interpreter waiting on
+/// input dies immediately rather than needing the timeout at all), so the
+/// deadline only ever catches something genuinely hanging, not the ordinary
+/// "no input given" case every probe already relied on being instant.
+fn run_probe_with_timeout(mut cmd: std::process::Command, timeout: std::time::Duration) -> Option<std::process::Output> {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().ok()?;
+    let stdout_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut readers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let sink = stdout_buf.clone();
+        readers.push(std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            if let Ok(mut slot) = sink.lock() {
+                *slot = buf;
+            }
+        }));
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let sink = stderr_buf.clone();
+        readers.push(std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            if let Ok(mut slot) = sink.lock() {
+                *slot = buf;
+            }
+        }));
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => break None,
+        }
+    };
+    for r in readers {
+        let _ = r.join();
+    }
+    Some(std::process::Output {
+        status: status?,
+        stdout: stdout_buf.lock().map(|b| b.clone()).unwrap_or_default(),
+        stderr: stderr_buf.lock().map(|b| b.clone()).unwrap_or_default(),
+    })
+}
+
 /// The interpreter's own `(major, minor)`, the way wheel filenames spell it
 /// (`cp312` -> `(3, 12)`).
 pub(crate) fn python_version_tuple(python_bin: &str) -> Option<(u32, u32)> {
     let mut cmd = crate::python::python_command(python_bin);
     cmd.args(["-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"]);
-    let out = cmd.output().ok()?;
+    let out = run_probe_with_timeout(cmd, PYTHON_PROBE_TIMEOUT)?;
     if !out.status.success() {
         return None;
     }
@@ -248,20 +315,36 @@ fn format_interpreter_lines(interpreters: &[(String, Option<(u32, u32)>)]) -> St
 }
 
 /// A candidate interpreter LU is about to pick FOR the customer must itself
-/// be capable of the two things the venv path needs: `ssl` (pip talks to
-/// the index over https) and `venv` (`create_comfyui_venv` builds the venv
-/// with it). Review Runde 3, Abschnitt 2: `pyenv install 3.12` without
-/// OpenSSL headers passes the version check and, before this, would have
-/// been picked automatically, landing the customer on exactly
-/// `diagnose_python_ssl`'s "built without the ssl module" sentence
-/// (pip.rs:537) after LU chose that interpreter FOR them rather than the
-/// customer choosing it themselves. `foreign_system_command`, the same
-/// adapter `diagnose_python_ssl` itself uses, since this spawns a foreign
-/// interpreter, not one of LU's own.
+/// be capable of the three things the venv path needs: `ssl` (pip talks to
+/// the index over https), `venv` (`create_comfyui_venv` builds the venv
+/// with it), AND `ensurepip` (`python -m venv` uses it to seed pip into the
+/// new venv, and it is what actually fails on Debian/Ubuntu). Review Runde
+/// 3, Abschnitt 2: `pyenv install 3.12` without OpenSSL headers passes the
+/// version check and, before this, would have been picked automatically,
+/// landing the customer on exactly `diagnose_python_ssl`'s "built without
+/// the ssl module" sentence (pip.rs:537) after LU chose that interpreter
+/// FOR them rather than the customer choosing it themselves.
+///
+/// Review Runde 4, B7(b): `import ssl, venv` alone missed the Debian/Ubuntu
+/// shape entirely. On those distros `venv` ships in the standard library
+/// (the module always imports), but `ensurepip` is packaged separately
+/// (`python3-venv`), and `python -m venv` fails at exactly that step. The
+/// codebase already knows this at four other call sites (venv.rs's own
+/// "ensurepip" error-text match, pip.rs's PEP-668 hint, python.rs's
+/// PYTHONHOME doc, trainer.rs), but the probe just never asked the same
+/// question BEFORE picking the interpreter, only after `python -m venv`
+/// had already failed against a venv this code had already committed to.
+///
+/// `foreign_system_command`, the same adapter `diagnose_python_ssl` itself
+/// uses, since this spawns a foreign interpreter, not one of LU's own, and
+/// `suppress_window` so the probe does not flash a console per candidate on
+/// Windows (review Runde 4, Abschnitt 4). Timed out via
+/// [`run_probe_with_timeout`], same reasoning as `python_version_tuple`.
 fn python_can_build_a_venv(python_bin: &str) -> bool {
     let mut cmd = crate::process_util::foreign_system_command(python_bin);
-    cmd.args(["-c", "import ssl, venv"]);
-    matches!(cmd.output(), Ok(out) if out.status.success())
+    cmd.args(["-c", "import ssl, venv, ensurepip"]);
+    crate::process_util::suppress_window(&mut cmd);
+    matches!(run_probe_with_timeout(cmd, PYTHON_PROBE_TIMEOUT), Some(out) if out.status.success())
 }
 
 /// The newest interpreter this machine has for which the live index
@@ -296,10 +379,18 @@ pub(crate) fn pick_newest_working_interpreter(
 /// exact version string already in hand. `python312`-style package names are
 /// deliberately NOT suggested: on Arch that name is in the AUR, not pacman,
 /// and no other distro's naming was checked either.
+///
+/// `retry_action`: the literal button the customer actually pressed to get
+/// here, so the closing sentence names it truthfully instead of always
+/// saying "Repair" (review Runde 4, Abschnitt 2: the Install path used to
+/// say "press Repair again" verbatim, lifted from the Repair path, even
+/// though the customer had pressed Install and there is no Repair button
+/// on that screen at all when nothing is installed yet).
 pub(crate) fn no_compatible_interpreter_message(
     current: (u32, u32),
     interpreters: &[(String, Option<(u32, u32)>)],
     supported: &std::collections::BTreeSet<(u32, u32)>,
+    retry_action: &str,
 ) -> String {
     let mut versions: Vec<String> = supported.iter().map(|(a, b)| format!("{a}.{b}")).collect();
     versions.sort();
@@ -314,13 +405,14 @@ pub(crate) fn no_compatible_interpreter_message(
          it on its own after that) or \"pyenv install {newest}\" if you use pyenv - not a \
          distro package name, those are not verified here and vary by distro (python312, for \
          example, is on Arch's AUR, not in pacman). Once a supported interpreter is on this \
-         machine, press Repair again; LU finds it and uses it automatically, nothing else to \
+         machine, {retry_action}; LU finds it and uses it automatically, nothing else to \
          configure.",
         maj = current.0,
         min = current.1,
         versions_joined = versions.join(", "),
         interpreters_block = format_interpreter_lines(interpreters),
         newest = newest,
+        retry_action = retry_action,
     )
 }
 
@@ -335,10 +427,49 @@ pub(crate) enum TorchPythonDecision {
     /// A DIFFERENT interpreter this machine already has serves torch and
     /// `current` does not; the caller should build (or rebuild) the venv
     /// from this path instead: B1(b), no Settings picker, LU decides.
-    UseInstead(String),
+    ///
+    /// Both versions travel WITH the decision (Runde 4, B7 "kleiner
+    /// Mangel"): a caller that re-queries either interpreter a second time
+    /// just to build a message can fail on that second query and fall back
+    /// to a made-up `(0, 0)`, and "This ComfyUI's own Python is 0.0" is
+    /// exactly the invented number the house rule forbids. Both were
+    /// already known here, so they are handed over instead of re-derived.
+    UseInstead { path: String, current_version: (u32, u32), chosen_version: (u32, u32) },
     /// Nothing on this machine serves torch for the chosen channel. The
     /// message is ready to show as-is.
     Blocked(String),
+}
+
+/// Runde 4, B7(b): at least one interpreter's VERSION matches what torch
+/// serves, but none of the version-matching candidates (current interpreter
+/// included) could pass the ssl/venv/ensurepip probe. This is a different
+/// customer situation from [`no_compatible_interpreter_message`] (which is
+/// "no version here serves torch at all") and needs different wording: the
+/// version is fine, but building a NEW venv with any of them would fail at
+/// `python -m venv` itself. On Debian/Ubuntu this is almost always the
+/// separately packaged `venv` support (`python3-venv`, or the minor-specific
+/// `python3.X-venv`), the exact package name this codebase already quotes
+/// at venv.rs's own `ensurepip` error hint and pip.rs's PEP-668 hint; not
+/// guessed here, reused for consistency. Other systems get the general
+/// reinstall suggestion instead of a distro package name nobody verified.
+pub(crate) fn venv_probe_failed_message(current: (u32, u32), interpreters: &[(String, Option<(u32, u32)>)], supported: &std::collections::BTreeSet<(u32, u32)>) -> String {
+    let mut versions: Vec<String> = supported.iter().map(|(a, b)| format!("{a}.{b}")).collect();
+    versions.sort();
+    format!(
+        "This environment's Python is {maj}.{min}. LU found a Python version on this machine \
+         that PyTorch supports, but it could not build a new virtual environment with it (a \
+         check of that interpreter's own ssl, venv and ensurepip support failed). On Debian or \
+         Ubuntu this usually means that Python's venv support is a separate package from Python \
+         itself: try \"sudo apt install python3-venv\", or \"python3.<minor>-venv\" for a \
+         specific version. On other systems, reinstalling that Python (for example \"pyenv \
+         install <version>\" again, or \"uv python install <version>\") usually restores a \
+         missing ssl or venv module too. Versions LU's PyTorch build serves: {versions_joined}.\n\n\
+         Python interpreters LU found:\n{interpreters_block}",
+        maj = current.0,
+        min = current.1,
+        versions_joined = versions.join(", "),
+        interpreters_block = format_interpreter_lines(interpreters),
+    )
 }
 
 /// Runde 3, B1: replaces the old report-only `torch_python_preflight`. Where
@@ -346,7 +477,16 @@ pub(crate) enum TorchPythonDecision {
 /// this one first asks whether something ELSE LU found would work, and only
 /// falls back to the message when nothing does: the Sackgasse Opus found
 /// (Runde 2 left the customer at a Settings picker that does not exist).
-pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>, packages: &[&str]) -> TorchPythonDecision {
+///
+/// Runde 4, B7(a): the ssl/venv/ensurepip probe used to run ONLY on
+/// replacement candidates inside `pick_newest_working_interpreter`, never on
+/// the interpreter `Proceed` was about to hand back. A system Python whose
+/// VERSION matched torch's list, but that was missing `python3-venv`,
+/// sailed through as `Proceed` unchecked, and the caller then destroyed the
+/// customer's working venv to rebuild one that failed at `python -m venv`
+/// itself. `current_python` now goes through the exact same probe as every
+/// other candidate before this returns `Proceed`.
+pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>, packages: &[&str], retry_action: &str) -> TorchPythonDecision {
     let Some(current) = python_version_tuple(current_python) else {
         return TorchPythonDecision::Proceed;
     };
@@ -361,13 +501,37 @@ pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>,
         // Empty or unreachable: cannot tell, so do not block (see doc above).
         _ => return TorchPythonDecision::Proceed,
     };
-    if supported.contains(&current) {
-        return TorchPythonDecision::Proceed;
+
+    // The full candidate pool: whatever `current_python` is, plus every
+    // interpreter `python_interpreters()` found, deduplicated by path. This
+    // is what lets `current_python` be probed by the SAME picker as every
+    // replacement candidate (B7(a)) instead of a separate early return.
+    let mut interpreters = interpreter_inventory();
+    if !interpreters.iter().any(|(p, _)| p == current_python) {
+        interpreters.insert(0, (current_python.to_string(), Some(current)));
     }
-    let interpreters = interpreter_inventory();
+
+    let any_version_match = interpreters.iter().any(|(_, v)| v.is_some_and(|v| supported.contains(&v)));
+
     match pick_newest_working_interpreter(&interpreters, &supported, python_can_build_a_venv) {
-        Some(path) => TorchPythonDecision::UseInstead(path),
-        None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, &supported)),
+        Some(path) if path == current_python => TorchPythonDecision::Proceed,
+        Some(path) => {
+            // Always present: `path` came out of `interpreters` itself, and
+            // only entries with a known, version-matching `Some(v)` are
+            // ever returned by `pick_newest_working_interpreter`.
+            let chosen_version = interpreters
+                .iter()
+                .find(|(p, _)| *p == path)
+                .and_then(|(_, v)| *v)
+                .unwrap_or(current);
+            TorchPythonDecision::UseInstead { path, current_version: current, chosen_version }
+        }
+        // Nothing passed both the version check AND the ssl/venv/ensurepip
+        // probe. Two different customer stories need two different
+        // messages: "torch does not serve any version I have" versus "I
+        // have the right version, but it cannot build a venv" (B7(b)).
+        None if any_version_match => TorchPythonDecision::Blocked(venv_probe_failed_message(current, &interpreters, &supported)),
+        None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, &supported, retry_action)),
     }
 }
 
@@ -396,6 +560,27 @@ pub(crate) fn existing_venv_needs_repair_message(current: (u32, u32), chosen_pat
         chmaj = chosen.0,
         chmin = chosen.1,
     )
+}
+
+/// Runde 5 (review Runde 4, Abschnitt 3): what the existing-venv branch of
+/// `comfy_install.rs` does with a `TorchPythonDecision`, pulled out into a
+/// pure function so it is directly testable without network access, disk
+/// state, or a running install thread. The reviewer's own point stands
+/// without this: "wer `return;` im `UseInstead`-Arm entfernt, laedt wieder 2
+/// GB in die falsche venv, und der Waechter bleibt gruen": a source-order
+/// needle test can pin where the call happens, but only a test that actually
+/// EXERCISES this mapping can catch the `return;` itself going missing. `Ok`
+/// only for `Proceed`; both `UseInstead` and `Blocked` are `Err`, on purpose,
+/// since this venv is never rebuilt here and switching interpreters under it
+/// unasked would be silently wrong.
+pub(crate) fn python_for_existing_venv(decision: TorchPythonDecision, venv_py: &str) -> Result<String, String> {
+    match decision {
+        TorchPythonDecision::Proceed => Ok(venv_py.to_string()),
+        TorchPythonDecision::UseInstead { path, current_version, chosen_version } => {
+            Err(existing_venv_needs_repair_message(current_version, &path, chosen_version))
+        }
+        TorchPythonDecision::Blocked(msg) => Err(msg),
+    }
 }
 
 #[cfg(test)]
@@ -611,7 +796,7 @@ mod tests {
         let interpreters = vec![("/usr/bin/python3".to_string(), Some((3, 14)))];
         let supported = supported_3_10_through_13();
         assert_eq!(pick_newest_working_interpreter(&interpreters, &supported, always_works), None);
-        let msg = no_compatible_interpreter_message((3, 14), &interpreters, &supported);
+        let msg = no_compatible_interpreter_message((3, 14), &interpreters, &supported, "press Repair again");
         assert!(msg.contains("3.14"), "{msg}");
         assert!(msg.contains("3.10, 3.11, 3.12, 3.13"), "{msg}");
         assert!(msg.contains("uv python install 3.13"), "{msg}");
@@ -720,7 +905,45 @@ mod tests {
 
     #[test]
     fn no_interpreters_at_all_still_yields_a_readable_message() {
-        let msg = no_compatible_interpreter_message((3, 14), &[], &supported_3_10_through_13());
+        let msg = no_compatible_interpreter_message((3, 14), &[], &supported_3_10_through_13(), "press Repair again");
         assert!(msg.contains("(none found)"), "{msg}");
+    }
+
+    // ── Runde 5 (review Runde 4, Abschnitt 3): the UseInstead-arm behavior
+    // test the reviewer asked for, on `python_for_existing_venv` rather than
+    // on `comfy_install.rs` itself, since that function is a Tauri command
+    // thread and cannot be driven from here. Whoever deletes the `return;`
+    // that guards the download in comfy_install.rs also has to route the
+    // decision through something other than this function to keep it green,
+    // which is exactly the point: this is what must go red first.
+
+    #[test]
+    fn proceed_keeps_the_venv_python_unchanged() {
+        let out = python_for_existing_venv(TorchPythonDecision::Proceed, "/venv/bin/python3");
+        assert_eq!(out, Ok("/venv/bin/python3".to_string()));
+    }
+
+    #[test]
+    fn use_instead_on_an_existing_venv_never_returns_a_python_to_install_into() {
+        // This is the exact case B3/Runde 4 was about: an existing venv on a
+        // Python PyTorch does not serve. Whatever calls this must NOT get a
+        // path back to install into, or the 2 GB download runs into the
+        // wrong (or broken) environment again with the guard staying green.
+        let decision = TorchPythonDecision::UseInstead {
+            path: "/home/user/.pyenv/versions/3.12.7/bin/python3".to_string(),
+            current_version: (3, 14),
+            chosen_version: (3, 12),
+        };
+        let out = python_for_existing_venv(decision, "/venv/bin/python3");
+        let msg = out.expect_err("UseInstead on an existing venv must not yield a Python to install into");
+        assert!(msg.contains("Repair environment"), "{msg}");
+        assert!(msg.contains("3.14"), "{msg}");
+        assert!(msg.contains("3.12"), "{msg}");
+    }
+
+    #[test]
+    fn blocked_on_an_existing_venv_also_refuses() {
+        let out = python_for_existing_venv(TorchPythonDecision::Blocked("no compatible interpreter".to_string()), "/venv/bin/python3");
+        assert_eq!(out, Err("no compatible interpreter".to_string()));
     }
 }

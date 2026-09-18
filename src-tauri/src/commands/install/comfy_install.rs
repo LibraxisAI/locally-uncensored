@@ -486,25 +486,18 @@ pub fn install_comfyui(
             // and fail with pip's generic error, again. The venv itself is
             // still never rebuilt here (it may be hand-built, or carry
             // custom nodes' own state), only checked before the download.
-            match super::torch::choose_torch_python(&venv_py, torch_index.as_deref(), &torch_package_refs) {
-                super::torch::TorchPythonDecision::Proceed => {
+            let decision = super::torch::choose_torch_python(&venv_py, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again");
+            match super::torch::python_for_existing_venv(decision, &venv_py) {
+                Ok(py) => {
                     update(
                         "installing",
                         &format!(
-                            "This ComfyUI already has its own environment. Installing into {venv_py}."
+                            "This ComfyUI already has its own environment. Installing into {py}."
                         ),
                     );
-                    venv_py
+                    py
                 }
-                super::torch::TorchPythonDecision::UseInstead(chosen_path) => {
-                    let current = super::torch::python_version_tuple(&venv_py)
-                        .unwrap_or((0, 0));
-                    let chosen = super::torch::python_version_tuple(&chosen_path)
-                        .unwrap_or((0, 0));
-                    update("error", &super::torch::existing_venv_needs_repair_message(current, &chosen_path, chosen));
-                    return;
-                }
-                super::torch::TorchPythonDecision::Blocked(msg) => {
+                Err(msg) => {
                     update("error", &msg);
                     return;
                 }
@@ -514,17 +507,17 @@ pub fn install_comfyui(
             // Runs BEFORE `create_comfyui_venv`/PEP-668 detection so a
             // healthy choice never gets discarded for one that cannot serve
             // torch (Nachbesserung 6).
-            let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs) {
+            let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again") {
                 super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
-                super::torch::TorchPythonDecision::UseInstead(p) => {
+                super::torch::TorchPythonDecision::UseInstead { path, .. } => {
                     update(
                         "installing",
                         &format!(
                             "The default Python ({python_bin}) does not have a PyTorch wheel for \
-                             this machine yet; using {p} instead, found on this machine already."
+                             this machine yet; using {path} instead, found on this machine already."
                         ),
                     );
-                    p
+                    path
                 }
                 super::torch::TorchPythonDecision::Blocked(msg) => {
                     update("error", &msg);
@@ -900,7 +893,7 @@ mod tests {
         let src = include_str!("comfy_install.rs");
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
-        let existing_venv_check = needle("choose_torch_python(&venv_py,", " torch_index.as_deref(), &torch_package_refs)");
+        let existing_venv_check = needle("choose_torch_python(&venv_py,", " torch_index.as_deref(), &torch_package_refs, \"press Install ComfyUI again\")");
         let download_start = needle("Downloading PyTorch + Torchvision", " + Torchaudio (~2 GB total)");
 
         let at_check = src.find(&existing_venv_check).expect("the existing-venv path no longer checks torch/Python compatibility");
