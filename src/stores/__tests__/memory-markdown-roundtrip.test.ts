@@ -124,6 +124,62 @@ describe('memory markdown round trip: the whole data-loss class (Opus-Review Nac
   }
 })
 
+/**
+ * Opus-Review Runde 2, Punkt 6: a data-loss class the property test above
+ * does not reach, because it only ever fed CRLF as content the export then
+ * escapes. Here the FILE itself gets CRLF line endings, the way a Windows
+ * text editor or `git core.autocrlf` would save a Version 2 export back to
+ * disk. `importFromMarkdown` splits on `markdown.split('\n')`, so every
+ * physical line then carries a trailing literal `\r`; `MD_ITEM` is
+ * `$`-anchored and `.` never matches `\r`, so every line refuses to match
+ * and the WHOLE import comes back empty, not just the odd entry. See the
+ * `\r` strip at the top of the `importFromMarkdown` loop in `../memoryStore.ts`.
+ */
+describe('memory markdown import: CRLF file line endings (Opus-Review Runde 2, Punkt 6)', () => {
+  beforeEach(reset)
+
+  it('a Version 2 export with every line ending turned into CRLF still imports identically', () => {
+    useMemoryStore.getState().addMemory({
+      type: 'project', title: 'Erster Eintrag', description: 'kurz', content: 'Inhalt eins',
+      tags: ['a', 'b'], source: 'unit-test',
+    })
+    useMemoryStore.getState().addMemory({
+      type: 'user', title: 'Zweiter Eintrag', description: 'auch kurz', content: 'Inhalt zwei\nmit zweiter Zeile',
+      tags: [], source: 'unit-test',
+    })
+    const before = [...useMemoryStore.getState().entries].sort((a, b) => a.title.localeCompare(b.title))
+
+    const md = useMemoryStore.getState().exportAsMarkdown()
+    const crlf = md.replace(/\n/g, '\r\n')
+    expect(crlf).not.toBe(md)
+
+    reset()
+    const result = useMemoryStore.getState().importFromMarkdown(crlf)
+
+    expect(result.added).toBe(2)
+    const after = [...useMemoryStore.getState().entries].sort((a, b) => a.title.localeCompare(b.title))
+    expect(after).toHaveLength(2)
+    expect(after.map((e) => e.title)).toEqual(before.map((e) => e.title))
+    expect(after.map((e) => e.content)).toEqual(before.map((e) => e.content))
+    expect(after.map((e) => e.source)).toEqual(before.map((e) => e.source))
+    expect(after.map((e) => e.tags)).toEqual(before.map((e) => e.tags))
+  })
+
+  it('NEGATIVE CONTROL: an LF export with no CRLF conversion imports the same way', () => {
+    // Confirms the assertions above are not accidentally tautological, the
+    // CRLF file is compared against a genuine LF-only import of the same data.
+    useMemoryStore.getState().addMemory({
+      type: 'project', title: 'Kontrolle', description: 'kurz', content: 'unveraendert',
+      tags: [], source: 'unit-test',
+    })
+    const md = useMemoryStore.getState().exportAsMarkdown()
+    reset()
+    const result = useMemoryStore.getState().importFromMarkdown(md)
+    expect(result.added).toBe(1)
+    expect(useMemoryStore.getState().entries[0].content).toBe('unveraendert')
+  })
+})
+
 describe('memory markdown import: Rueckwaertskompatibilitaet (Opus-Review Nachbesserung 5)', () => {
   beforeEach(reset)
 

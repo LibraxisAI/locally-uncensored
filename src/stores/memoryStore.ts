@@ -1091,7 +1091,16 @@ export const useMemoryStore = create<MemoryState>()(
           'facts': 'user', 'tool results': 'reference', 'decisions': 'project', 'context': 'project',
         }
 
-        for (const line of lines) {
+        for (const rawLine of lines) {
+          // Opus-Review Runde 2, Punkt 6: `markdown.split('\n')` leaves a
+          // trailing `\r` on every physical line when the file carries CRLF
+          // endings (a Windows text editor, `git core.autocrlf` on checkout).
+          // MD_ITEM is `$`-anchored and `.` never matches `\r` (same class as
+          // Nachbesserung 5 above), so every line would refuse to match and
+          // the WHOLE import would silently yield zero entries, not just miss
+          // the odd one. Stripping it here, before either regex sees the
+          // line, is the one point both `headerMatch` and `MD_ITEM` share.
+          const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
           const headerMatch = line.match(/^##\s+(.+)/)
           if (headerMatch) {
             const header = headerMatch[1].toLowerCase().trim()
