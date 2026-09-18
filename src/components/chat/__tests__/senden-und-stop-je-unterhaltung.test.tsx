@@ -10,16 +10,18 @@
  * obwohl der generationStore die Wahrheit seit 22f76b04 je Unterhaltung
  * fuehrt und die Schreibanzeige sie auch schon las.
  *
- * Warum hier nur die halbe Strecke steht: ein vollstaendiges "jede
- * Unterhaltung darf gleichzeitig senden" haengt an den geteilten
- * Stream-Puffern in useChat.ts (contentRef, thinkingRef, abortRef) und
- * useAgentChat.ts, rund 110 Zugriffe, und daran, dass `runInLane` aus
+ * Warum hier zum Zeitpunkt dieses Befunds nur die halbe Strecke stand: ein
+ * vollstaendiges "jede Unterhaltung darf gleichzeitig senden" hing an den
+ * geteilten Stream-Puffern in useChat.ts (contentRef, thinkingRef, abortRef)
+ * und useAgentChat.ts, rund 110 Zugriffe, und daran, dass `runInLane` aus
  * lib/run-slot.ts bis heute keinen Aufrufer in der Produktion hat: ohne
  * Warteschlange liefen zwei lokale Laeufe gegen einen llama-server mit einem
- * einzigen Slot. Das ist mehr als eine Stunde Arbeit und gehoert in einen
- * eigenen Auftrag. Was hier steht, ist das, was ohne diese Entflechtung
- * richtig wird: der laufende Chat behaelt Stop und bricht nur sich selbst ab,
- * der andere behaelt seinen Sendeknopf und bekommt einen englischen Satz
+ * einzigen Slot. useChat.ts hat seine Haelfte seit B2 Commit 1/2
+ * (ChatRun-Objekt statt Refs, generationStore statt abortRef): siehe
+ * useChat-zwei-laeufe-vermischen-nicht.test.ts. useAgentChat.ts und die
+ * Warteschlange stehen noch aus. Was hier steht, ist das, was schon vorher
+ * richtig wurde: der laufende Chat behaelt Stop und bricht nur sich selbst
+ * ab, der andere behaelt seinen Sendeknopf und bekommt einen englischen Satz
  * statt eines stummen Tauschs.
  *
  * Run: npx vitest run src/components/chat/__tests__/senden-und-stop-je-unterhaltung.test.tsx
@@ -106,19 +108,30 @@ describe('the composer of the chat that IS answering', () => {
 })
 
 /**
- * Die zweite Haelfte des Befunds sitzt in zwei Hooks, deren Abbruchgriffe der
- * Hook-INSTANZ gehoeren und nicht der Unterhaltung. Ein echter Lauf mit zwei
- * gleichzeitigen Unterhaltungen ist von hier aus nicht zu fahren, deshalb
- * steht hier der Quelltext-Waechter auf die Bedingung. Nachgemessen werden
- * muss das an der laufenden App (siehe Bericht).
+ * Die zweite Haelfte des Befunds sitzt (noch, Stand vor B2) in zwei Hooks,
+ * deren Abbruchgriffe der Hook-INSTANZ gehoeren und nicht der Unterhaltung.
+ * Ein echter Lauf mit zwei gleichzeitigen Unterhaltungen ist von hier aus
+ * nicht zu fahren, deshalb steht hier der Quelltext-Waechter auf die
+ * Bedingung. Nachgemessen werden muss das an der laufenden App (siehe
+ * Bericht).
+ *
+ * useChat.ts ist seit B2 Commit 2 raus aus dieser Liste: `abortRef` /
+ * `abortConvRef` sind entfernt, weil sie erwiesenermassen redundant waren -
+ * `generationStore.aborters` ist bereits je Konversation gefuehrt und war
+ * schon vorher der Griff, der wirklich abbricht (siehe die
+ * `abortConversation`-Zeile, die hier unveraendert blieb). Ein Quelltext-Pin
+ * auf die entfernten Refs waere jetzt ein Pin auf toten Code. Der Beweis fuer
+ * useChat steht stattdessen als echter Zwei-Unterhaltungen-Lauf in
+ * useChat-zwei-laeufe-vermischen-nicht.test.ts.
  */
 describe('Stop bricht nur die eigene Erzeugung ab', () => {
-  it('useChat abortet den Controller der Instanz nur fuer die eigene Unterhaltung', () => {
+  it('useChat hat kein Instanz-Ref mehr, das ein zweiter Lauf ueberschreiben koennte', () => {
     const chat = src('../../../hooks/useChat.ts')
-    expect(chat).toMatch(/const abortConvRef = useRef<string \| null>\(null\)/)
-    expect(chat).toMatch(/if \(abortConvRef\.current === convId\) \{\s*\n\s*abortRef\.current\?\.abort\(\)/)
-    // Und der Ref wird auch wirklich gesetzt, sonst bricht Stop nie etwas ab.
-    expect(chat.match(/abortConvRef\.current = convId/g)?.length).toBe(2)
+    expect(chat).not.toMatch(/abortConvRef/)
+    expect(chat).not.toMatch(/const abortRef = useRef/)
+    // Der EINE Griff, der wirklich abbricht, bleibt: je Konversation, im
+    // generationStore, nicht in einem Hook-Ref.
+    expect(chat).toMatch(/useGenerationStore\.getState\(\)\.abortConversation\(convId\)/)
   })
 
   it('useAgentChat beendet den Agentenlauf nur fuer die eigene Unterhaltung', () => {
