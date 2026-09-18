@@ -25,7 +25,7 @@ use tracing::warn;
 
 use super::children::{wait_or_cancel, TrackedInstallerChild};
 use crate::os_error;
-use crate::python::venv_python_path;
+use crate::python::{venv_python_path, venv_python_path_named};
 use crate::state::AppState;
 
 
@@ -85,12 +85,30 @@ pub fn create_comfyui_venv(
     python_bin: &str,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<PathBuf, String> {
-    let venv_dir = comfyui_dir.join("venv");
+    create_comfyui_venv_named(comfyui_dir, "venv", python_bin, cancel)
+}
+
+/// Same as [`create_comfyui_venv`], but for an arbitrary venv folder name
+/// instead of the fixed `venv`.
+///
+/// Runde 5, B7(c): the repair's build-then-swap needs to build the NEW venv
+/// under a staging name (`STAGING_VENV_PREFIX`) that is not `venv` at all,
+/// so the old, still-working `venv` is never touched until the new one is
+/// built and verified. Only after that succeeds does the caller rename the
+/// staging folder over the real one.
+pub fn create_comfyui_venv_named(
+    comfyui_dir: &Path,
+    venv_name: &str,
+    python_bin: &str,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<PathBuf, String> {
+    let venv_dir = comfyui_dir.join(venv_name);
     // venv is idempotent: re-running on an existing dir just no-ops, but be
     // explicit so the log reads cleanly.
-    let already_existed = venv_dir.exists() && venv_python_path(comfyui_dir).exists();
+    let venv_py_path = venv_python_path_named(comfyui_dir, venv_name);
+    let already_existed = venv_dir.exists() && venv_py_path.exists();
     if already_existed {
-        return Ok(venv_python_path(comfyui_dir));
+        return Ok(venv_py_path);
     }
 
     let mut cmd = python_command(python_bin);
@@ -156,7 +174,7 @@ pub fn create_comfyui_venv(
         ));
     }
 
-    let venv_py = venv_python_path(comfyui_dir);
+    let venv_py = venv_py_path;
     if !venv_py.exists() {
         return Err(format!(
             "venv was created at {} but no Python binary appeared at {}. \
@@ -179,6 +197,30 @@ pub fn create_comfyui_venv(
 /// autostart and to `resolve_lu_python`.
 pub(crate) const RETIRED_VENV_PREFIX: &str = "venv.lu-old-";
 
+/// Runde 5, B7(c): the name a NEW venv is built under while the old `venv`
+/// is still live. Neither `venv` nor `.venv`, same reasoning as
+/// [`RETIRED_VENV_PREFIX`]: invisible to `resolve_comfyui_venv_python`, the
+/// launcher, autostart and `detect_venv_passengers`, so a repair in
+/// progress never looks like it already has a broken second venv.
+pub(crate) const STAGING_VENV_PREFIX: &str = "venv.lu-new-";
+
+/// Nanoseconds plus our own process id, so two runs (or a retiring venv and
+/// a staging venv in the same repair) never land on the same folder.
+fn stamped_sibling_name(prefix: &str) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}{}-{}", prefix, stamp, std::process::id())
+}
+
+/// A fresh, not-yet-existing staging folder NAME (not a path) to build the
+/// new venv under, via [`create_comfyui_venv_named`]. The caller joins it to
+/// the ComfyUI directory itself.
+pub(crate) fn staging_venv_name() -> String {
+    stamped_sibling_name(STAGING_VENV_PREFIX)
+}
+
 /// Move `<comfy>/venv` out of the way and answer where it went.
 ///
 /// Deleting it in line was the 76 seconds P3 measured: a venv holding PyTorch
@@ -188,9 +230,6 @@ pub(crate) const RETIRED_VENV_PREFIX: &str = "venv.lu-old-";
 /// metadata operation no matter how much is inside. The deleting happens
 /// afterwards on a worker thread, and the caller is free again the moment this
 /// returns.
-///
-/// Nanoseconds plus our own process id in the name, so two runs never land on
-/// the same folder.
 pub(crate) fn retire_venv(venv_dir: &Path) -> std::io::Result<PathBuf> {
     let parent = venv_dir.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -198,21 +237,83 @@ pub(crate) fn retire_venv(venv_dir: &Path) -> std::io::Result<PathBuf> {
             "the venv path has no parent directory to move it into",
         )
     })?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let retired = parent.join(format!(
-        "{}{}-{}",
-        RETIRED_VENV_PREFIX,
-        stamp,
-        std::process::id()
-    ));
+    let retired = parent.join(stamped_sibling_name(RETIRED_VENV_PREFIX));
     std::fs::rename(venv_dir, &retired)?;
     Ok(retired)
 }
 
-/// Delete whatever [`retire_venv`] left lying around.
+/// B7(c) (review Runde 4): the swap half of the build-then-swap repair. Only
+/// called once a staging venv has been built AND verified, never before. If
+/// `venv_dir` exists it is retired and `staging_dir` takes its name; on
+/// Windows, where a held-open handle can make that rename fail, the old venv
+/// is deleted in place instead before the same rename. If the FINAL rename
+/// (staging into place) itself fails, the old venv is put straight back
+/// rather than left as a bare retired folder, so this never trades a working
+/// old venv for neither.
+///
+/// A pure filesystem operation, deliberately not accepting a comfy_dir plus
+/// hardcoded child names: this is what makes it directly testable with two
+/// plain temp directories, one Attrappe standing in for each venv, and a
+/// negative control (below) that never even builds a staging folder.
+pub(crate) fn swap_in_new_venv(comfy_dir: &Path, venv_dir: &Path, staging_dir: &Path) -> Result<(), String> {
+    if !venv_dir.exists() {
+        return std::fs::rename(staging_dir, venv_dir).map_err(|e| {
+            format!(
+                "The new environment was verified, but could not be moved into place: {}. It is \
+                 still on disk at {}; rename that folder to \"venv\" manually to recover it.",
+                venv_removal_error(staging_dir, &e),
+                staging_dir.display(),
+            )
+        });
+    }
+    match retire_venv(venv_dir) {
+        Ok(retired) => {
+            if let Err(rename_failed) = std::fs::rename(staging_dir, venv_dir) {
+                // Extremely unlikely (both are plain renames on the same
+                // filesystem, seconds apart), but a customer must never be
+                // left with NEITHER a `venv` nor a clear next step. Put the
+                // old one straight back rather than leave the folder empty.
+                let _ = std::fs::rename(&retired, venv_dir);
+                return Err(format!(
+                    "The new environment was verified, but could not be swapped into place ({}). \
+                     Your existing environment was restored; nothing was lost, but the repair did \
+                     not finish.",
+                    venv_removal_error(staging_dir, &rename_failed)
+                ));
+            }
+            let sweep_dir = comfy_dir.to_path_buf();
+            std::thread::spawn(move || {
+                if let Err(e) = std::fs::remove_dir_all(&retired) {
+                    warn!(error = %e, folder = %retired.display(), "the retired venv could not be deleted");
+                }
+                sweep_retired_venvs(&sweep_dir);
+            });
+            Ok(())
+        }
+        Err(rename_failed) => {
+            // Windows refuses a rename while a process holds the directory
+            // itself open or has its working directory in it. Fall back to
+            // deleting the old venv in place, then moving the new
+            // (already-verified) one over.
+            warn!(error = %rename_failed, "old venv rename failed, deleting it in place before the swap");
+            let _ = std::fs::remove_file(venv_python_path(comfy_dir));
+            if let Err(e) = std::fs::remove_dir_all(venv_dir) {
+                return Err(venv_removal_error(venv_dir, &e));
+            }
+            std::fs::rename(staging_dir, venv_dir).map_err(|e| {
+                format!(
+                    "The new environment was verified, but could not be swapped into place: {}. It \
+                     is still on disk at {}; rename that folder to \"venv\" manually to recover it.",
+                    venv_removal_error(staging_dir, &e),
+                    staging_dir.display(),
+                )
+            })
+        }
+    }
+}
+
+/// Delete whatever [`retire_venv`] OR an interrupted staging build left
+/// lying around.
 ///
 /// Quietly, over tracing only: these are folders nobody is looking for, and a
 /// failure to clear one must not colour a repair the user is watching. Every
@@ -221,24 +322,24 @@ pub(crate) fn retire_venv(venv_dir: &Path) -> std::io::Result<PathBuf> {
 /// delete does not keep the space forever and two deleters never meet on the
 /// same tree.
 ///
-/// Only names carrying [`RETIRED_VENV_PREFIX`] are touched. This runs inside
-/// the user's ComfyUI folder, next to models, outputs and custom nodes, so the
-/// match being too eager is the one way this could destroy something.
+/// Only names carrying [`RETIRED_VENV_PREFIX`] or [`STAGING_VENV_PREFIX`] are
+/// touched. This runs inside the user's ComfyUI folder, next to models,
+/// outputs and custom nodes, so the match being too eager is the one way
+/// this could destroy something.
 pub(crate) fn sweep_retired_venvs(comfy_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(comfy_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let retired = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with(RETIRED_VENV_PREFIX));
-        if !retired || !path.is_dir() {
+        let ephemeral = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.starts_with(RETIRED_VENV_PREFIX) || n.starts_with(STAGING_VENV_PREFIX)
+        });
+        if !ephemeral || !path.is_dir() {
             continue;
         }
         if let Err(e) = std::fs::remove_dir_all(&path) {
-            warn!(error = %e, folder = %path.display(), "a retired venv could not be swept");
+            warn!(error = %e, folder = %path.display(), "a retired or staging venv could not be swept");
         }
     }
 }
@@ -744,6 +845,106 @@ mod tests {
             assert!(comfy.join(keep).is_dir(), "the sweep took {keep}");
         }
         assert!(comfy.join("requirements.txt").exists(), "the sweep took requirements.txt");
+    }
+
+    #[test]
+    fn the_sweep_also_takes_abandoned_staging_folders() {
+        // B7(c): a staging venv an interrupted repair never got to swap in is
+        // exactly as much of a leftover as a retired one, and the widened
+        // sweep is what keeps it from sitting there forever. Same shape as
+        // the retired-folder test above, on purpose: one prefix's coverage
+        // must not silently stand in for the other's.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        for keep in ["venv", "models", "custom_nodes"] {
+            std::fs::create_dir_all(comfy.join(keep)).unwrap();
+        }
+        let gone = comfy.join(format!("{STAGING_VENV_PREFIX}1"));
+        tree_with_files(&gone, 2, 2);
+
+        sweep_retired_venvs(&comfy);
+
+        assert!(!gone.exists(), "an abandoned staging venv survived the sweep: {}", gone.display());
+        for keep in ["venv", "models", "custom_nodes"] {
+            assert!(comfy.join(keep).is_dir(), "the sweep took {keep}");
+        }
+    }
+
+    #[test]
+    fn swap_puts_the_new_venv_in_place_and_retires_the_old_one() {
+        // B7(c) Verhaltenstest, Attrappe: two plain directories stand in for
+        // the old and the new venv. What matters is not what pip or `python
+        // -m venv` did to build them, only that the swap moves the RIGHT one
+        // into `venv` and does not touch the other's own contents while doing
+        // it.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        let staging_dir = comfy.join(format!("{STAGING_VENV_PREFIX}1"));
+        std::fs::create_dir_all(&venv_dir).unwrap();
+        std::fs::write(venv_dir.join("marker.txt"), b"old").unwrap();
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(staging_dir.join("marker.txt"), b"new").unwrap();
+
+        swap_in_new_venv(&comfy, &venv_dir, &staging_dir).expect("the swap failed");
+
+        assert!(venv_dir.is_dir(), "venv is gone after the swap");
+        assert_eq!(
+            std::fs::read(venv_dir.join("marker.txt")).unwrap(),
+            b"new",
+            "venv still holds the OLD environment after the swap"
+        );
+        assert!(!staging_dir.exists(), "the staging folder was not consumed by the swap");
+        // The old venv is retired, not deleted in line by this call (deletion
+        // runs on its own thread), but it must not still be sitting at the
+        // name a fresh repair, the launcher or autostart would read.
+        let retired: Vec<_> = std::fs::read_dir(&comfy)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(RETIRED_VENV_PREFIX))
+            })
+            .collect();
+        assert!(!retired.is_empty(), "no trace of the old venv having been retired");
+    }
+
+    #[test]
+    fn swap_leaves_the_old_venv_untouched_when_there_is_nothing_to_swap_in() {
+        // Negativkontrolle: this is B7(c)'s whole point on its own. No
+        // staging folder exists at all (the build never finished, or this is
+        // a bug calling the swap too early), the rename must fail, and the
+        // OLD venv must be exactly as it was, not retired, not half-renamed,
+        // not gone. "Nie wieder: alte weg, neue scheitert."
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        let staging_dir = comfy.join(format!("{STAGING_VENV_PREFIX}1"));
+        std::fs::create_dir_all(&venv_dir).unwrap();
+        std::fs::write(venv_dir.join("marker.txt"), b"old").unwrap();
+        // staging_dir is deliberately never created.
+
+        let err = swap_in_new_venv(&comfy, &venv_dir, &staging_dir)
+            .expect_err("a swap with no staging venv to swap in must fail");
+        assert!(!err.is_empty());
+
+        assert!(venv_dir.is_dir(), "the old venv is gone after a failed swap");
+        assert_eq!(
+            std::fs::read(venv_dir.join("marker.txt")).unwrap(),
+            b"old",
+            "the old venv was replaced even though the swap failed"
+        );
+        let retired: Vec<_> = std::fs::read_dir(&comfy)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(RETIRED_VENV_PREFIX))
+            })
+            .collect();
+        assert!(retired.is_empty(), "the old venv was retired even though the swap never completed");
     }
 
     #[test]

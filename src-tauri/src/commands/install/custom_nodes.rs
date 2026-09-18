@@ -251,7 +251,7 @@ fn move_aside_broken_node_dir(target_dir: &std::path::Path) -> Result<PathBuf, S
 /// launcher in `process.rs::start_comfyui` and the installer in
 /// `install_comfyui`) so requirements land in the same site-packages ComfyUI
 /// actually imports from, and surface a useful error when pip fails.
-fn install_node_requirements(
+pub(crate) fn install_node_requirements(
     comfy_dir: &std::path::Path,
     target_dir: &std::path::Path,
     node_name: &str,
@@ -327,6 +327,59 @@ fn install_node_requirements(
     Ok(())
 }
 
+
+/// Runde 5 (review-engine.md Runde 4, Folgeposten): after the repair
+/// rebuilds `ComfyUI/venv` from nothing, every EXISTING `custom_nodes/*`
+/// folder's own `requirements.txt` (RMBG, VHS, controlnet_aux, whatever the
+/// customer had cloned in) is gone from the fresh venv, unlike ComfyUI's own
+/// core requirements, which the repair already reinstalls. The repair's own
+/// log line and the "Repair environment" tooltip both say "custom nodes stay
+/// untouched", true for the FOLDERS but not for what those nodes need to
+/// import; without this, "untouched" is a promise the repair does not keep.
+///
+/// Reuses [`install_node_requirements`], the SAME function `install_custom_node`
+/// itself calls (#72's rule: one function for every path that installs a
+/// node's requirements, so a fix never lands in only one of them), nothing
+/// here re-implements pip or PEP 668 handling.
+///
+/// One folder's failure never stops the rest: a customer with five nodes and
+/// one broken one should get four working nodes back, not zero, and the
+/// caller is told which one(s) failed so it can say so instead of silently
+/// claiming success.
+pub(crate) fn reinstall_all_node_requirements(comfy_dir: &std::path::Path, fallback_python: &str) -> Vec<(String, String)> {
+    let nodes_dir = comfy_dir.join("custom_nodes");
+    let Ok(entries) = fs::read_dir(&nodes_dir) else {
+        return Vec::new();
+    };
+    let mut failures = Vec::new();
+    let mut names: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // The move-aside convention above: a folder ComfyUI itself never
+            // loads must not be reinstalled into either, it is not a live
+            // node. `__pycache__` is not a node folder; harmless to skip.
+            if name.ends_with(".disabled") || name == "__pycache__" {
+                None
+            } else {
+                Some((name, e.path()))
+            }
+        })
+        .collect();
+    // Deterministic order: a real folder listing order is filesystem- and
+    // platform-dependent, and a customer-facing failure list that reorders
+    // itself between runs reads as flaky even when the underlying cause is
+    // stable.
+    names.sort();
+    for (name, target_dir) in names {
+        if let Err(e) = install_node_requirements(comfy_dir, &target_dir, &name, fallback_python) {
+            error!(node = %name, error = %e, "custom node requirements could not be restored after a repair");
+            failures.push((name, e));
+        }
+    }
+    failures
+}
 
 #[cfg(test)]
 mod tests {
