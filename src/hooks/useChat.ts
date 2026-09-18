@@ -355,7 +355,8 @@ export function useChat() {
     // remember this controller: Stop looks it up there, by conversation, not
     // through a hook-instance ref that a second overlapping run would
     // overwrite.
-    useGenerationStore.getState().registerAborter(convId, () => abort.abort())
+    const myAborter = () => abort.abort()
+    useGenerationStore.getState().registerAborter(convId, myAborter)
     setIsGenerating(true)
     useGenerationStore.getState().setGenerating(convId, true)
     try {
@@ -364,14 +365,23 @@ export function useChat() {
         await runGroupTurn(convId, model, models, abort)
       }
     } finally {
-      useGenerationStore.getState().clearAborter(convId)
+      // Same identity check as the single-model turn below (Blocker 2,
+      // review-lanes.md): a Stop followed by an immediate resend on this
+      // conversation can register a new aborter before this round's
+      // finally runs.
+      const stillOwnsSlot = useGenerationStore.getState().aborters[convId] === myAborter
+      if (stillOwnsSlot) {
+        useGenerationStore.getState().clearAborter(convId)
+      }
       // The round is over, so it goes on disk BEFORE the app says so. Same
       // contract as the single-model turn below and as the Agent and Coding
       // runs — see stores/durability.ts for the measurement that made the
       // order matter.
       await endTurnDurably(() => {
-        setIsGenerating(false)
-        useGenerationStore.getState().setGenerating(convId, false)
+        if (stillOwnsSlot) {
+          setIsGenerating(false)
+          useGenerationStore.getState().setGenerating(convId, false)
+        }
       })
     }
   }, [])
@@ -793,7 +803,15 @@ export function useChat() {
     // the chat goes away mid-generation (the _activeHandoffs gate makes it a
     // no-op when no media gen is in flight). Without it a long video kept
     // rendering after the chat was deleted.
-    useGenerationStore.getState().registerAborter(convId, () => { abort.abort(); requestGenerationCancel() })
+    //
+    // Kept as a named reference (not inlined) so the `finally` below can tell
+    // whether THIS run still owns the aborter slot for `convId` before
+    // touching anything keyed only by conversation (Blocker 2,
+    // review-lanes.md): Stop, then an immediate resend on the same
+    // conversation, can register a NEW aborter here before this run's
+    // `finally` executes, and the old run's cleanup must not reach past it.
+    const myAborter = () => { abort.abort(); requestGenerationCancel() }
+    useGenerationStore.getState().registerAborter(convId, myAborter)
     setIsGenerating(true)
     // Bind the generating flag to THIS conversation so the typing indicator
     // only shows in the chat whose turn is in flight — not in every other chat
@@ -1172,7 +1190,16 @@ export function useChat() {
         }
       }
     } finally {
-      useGenerationStore.getState().clearAborter(run.convId)
+      // Identity check (B2/Blocker 2): only clean up if this run still owns
+      // the aborter slot for run.convId. A replaced slot means a NEW run
+      // (Stop, then an immediate resend on the same conversation) is now in
+      // flight, and clearing its aborter or flipping its generating flag
+      // back to false out from under it would make the new run unstoppable
+      // through generationStore, exactly like the useAgentChat.ts case.
+      const stillOwnsSlot = useGenerationStore.getState().aborters[run.convId] === myAborter
+      if (stillOwnsSlot) {
+        useGenerationStore.getState().clearAborter(run.convId)
+      }
       setIsLoadingModel(false)
       useModelStore.getState().setIsModelLoading(false)
 
@@ -1194,8 +1221,14 @@ export function useChat() {
       // The answer itself is already painted, so what waits here is the Stop
       // button turning back into Send, not the text.
       await endTurnDurably(() => {
-        setIsGenerating(false)
-        useGenerationStore.getState().setGenerating(run.convId, false)
+        // Review-lanes.md point 1: same asymmetry as Blocker 2. Only THIS
+        // run flipping the hook's own flag back to false when it still owns
+        // the slot keeps a still-running resend on the same conversation
+        // from being reported as idle while it is not.
+        if (stillOwnsSlot) {
+          setIsGenerating(false)
+          useGenerationStore.getState().setGenerating(run.convId, false)
+        }
       })
 
       // Auto-read the finished response when the user opted in (#77, ElBiggus).

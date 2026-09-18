@@ -2551,13 +2551,18 @@ export function useAgentChat() {
         }
       }
     } finally {
-      useGenerationStore.getState().clearAborter(convId)
-      // Identity check (B2): only release the slot if it is still THIS run's.
+      // Identity check (B2): only clean up if this run still OWNS the slot.
       // stopAgent() can already have deleted and even replaced it (Stop, then
       // an immediate resend on the same conversation) by the time this
-      // finally runs, and unconditionally deleting would then drop the NEW
-      // run's re-entry protection out from under it.
-      if (activeAgentRuns.get(convId) === runState) {
+      // finally runs. Blocker 2 (review-lanes.md): the three neighbouring
+      // cleanup calls below used to run unconditionally, so run A's delayed
+      // finally would clear run B's aborter, flip B's generating flag back
+      // to false, and reject B's pending approvals, leaving the NEW run
+      // unstoppable through generationStore (Stop button, sign-out, window
+      // close, app quit) even though activeAgentRuns still pointed at it.
+      const stillOwnsSlot = activeAgentRuns.get(convId) === runState
+      if (stillOwnsSlot) {
+        useGenerationStore.getState().clearAborter(convId)
         activeAgentRuns.delete(convId)
       }
       // Chat-tools artifact mode: attach any files the model "wrote" (captured
@@ -2585,15 +2590,21 @@ export function useAgentChat() {
         // still-running conversation B does not lose its Stop button just
         // because conversation A's turn ended first.
         setIsAgentRunning(activeAgentRuns.size > 0)
-        useGenerationStore.getState().setGenerating(convId, false)
+        if (stillOwnsSlot) {
+          useGenerationStore.getState().setGenerating(convId, false)
+        }
       })
       // Drop the per-run workspace scope so standalone tool calls from
       // other tabs don't accidentally land in this chat's folder. Only when
       // this run still owns the shared mirror, so a Coding run that outlives
       // us keeps its own jail root (plan C1 ERZWINGUNG).
       endAgentRun(run)
-      // Reject any pending approvals so their promises don't hang forever
-      drainApprovals(convId)
+      // Reject any pending approvals so their promises don't hang forever,
+      // but only THIS run's: a replaced slot means a NEW run's approvals are
+      // waiting under the same convId, and they must survive.
+      if (stillOwnsSlot) {
+        drainApprovals(convId)
+      }
 
       // Auto-read the finished response when the user opted in (#77). Default
       // OFF, additionally gated on ttsEnabled; getState() so this callback never
@@ -2619,7 +2630,13 @@ export function useAgentChat() {
       // one: a loop someone asked to keep going keeps going until it says done
       // or they stop it. The loop bar above the composer is what keeps that
       // honest rather than invisible.
-      if (opts?.loop && convId && loopHalt) {
+      if (opts?.loop && convId && !stillOwnsSlot) {
+        // This run was replaced (Stop, then an immediate resend on the same
+        // conversation) before its own finally ran. The NEW run owns convId
+        // now; scheduling or clearing the /loop driver on its behalf would
+        // be this same finally-runs-late class of bug from Blocker 2, just
+        // aimed at the loop timer instead of the generation store.
+      } else if (opts?.loop && convId && loopHalt) {
         // Same rule as the coding surface: no retry fixes an empty wallet, so
         // the loop ends here instead of refiring into the same refusal.
         useAgentLoopStore.getState().clear(convId)
