@@ -2175,10 +2175,23 @@ fn serve_or_heal_garbled(
     // ends in seconds instead of restarting for ever.
     for _ in 0..3 {
         let Some(probe) = engine_sanity::probe_engine(port, engine_sanity::PROBE_TIMEOUT) else {
+            // D3: `None` here means the probe itself never got an answer to
+            // judge (timed out, refused, or an unexpected body) — not that
+            // the engine answered badly. On a run with no GPU layers this is
+            // routine: a cold CPU-only load of `PROBE_TOKENS` can outrun the
+            // probe's short budget on its own, with nothing wrong at all, and
+            // the wording says so instead of reading like a fault.
+            let cpu_only = gpu_layers_in(&serving_args).unwrap_or_default() == 0;
+            let msg = format!(
+                "the sanity probe did not get an answer to judge within its budget{}, the LU Engine is left as it is",
+                if cpu_only { " (a cold CPU-only load can be slower than that on its own)" } else { "" }
+            );
             tracing::info!(
                 target: "engine",
                 port,
-                "the sanity probe got no usable answer, the LU Engine is left as it is"
+                cpu_only,
+                budget_s = engine_sanity::PROBE_TIMEOUT.as_secs(),
+                "{}", msg
             );
             return answer;
         };
@@ -2190,7 +2203,7 @@ fn serve_or_heal_garbled(
         tracing::info!(
             target: "engine",
             port,
-            verdict = probe.verdict.label(),
+            verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
             ms = probe.took.as_millis() as u64,
             ngl = facts.gpu_layers.map(|n| n.to_string()).unwrap_or_else(|| "none".into()),
             flash_attention = facts.flash_attention_on,
@@ -2207,7 +2220,7 @@ fn serve_or_heal_garbled(
                 tracing::error!(
                     target: "engine",
                     port,
-                    verdict = probe.verdict.label(),
+                    verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
                     "the LU Engine answers unreadably without the graphics card, so the card is not the cause"
                 );
                 answer["garbled"] = serde_json::json!(true);
@@ -2219,7 +2232,7 @@ fn serve_or_heal_garbled(
                 tracing::warn!(
                     target: "engine",
                     port,
-                    verdict = probe.verdict.label(),
+                    verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
                     "this card reports no matrix cores, restarting the LU Engine with Flash Attention off"
                 );
                 (without_flash_attention(&serving), false)
@@ -2228,7 +2241,7 @@ fn serve_or_heal_garbled(
                 tracing::warn!(
                     target: "engine",
                     port,
-                    verdict = probe.verdict.label(),
+                    verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
                     "the graphics card produced unreadable output, restarting the LU Engine on the processor"
                 );
                 (on_the_processor(&serving), true)
