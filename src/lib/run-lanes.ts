@@ -70,6 +70,34 @@
  * wird weiter nur hier, gelesen wird weiter nur hier. Ein Spiegel waere genau
  * der Grundfehler, gegen den `run-idle.ts` gebaut ist, eine Tatsache an zwei
  * Orten, die im Fenster dazwischen auseinanderlaufen.
+ *
+ * ── DIE KENNUNG UND DIE IDENTITAET SIND ZWEI VERSCHIEDENE DINGE ─────────────
+ *
+ * (Nachbesserung, Opus-Review Runde 2, BLOCKER A) `admit`/`release` nahmen bis
+ * hierher an, dass zwei Aufrufe mit derselben `convId` immer DERSELBE Lauf
+ * sind ("Derselbe Lauf fragt zweimal: er hat den Platz schon"). Das stimmt
+ * fuer den einen Fall, fuer den es gedacht war (ein Elternlauf fragt sich
+ * selbst noch einmal), und stimmt NICHT fuer den Fall, den `run-slot.ts` frueher
+ * mit einem eigenen, fehlerhaften Zaehler abgefangen hat: Stop in einer
+ * Unterhaltung, sofort danach neu gesendet. Der ALTE Lauf wickelt sich noch
+ * ab (`endTurnDurably` braucht 300 bis 500 ms), sein `finally` hat die Spur
+ * noch nicht zurueckgegeben, und der NEUE Lauf traegt dieselbe `convId`. Ohne
+ * Unterscheidung waere der neue Lauf "derselbe Lauf, der noch einmal fragt"
+ * und bekaeme den Platz sofort, obwohl der alte ihn noch haelt: zwei echte
+ * Anfragen gegen den Motor gleichzeitig.
+ *
+ * Deshalb nimmt `admit`/`release` ein optionales viertes/zweites Argument,
+ * `identity`. Ohne Angabe ist es die `convId` selbst, und jedes bestehende
+ * Verhalten (alle Tests unten) bleibt exakt, wie es war: eine Anfrage ohne
+ * eigene Identitaet gilt als Fortsetzung der letzten mit derselben `convId`.
+ * `run-slot.ts` ist der einzige Aufrufer, der eine ECHTE Identitaet mitgibt,
+ * ein frisches, undurchsichtiges Objekt je `runInLane`-Aufruf: fuer dieses
+ * Modul sind zwei Aufrufe mit derselben `convId`, aber verschiedener
+ * `identity`, zwei VERSCHIEDENE Laeufe. Der neue stellt sich hinten an, der
+ * alte behaelt seinen Platz, bis sein eigenes `finally` ihn zurueckgibt. Die
+ * `convId` bleibt dabei die sichtbare Kennung fuer die Warteschlangen-Anzeige
+ * (`localLaneHolder`, `runQueuePosition`, `isRunQueued`, `queuedRunIds`): die
+ * Oberflaeche fragt "wartet DIESE Unterhaltung", nicht "wartet DIESER Lauf".
  */
 
 /** Woran ein Lauf rechnet: an der Karte des Nutzers oder woanders. */
@@ -89,6 +117,8 @@ export type StartThunk = () => void
 
 interface Wartend {
   convId: string
+  /** Siehe Kopf: default `convId`, echt nur wenn der Aufrufer eine mitgibt. */
+  identity: unknown
   start: StartThunk
 }
 
@@ -99,7 +129,7 @@ interface Wartend {
  * nicht zwei gleichzeitig gibt. Ein Zaehler mit Obergrenze 1 waere dieselbe
  * Aussage, nur mit einem Zustand mehr, in dem er falsch stehen kann.
  */
-let halter: string | null = null
+let halter: { convId: string; identity: unknown } | null = null
 
 /** Wer wartet, in der Reihenfolge des Anstellens. */
 const warteschlange: Wartend[] = []
@@ -163,8 +193,18 @@ export function runQueuePosition(conversationId: string | null | undefined): num
  * Aufrufrahmen dieser Funktion an, waehrend der Aufrufer noch glaubt, er sei
  * beim Anmelden. Ein Fehler daraus kaeme dann aus `admit` heraus, nicht aus
  * dem Lauf. Der Startpunkt bleibt beim Aufrufer, wo er hingehoert.
+ *
+ * `identity` (siehe Kopf, Abschnitt "DIE KENNUNG UND DIE IDENTITAET"): ohne
+ * Angabe die `convId` selbst, also das alte Verhalten. `run-slot.ts` gibt ein
+ * frisches, je Aufruf eigenes Objekt mit, damit ein neuer Lauf derselben
+ * Unterhaltung NICHT als Fortsetzung eines noch abwickelnden alten durchgeht.
  */
-export function admit(lane: RunLane, convId: string, start: StartThunk): Admission {
+export function admit(
+  lane: RunLane,
+  convId: string,
+  start: StartThunk,
+  identity: unknown = convId,
+): Admission {
   if (lane === 'cloud') return 'started'
 
   // Ein Lauf ohne Kennung nimmt den Platz NICHT.
@@ -178,16 +218,17 @@ export function admit(lane: RunLane, convId: string, start: StartThunk): Admissi
 
   // Derselbe Lauf fragt zweimal: er hat den Platz schon. Kein zweiter Halter,
   // keine zweite Zeile in der Schlange, und vor allem kein zweites `release`,
-  // das den Platz eines Fremden freigaebe.
-  if (halter === convId) return 'started'
-  if (warteschlange.some((w) => w.convId === convId)) return 'queued'
+  // das den Platz eines Fremden freigaebe. "Derselbe Lauf" heisst seit
+  // Blocker A: dieselbe `identity`, nicht nur dieselbe `convId`.
+  if (halter?.identity === identity) return 'started'
+  if (warteschlange.some((w) => w.identity === identity)) return 'queued'
 
   if (halter === null) {
-    halter = convId
+    halter = { convId, identity }
     veraendert()
     return 'started'
   }
-  warteschlange.push({ convId, start })
+  warteschlange.push({ convId, identity, start })
   veraendert()
   return 'queued'
 }
@@ -210,14 +251,19 @@ export function admit(lane: RunLane, convId: string, start: StartThunk): Admissi
  * Fuer einen Wartenden, der abbricht, bevor er dran war, gibt es hier den
  * zweiten Weg: er faellt aus der Schlange und niemand rueckt nach, denn der
  * Halter rechnet ja noch.
+ *
+ * `identity` wie bei `admit`: ohne Angabe die `convId`, also das alte
+ * Verhalten. Wer eine echte Identitaet mitgibt, gibt exakt den Platz zurueck,
+ * den er selbst mit derselben Identitaet genommen hat, nie den eines anderen
+ * Laufs derselben Unterhaltung.
  */
-export function release(convId: string): StartThunk | undefined {
+export function release(convId: string, identity: unknown = convId): StartThunk | undefined {
   if (!convId) return undefined
 
   // Erst der Wartende, dann der Halter. Beides gleichzeitig kann eine
   // Konversation nicht sein (`admit` schliesst es aus), und die Reihenfolge
   // macht den haeufigeren Fall nicht teurer.
-  const wartet = warteschlange.findIndex((w) => w.convId === convId)
+  const wartet = warteschlange.findIndex((w) => w.identity === identity)
   if (wartet >= 0) {
     warteschlange.splice(wartet, 1)
     veraendert()
@@ -227,10 +273,10 @@ export function release(convId: string): StartThunk | undefined {
   // Nicht der Halter: ein Cloud-Lauf, oder schon einmal freigegeben. Beides
   // ist harmlos und darf NICHT den Platz eines anderen raeumen. Ein
   // `release` ohne vorheriges `admit` waere sonst ein Generalschluessel.
-  if (halter !== convId) return undefined
+  if (halter?.identity !== identity) return undefined
 
   const naechster = warteschlange.shift()
-  halter = naechster ? naechster.convId : null
+  halter = naechster ? { convId: naechster.convId, identity: naechster.identity } : null
   veraendert()
   return naechster?.start
 }
@@ -248,7 +294,7 @@ export function anyRunQueued(): boolean {
 
 /** Wer hat die lokale Spur gerade, falls jemand. Fuer Tests und Diagnose. */
 export function localLaneHolder(): string | null {
-  return halter
+  return halter?.convId ?? null
 }
 
 /** Die Wartenden in ihrer Reihenfolge. Fuer Tests und Diagnose. */

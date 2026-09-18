@@ -48,7 +48,6 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { __resetRunLanesForTests, localLaneHolder, queuedRunIds } from '../../lib/run-lanes'
-import { __resetRunSlotsForTests } from '../../lib/run-slot'
 import { DEFAULT_SETTINGS } from '../../lib/constants'
 
 const LOCAL_MODEL = 'openai::local-builtin-model'
@@ -84,7 +83,6 @@ function seed(model: string): string {
 
 beforeEach(() => {
   __resetRunLanesForTests()
-  __resetRunSlotsForTests()
   useChatStore.setState({ conversations: [], activeConversationId: null })
   useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
   useModelStore.setState({ models: [], activeModel: LOCAL_MODEL })

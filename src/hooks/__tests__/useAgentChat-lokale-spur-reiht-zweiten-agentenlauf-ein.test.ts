@@ -47,7 +47,6 @@ import { useToolAuditStore } from '../../stores/toolAuditStore'
 import { DEFAULT_SETTINGS } from '../../lib/constants'
 import { __resetRunStopsForTests } from '../../lib/run-stop'
 import { __resetRunLanesForTests, localLaneHolder, queuedRunIds } from '../../lib/run-lanes'
-import { __resetRunSlotsForTests } from '../../lib/run-slot'
 import { toolRegistry, registerBuiltinTools } from '../../api/mcp'
 
 const MODEL = 'openai::local-builtin-model'
@@ -81,7 +80,6 @@ beforeEach(() => {
   registerBuiltinTools(toolRegistry)
   __resetRunStopsForTests()
   __resetRunLanesForTests()
-  __resetRunSlotsForTests()
   useChatStore.setState({ conversations: [], activeConversationId: null })
   useAgentTaskStore.setState({ byConv: {} })
   useAgentLoopStore.setState({ loops: {} })

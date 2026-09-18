@@ -177,6 +177,58 @@ describe('DER SELBSTBLOCKIERER: dieselbe Konversation fragt noch einmal', () => 
   })
 })
 
+// ── DIE `identity` (Blocker A, Opus-Review Runde 2) ─────────────────────────
+//
+// `run-slot.ts` hatte bis Runde 5 einen eigenen Zaehler (`tiefe`), der einen
+// ZWEITEN `runInLane`-Aufruf mit derselben `conversationId` durchwinkte,
+// solange der erste noch lief. Das traf nicht nur den echten Sub-Agenten-Fall
+// oben, sondern auch Stop-dann-sofort-neu-senden: der ALTE Lauf wickelte sich
+// noch ab, der NEUE trug dieselbe `conversationId`, und `admit`s eigener
+// "Derselbe Lauf fragt zweimal"-Kurzschluss (`halter?.identity === identity`,
+// Kopf der Datei) haette denselben Fehler nur eine Ebene tiefer wiederholt,
+// waere die Identitaet weiterhin die blosse `conversationId` gewesen.
+// `run-slot.ts` gibt seit Runde 5 ein FRISCHES, undurchsichtiges Objekt je
+// Aufruf mit; ohne Angabe bleibt `identity` die `convId` selbst (alle Tests
+// oben unveraendert).
+describe('identity: zwei Aufrufe derselben Konversation koennen zwei VERSCHIEDENE Laeufe sein', () => {
+  it('mit unterschiedlicher identity stellt sich der zweite Aufruf an, statt durchgewunken zu werden', () => {
+    const altesLaufToken = Symbol('alt')
+    const neuesLaufToken = Symbol('neu')
+    expect(admit('local', 'a', () => {}, altesLaufToken)).toBe('started')
+    // Gleiche `convId`, ANDERE `identity`: kein Kurzschluss mehr.
+    expect(admit('local', 'a', () => {}, neuesLaufToken)).toBe('queued')
+    expect(localLaneHolder()).toBe('a')
+    expect(queuedRunIds()).toEqual(['a'])
+  })
+
+  it('release trifft nur die eigene identity, nie die des noch laufenden anderen', () => {
+    const altesLaufToken = Symbol('alt')
+    const neuesLaufToken = Symbol('neu')
+    let neuLief = false
+    admit('local', 'a', () => {}, altesLaufToken)
+    admit('local', 'a', () => { neuLief = true }, neuesLaufToken)
+
+    // Der ALTE Lauf gibt SEINEN Platz zurueck: der Naechste (der NEUE, unter
+    // derselben convId) rueckt nach, nicht der alte noch einmal.
+    release('a', altesLaufToken)?.()
+    expect(neuLief).toBe(true)
+    expect(localLaneHolder()).toBe('a')
+
+    // Ein `release` mit der ALTEN identity, nachdem der neue Lauf laengst
+    // haelt, darf dessen Platz nicht raeumen (Generalschluessel-Gegenprobe,
+    // wie bei den Cloud/lokal-Tests oben, jetzt auf Identitaets-Ebene).
+    expect(release('a', altesLaufToken)).toBeUndefined()
+    expect(localLaneHolder()).toBe('a')
+  })
+
+  it('ohne identity-Angabe bleibt alles beim Alten: dieselbe convId ist weiter dieselbe Identitaet', () => {
+    // Genau die Rueckwaertskompatibilitaet, die alle Tests oben voraussetzen.
+    expect(admit('local', 'a', () => {})).toBe('started')
+    expect(admit('local', 'a', () => {})).toBe('started')
+    expect(localLaneHolder()).toBe('a')
+  })
+})
+
 describe('ein Lauf ohne Kennung kann die Spur nicht verklemmen', () => {
   it('er nimmt den Platz gar nicht erst', () => {
     // Er koennte ihn nie zurueckgeben, denn `release` findet ihn ueber die

@@ -32,7 +32,6 @@ import { renderHook, act } from '@testing-library/react'
 import { useBenchmark, BENCHMARK_LANE_ID } from '../useBenchmark'
 import { useBenchmarkStore } from '../../stores/benchmarkStore'
 import { admit, release, localLaneHolder, queuedRunIds, __resetRunLanesForTests } from '../../lib/run-lanes'
-import { __resetRunSlotsForTests } from '../../lib/run-slot'
 
 const chatStream = vi.fn(() => (async function* () {})())
 let resolveMeasure: ((v: unknown) => void) | null = null
@@ -50,7 +49,6 @@ vi.mock('../../lib/benchmark-run', () => ({
 
 beforeEach(() => {
   __resetRunLanesForTests()
-  __resetRunSlotsForTests()
   useBenchmarkStore.setState({ results: {}, isRunning: false, currentModel: null, currentStep: 0, totalSteps: 0, error: null })
   chatStream.mockClear()
   resolveMeasure = null

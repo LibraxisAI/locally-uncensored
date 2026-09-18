@@ -47,7 +47,6 @@ import { useModelStore } from '../../stores/modelStore'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { __resetRunLanesForTests, localLaneHolder, queuedRunIds } from '../../lib/run-lanes'
-import { __resetRunSlotsForTests } from '../../lib/run-slot'
 
 const MODEL = 'openai::local-builtin-model'
 
@@ -62,7 +61,6 @@ beforeEach(() => {
   gates.length = 0
   slugCalls.length = 0
   __resetRunLanesForTests()
-  __resetRunSlotsForTests()
   useChatStore.setState({ conversations: [], activeConversationId: null })
   useCodexStore.setState({ sendsInFlight: 0, threads: {}, workingDirectory: '' })
   useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })

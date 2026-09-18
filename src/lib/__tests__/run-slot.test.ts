@@ -23,13 +23,12 @@ import {
   runQueuePosition,
   __resetRunLanesForTests,
 } from '../run-lanes'
-import { runInLane, __resetRunSlotsForTests } from '../run-slot'
+import { runInLane } from '../run-slot'
 import { useGenerationStore } from '../../stores/generationStore'
 import { quelldateien, quelltext } from '../../components/__tests__/quelldateien'
 
 beforeEach(() => {
   __resetRunLanesForTests()
-  __resetRunSlotsForTests()
   useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
 })
 
@@ -246,52 +245,105 @@ describe('Stop auf einen Lauf, der noch wartet', () => {
   })
 })
 
-describe('der verschachtelte Lauf gibt die Spur des Elternlaufs nicht frei', () => {
-  it('ein Lauf im Lauf laeuft durch, ohne den Platz herzugeben', async () => {
-    // Die Ecke, an der ein einzelnes `finally` zu viel die ganze Sperre
-    // aushebelt. `admit` laesst denselben Lauf absichtlich durch (sonst
-    // wartete ein Vordergrund-Sub-Agent auf eine Spur, die sein eigener
-    // Elternlauf haelt). Ohne Zaehler naehme der innere Lauf dieses `started`
-    // fuer bare Muenze und raeumte in seinem `finally` den Platz des Aeusseren.
-    let innenFertigHalter: string | null = 'noch-nicht-gemessen'
-    const laufA = runInLane({ conversationId: 'a', lane: 'local' }, async () => {
-      await runInLane({ conversationId: 'a', lane: 'local' }, async () => {})
-      innenFertigHalter = localLaneHolder()
-    })
-    await laufA
-    expect(innenFertigHalter).toBe('a')
-    expect(localLaneHolder()).toBeNull()
-  })
-
-  it('und der Wartende rueckt dabei NICHT vor', async () => {
+// ── BLOCKER A (Opus-Review Runde 2) ─────────────────────────────────────────
+//
+// Hier stand bis Runde 5 "der verschachtelte Lauf gibt die Spur des
+// Elternlaufs nicht frei": ein Zaehler (`tiefe`) liess einen ZWEITEN
+// `runInLane`-Aufruf mit derselben `conversationId` sofort durch, solange der
+// erste noch lief, gedacht fuer einen Vordergrund-Sub-Agenten. Diesen
+// Aufrufer gibt es nicht mehr (`sub-agent.ts` ruft `provider.chatWithTools`
+// direkt, nie `runInLane`, nachgesehen per grep), und der Zaehler traf
+// stattdessen jeden Stop-dann-sofort-neu-senden auf derselben Unterhaltung:
+// der neue Lauf lief unblockiert und ungebucht, WAEHREND der alte noch in
+// seinem eigenen `finally` steckte. Die drei Tests hier ersetzen das durch
+// das Verhalten, das jetzt gilt: JEDER Aufruf ist ein eigener Lauf, auch mit
+// identischer `conversationId`.
+describe('Stop und sofortiges Neusenden: der neue Lauf ist ein EIGENER Lauf', () => {
+  it('Opus-Szenario: A haelt, C wartet, Stop A, sofort A neu: A-neu stellt sich HINTER C an', async () => {
+    // Aufbau wie im Wegwerf-Test aus review-lanes.md: drei Unterhaltungen,
+    // A haelt die Spur, C hat sich schon angestellt, WAEHREND A noch laeuft.
+    // C bekommt einen STEUERBAREN Rumpf, sonst laeuft er (ohne eigenes await)
+    // im selben Tick durch wie A-neu und die beiden lassen sich nicht mehr
+    // auseinanderhalten.
     const a = steuerbar()
-    let bLief = false
+    const c = steuerbar()
+    const spur: string[] = []
     const laufA = runInLane({ conversationId: 'a', lane: 'local' }, async () => {
-      await runInLane({ conversationId: 'a', lane: 'local' }, async () => {})
-      await a.versprechen
+      spur.push('a-an'); await a.versprechen; spur.push('a-aus')
     })
-    const laufB = runInLane({ conversationId: 'b', lane: 'local' }, async () => { bLief = true })
-    await takte()
+    const laufC = runInLane({ conversationId: 'c', lane: 'local' }, async () => {
+      spur.push('c-an'); await c.versprechen; spur.push('c-aus')
+    })
+    expect(localLaneHolder()).toBe('a')
+    expect(queuedRunIds()).toEqual(['c'])
 
-    expect(bLief).toBe(false)
+    // Stop in A: der Sendeweg bricht seinen eigenen Fetch ab, aber der
+    // `runInLane`-Rumpf steckt noch in `await a.versprechen` (das Analogon zu
+    // den gemessenen 300-500 ms `endTurnDurably`). Sein `finally` ist noch
+    // NICHT gelaufen.
+    useGenerationStore.getState().abortConversation('a')
+
+    // Sofortiges Neusenden: ein ZWEITER, unabhaengiger `runInLane`-Aufruf mit
+    // DERSELBEN conversationId, waehrend der erste noch offen ist.
+    let neuAGelaufen = false
+    const laufANeu = runInLane({ conversationId: 'a', lane: 'local' }, async () => { neuAGelaufen = true })
+
+    // VOR der Nachbesserung waere hier `neuAGelaufen === true` gewesen (der
+    // Fastpath liess ihn sofort durch, ungebucht). Jetzt stellt er sich an.
+    expect(neuAGelaufen).toBe(false)
+    expect(queuedRunIds()).toEqual(['c', 'a'])
+    // Zu keinem Zeitpunkt haelt irgendwer ausser dem ALTEN A-Lauf die Spur:
     expect(localLaneHolder()).toBe('a')
 
+    // Der alte A-Lauf wickelt sich jetzt wirklich ab.
     a.aufloesen()
-    await Promise.all([laufA, laufB])
-    expect(bLief).toBe(true)
+    await laufA
+    await takte()
+
+    // C ist dran, NICHT der neue A-Lauf: FIFO nach Ankunftszeit, C hat sich
+    // angestellt, bevor A-neu ueberhaupt existierte. C haengt jetzt selbst in
+    // seinem eigenen `await`, also ist das der Moment, an dem sich "C laeuft"
+    // und "A-neu laeuft noch nicht" wirklich auseinanderhalten lassen.
+    expect(spur).toEqual(['a-an', 'a-aus', 'c-an'])
+    expect(neuAGelaufen).toBe(false)
+    expect(localLaneHolder()).toBe('c')
+    expect(queuedRunIds()).toEqual(['a'])
+
+    // C beendet seinen Zug. Erst DANACH darf A-neu drankommen.
+    c.aufloesen()
+    await laufC
+    await takte()
+
+    expect(spur).toEqual(['a-an', 'a-aus', 'c-an', 'c-aus'])
+    await laufANeu
+    expect(neuAGelaufen).toBe(true)
+    expect(localLaneHolder()).toBeNull()
   })
 
-  it('ein werfender innerer Lauf raeumt den Platz des Aeusseren auch nicht', async () => {
-    const laufA = runInLane({ conversationId: 'a', lane: 'local' }, async () => {
-      try {
-        await runInLane({ conversationId: 'a', lane: 'local' }, async () => {
-          throw new Error('innen kaputt')
-        })
-      } catch { /* der Elternlauf faengt und macht weiter */ }
-      expect(localLaneHolder()).toBe('a')
-    })
+  it('zwei unabhaengige Laeufe derselben Unterhaltung geben je ihre EIGENE Buchung zurueck', async () => {
+    // Ergaenzung zur Buchungsseite (generationStore.runs): das spaet kommende
+    // `finally` des ALTEN Laufs darf die Buchung des NEUEN nicht wegraeumen.
+    // A-neu bekommt einen STEUERBAREN Rumpf, sonst ist er schon fertig (und
+    // hat seine eigene Buchung schon wieder geloescht), bevor der Test
+    // nachsehen kann.
+    const a = steuerbar()
+    const aNeu = steuerbar()
+    const laufA = runInLane({ conversationId: 'a', lane: 'local' }, async () => { await a.versprechen })
+    expect(useGenerationStore.getState().runs['a']?.lane).toBe('local')
+
+    const laufANeu = runInLane({ conversationId: 'a', lane: 'local' }, async () => { await aNeu.versprechen })
+    // A-neu wartet (A haelt noch), ist aber trotzdem schon gebucht.
+    expect(useGenerationStore.getState().runs['a']).toBeDefined()
+
+    a.aufloesen()
     await laufA
-    expect(localLaneHolder()).toBeNull()
+    await takte()
+    // Jetzt laeuft A-neu: die Buchung muss noch stehen, das alte `finally`
+    // darf sie nicht geloescht haben.
+    expect(useGenerationStore.getState().runs['a']).toBeDefined()
+    aNeu.aufloesen()
+    await laufANeu
+    expect(useGenerationStore.getState().runs['a']).toBeUndefined()
   })
 })
 
