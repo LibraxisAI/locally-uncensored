@@ -43,6 +43,8 @@ import {
   loopPassSaysDone,
 } from '../lib/agent-commands'
 import { useGenerationStore } from '../stores/generationStore'
+import { runInLane } from '../lib/run-slot'
+import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
 import { isOllamaLocal } from '../api/backend'
 import { requestGenerationCancel } from '../api/vram-handoff'
 import { planWithArchitect, renderArchitectPlanSection } from '../api/agents/architect'
@@ -405,6 +407,23 @@ export function useCodex() {
     // do nothing, with no error and no way out short of reloading the app.
     // This is the safety net for that whole stretch, not just the happy path.
     try {
+
+    // Lane admission (Runde 4, review-lanes.md Blocker 1+6): everything from
+    // here on (workspace resolution, RAG, memory, the tool loop, the /loop
+    // driver) runs inside runInLane's body, so a local run that has to wait
+    // for the built-in engine's one llama-server slot has not touched the
+    // chat store yet when it is queued. `queueAbort` starts null because the
+    // real AbortController is not created until deep inside the body (after
+    // messages are assembled); it is filled in the moment that happens, so
+    // the rare window between "granted the lane" and "the body registered
+    // its own aborter" still has something to reach if Stop lands there.
+    // 'cancelled-while-queued' (Stop while still waiting) skips the body and
+    // its own finally entirely, so the guard claimed above is freed here.
+    const lane = laneOf(activeModel, currentLaneFacts())
+    let queueAbort: AbortController | null = null
+    const laneOutcome = await runInLane(
+      { conversationId: convId, lane, abort: () => queueAbort?.abort() },
+      async () => {
 
     const memoryScope = store.conversations.find(c => c.id === convId)?.memoryScope
     // A brand-new instruction clears a previous stop; a /loop pass inherits it,
@@ -909,6 +928,7 @@ export function useCodex() {
 
     // Setup
     const abort = new AbortController()
+    queueAbort = abort
     // Hand Stop to everything this run starts, including the nested ReAct loop
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
@@ -2623,6 +2643,14 @@ export function useCodex() {
           codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, loopState.intervalMs))
         }
       }
+    }
+      },
+    )
+    if (laneOutcome === 'cancelled-while-queued' && activeCodexRuns.get(convId) === runToken) {
+      // Stop pulled this run out of the local lane's waiting room before the
+      // body (and its own finally, and even its own AbortController) ever
+      // existed, so the guard claimed above has to be freed here instead.
+      activeCodexRuns.delete(convId)
     }
     } catch (e) {
       // Safety net for the guard claimed above: whatever threw, and from
