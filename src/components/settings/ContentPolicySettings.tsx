@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { getContentPolicy, setContentPolicy, type ContentPolicy } from '../../api/cloud/jobs'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { primeContentPolicyCache } from '../../hooks/useContentPolicy'
 
 /*
  * Der Zusatz am Off-Hinweis haengt am Schalter des Servers. Ein Satz, der eine
@@ -66,6 +67,10 @@ export function ContentPolicySettings() {
     try {
       const saved = await setContentPolicy(next, ageConfirmed)
       setPolicy(saved)
+      // C2: the ModelChip badge reads a separate shared cache (useContentPolicy)
+      // so it does not fire its own GET per mount — push the fresh value in
+      // immediately instead of leaving it to catch up on the next reload.
+      primeContentPolicyCache(saved)
       /*
        * Das Bestaetigungsdatum kommt vom Server, nicht von der Uhr dieses
        * Rechners (R2-30). `setContentPolicy` gibt nur die Richtlinie zurueck,
