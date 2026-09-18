@@ -107,12 +107,41 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  // 3.0.0 ist gebaut, aber nicht veroeffentlicht: kein Tag, kein Release. Seit
-  // dem 11.09.2026 stehen alle fuenf Manifeste auf 3.0.0, also liest die
-  // Tabelle diesen Eintrag als den der LAUFENDEN Version, und der Waechter in
-  // stores/__tests__/releaseNotesStore.test.ts haelt ihn an die Version. Der
-  // Eintrag steht hier und nicht in einer Textdatei daneben, weil nur hier
-  // geprueft wird, ob eine Zusage im Text zur Wirklichkeit im Code passt.
+  // Runde 4 (review-engine.md Runde 3, Abschnitt 6): der Kommentar hier war
+  // veraltet. 3.0.0 IST getaggt (v3.0.0 auf 10df943e, 14.09.2026) und auf
+  // origin, also veroeffentlicht; der 3.0.0-Eintrag unten darf keine Zusage
+  // mehr tragen, die 3.0.0 selbst nicht enthielt. Ein 3.0.1-Entwurf steht
+  // jetzt davor, genau wie releaseNotesStore.test.ts es ausdruecklich
+  // erlaubt (ein einziger Entwurf ueber der laufenden Version, package.json
+  // bleibt auf 3.0.0). Package.json wird erst beim Release hochgezogen; bis
+  // dahin liest der Waechter den 3.0.0-Eintrag weiter als den der laufenden
+  // Version, unveraendert.
+  {
+    version: '3.0.1',
+    headline: 'A GPU without a measured free reading gets a safer plan, and Linux/AppImage installs stop losing environment variables to it',
+    lines: [
+      'On a GPU where the free VRAM could not actually be measured (no nvidia-smi, for instance), the LU Engine used to plan layers as if the whole card were sitting empty and log "N MiB are free" for a number that was really the total size, other programs included. It now takes a bigger safety margin on that weaker reading and logs it correctly as total capacity, not free memory, so a start plans fewer layers rather than too many.',
+      'Linux AppImage: a foreign program the app starts (git, a system Python, pip, ffmpeg, nvidia-smi, and the coding agent shell itself) no longer inherits the AppImage runtime\'s own LD_LIBRARY_PATH, PYTHONHOME and related variables. That inheritance made a perfectly healthy system Python fail to import ssl or find its standard library, with a diagnosis that pointed at a broken Python install rather than the real cause.',
+      'ComfyUI on a platform where pip refuses to write into the system Python (Arch, Debian 12+, Fedora 38+, Ubuntu 23.04+) now gets an isolated venv without the setup dying at the first pip call, and the same fix keeps the Coding Agent\'s own terminal from picking up the same poisoned environment for every git, pip or python command typed into it.',
+      'A local training run\'s pip, Hugging Face and torch caches now follow wherever the trainer\'s own data root is configured to, instead of always writing to the user profile drive regardless of that setting.',
+    ],
+    details: [
+      {
+        title: 'Fixes',
+        items: [
+          'The LU Engine crashing immediately on an old CPU now says which instruction set is missing, measured from the CPU itself rather than guessed, and stops retrying the same binary a second time since it would only fail the same way again.',
+          'The engine startup probe\'s log line read as if a model that is still loading, one that is thinking, and one that has genuinely failed all looked the same. The wording for each case is distinct now.',
+          'The CI check that runs on every pull request now fails independently on each platform instead of one platform\'s failure hiding whatever the other platform would have found.',
+        ],
+      },
+    ],
+  },
+  // 3.0.0 ist getaggt (v3.0.0, 10df943e, 14.09.2026) und auf origin: dieser
+  // Eintrag ist der VEROEFFENTLICHTE Notizzettel und darf nachtraeglich
+  // keine Zusage mehr bekommen, die die veroeffentlichte 3.0.0 nicht
+  // enthielt. Solange package.json auf 3.0.0 steht, haelt der Waechter in
+  // stores/__tests__/releaseNotesStore.test.ts diesen Eintrag an der
+  // Version; der 3.0.1-Entwurf oben steht daneben, nicht an seiner Stelle.
   {
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
@@ -192,7 +221,6 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'When that backend reports both a running window and a training limit, the running one wins. A server started with 16K no longer reads as 40K, and the context picker stops at what the server really has. A limit with nothing running behind it is labelled as the training limit, and no budget is derived from it.',
           'A large model download no longer looks frozen at zero. The bar was watching the model folder while the downloader filled a shared chunk cache beside it, so the bytes that really arrived were never counted. It counts that cache as well now, from the moment the download starts. On Windows it also counts the transfer figure a network read is booked under, which is the half we have not yet watched on a real download.',
           'A 2 GB card can still turn a 3B model into garbage. The layer count is now measured against the card, which should help, but we have not seen that card in the house, so the report stays open.',
-          'On a GPU where the free VRAM could not actually be measured (no nvidia-smi, for instance), the LU Engine used to plan layers as if the whole card were sitting empty and log "N MiB are free" for a number that was really the total size, other programs included. It now takes a bigger safety margin on that weaker reading and logs it correctly as total capacity, not free memory, so a start plans fewer layers rather than too many.',
         ],
       },
     ],
