@@ -22,6 +22,7 @@ use crate::os_error;
 // base models resolve only from known filenames inside LU-managed dirs, and
 // the training-set id / names are sanitized before any path join.
 
+use crate::process_util::foreign_system_command;
 use crate::state::AppState;
 use std::fs;
 use std::io::{BufReader, Read};
@@ -1070,7 +1071,7 @@ fn winget_install(
     cancel: &Arc<std::sync::atomic::AtomicBool>,
     pid_slot: &Arc<Mutex<Option<u32>>>,
 ) -> Result<(), String> {
-    let mut winget = Command::new("winget");
+    let mut winget = foreign_system_command("winget");
     winget.args(winget_install_args(id, user_scope));
     run_quiet(winget, &format!("winget install {id}"), run, cancel, pid_slot)
 }
@@ -1783,7 +1784,7 @@ struct ProbeOutcome {
 /// (Opus review of K3: the VRAM check has to measure the card that trains,
 /// not whatever the driver puts at index 0).
 fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, device: Option<&TrainerGpuChoice>, label: &str) -> ProbeOutcome {
-    let mut probe = Command::new(vpy);
+    let mut probe = foreign_system_command(vpy);
     probe.args(["-c", TORCH_PREFLIGHT_PY]);
     trainer_child_env(&mut probe);
     if let Some(choice) = device {
@@ -2000,7 +2001,7 @@ fn provision_trainer_env(
             });
         }
         set_status(state, status_kind, &format!("{tag} (2/4): creating the training environment (venv)..."));
-        let mut venv = Command::new(python_bin);
+        let mut venv = foreign_system_command(python_bin);
         venv.args(venv_create_args(action)).arg(root.join("venv"));
         run_streamed(venv, "venv create", state, cancel, pid_slot)?;
     }
@@ -2020,7 +2021,7 @@ fn provision_trainer_env(
     let vpy_for_torch = vpy.clone();
     pip_with_retry(
         || {
-            let mut torch = Command::new(&vpy_for_torch);
+            let mut torch = foreign_system_command(&vpy_for_torch);
             torch.args(&torch_args);
             torch
         },
@@ -2035,7 +2036,7 @@ fn provision_trainer_env(
     let vpy_for_pkg = vpy.clone();
     pip_with_retry(
         || {
-            let mut pkg = Command::new(&vpy_for_pkg);
+            let mut pkg = foreign_system_command(&vpy_for_pkg);
             pkg.args(["-m", "pip", "install", "--progress-bar", "off", "--no-input", "-e", "."])
                 .current_dir(repo_dir(root));
             pkg
@@ -2260,7 +2261,7 @@ struct TrainStep<'a> {
 /// minus its guesses about the machine. `--mixed_precision bf16` was already
 /// among the script's own arguments; musubi passes it to `Accelerator`.
 fn training_command(vpy: &str, repo: &Path, step: &TrainStep<'_>) -> Command {
-    let mut cmd = Command::new(vpy);
+    let mut cmd = foreign_system_command(vpy);
     // What `--num_cpu_threads_per_process 1` used to set, nothing more.
     cmd.current_dir(repo).env("OMP_NUM_THREADS", "1").arg("src/musubi_tuner/zimage_train_network.py").args([
         "--dit", step.dit,
@@ -2531,7 +2532,7 @@ pub fn start_character_training(
 
         // 1) latent cache
         set_status(&run, "running", "Step 1/4: Caching image latents...");
-        let mut c1 = Command::new(&vpy_s);
+        let mut c1 = foreign_system_command(&vpy_s);
         c1.current_dir(&repo).args([
             "src/musubi_tuner/zimage_cache_latents.py",
             "--dataset_config", &toml_s,
@@ -2551,7 +2552,7 @@ pub fn start_character_training(
         }
         // 2) text-encoder cache (fp8 keeps the 4B Qwen TE inside 12 GB)
         set_status(&run, "running", "Step 2/4: Caching text encoder outputs...");
-        let mut c2 = Command::new(&vpy_s);
+        let mut c2 = foreign_system_command(&vpy_s);
         c2.current_dir(&repo).args([
             "src/musubi_tuner/zimage_cache_text_encoder_outputs.py",
             "--dataset_config", &toml_s,
@@ -2629,7 +2630,7 @@ pub fn start_character_training(
         }
         let _ = fs::create_dir_all(&loras_dir);
         let final_path = loras_dir.join(format!("{out_name}.safetensors"));
-        let mut c4 = Command::new(&vpy_s);
+        let mut c4 = foreign_system_command(&vpy_s);
         c4.current_dir(&repo).args([
             "src/musubi_tuner/convert_lora.py",
             "--input", &trained.to_string_lossy(),
@@ -3287,6 +3288,62 @@ mod tests {
             "BLOCKER B2 (Runde 2): without this, CUDA's own FASTEST_FIRST default \
              can pin a different physical card than the index promises: {envs:?}",
         );
+    }
+
+    /// Trainer-3.0.1-Folgeauftrag B1: every foreign program trainer.rs starts
+    /// (python, pip, winget, the venv it builds) now goes through
+    /// `foreign_system_command`, the same AppImage-cleanup adapter the
+    /// engine branch introduced for K11/K14. That adapter strips
+    /// `LD_LIBRARY_PATH`/`PYTHONHOME`/etc. the moment the `Command` is
+    /// built; `pin_trainer_gpu` and `trainer_child_env` run AFTER that, on
+    /// the same `Command`. This locks the order in: the trainer-specific
+    /// variables have to survive a real AppImage cleanup, not merely avoid
+    /// being on the poisoned list by accident.
+    ///
+    /// Uses the guarded `APPDIR` env mutation `process_util`'s own tests
+    /// use, since `std::env` is process-wide and `cargo test` runs this
+    /// file's tests concurrently on one binary.
+    #[test]
+    fn trainer_env_survives_the_appimage_cleanup_the_adapter_runs_first() {
+        let _guard = crate::process_util::appimage_env_test_guard();
+        std::env::set_var("APPDIR", "/tmp/.mount_LocallieGkad");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu",
+        );
+        let mut cmd = super::foreign_system_command("python3");
+        super::trainer_child_env(&mut cmd);
+        let choice = super::TrainerGpuChoice {
+            index: 1,
+            name: "RTX 3090 Ti".to_string(),
+            memory_mib: Some(24564),
+            source: "the Hardware tab's GPU selection",
+        };
+        super::pin_trainer_gpu(&mut cmd, &choice);
+        cmd.env("HF_HOME", "/data/lu/trainer/cache/huggingface");
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&("LD_LIBRARY_PATH".into(), None)),
+            "the AppImage-poisoned LD_LIBRARY_PATH must actually be gone: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_VISIBLE_DEVICES".into(), Some("1".into()))),
+            "the GPU pin must survive the adapter's cleanup: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "CUDA_DEVICE_ORDER must survive the adapter's cleanup: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("PYTHONUTF8".into(), Some("1".into()))),
+            "trainer_child_env's variables must survive the adapter's cleanup: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("HF_HOME".into(), Some("/data/lu/trainer/cache/huggingface".into()))),
+            "the trainer's own cache variables must survive the adapter's cleanup: {envs:?}",
+        );
+        std::env::remove_var("APPDIR");
+        std::env::remove_var("LD_LIBRARY_PATH");
     }
 
     /// The priority order the review asked for: the Hardware tab's own pick
@@ -4353,7 +4410,7 @@ mod journey_tests {
         let body = &src[src.find("fn provision_trainer_env(").expect("provision")..];
         let body = &body[..body.find("pub fn character_trainer_status").expect("end of provision")];
         let gate = body.find("trainer_base_python(python_bin").expect("the interpreter is chosen");
-        for later in ["fetch_musubi_source(", "Command::new(python_bin)", "pip_with_retry(", "create_dir_all("] {
+        for later in ["fetch_musubi_source(", "foreign_system_command(python_bin)", "pip_with_retry(", "create_dir_all("] {
             let at = body.find(later).unwrap_or_else(|| panic!("{later} is gone from the setup"));
             assert!(gate < at, "{later} runs before the Python rule is enforced");
         }

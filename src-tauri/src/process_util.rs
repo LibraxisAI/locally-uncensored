@@ -270,18 +270,30 @@ pub fn foreign_system_command_tokio<S: AsRef<std::ffi::OsStr>>(program: S) -> to
     cmd
 }
 
+/// `APPDIR` and the variables it poisons are PROCESS-WIDE `std::env` state,
+/// and `cargo test` runs every test in this binary concurrently on one
+/// process. Any test anywhere in the crate that sets or reads `APPDIR` (this
+/// module's own, and `commands::trainer`'s B1 proof that trainer-specific
+/// variables survive the cleanup) takes this ONE crate-wide lock first, or
+/// two such tests running on different threads can observe each other's
+/// `APPDIR` mid-mutation -- an intermittent failure that has nothing to do
+/// with the code under test. `#[cfg(test)]`-only: never reachable from
+/// shipping code, so it needs no entry in `command_new_coverage_guard`.
+#[cfg(test)]
+pub(crate) fn appimage_env_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 #[cfg(test)]
 mod appimage_env_tests {
     use super::*;
 
-    /// `APPDIR` and friends are PROCESS-WIDE `std::env` state, and cargo runs
-    /// this file's tests concurrently on one binary. Every test below that
-    /// sets or reads `APPDIR` takes this first, or it can observe another
-    /// thread's `APPDIR` mid-mutation (an intermittent failure that has
-    /// nothing to do with the code under test).
+    /// Delegates to the crate-wide guard so this module's own APPDIR tests
+    /// and `commands::trainer`'s take the same lock, see
+    /// [`appimage_env_test_guard`].
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+        appimage_env_test_guard()
     }
 
     /// Most tests below care only about the mount-stripping behaviour, not
@@ -1163,6 +1175,20 @@ mod command_new_coverage_guard {
         // shell.rs:204, `#[cfg(windows)]`-gated and windows-only exactly
         // like the review's own Ausnahmeliste for that file names.
         ("src/commands/shell.rs", 1),
+        // Trainer-3.0.1-Folgeauftrag B1 (bau/engine.md, Nachbesserung 11):
+        // every foreign program trainer.rs starts (winget, the venv's own
+        // python, the two pip installs, the four musubi-tuner steps) now
+        // goes through foreign_system_command. Zero raw Command::new left
+        // in shipping code; trainer.rs spawns no bundled sidecar of its
+        // own, unlike engine.rs below.
+        ("src/commands/trainer.rs", 0),
+        // Same Nachbesserung, engine.rs half: these 2 are NOT foreign
+        // programs, they are engine.rs's own two llama-server spawns (the
+        // chat/completion server and the embeddings server), our own
+        // bundled sidecar. K11/K14's doc comment on foreign_system_command
+        // is explicit that a bundled sidecar stays raw, it needs exactly
+        // the AppImage-bundled libraries the adapter would strip out.
+        ("src/commands/engine.rs", 2),
     ];
 
     /// Runde 3, Nachbesserung 10: the review caught this before it bit
