@@ -302,6 +302,37 @@ interface ChatRun {
   discardedThinkBuf: string
 }
 
+/**
+ * Runs currently in flight in PLAIN chat's `sendMessage`, keyed by
+ * conversation. The re-entry guard `useAgentChat.ts` (`activeAgentRuns`) and
+ * `useCodex.ts` (`activeCodexRuns`) already have; `sendMessage` had none
+ * (Runde 5 Folgeposten 2, review-lanes.md Runde 2 Punkt 4).
+ *
+ * Blocker A's fix (`run-slot.ts`, this round) gives every `runInLane` call
+ * its own booking identity, so two sends on the same conversation can no
+ * longer both hold the LOCAL lane at once, but that only serializes the
+ * lane a local model uses. A CLOUD model's lane always returns `'started'`
+ * immediately (`admit`, `run-lanes.ts`): nothing there stops a double-click
+ * on a cloud conversation from firing two real, simultaneous requests, each
+ * writing into its OWN fresh assistant message. That is the exact live money
+ * bug this house has already paid for once (one prompt, two Enters,
+ * `video_generate` four times, David 2026-06-16). Blocker A closed the
+ * local half of it and left the cloud half open, because a cloud send was
+ * never anyone's re-entry guard's job before.
+ *
+ * Same shape and same placement as the sister hooks: claimed synchronously
+ * right after `convId` is resolved, no `await` in between, freed in the
+ * `finally` only if this run still owns the entry (a Stop-then-resend on the
+ * same conversation must not have the OLD run's cleanup evict the NEW run's
+ * claim).
+ */
+const activeChatRuns = new Map<string, symbol>()
+
+/** Test-only: which conversations currently have a live plain-chat send. */
+export function __activeChatRunConvIdsForTests(): string[] {
+  return [...activeChatRuns.keys()]
+}
+
 export function useChat() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [isLoadingModel, setIsLoadingModel] = useState(false)
@@ -341,7 +372,16 @@ export function useChat() {
   /** One group round: the user's line goes in once, then every group model
    *  answers in turn on the shared, attribution-tagged history. One abort
    *  controller spans the whole round, so Stop ends the round, not just the
-   *  model that happened to be talking. */
+   *  model that happened to be talking.
+   *
+   * Runde 5 (review-lanes.md Blocker B): the round now books the local lane
+   * for its ENTIRE span, all speakers included, exactly like the other two
+   * send paths. Before this, `fbfe15c3` (Runde 4) removed the app-wide
+   * composer lock that used to cover a group round as a side effect, without
+   * putting the round on the lane that replaced it: a local group chat and
+   * a second local conversation could stream from the built-in engine at the
+   * same time, silently, because `localLaneHolder()` never heard about the
+   * group round at all. */
   const runGroupRound = useCallback(async (convId: string, content: string, images: ImageAttachment[] | undefined, models: string[]) => {
     useChatStore.getState().addMessage(convId, {
       id: uuid(),
@@ -351,41 +391,53 @@ export function useChat() {
       timestamp: Date.now(),
     })
 
+    // The round holds the lane its SPEAKERS need. Mixed local+cloud speakers
+    // hold the local lane: a single local speaker anywhere in the round still
+    // ties up the one engine slot for the whole round's duration, and the
+    // safe reading is "this round touches the local card", not "every
+    // speaker does". Getting this wrong the other way (treating a mixed
+    // round as cloud) would let a local speaker in the round run alongside
+    // an unrelated local conversation, the exact VRAM swap this module
+    // exists to prevent.
+    const facts = currentLaneFacts()
+    const lane = models.some((model) => laneOf(model, facts) === 'local') ? 'local' : 'cloud'
     const abort = new AbortController()
-    // The generationStore aborter map IS the run register, keyed by convId,
-    // see the ChatRun doc comment above sendMessage. Nothing else needs to
-    // remember this controller: Stop looks it up there, by conversation, not
-    // through a hook-instance ref that a second overlapping run would
-    // overwrite.
-    const myAborter = () => abort.abort()
-    useGenerationStore.getState().registerAborter(convId, myAborter)
-    setIsGenerating(true)
-    useGenerationStore.getState().setGenerating(convId, true)
-    try {
-      for (const model of models) {
-        if (abort.signal.aborted) break
-        await runGroupTurn(convId, model, models, abort)
-      }
-    } finally {
-      // Same identity check as the single-model turn below (Blocker 2,
-      // review-lanes.md): a Stop followed by an immediate resend on this
-      // conversation can register a new aborter before this round's
-      // finally runs.
-      const stillOwnsSlot = useGenerationStore.getState().aborters[convId] === myAborter
-      if (stillOwnsSlot) {
-        useGenerationStore.getState().clearAborter(convId)
-      }
-      // The round is over, so it goes on disk BEFORE the app says so. Same
-      // contract as the single-model turn below and as the Agent and Coding
-      // runs — see stores/durability.ts for the measurement that made the
-      // order matter.
-      await endTurnDurably(() => {
-        if (stillOwnsSlot) {
-          setIsGenerating(false)
-          useGenerationStore.getState().setGenerating(convId, false)
+    await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
+      // The generationStore aborter map IS the run register, keyed by convId,
+      // see the ChatRun doc comment above sendMessage. Nothing else needs to
+      // remember this controller: Stop looks it up there, by conversation, not
+      // through a hook-instance ref that a second overlapping run would
+      // overwrite.
+      const myAborter = () => abort.abort()
+      useGenerationStore.getState().registerAborter(convId, myAborter)
+      setIsGenerating(true)
+      useGenerationStore.getState().setGenerating(convId, true)
+      try {
+        for (const model of models) {
+          if (abort.signal.aborted) break
+          await runGroupTurn(convId, model, models, abort)
         }
-      })
-    }
+      } finally {
+        // Same identity check as the single-model turn below (Blocker 2,
+        // review-lanes.md): a Stop followed by an immediate resend on this
+        // conversation can register a new aborter before this round's
+        // finally runs.
+        const stillOwnsSlot = useGenerationStore.getState().aborters[convId] === myAborter
+        if (stillOwnsSlot) {
+          useGenerationStore.getState().clearAborter(convId)
+        }
+        // The round is over, so it goes on disk BEFORE the app says so. Same
+        // contract as the single-model turn below and as the Agent and Coding
+        // runs; see stores/durability.ts for the measurement that made the
+        // order matter.
+        await endTurnDurably(() => {
+          if (stillOwnsSlot) {
+            setIsGenerating(false)
+            useGenerationStore.getState().setGenerating(convId, false)
+          }
+        })
+      }
+    })
   }, [])
 
   const sendMessage = useCallback(async (content: string, images?: ImageAttachment[]) => {
@@ -549,6 +601,18 @@ export function useChat() {
       convId = store.createConversation(activeModel, persona?.systemPrompt || "")
     }
 
+    // Re-entry guard (Runde 5 Folgeposten 2): claimed synchronously, no
+    // `await` since `convId` was resolved above, same discipline as
+    // `activeAgentRuns`/`activeCodexRuns`. A second `sendMessage` for the
+    // SAME conversation while the first is still in flight is refused here,
+    // before it can add its own message pair or fire its own request.
+    if (activeChatRuns.has(convId)) {
+      log.info('chat.duplicate_send_blocked', { activeModel, convId })
+      return
+    }
+    const myRunToken = Symbol(convId)
+    activeChatRuns.set(convId, myRunToken)
+
     const memoryScope = store.conversations.find(c => c.id === convId)?.memoryScope
     const userMessage = {
       id: uuid(),
@@ -575,7 +639,13 @@ export function useChat() {
     useChatStore.getState().addMessage(convId, assistantMessage)
 
     const conv = useChatStore.getState().conversations.find((c) => c.id === convId)
-    if (!conv) return
+    if (!conv) {
+      // Practically unreachable (nothing awaited since the message pair was
+      // just added to this exact conversation), but the guard claimed above
+      // must not survive an early return regardless.
+      if (activeChatRuns.get(convId) === myRunToken) activeChatRuns.delete(convId)
+      return
+    }
 
     // RAG context injection
     // Per-chat persona toggle (mobile-parity, mirrors mobile's
@@ -807,7 +877,7 @@ export function useChat() {
     // pulls out of the queue before its turn leaves nothing to unwind.
     const lane = laneOf(activeModel, currentLaneFacts())
     const abort = new AbortController()
-    await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
+    const laneOutcome = await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
     // Register so deleting/closing this chat aborts the in-flight stream (Bug C).
     // Also requestGenerationCancel so a running ComfyUI job is interrupted when
     // the chat goes away mid-generation (the _activeHandoffs gate makes it a
@@ -1214,6 +1284,13 @@ export function useChat() {
       if (stillOwnsSlot) {
         useGenerationStore.getState().clearAborter(run.convId)
       }
+      // Re-entry guard release (Runde 5 Folgeposten 2): its own identity
+      // check, same reasoning as `stillOwnsSlot` above but a SEPARATE map.
+      // A Stop-then-resend on the same conversation must free only the run
+      // that actually still holds the claim, never a newer one's.
+      if (activeChatRuns.get(run.convId) === myRunToken) {
+        activeChatRuns.delete(run.convId)
+      }
       setIsLoadingModel(false)
       useModelStore.getState().setIsModelLoading(false)
 
@@ -1263,6 +1340,14 @@ export function useChat() {
       }
     }
     })
+    if (laneOutcome === 'cancelled-while-queued' && activeChatRuns.get(convId) === myRunToken) {
+      // Stop pulled this send out of the local lane's waiting room before its
+      // own `finally` ever ran (that `finally` lives inside the body above),
+      // so the guard claimed synchronously at the top has to be freed here
+      // instead. Nothing else needs undoing beyond that: the body never
+      // started, so it never registered an aborter or set `generating`.
+      activeChatRuns.delete(convId)
+    }
     // Alle drei Referenzen sind konstant: `extractAndSave` kommt aus dem
     // Modul-Singleton MEMORY_API, `runGroupRound` ist ein useCallback mit
     // leerer Dep-Liste, `sendAgentMessage` ebenfalls. `sendMessage` behaelt
