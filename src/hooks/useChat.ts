@@ -500,13 +500,55 @@ export function useChat() {
           id: noticeId, role: 'system', notice: 'info',
           content: 'Summarising the earlier turns…', timestamp: Date.now(),
         })
-        const outcome = await runCompactForConversation({
-          conversationId: convId,
-          activeModel,
-          trigger: 'manual',
-          focus: cmd.args || undefined,
-        })
-        useChatStore.getState().updateMessageContent(convId, noticeId, compactOutcomeMessage(outcome))
+        // Runde 5 Nachtrag (review-lanes.md Runde 2, Grep-Audit dieser Runde):
+        // this used to call runCompactForConversation straight away, a real
+        // inference call that never touched run-lanes.ts. A local /compact
+        // could stream from the built-in engine at the same time as an
+        // unrelated local conversation, the same VRAM-swap Blocker A and B
+        // this round were about, just triggered from a slash command instead
+        // of a send. It now books the same lane a normal turn would, with a
+        // real AbortController so Stop reaches it, whether Stop lands while
+        // it is still queued (nothing was ever asked of the model, the
+        // outcome is reported the same way an aborted summary call itself
+        // would report it) or while it is actually running.
+        const compactAbort = new AbortController()
+        setIsGenerating(true)
+        useGenerationStore.getState().setGenerating(convId, true)
+        try {
+          // No model selected: `runCompactForConversation` reports `no-model`
+          // on its own without touching any provider, so there is nothing
+          // local to guard against; `'cloud'` starts immediately and never
+          // queues, same as any other lane-less no-op would.
+          const lane = activeModel ? laneOf(activeModel, currentLaneFacts()) : 'cloud'
+          const laneOutcome = await runInLane(
+            { conversationId: convId, lane, abort: () => compactAbort.abort() },
+            async () => {
+              const outcome = await runCompactForConversation({
+                conversationId: convId,
+                activeModel,
+                trigger: 'manual',
+                focus: cmd.args || undefined,
+                signal: compactAbort.signal,
+              })
+              useChatStore.getState().updateMessageContent(convId, noticeId, compactOutcomeMessage(outcome))
+            },
+          )
+          if (laneOutcome === 'cancelled-while-queued') {
+            useChatStore.getState().updateMessageContent(
+              convId, noticeId, compactOutcomeMessage({ ok: false, reason: 'aborted' }),
+            )
+          }
+        } finally {
+          // The summary (or the "Stopped" notice) is already in the store by
+          // this point; only the announcement that flips Stop back to Send
+          // waits for the write, same contract as the send path below and
+          // runGroupRound above (stores/durability.ts has the measurement
+          // that made the order matter).
+          await endTurnDurably(() => {
+            setIsGenerating(false)
+            useGenerationStore.getState().setGenerating(convId, false)
+          })
+        }
         return
       }
     }
