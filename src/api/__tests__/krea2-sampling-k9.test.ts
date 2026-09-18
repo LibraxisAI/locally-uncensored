@@ -1,12 +1,24 @@
 /**
- * K9 nachbessert (review-create.md, GH #136, LUSTIFY! v10 Krea2 and
- * FinePorn author workflows): Krea 2 is an AuraFlow-family checkpoint, and
- * both reported author graphs carry ModelSamplingAuraFlow at shift 4, plus
- * ConditioningZeroOut for the negative branch at CFG 1 (the negative prompt
- * is a no-op there, so zeroing it out replaces a wasted CLIPTextEncode pass,
- * same rule buildDynamicWorkflow already applies to unet_ernie_image).
- * Neither node existed on the unet_krea2 path before this fix; the sigma
- * schedule the model was actually trained on never applied.
+ * K9 nachbessert (review-create.md, GH #136), corrected in Runde 3 after
+ * Opus review found the previous version of this test asserted a claim the
+ * issue does not make: "both author workflows carry ModelSamplingAuraFlow at
+ * shift 4". They do not. The issue documents TWO Krea 2 recipes that
+ * disagree on this exact node:
+ *
+ *  - FinePorn v4 NVFP4: the reporter's only PROVEN successful run (Euler,
+ *    beta, CFG 1, 8 steps), NO ModelSamplingAuraFlow, ComfyUI's own default
+ *    sampling.
+ *  - LUSTIFY! v10 Krea2: Euler, simple, CFG 1, 8 steps, PLUS
+ *    ModelSamplingAuraFlow shift 4 and ConditioningZeroOut.
+ *
+ * classifyModel cannot tell a LUSTIFY-style checkpoint from a FinePorn-style
+ * one (both classify as 'krea2'), so buildDynamicWorkflow no longer forces
+ * shift 4 on every krea2 checkpoint: that applied an unevidenced
+ * sigma-schedule change to the one variant the issue actually proves works
+ * without it. ConditioningZeroOut at CFG 1 stays (Opus: "unkritisch", it
+ * only replaces a no-op CLIPTextEncode pass, same rule as unet_ernie_image).
+ * MODEL_TYPE_DEFAULTS.krea2's scheduler moved from 'simple' to 'beta' for
+ * the same reason: it now defaults to the one PROVEN recipe.
  *
  * Run: npx vitest run src/api/__tests__/krea2-sampling-k9.test.ts
  */
@@ -24,6 +36,7 @@ vi.mock('../backend', async (importOriginal) => {
 import { buildDynamicWorkflow } from '../dynamic-workflow'
 import { getAllNodeInfo } from '../comfyui-nodes'
 import { localFetch } from '../backend'
+import { MODEL_TYPE_DEFAULTS } from '../comfyui'
 import { classTypes, nodeOf } from './graph-test-support'
 
 const KREA2_NODES = {
@@ -42,11 +55,11 @@ const KREA2_NODES = {
 const baseParams = {
   model: 'krea2-lustify-v10.safetensors',
   prompt: 'a red jacket', negativePrompt: '',
-  sampler: 'euler', scheduler: 'simple',
+  sampler: 'euler', scheduler: 'beta',
   width: 1024, height: 1024, steps: 8, cfgScale: 1, seed: 1, batchSize: 1,
 } as never
 
-describe('unet_krea2 graph (K9, GH #136)', () => {
+describe('unet_krea2 graph (K9, GH #136), corrected Runde 3', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getAllNodeInfo).mockResolvedValue(KREA2_NODES as never)
@@ -59,18 +72,22 @@ describe('unet_krea2 graph (K9, GH #136)', () => {
     } as never)
   })
 
-  it('carries ModelSamplingAuraFlow at shift 4, wired between the UNETLoader and KSampler', async () => {
+  it('does NOT force ModelSamplingAuraFlow: only one of the two documented recipes uses it, and classifyModel cannot tell them apart', async () => {
     const wf = await buildDynamicWorkflow(baseParams)
-    expect(classTypes(wf)).toContain('ModelSamplingAuraFlow')
-    const [shiftId, shiftNode] = nodeOf(wf, 'ModelSamplingAuraFlow')!
-    expect(shiftNode.inputs.shift).toBe(4.0)
-    const [, unetNode] = nodeOf(wf, 'UNETLoader')!
-    expect(shiftNode.inputs.model).toEqual([Object.entries(wf).find(([, n]) => n === unetNode)![0], 0])
+    expect(classTypes(wf)).not.toContain('ModelSamplingAuraFlow')
+    // ComfyUI's own default sampling applies: KSampler reads straight off the
+    // UNETLoader, the same wiring every other checkpoint-without-a-shift-node
+    // strategy uses.
+    const [unetId] = nodeOf(wf, 'UNETLoader')!
     const [, sampler] = nodeOf(wf, 'KSampler')!
-    expect(sampler.inputs.model).toEqual([shiftId, 0])
+    expect(sampler.inputs.model).toEqual([unetId, 0])
   })
 
-  it('at CFG 1, the negative branch is ConditioningZeroOut, not CLIPTextEncode', async () => {
+  it('MODEL_TYPE_DEFAULTS.krea2 defaults to the PROVEN recipe (FinePorn: beta), not the unproven one (LUSTIFY: simple)', () => {
+    expect(MODEL_TYPE_DEFAULTS.krea2.scheduler).toBe('beta')
+  })
+
+  it('at CFG 1, the negative branch is ConditioningZeroOut, not CLIPTextEncode (unaffected by the shift correction)', async () => {
     const wf = await buildDynamicWorkflow({ ...(baseParams as object), cfgScale: 1 } as never)
     expect(classTypes(wf)).toContain('ConditioningZeroOut')
     const [, zeroOut] = nodeOf(wf, 'ConditioningZeroOut')!

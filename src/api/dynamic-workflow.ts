@@ -1016,15 +1016,19 @@ export async function buildDynamicWorkflow(
     delete workflow[latentId]
   }
 
-  // K9 (GH #136): Krea 2's own AuraFlow-family sampling shift. Both author
-  // workflows in the issue (FinePorn, LUSTIFY! v10 Krea2) carry
-  // ModelSamplingAuraFlow at shift 4; without it the sigma schedule the model
-  // was trained on never applies.
-  if (strategy === 'unet_krea2') {
-    const shiftId = String(n++)
-    workflow[shiftId] = { class_type: 'ModelSamplingAuraFlow', inputs: { model: [samplerModelId, 0], shift: 4.0 } }
-    samplerModelId = shiftId
-  }
+  // K9 (GH #136), corrected Runde 3 after review: the issue documents TWO
+  // Krea 2 author recipes that disagree on this exact node. LUSTIFY! v10
+  // Krea2 carries ModelSamplingAuraFlow at shift 4; FinePorn v4 NVFP4, the
+  // reporter's only run he actually PROVED working end to end, used NO such
+  // node and ComfyUI's own default sampling. classifyModel cannot tell a
+  // LUSTIFY-style checkpoint from a FinePorn-style one (both classify as
+  // 'krea2'), so forcing shift 4 on every one of them - what this branch
+  // used to do - applied an unevidenced sigma-schedule change to the one
+  // variant the issue actually proves works without it. Deliberately absent:
+  // no ModelSamplingAuraFlow node, ComfyUI's built-in default applies,
+  // matching the proven recipe. If a future signal can tell the two variants
+  // apart (filename convention, a CivitAI metadata field, ...), gate this
+  // node on that signal rather than reintroducing it unconditionally.
 
   // ─── Phase 4: Sampling ───
 

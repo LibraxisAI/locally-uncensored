@@ -411,8 +411,15 @@ export const MODEL_TYPE_DEFAULTS: Record<string, ModelTypeDefaults> = {
   sdxl:   { steps: 25, cfg: 7.0, sampler: 'dpmpp_2m',        scheduler: 'karras', width: 1024, height: 1024, frames: 1, fps: 1 },
   flux:   { steps: 20, cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   flux2:  { steps: 20, cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
-  // Krea 2 (GH #136): author workflow runs euler @ CFG 1, 8 steps, 1024x1024.
-  krea2:  { steps: 8,  cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
+  // Krea 2 (GH #136, corrected Runde 3): the issue documents two author
+  // recipes that share nothing but euler / CFG 1 / 8 steps / 1024x1024 -
+  // FinePorn v4 NVFP4 (the reporter's only PROVEN successful run) uses
+  // scheduler 'beta' and no extra sampling node; LUSTIFY! v10 Krea2 uses
+  // 'simple' plus ModelSamplingAuraFlow shift 4 (see buildDynamicWorkflow's
+  // unet_krea2 comment). classifyModel cannot tell the two apart, so this
+  // default follows the one run the issue actually confirms working rather
+  // than guessing at the other.
+  krea2:  { steps: 8,  cfg: 1.0, sampler: 'euler',           scheduler: 'beta',   width: 1024, height: 1024, frames: 1, fps: 1 },
   zimage: { steps: 12, cfg: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   unknown:{ steps: 25, cfg: 7.0, sampler: 'euler',           scheduler: 'normal', width: 1024, height: 1024, frames: 1, fps: 1 },
   // ── Video ──
