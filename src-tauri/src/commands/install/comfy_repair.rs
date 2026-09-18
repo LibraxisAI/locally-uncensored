@@ -340,8 +340,17 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             let _ = deleting.join();
         }
 
-        let (torch_args, gpu_info) = plan_pytorch_install();
+        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
         update("installing", &format!("Step 2/4: {}", gpu_info));
+
+        // Runde 2, Nachbesserung 12: same preflight as the first install,
+        // before the repair spends 2 GB on a download that cannot land.
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        if let Some(msg) = super::torch::torch_python_preflight(&venv_py, torch_index.as_deref(), &torch_package_refs) {
+            update("error", &msg);
+            return;
+        }
+
         update(
             "installing",
             "Downloading PyTorch into the fresh venv (~2 GB). Live pip output below.",

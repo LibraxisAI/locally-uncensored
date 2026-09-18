@@ -119,7 +119,12 @@ pub(crate) fn pytorch_pip_args(index_url: Option<&str>, packages: &[&str]) -> Ve
 /// "Torch not compiled with CUDA enabled" the moment the user forces the GPU.
 /// The vendor list now decides, and the choice itself lives in
 /// `torch_wheels` where it is testable without any of the hardware.
-pub(crate) fn plan_pytorch_install() -> (Vec<String>, String) {
+/// Returns the ready-to-run pip args, the human-readable channel note, and
+/// (index_url, packages) again on their own: Runde 2's preflight
+/// ([`torch_python_preflight`]) needs those two separately, and re-deriving
+/// them from the combined arg list would be a second copy of the exact
+/// assembly `pytorch_pip_args` already does.
+pub(crate) fn plan_pytorch_install() -> (Vec<String>, String, Option<String>, Vec<String>) {
     let (has_nvidia, has_amd, amd_names) = torch_wheels::gpu_vendor_facts();
     let compute_cap = if has_nvidia { detect_nvidia_compute_cap() } else { None };
     let amd_refs: Vec<&str> = amd_names.iter().map(|s| s.as_str()).collect();
@@ -139,7 +144,139 @@ pub(crate) fn plan_pytorch_install() -> (Vec<String>, String) {
         Some(url) => format!("{note} ({url})"),
         None => note,
     };
-    (pytorch_pip_args(index, packages), gpu_info)
+    let args = pytorch_pip_args(index, packages);
+    (
+        args,
+        gpu_info,
+        index.map(|s| s.to_string()),
+        packages.iter().map(|s| s.to_string()).collect(),
+    )
+}
+
+// ── Runde 2, Nachbesserung 12: torch/Python-version preflight ───────────────
+
+/// The interpreter's own `(major, minor)`, the way wheel filenames spell it
+/// (`cp312` -> `(3, 12)`).
+pub(crate) fn python_version_tuple(python_bin: &str) -> Option<(u32, u32)> {
+    let mut cmd = crate::python::python_command(python_bin);
+    cmd.args(["-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"]);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_version_tuple(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+pub(crate) fn parse_version_tuple(s: &str) -> Option<(u32, u32)> {
+    let mut parts = s.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Every distinct CPython `(major, minor)` a wheel index page's `.whl`
+/// filenames declare support for (`torch-2.7.0-cp312-cp312-linux_x86_64.whl`
+/// -> `(3, 12)`). Pure and network-free, so it is testable against a canned
+/// page instead of the real index; see the module doc on why that beats a
+/// hardcoded version table: this reads whatever the channel serves AT CALL
+/// TIME, so it is never stale the day a channel adds or drops a version.
+pub(crate) fn python_versions_from_index_html(html: &str) -> std::collections::BTreeSet<(u32, u32)> {
+    // `cp3\d{1,2}-cp3\d{1,2}` rather than `cp(\d)(\d+)`: a wheel tag repeats
+    // the ABI tag right after the Python tag (`cp312-cp312-...`), and asking
+    // for that repeat is enough discipline to reject a stray "cp312" inside
+    // some other token (a URL query string, a directory name) without also
+    // pulling in a whole HTML parser.
+    static TAG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = TAG.get_or_init(|| regex::Regex::new(r"cp3(\d{1,2})-cp3\d{1,2}").unwrap());
+    re.captures_iter(html)
+        .filter_map(|c| c.get(1)?.as_str().parse::<u32>().ok())
+        .map(|minor| (3u32, minor))
+        .collect()
+}
+
+/// Fetch a PEP 503 wheel index page (`<index_url>/<package>/`, or PyPI's own
+/// simple index when `index_url` is `None`) and read the Python versions it
+/// serves wheels for, per [`python_versions_from_index_html`].
+///
+/// Talks to the network, so it is the one function here `torch.rs`'s own
+/// module doc excludes from "ohne Netz und ohne Zustand": everything ELSE
+/// in this file stays a pure decision over a probe, on purpose, and this is
+/// the deliberate, narrow exception, isolated so the pure half stays
+/// testable without it.
+fn fetch_index_python_versions(index_url: Option<&str>, package: &str) -> Result<std::collections::BTreeSet<(u32, u32)>, String> {
+    let base = index_url.unwrap_or("https://pypi.org/simple").trim_end_matches('/');
+    let url = format!("{base}/{package}/");
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("LocallyUncensored/3.0")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", crate::os_error::english(&e)))?;
+    let resp = client.get(&url).send().map_err(|e| format!("index request failed: {}", crate::os_error::english(&e)))?;
+    if !resp.status().is_success() {
+        return Err(format!("index returned HTTP {}", resp.status()));
+    }
+    let html = resp.text().map_err(|e| format!("index body: {}", crate::os_error::english(&e)))?;
+    Ok(python_versions_from_index_html(&html))
+}
+
+/// One line per interpreter found on the box, for the "here is what LU can
+/// see instead" half of the preflight message.
+fn interpreter_inventory_lines() -> Vec<String> {
+    crate::python::python_interpreters()
+        .into_iter()
+        .map(|path| match python_version_tuple(&path) {
+            Some((maj, min)) => format!("  - {path} (Python {maj}.{min})"),
+            None => format!("  - {path} (version unknown)"),
+        })
+        .collect()
+}
+
+/// Runs right before the real `pip install` for PyTorch. `None` means
+/// proceed; `Some(message)` means the venv's Python is not on the channel
+/// `plan_pytorch_install` chose and pip's own generic "no matching
+/// distribution" would send the user chasing a PATH or proxy problem that
+/// does not exist.
+///
+/// Fails OPEN on anything it cannot establish (offline, index unreachable,
+/// version probe failed): a preflight that blocks installs whenever the
+/// network hiccups is worse than the gap it closes. This is the "was du
+/// ohne Netz nicht messen kannst, als solches markieren" rule applied to a
+/// live check instead of a written report: the honest answer to "can I
+/// tell" is sometimes "no", and the function returns exactly that as
+/// `None`, not a false pass dressed up as a positive one.
+pub(crate) fn torch_python_preflight(python_bin: &str, index_url: Option<&str>, packages: &[&str]) -> Option<String> {
+    let (maj, min) = python_version_tuple(python_bin)?;
+    // The AMD Windows channel serves "torch[device-all]"; strip any extra so
+    // the index lookup is against the real package directory.
+    let package = packages.first()?.split('[').next().unwrap_or("torch");
+    let supported = match fetch_index_python_versions(index_url, package) {
+        Ok(s) if !s.is_empty() => s,
+        // Empty or unreachable: cannot tell, so do not block (see doc above).
+        _ => return None,
+    };
+    if supported.contains(&(maj, min)) {
+        return None;
+    }
+    let mut versions: Vec<String> = supported.iter().map(|(a, b)| format!("{a}.{b}")).collect();
+    versions.sort();
+    let interpreters = interpreter_inventory_lines();
+    let interpreters_block = if interpreters.is_empty() {
+        "  (none found)".to_string()
+    } else {
+        interpreters.join("\n")
+    };
+    Some(format!(
+        "This environment's Python is {maj}.{min}, and the PyTorch build LU needs for this \
+         machine currently ships wheels only for Python {versions}. Installing torch would \
+         fail with a generic pip error, so LU is stopping before that and offering to rebuild \
+         the virtual environment with a supported interpreter instead - your models and custom \
+         nodes are untouched either way, only the venv folder is recreated.\n\n\
+         Python interpreters LU found on this machine:\n{interpreters_block}\n\n\
+         Pick one of the versions above in Settings and press Repair, or install a supported \
+         Python and press Repair again.",
+        versions = versions.join(", "),
+    ))
 }
 
 #[cfg(test)]
@@ -286,4 +423,53 @@ mod tests {
         assert_eq!(parse_compute_cap_output("[Not Supported]\n8.6\n"), Some((8, 6)));
     }
 
+    // ── Runde 2, Nachbesserung 12: torch/Python preflight ────────────────
+
+    #[test]
+    fn version_tuple_parses_the_usual_shape() {
+        assert_eq!(parse_version_tuple("3.14"), Some((3, 14)));
+        assert_eq!(parse_version_tuple("3.9"), Some((3, 9)));
+        assert_eq!(parse_version_tuple(""), None);
+        assert_eq!(parse_version_tuple("garbage"), None);
+    }
+
+    /// A trimmed but structurally real PEP 503 index page, the shape both
+    /// pypi.org/simple and download.pytorch.org/whl/<channel> serve: one
+    /// `<a>` per wheel file, cp-tagged twice (Python tag, then ABI tag).
+    const SAMPLE_INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html><body>
+<a href="torch-2.7.0-cp310-cp310-manylinux_2_28_x86_64.whl">torch-2.7.0-cp310-cp310-manylinux_2_28_x86_64.whl</a>
+<a href="torch-2.7.0-cp311-cp311-manylinux_2_28_x86_64.whl">torch-2.7.0-cp311-cp311-manylinux_2_28_x86_64.whl</a>
+<a href="torch-2.7.0-cp312-cp312-manylinux_2_28_x86_64.whl">torch-2.7.0-cp312-cp312-manylinux_2_28_x86_64.whl</a>
+<a href="torch-2.7.0-cp313-cp313-manylinux_2_28_x86_64.whl">torch-2.7.0-cp313-cp313-manylinux_2_28_x86_64.whl</a>
+<a href="torch-2.6.0-cp39-cp39-manylinux_2_28_x86_64.whl">torch-2.6.0-cp39-cp39-manylinux_2_28_x86_64.whl</a>
+</body></html>"#;
+
+    #[test]
+    fn index_html_yields_every_python_version_the_channel_actually_serves() {
+        let versions = python_versions_from_index_html(SAMPLE_INDEX_HTML);
+        assert_eq!(
+            versions,
+            [(3, 9), (3, 10), (3, 11), (3, 12), (3, 13)].into_iter().collect()
+        );
+        // Python 3.14 is deliberately NOT in the sample: this is the exact
+        // shape of the gap the preflight exists to catch (Punkt 12).
+        assert!(!versions.contains(&(3, 14)));
+    }
+
+    #[test]
+    fn index_html_with_no_wheels_yields_an_empty_set_not_a_panic() {
+        assert!(python_versions_from_index_html("<html><body>nothing here</body></html>").is_empty());
+        assert!(python_versions_from_index_html("").is_empty());
+    }
+
+    /// Negative control for the parser: a bare `cp312` with no repeated ABI
+    /// tag (not a real wheel filename shape) must NOT be picked up. A parser
+    /// that matched anything containing "cp3\d\d" would also fire on a stray
+    /// digit sequence inside a URL query string or directory name.
+    #[test]
+    fn a_lone_cp_tag_without_the_repeated_abi_tag_is_not_counted() {
+        let html = r#"<a href="/cp312/some-other-thing">not a wheel</a>"#;
+        assert!(python_versions_from_index_html(html).is_empty());
+    }
 }

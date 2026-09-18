@@ -510,9 +510,19 @@ pub fn install_comfyui(
 
         // Step 2: Detect GPU and install PyTorch (probe + wheel choice shared
         // with repair_comfyui_env via plan_pytorch_install).
-        let (torch_args, gpu_info) = plan_pytorch_install();
+        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
         println!("[Install] {}", gpu_info);
         update("installing", &format!("Step 2/4: {}", gpu_info));
+
+        // Runde 2, Nachbesserung 12: before spending 2 GB and several minutes
+        // on a download pip would refuse anyway, check whether this Python
+        // is even on the chosen channel's version list.
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        if let Some(msg) = super::torch::torch_python_preflight(&effective_python, torch_index.as_deref(), &torch_package_refs) {
+            update("error", &msg);
+            return;
+        }
+
         update(
             "installing",
             "Downloading PyTorch + Torchvision + Torchaudio (~2 GB total). \
