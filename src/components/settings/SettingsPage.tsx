@@ -2454,7 +2454,7 @@ export function UpdateSection() {
 
 // ── B7 Troubleshoot section — one-shot diagnostic probe ───────
 
-interface BackendProbe {
+export interface BackendProbe {
   status: 'ok' | 'unreachable' | 'not_installed' | 'error'
   detail: string
   endpoint: string
@@ -2479,7 +2479,12 @@ interface SystemHealthReport {
   lm_studio: BackendProbe
 }
 
-function ProbeBadge({ probe }: { probe: BackendProbe }) {
+// Exported for D1's regression test (3.0.1): SettingsPage.tsx is
+// hook/store-heavy with no render harness of its own, so the small,
+// self-contained pieces that carry real decisions get tested directly
+// instead of through the whole page, the same pattern ModelSelector.tsx uses
+// for its LM Studio helpers.
+export function ProbeBadge({ probe, switchedOff }: { probe: BackendProbe; switchedOff?: boolean }) {
   // "Not running" und "Not installed" sind beide nur ein Nein und tragen
   // deshalb dasselbe Grau; der Unterschied steht im Wort, nicht in der Farbe.
   // Das Gelb, das "Not running" frueher trug, hat einen ausgeschalteten
@@ -2497,12 +2502,25 @@ function ProbeBadge({ probe }: { probe: BackendProbe }) {
     not_installed: 'Not installed',
     error: 'Error',
   }
+  // D1 (3.0.1): the probe itself only asks the fixed default address whether
+  // something answers there — it does not know, and cannot say, whether LU
+  // has this backend switched OFF in Settings. Reachable-but-off used to read
+  // as plain "Reachable", telling a customer with Ollama installed but turned
+  // off that it is in use when it plainly is not. This is the half of the fix
+  // this file can make on its own: the word changes to name both facts at
+  // once. The other half — asking the CONFIGURED address instead of the
+  // hard-coded default — is Rust (health.rs) and stays open (see report).
+  const label = probe.status === 'ok' && switchedOff ? `${labels.ok}, switched off` : labels[probe.status]
+  // Emerald reads as "in use", which is exactly the wrong colour once the
+  // sentence itself says the opposite — the quiet grey used for the other
+  // off states says so at a glance too.
+  const color = probe.status === 'ok' && switchedOff ? RUHIG : colors[probe.status]
   return (
     <span
-      className={`text-[0.55rem] px-1.5 py-0.5 rounded border font-medium ${colors[probe.status]}`}
+      className={`text-[0.55rem] px-1.5 py-0.5 rounded border font-medium ${color}`}
       title={probe.detail || probe.endpoint}
     >
-      {labels[probe.status]}
+      {label}
     </span>
   )
 }
@@ -2511,6 +2529,8 @@ function TroubleshootSection() {
   const [report, setReport] = useState<SystemHealthReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [hinweis, setHinweis] = useState<TroubleshootHinweis | null>(null)
+  // D1 (3.0.1): the one fact the probe itself cannot know — see ProbeBadge.
+  const ollamaEnabled = useProviderStore((s) => s.providers.ollama.enabled)
 
   const run = async () => {
     setLoading(true)
@@ -2563,7 +2583,7 @@ function TroubleshootSection() {
             <div className="text-[0.55rem] uppercase tracking-widest text-gray-500">Backends</div>
             <div className="flex items-center justify-between">
               <span className="text-[0.65rem] text-gray-300">Ollama</span>
-              <ProbeBadge probe={report.ollama} />
+              <ProbeBadge probe={report.ollama} switchedOff={!ollamaEnabled} />
             </div>
             {!isMlxImageHost() && (
               <div className="flex items-center justify-between">
