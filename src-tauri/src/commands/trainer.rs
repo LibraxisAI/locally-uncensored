@@ -561,7 +561,20 @@ pub(crate) fn resolve_trainer_gpu(selection: &crate::commands::gpu::GpuSelection
 
 /// Set on a Command right before it runs: every trainer child sees exactly
 /// this one card, regardless of how many are actually plugged in.
+///
+/// BLOCKER fix, Runde 2: `choice.index` comes from `nvidia-smi`, which
+/// numbers cards in PCI bus order. CUDA itself, without `CUDA_DEVICE_ORDER`,
+/// defaults to FASTEST_FIRST, a different ordering whenever visible cards
+/// differ in speed. `CUDA_VISIBLE_DEVICES` alone can therefore pin the wrong
+/// physical card on a multi-GPU box, the VRAM preflight measures a
+/// different card than the one that trains, and the log line names the
+/// intended card while a different one runs. This also covers the branch in
+/// `choose_trainer_gpu` that reads a user-set `CUDA_VISIBLE_DEVICES`: its
+/// index is matched against `detect_gpus()`'s PCI-order list, so the index
+/// this function writes back out needs the same ordering to mean what it
+/// says.
 fn pin_trainer_gpu(cmd: &mut Command, choice: &TrainerGpuChoice) {
+    cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
     cmd.env("CUDA_VISIBLE_DEVICES", choice.index.to_string());
 }
 
@@ -3106,6 +3119,11 @@ mod tests {
         assert!(
             envs.contains(&("CUDA_VISIBLE_DEVICES".into(), Some("1".into()))),
             "the chosen card's index is not what the child sees: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "BLOCKER B2 (Runde 2): without this, CUDA's own FASTEST_FIRST default \
+             can pin a different physical card than the index promises: {envs:?}",
         );
     }
 

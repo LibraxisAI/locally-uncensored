@@ -1484,7 +1484,12 @@ pub fn apply_gpu_env(cmd: &mut Command, selection: &GpuSelection) {
     if selection.indices.is_empty() { return }
     let csv: String = selection.indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     match selection.vendor.as_str() {
-        "nvidia" => { cmd.env("CUDA_VISIBLE_DEVICES", &csv); }
+        // Trainer Nachbesserung Runde 2 (bau/review-trainer.md): the same
+        // ordering gap as trainer.rs::pin_trainer_gpu. Without
+        // CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA's own FASTEST_FIRST default can
+        // read this index against a different physical card than
+        // nvidia-smi's PCI-order list promised for Ollama and ComfyUI.
+        "nvidia" => { cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID"); cmd.env("CUDA_VISIBLE_DEVICES", &csv); }
         "amd" => {
             // HIP_VISIBLE_DEVICES is the official ROCm name; ROCR_VISIBLE_DEVICES
             // is the lower-level Runtime equivalent that some older builds
@@ -1736,6 +1741,11 @@ End of search: 3 match(es) found.
         // We can inspect envs via get_envs (Rust 1.69+).
         let has_cuda = cmd.get_envs().any(|(k, v)| k == "CUDA_VISIBLE_DEVICES" && v.map(|s| s == "1,2").unwrap_or(false));
         assert!(has_cuda, "CUDA_VISIBLE_DEVICES should be set to 1,2");
+        // Trainer Nachbesserung Runde 2: without this, CUDA's own
+        // FASTEST_FIRST default can disagree with nvidia-smi's PCI-order
+        // index, and Ollama/ComfyUI would pin the wrong physical card.
+        let has_order = cmd.get_envs().any(|(k, v)| k == "CUDA_DEVICE_ORDER" && v.map(|s| s == "PCI_BUS_ID").unwrap_or(false));
+        assert!(has_order, "CUDA_DEVICE_ORDER should be set to PCI_BUS_ID");
     }
 
     #[test]
