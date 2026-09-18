@@ -14,13 +14,13 @@
 //! daneben, weil die Codex-Ansicht dieselbe Sonde für ihr eigenes Banner
 //! braucht — dieselbe Frage, anderer Adressat.
 
-use std::process::Command;
-
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 use super::CREATE_NO_WINDOW;
+
+use crate::process_util::foreign_system_command;
 
 /// Bug N — git probe before ComfyUI install (juliandiggins-stack issue #40).
 ///
@@ -79,7 +79,7 @@ pub fn windows_git_probe_from_output(stdout: &str, exited_successfully: bool) ->
 /// platforms a stock `git` is fine.
 #[cfg(target_os = "windows")]
 pub fn windows_git_probe() -> WindowsGitState {
-    let mut cmd = Command::new("git");
+    let mut cmd = foreign_system_command("git");
     cmd.arg("--version").creation_flags(CREATE_NO_WINDOW);
     match cmd.output() {
         Ok(o) if o.status.success() => {
@@ -136,7 +136,7 @@ pub struct GitStatus {
 /// Run `git --version` (no console window on Windows) and return the trimmed
 /// stdout line, or `None` if git is missing / failed to run.
 fn git_version_string() -> Option<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = foreign_system_command("git");
     cmd.arg("--version");
     #[cfg(target_os = "windows")]
     {

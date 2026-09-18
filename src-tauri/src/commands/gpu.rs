@@ -60,7 +60,10 @@ pub struct DetectedGpu {
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new(program);
+    // K14: nvidia-smi / rocm-smi / lspci, every program this reaches, are all
+    // foreign vendor CLIs, never something LU bundles, the same category
+    // `foreign_system_command` was written for K11's git bug.
+    let mut cmd = crate::process_util::foreign_system_command(program);
     cmd.args(args);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);

@@ -11,18 +11,12 @@
 use crate::os_error;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::process::Stdio;
 
 use base64::Engine;
 use tauri::{Manager, State};
 
 use crate::state::AppState;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// The default Piper voice LU downloads + speaks with. Medium-quality English,
 /// ~63 MB. Files land in `<app_data>/piper_voices/`.
@@ -86,7 +80,7 @@ pub fn tts_status(
 
     let mut piper_importable = false;
     if !python.is_empty() && crate::python::is_real_python(&python) {
-        let mut cmd = Command::new(&python);
+        let mut cmd = crate::python::python_command(&python);
         // find_spec, not a full `import piper`, so the badge stays a cheap
         // installability check that can't stall on a heavy import (mirrors
         // whisper_package_installed — see #78).
@@ -96,8 +90,6 @@ pub fn tts_status(
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
         piper_importable = cmd.output().map(|o| o.status.success()).unwrap_or(false);
     }
 
@@ -184,7 +176,7 @@ fn download_voice_blocking(
     let dir = piper_voices_dir(&app)?;
     let _ = std::fs::create_dir_all(&dir);
 
-    let mut cmd = Command::new(&python);
+    let mut cmd = crate::python::python_command(&python);
     cmd.args([
         "-m",
         "piper.download_voices",
@@ -194,8 +186,6 @@ fn download_voice_blocking(
     ])
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let output = cmd.output().map_err(|e| format!("could not start voice download: {}", os_error::english(&e)))?;
     if !output.status.success() {
@@ -275,7 +265,7 @@ fn synthesize_blocking(
         .unwrap_or(0);
     let out_wav = std::env::temp_dir().join(format!("lu-tts-{}.wav", stamp));
 
-    let mut cmd = Command::new(&python);
+    let mut cmd = crate::python::python_command(&python);
     cmd.args([
         "-m",
         "piper",
@@ -289,8 +279,6 @@ fn synthesize_blocking(
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().map_err(|e| format!("Failed to start piper: {}", os_error::english(&e)))?;
     // Feed stdin from its own thread. Writing the whole text inline and only

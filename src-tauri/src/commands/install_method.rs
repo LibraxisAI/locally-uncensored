@@ -29,7 +29,7 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// How a copy of LU got onto the machine, as far as the machine can tell.
@@ -241,11 +241,12 @@ pub fn on_path(name: &str) -> bool {
 /// A missing binary, a crash and a query that runs past the deadline are all
 /// "no" - the caller must not learn anything from a probe that did not finish.
 fn query_owner(program: &str, args: &[&OsStr]) -> bool {
-    let mut child = match Command::new(program)
-        .args(args)
+    let mut cmd = crate::process_util::foreign_system_command(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = match cmd
         .spawn()
     {
         Ok(c) => c,

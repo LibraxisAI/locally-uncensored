@@ -19,7 +19,9 @@
 //! signierte App. Was sie eint, ist der Schluss — starten und warten, ob die
 //! API antwortet.
 
-use std::process::{Command, Stdio};
+#[cfg(target_os = "windows")]
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
@@ -113,7 +115,8 @@ pub fn install_ollama(state: State<'_, AppState>) -> Result<serde_json::Value, S
 /// reaps it instead of orphaning a daemon we started) and registering the pid
 /// with the kill-on-close job on Windows.
 fn spawn_ollama_serve(slot: &Arc<Mutex<Option<std::process::Child>>>) -> std::io::Result<()> {
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -178,9 +181,9 @@ fn install_ollama_windows_impl<F: Fn(&str, &str)>(
         return;
     }
     update("installing", "Download complete. Installing Ollama...");
-    let mut cmd = Command::new(&installer_path);
+    let mut cmd = crate::process_util::foreign_system_command(&installer_path);
     cmd.arg("/S");
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     match cmd.output() {
         Ok(o) => {
             let code = o.status.code().unwrap_or(-1);
@@ -219,7 +222,8 @@ fn install_ollama_linux_impl<F: Fn(&str, &str)>(
 ) {
     // If `ollama` is already on PATH (pacman -S ollama, manual install, etc.),
     // skip ahead to spawning the service.
-    let already_installed = Command::new("which")
+    // K14: which/ollama are both foreign.
+    let already_installed = crate::process_util::foreign_system_command("which")
         .arg("ollama")
         .output()
         .map(|o| o.status.success())
@@ -322,7 +326,7 @@ fn install_ollama_macos_impl<F: Fn(&str, &str)>(
     serve_slot: &Arc<Mutex<Option<std::process::Child>>>,
     update: F,
 ) {
-    if Command::new("which").arg("ollama").output().map(|o| o.status.success()).unwrap_or(false) {
+    if crate::process_util::foreign_system_command("which").arg("ollama").output().map(|o| o.status.success()).unwrap_or(false) {
         update("starting", "Ollama already installed — starting service...");
         if let Err(e) = spawn_ollama_serve(serve_slot) {
             update(

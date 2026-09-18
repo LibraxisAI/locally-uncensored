@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command as TokioCommand;
 use uuid::Uuid;
 
 // tokio::process::Command has `creation_flags` as an inherent method on
@@ -323,7 +322,12 @@ pub(crate) async fn shell_task_start_impl(args: &Value) -> CmdResult {
         &a.command,
     );
 
-    let mut cmd = TokioCommand::new(&program);
+    // K14 Runde 2, Punkt 5/6: the shell itself (bash/powershell/cmd) is a
+    // foreign program exactly like the one `shell.rs`'s foreground twin
+    // runs, an AppImage's poisoned LD_LIBRARY_PATH can break it the same
+    // way it broke `git`. The COMMAND the user typed stays theirs, only the
+    // shell binary's own environment is cleaned.
+    let mut cmd = crate::process_util::foreign_system_command_tokio(&program);
     cmd.args(&args_vec);
     if let Some(cwd) = &cwd {
         cmd.current_dir(cwd);

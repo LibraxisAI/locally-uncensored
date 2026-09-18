@@ -226,7 +226,7 @@ fn verify_python_path(path: &str) -> bool {
     if path.is_empty() || path.to_lowercase().contains("windowsapps") {
         return false;
     }
-    let mut cmd = std::process::Command::new(path);
+    let mut cmd = crate::python::python_command(path);
     cmd.arg("--version");
     crate::process_util::suppress_window(&mut cmd);
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
@@ -235,7 +235,7 @@ fn verify_python_path(path: &str) -> bool {
 /// `where python` on PATH, skipping the WindowsApps Store-stub alias.
 #[cfg(target_os = "windows")]
 fn python_via_where() -> Option<PathBuf> {
-    let mut cmd = std::process::Command::new("where");
+    let mut cmd = crate::process_util::foreign_system_command("where");
     cmd.arg("python");
     crate::process_util::suppress_window(&mut cmd);
     let out = cmd.output().ok()?;
@@ -258,7 +258,7 @@ fn python_via_where() -> Option<PathBuf> {
 /// python.exe (needed for venv creation / pip), not the launcher shim.
 #[cfg(target_os = "windows")]
 fn python_via_py_launcher() -> Option<PathBuf> {
-    let mut cmd = std::process::Command::new("py");
+    let mut cmd = crate::python::python_command("py");
     cmd.args(["-3", "-c", "import sys; print(sys.executable)"]);
     crate::process_util::suppress_window(&mut cmd);
     let out = cmd.output().ok()?;

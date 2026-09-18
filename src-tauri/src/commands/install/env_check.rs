@@ -1277,14 +1277,21 @@ const START_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs
 ///
 /// stderr first, because that is where an uncaught exception lands; a ComfyUI
 /// that logs its own refusal to stdout and exits is the fallback.
+///
+/// R1-8: `run_python_bounded` stores each line already `.trim()`ed (so the
+/// progress-parsing and the DLL-name matching above see plain text, not
+/// leading whitespace). That means a frame's own indentation is gone by the
+/// time it reaches here, so the original filter (`line.starts_with(' ')`)
+/// never matched anything and every traceback frame line down to
+/// `File "...", line N, in <fn>` was read as if it were the cause. Every
+/// Python frame line starts with `File "` even after trimming, so that is
+/// the filter now.
 pub(crate) fn real_error_line(stdout: &str, stderr: &str) -> Option<String> {
     fn cause(text: &str) -> Option<String> {
         text.lines().rev().find_map(|raw| {
-            let line = raw.trim_end();
-            let trimmed = line.trim();
+            let trimmed = raw.trim();
             if trimmed.is_empty()
-                || line.starts_with(' ')
-                || line.starts_with('\t')
+                || trimmed.starts_with("File \"")
                 || trimmed.starts_with("Traceback (most recent call last)")
                 || trimmed.starts_with("During handling of")
                 || trimmed.starts_with("The above exception")
@@ -2457,6 +2464,44 @@ mod start_tests {
         assert_eq!(
             real_error_line("", stderr).as_deref(),
             Some("ImportError: cannot import name 'x' from 'comfy_kitchen'")
+        );
+    }
+
+    #[test]
+    fn r1_8_a_trimmed_traceback_still_skips_its_frames() {
+        // R1-8: this is the shape run_python_bounded actually stores, every
+        // line already `.trim()`ed, so a frame carries no leading whitespace
+        // at all. The old filter (line.starts_with(' ')) was dead against
+        // text like this, so a frame line as the LAST stored line (a kill
+        // mid-traceback-print, or a second exception's frame trailing the
+        // real one through pipe buffering) was returned as the cause
+        // verbatim instead of the actual RuntimeError above it. This is the
+        // scenario the fix ticket asks to prove: same trimmed text, correct
+        // cause read past the trailing frame.
+        let stderr = "Traceback (most recent call last):\n\
+                      File \"main.py\", line 12, in <module>\n\
+                      import comfy.model_management\n\
+                      File \"comfy/model_management.py\", line 88, in <module>\n\
+                      torch.cuda.init()\n\
+                      RuntimeError: HIP error: invalid argument\n\
+                      File \"comfy/model_management.py\", line 90, in init\n";
+        assert_eq!(
+            real_error_line("", stderr).as_deref(),
+            Some("RuntimeError: HIP error: invalid argument")
+        );
+    }
+
+    #[test]
+    fn a_missing_models_path_is_not_swallowed_as_a_frame() {
+        // Negative control named in the fix ticket: a line that happens to
+        // start with something frame-adjacent-looking must still come
+        // through when it IS the real cause.
+        let stderr = "Traceback (most recent call last):\n\
+                      File \"main.py\", line 3, in <module>\n\
+                      FileNotFoundError: File not found: models/\n";
+        assert_eq!(
+            real_error_line("", stderr).as_deref(),
+            Some("FileNotFoundError: File not found: models/")
         );
     }
 

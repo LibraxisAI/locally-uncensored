@@ -20,14 +20,14 @@
 //! der Nutzer nur "die Sprachausgabe ist plötzlich weg".
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 use tauri::State;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::state::AppState;
 use crate::os_error;
@@ -35,14 +35,15 @@ use std::path::Path;
 use super::comfy_job::{finished_notice, requirements_fallback_log};
 use super::env_check::verify_and_heal_environment;
 use super::pip::{pip_install_streaming_with_retry_raw, requirements_failure_reason_for};
-use super::venv::venv_removal_error;
 
 use super::comfy_job::{ComfyJob, COMFY_JOB};
 use super::comfy_job::comfy_job_busy_message;
 use super::pip::pip_install_streaming_with_retry_cancellable;
 use super::torch::plan_pytorch_install;
-use super::venv::{create_comfyui_venv, detect_venv_passengers, retire_venv, sweep_retired_venvs};
-use crate::python::venv_python_path;
+use super::venv::{
+    create_comfyui_venv, detect_venv_passengers, finish_rebuild, restore_after_failed_rebuild,
+    restore_orphaned_venv_if_needed, retire_for_rebuild,
+};
 #[cfg(target_os = "windows")]
 use super::git::{windows_git_install_hint, windows_git_probe, WindowsGitState};
 #[cfg(target_os = "windows")]
@@ -150,6 +151,13 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
         // log line and the line the finished run leaves behind agree (A15).
         let mut requirements_fallback: Option<(String, &'static str)> = None;
 
+        // Runde 6, B9 "Wiederanlauf": before ANYTHING else touches this
+        // folder, recover from a rebuild that died between retiring the old
+        // venv and the new one passing verification (crash, power loss, the
+        // app being killed). A healthy environment sees no difference at
+        // all: this is a no-op the moment a usable `venv` already exists.
+        restore_orphaned_venv_if_needed(&comfy_dir);
+
         // A16 (A15-2): before anything is deleted and before anything is
         // downloaded. A folder with no requirements.txt is not a ComfyUI
         // checkout, and nothing later in this run can change that, so there is
@@ -171,24 +179,75 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             return;
         }
 
-        // The rebuild puts about two gigabytes back, and the old venv is now
-        // deleted alongside that instead of before it, so the drive gets less
-        // slack than it used to. Say so before the work starts, exactly as the
-        // installer does; a warning is not a refusal.
+        let venv_dir = comfy_dir.join("venv");
+
+        // Runde 6, B9: the old venv and the new one now BOTH sit on disk at
+        // the same time, from the moment the old one is retired until it is
+        // swept away in the background after the new one passes
+        // verification. The flat 5 GB estimate below never accounted for
+        // that second copy; this one does, and it REFUSES rather than warns,
+        // before anything is touched, so a drive that genuinely cannot hold
+        // both says so up front instead of failing minutes into the PyTorch
+        // download with the old venv already gone.
+        if let Some(msg) = check_repair_disk_pressure(&comfy_dir, &venv_dir) {
+            update("error", &msg);
+            return;
+        }
+        // The generic warning (soft, not a refusal) the installer also
+        // shows, kept for the same reason it always was: room for
+        // everything ELSE a repair downloads besides the venv itself.
         if let Some(warning) = super::comfy_install::check_install_disk_pressure(&comfy_dir) {
             update("installing", &warning);
         }
 
-        // A broken venv must go entirely: pip inside it would report the
-        // damaged packages as already satisfied, which is the exact dead end
-        // this command exists to break.
-        let venv_dir = comfy_dir.join("venv");
-        // Where the old venv went, once it has been moved aside. Deleted in the
-        // background further down, and waited on before the download, so the
-        // old copy and the new two gigabytes never fill the drive at once.
-        let mut retired_venv: Option<PathBuf> = None;
-        // OI-3: faster-whisper and Piper live in this venv too. Take stock
-        // BEFORE the delete, because afterwards there is nothing left to read.
+        // Runde 3, Nachbesserung 6: the torch/Python preflight used to run
+        // AFTER the old venv was already gone (`torch_python_preflight` sat
+        // right before Step 2's download, well past the delete below). A
+        // repair that then turned out to have no usable interpreter left the
+        // customer with a freshly emptied venv folder and a failed run, the
+        // exact "a healthy venv must never be destroyed for a run that then
+        // fails anyway" case. Moving the check here, before `venv_dir` is
+        // touched at all, means a repair that cannot proceed leaves the old
+        // venv exactly as it was. Also folds in B1(b): LU picks the newest
+        // interpreter that actually has a torch wheel itself, no Settings
+        // picker, and the picked interpreter is what builds the new venv
+        // further down instead of always `python_bin`.
+        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Repair environment\" again") {
+            super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
+            super::torch::TorchPythonDecision::UseInstead { path, .. } => {
+                update(
+                    "installing",
+                    &format!(
+                        "The default Python ({python_bin}) does not have a PyTorch wheel for \
+                         this machine yet; using {path} instead, found on this machine already."
+                    ),
+                );
+                path
+            }
+            super::torch::TorchPythonDecision::Blocked(msg) => {
+                update("error", &msg);
+                return;
+            }
+        };
+
+        // Runde 6, BLOCKER B9 (review Runde 5): Runde 5's build-then-swap
+        // built the new venv under a staging name and renamed the folder
+        // into place afterwards. A venv is not relocatable: every console
+        // script's shebang, `pip`'s own launcher, and every activate script
+        // bake in the ABSOLUTE path it was BUILT at, so that rename left
+        // `venv/bin/pip` and every other script pointing at a staging folder
+        // that no longer existed. See `venv::retire_for_rebuild`'s doc for
+        // the measured proof. The fix: the OLD venv is retired (renamed
+        // aside, reversibly (reversible because restoring it uses the EXACT
+        // same name it already had) FIRST, and the NEW venv is then built
+        // DIRECTLY under the final `venv` name via `create_comfyui_venv`, so
+        // its build path and its resting path are the same string from the
+        // very first `python -m venv` call. Never renamed again afterwards.
+        //
+        // OI-3: faster-whisper and Piper live in the OLD venv too. Read
+        // BEFORE it is touched (it still is not, at this point).
         let passengers = detect_venv_passengers(&venv_dir);
         if !passengers.is_empty() {
             let names: Vec<&str> = passengers.iter().map(|p| p.label).collect();
@@ -201,160 +260,113 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
                 "installing",
                 &format!(
                     "This venv also holds {}. Rebuilding it removes them, so LU will \
-                     reinstall them at the end of the repair — do not close the app until \
-                     that step is done.",
+                     reinstall them once the new environment is verified; do not close the app \
+                     until that step is done.",
                     names.join(" and ")
                 ),
             );
         }
+
+        // Nothing of ours may still be running out of the OLD venv before it
+        // is even RETIRED, or its files stay open on Windows and the rename
+        // fails (see `venv::windows_lock_aware_retire_error`'s doc: this is
+        // the same OI-3 reasoning Runde 5 applied right before its swap; it
+        // has to run before the retire now, since the retire is the first
+        // destructive step).
         if venv_dir.exists() {
-            // Before the delete: nothing of ours may still be running out of
-            // this venv (see the `whisper` clone above).
             if let Ok(mut w) = whisper.lock() {
                 if w.is_running() {
                     update(
                         "installing",
-                        "Stopping the voice-input server, which runs from this venv. It \
-                         restarts by itself the next time you use voice input.",
+                        "Stopping the voice-input server, which runs from the existing \
+                         environment. It restarts by itself the next time you use voice input.",
                     );
                     w.stop();
                 }
             }
-            update(
-                "installing",
-                "Removing the old venv (models, outputs and custom nodes stay untouched)...",
-            );
-            // Moved aside, not walked. Deleting in line was 40000 to 80000
-            // files inside one blocking call that never looks at the cancel
-            // flag, which is where P3's 76 seconds started. The new name is a
-            // sibling, so the same drive, so one metadata operation.
-            match retire_venv(&venv_dir) {
-                Ok(retired) => {
-                    update(
-                        "installing",
-                        "The old venv has been set aside and is being deleted in the background.",
-                    );
-                    retired_venv = Some(retired);
-                }
-                Err(rename_failed) => {
-                    // Windows refuses a rename while a process holds the
-                    // directory itself open or has its working directory in
-                    // it. Then there is no way around walking the tree, but it
-                    // goes on its own thread so the cancel flag still gets
-                    // read every 200 ms.
-                    info!(error = %rename_failed, "venv rename failed, falling back to deleting it in place");
-                    // The interpreter first, and on its own. What the fallback
-                    // leaves behind on a cancel is a half-emptied venv still
-                    // called `venv`, and this one file is what the launcher
-                    // asks about before offering that venv to autostart. Since
-                    // P3 a missing interpreter is answered with a message
-                    // rather than a silent start on some other Python, so what
-                    // this unlink now buys is that the message is the truth.
-                    // One unlink, so it cannot be interrupted.
-                    let _ = std::fs::remove_file(venv_python_path(&comfy_dir));
-                    let doomed = venv_dir.clone();
-                    let worker = std::thread::spawn(move || std::fs::remove_dir_all(&doomed));
-                    while !worker.is_finished() {
-                        if cancelled() {
-                            update(
-                                "cancelled",
-                                "Repair cancelled. The old venv is still being deleted in the background.",
-                            );
-                            return;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(200));
-                    }
-                    if let Ok(Err(e)) = worker.join() {
-                        update("error", &venv_removal_error(&venv_dir, &e));
-                        return;
-                    }
-                }
-            }
         }
 
-        // One worker for everything that still has to be walked, in this order:
-        // the folder this run just set aside, then the leftovers of runs that
-        // died between their rename and the end of their delete. One thread and
-        // not two, because two would race each other over the same tree the
-        // moment the sweep listed the folder after this run's rename.
-        let deleting = {
-            let sweep_dir = comfy_dir.clone();
-            std::thread::spawn(move || {
-                if let Some(retired) = retired_venv {
-                    if let Err(e) = std::fs::remove_dir_all(&retired) {
-                        warn!(error = %e, folder = %retired.display(), "the retired venv could not be deleted");
-                    }
-                }
-                sweep_retired_venvs(&sweep_dir);
-            })
+        update("installing", "Step 1/4: Setting the existing environment aside...");
+        let retired = match retire_for_rebuild(&venv_dir) {
+            Ok(r) => r,
+            Err(msg) => {
+                update("error", &msg);
+                return;
+            }
         };
 
-        // The check that was missing. It used to sit behind the venv build, so
-        // a cancel during the delete still wrote the line below and then built
-        // the whole venv before noticing.
-        if cancelled() {
-            update("cancelled", "Repair cancelled.");
-            return;
-        }
+        // Every early return from here on has to leave the customer with a
+        // WORKING venv again: either the freshly verified new one, or, on
+        // ANY failure (a failed build, a failed download, a failed
+        // requirements install, a failed verification, or the user
+        // cancelling at any of those points), the retired old one restored.
+        // One place, so that guarantee is enforced once instead of repeated
+        // at each call site, the same reasoning Runde 5's `abandon_staging`
+        // documented for the staging approach.
+        let abort_and_restore = |status: &str, msg: &str, install_status: &std::sync::Arc<std::sync::Mutex<crate::state::InstallState>>| {
+            let restore_note = match restore_after_failed_rebuild(&comfy_dir, &venv_dir, retired.clone()) {
+                Ok(()) => String::new(),
+                Err(e) => format!("\n\n{}", e),
+            };
+            if let Ok(mut s) = install_status.lock() {
+                s.status = status.to_string();
+                s.logs.push(format!("{msg}{restore_note}"));
+            }
+        };
 
-        update(
-            "installing",
-            "Step 1/4: Creating a fresh isolated venv inside the ComfyUI folder...",
-        );
-        let venv_py = match create_comfyui_venv(&comfy_dir, &python_bin, Some(&cancel_flag)) {
+        let venv_py = match create_comfyui_venv(&comfy_dir, &chosen_python, Some(&cancel_flag)) {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) if e == "cancelled" => {
-                update("cancelled", "Repair cancelled while the new venv was being created.");
+                abort_and_restore(
+                    "cancelled",
+                    "Repair cancelled while the new environment was being built. Your previous \
+                     environment was restored.",
+                    &install_status,
+                );
                 return;
             }
             Err(e) => {
-                update("error", &format!("venv creation failed.\n\n{}", e));
+                abort_and_restore(
+                    "error",
+                    &format!(
+                        "Building the new environment failed. Your previous environment was \
+                         restored.\n\n{}",
+                        e
+                    ),
+                    &install_status,
+                );
                 return;
             }
         };
 
-        // The old venv is still on the drive until that worker finishes, and
-        // the next step puts two gigabytes of PyTorch down beside it. Waiting
-        // here costs nothing when the delete is already through, and when it is
-        // not, waiting is the honest answer: the loop keeps reading the cancel
-        // flag, so the user is never more than 200 ms from leaving.
-        {
-            let mut said = false;
-            while !deleting.is_finished() {
-                if cancelled() {
-                    update(
-                        "cancelled",
-                        "Repair cancelled. The old venv is still being deleted in the background.",
-                    );
-                    return;
-                }
-                if !said {
-                    said = true;
-                    update(
-                        "installing",
-                        "Waiting for the old venv to finish deleting before the download starts...",
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            let _ = deleting.join();
-        }
-
-        let (torch_args, gpu_info) = plan_pytorch_install();
         update("installing", &format!("Step 2/4: {}", gpu_info));
+
         update(
             "installing",
-            "Downloading PyTorch into the fresh venv (~2 GB). Live pip output below.",
+            "Downloading PyTorch into the new environment (~2 GB). Live pip output below.",
         );
         let refs: Vec<&str> = torch_args.iter().map(|s| s.as_str()).collect();
         match pip_install_streaming_with_retry_cancellable(&refs, &venv_py, 3, &install_status, Some(&cancel_flag)) {
             Ok(()) => update("installing", "PyTorch installed."),
             Err(d) if d == "cancelled" => {
-                update("cancelled", "Repair cancelled during the PyTorch download.");
+                abort_and_restore(
+                    "cancelled",
+                    "Repair cancelled during the PyTorch download. Your previous environment was \
+                     restored.",
+                    &install_status,
+                );
                 return;
             }
             Err(d) => {
-                update("error", &format!("PyTorch installation failed.\n\n{}", d));
+                abort_and_restore(
+                    "error",
+                    &format!(
+                        "PyTorch installation failed. Your previous environment was \
+                         restored.\n\n{}",
+                        d
+                    ),
+                    &install_status,
+                );
                 return;
             }
         }
@@ -364,13 +376,13 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
         // renamed or deleted while the rebuild was running, which is a real
         // few minutes on a slow line.
         if !reqs.exists() {
-            update("error", &missing_requirements_for_repair(&comfy_dir));
+            abort_and_restore("error", &missing_requirements_for_repair(&comfy_dir), &install_status);
             return;
         }
         {
             update(
                 "installing",
-                "Step 3/4: Installing ComfyUI dependencies into the venv...",
+                "Step 3/4: Installing ComfyUI dependencies into the new environment...",
             );
             let reqs_str = reqs.to_string_lossy().to_string();
             let req_args = vec![
@@ -382,7 +394,12 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             match pip_install_streaming_with_retry_raw(&req_args, &venv_py, 3, &install_status, Some(&cancel_flag)) {
                 Ok(()) => update("installing", "Dependencies installed."),
                 Err(f) if f.diagnosis == "cancelled" => {
-                    update("cancelled", "Repair cancelled during the requirements install.");
+                    abort_and_restore(
+                        "cancelled",
+                        "Repair cancelled during the requirements install. Your previous \
+                         environment was restored.",
+                        &install_status,
+                    );
                     return;
                 }
                 Err(f) => {
@@ -401,16 +418,17 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             }
         }
 
-        // OI-3: put the passengers back. Failures here are reported but do not
-        // fail the repair — ComfyUI itself is rebuilt at this point, and
-        // burying a working ComfyUI under a Piper wheel error would trade one
-        // silent loss for another. What must never happen again is the repair
-        // finishing without saying what happened to Voice.
+        // OI-3: put the passengers back, into the new environment. Failures
+        // here are reported but do not fail the repair, since a working
+        // ComfyUI is nearly ready at this point, and burying it under a
+        // Piper wheel error would trade one silent loss for another. What
+        // must never happen again is the repair finishing without saying
+        // what happened to Voice.
         let mut lost: Vec<&str> = Vec::new();
         for p in &passengers {
             update(
                 "installing",
-                &format!("Reinstalling {} into the fresh venv...", p.label),
+                &format!("Reinstalling {} into the new environment...", p.label),
             );
             let args = vec![
                 "-m", "pip", "install",
@@ -421,13 +439,14 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             match pip_install_streaming_with_retry_cancellable(&args, &venv_py, 3, &install_status, Some(&cancel_flag)) {
                 Ok(()) => update("installing", &format!("{} is back.", p.label)),
                 Err(d) if d == "cancelled" => {
-                    update(
+                    abort_and_restore(
                         "cancelled",
                         &format!(
-                            "Repair cancelled while reinstalling {}. It is NOT installed — \
-                             reinstall it from Settings.",
+                            "Repair cancelled while reinstalling {}. Your previous environment \
+                             was restored.",
                             p.label
                         ),
+                        &install_status,
                     );
                     return;
                 }
@@ -444,38 +463,163 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
 
         // A3: this is the step the button was missing. Two of the five
         // reporters pressed Repair environment and nothing changed, because a
-        // rebuild that trusts pip's exit code rebuilds the same hole.
-        update("installing", "Step 4/4: Checking that the environment really starts...");
+        // rebuild that trusts pip's exit code rebuilds the same hole. Now
+        // also the B9 gate: this is the LAST check before the retired old
+        // venv is discarded for good, so a new environment that does not
+        // import never leaves the customer with neither one.
+        update("installing", "Step 4/4: Checking that the new environment really starts...");
         match verify_and_heal_environment(&venv_py, &comfy_dir, &reqs, &install_status, Some(&cancel_flag)) {
             Ok(()) => {}
             Err(e) if e == "cancelled" => {
-                update("cancelled", "Repair cancelled during the environment check.");
+                abort_and_restore(
+                    "cancelled",
+                    "Repair cancelled during the environment check. Your previous environment \
+                     was restored.",
+                    &install_status,
+                );
                 return;
             }
             Err(e) => {
-                error!("comfyui env repair left an environment that does not import");
-                update("error", &format!("The environment was rebuilt, but it still does not start.\n\n{}", e));
+                error!("comfyui env repair built an environment that does not import");
+                abort_and_restore(
+                    "error",
+                    &format!(
+                        "The new environment was built, but it still does not start, so your \
+                         previous environment was restored instead of being replaced with one \
+                         that does not work either.\n\n{}",
+                        e
+                    ),
+                    &install_status,
+                );
                 return;
             }
         }
 
-        let (notice_text, closing) = if lost.is_empty() {
+        // The new environment is built, populated and VERIFIED, and it is
+        // already at its final path: nothing above this line ever renamed
+        // it, so there is no swap left to do. Only now is the retired old
+        // one discarded for good.
+        update("installing", "Removing the previous, now-replaced environment...");
+        finish_rebuild(&comfy_dir, retired);
+
+        // Runde 5 Folgeposten (review Runde 4, Abschnitt 2): the repair's own
+        // log line promises "custom nodes stay untouched", true for the
+        // FOLDERS but not for what they import: their own requirements.txt
+        // never followed the venv into the rebuild. Reusing
+        // `install_node_requirements` (the same function `install_custom_node`
+        // itself calls, #72's rule) against the now-final venv, one folder's
+        // failure never stopping the rest.
+        //
+        // Runde 6, Folgeposten (a) (review Runde 5, F2): a node's own
+        // requirements.txt (an unpinned old torch, a `numpy<2`, ...) must not
+        // be allowed to quietly downgrade the core packages this repair just
+        // spent four steps verifying. A constraints file built from THIS
+        // venv's own `pip freeze` of torch/torchvision/torchaudio/numpy makes
+        // pip refuse such a change outright: the node's own install fails
+        // loudly and by name, through the existing per-node failure list,
+        // instead of the environment silently regressing. `verify_and_heal_
+        // environment` then runs a SECOND time after the whole node loop: a
+        // node with an `install.py` or another way around the constraint
+        // (F10, still open) could still break something the constraints file
+        // does not cover, and this is the backstop for that.
+        //
+        // Runde 6, Folgeposten (b): a name and a log line per node while this
+        // runs (there was one blanket sentence before), and the cancel flag
+        // is now read between nodes, so twenty custom nodes no longer look
+        // like a hang with a Cancel button that does nothing.
+        let mut broken_nodes: Vec<(String, String)> = Vec::new();
+        if comfy_dir.join("custom_nodes").is_dir() {
+            let constraints = super::custom_nodes::write_core_package_constraints(&venv_py);
+            let outcome = super::custom_nodes::reinstall_all_node_requirements(
+                &comfy_dir,
+                &venv_py,
+                constraints.as_deref(),
+                Some(&cancel_flag),
+                |name| update("installing", &format!("Restoring dependencies for {}...", name)),
+            );
+            if let Some(c) = &constraints {
+                let _ = std::fs::remove_file(c);
+            }
+            for (name, _) in &outcome.failures {
+                update("installing", &format!("Could not restore requirements for {}.", name));
+            }
+            if outcome.cancelled {
+                update(
+                    "cancelled",
+                    "Repair cancelled while restoring custom node dependencies. ComfyUI's \
+                     environment itself was already rebuilt and verified; some custom nodes may \
+                     still be missing their own dependencies.",
+                );
+                return;
+            }
+            if outcome.failures.is_empty() && !outcome.reinstalled.is_empty() {
+                update(
+                    "installing",
+                    "Re-checking the environment after restoring custom node dependencies...",
+                );
+                if let Err(e) = verify_and_heal_environment(&venv_py, &comfy_dir, &reqs, &install_status, Some(&cancel_flag)) {
+                    if e == "cancelled" {
+                        update(
+                            "cancelled",
+                            "Repair cancelled during the post-restore environment check. ComfyUI's \
+                             environment itself was already rebuilt and verified.",
+                        );
+                        return;
+                    }
+                    // A3: the same rule that governs the FIRST verification
+                    // governs this one too. The constraints file above is
+                    // the primary defense, but it cannot cover every way a
+                    // node's own install could break something (an
+                    // `install.py`, F10, still open); this is the backstop,
+                    // and it must stop the run rather than report "complete"
+                    // over an environment that no longer starts. The venv
+                    // itself is left exactly as it is (its own build already
+                    // passed verification once): only the node loop's
+                    // outcome is undone, by naming it, not by rolling back
+                    // the whole rebuild.
+                    error!(nodes = ?outcome.reinstalled, "comfyui repair: custom node dependencies left the environment unable to start");
+                    let suspects = outcome.reinstalled.join(", ");
+                    update("error",
+                        &format!(
+                            "The environment was rebuilt and verified, but restoring custom node \
+                             dependencies left it unable to start again. One of these likely \
+                             caused it: {}. Disabling that node (move its folder out of \
+                             custom_nodes and add .disabled to the name) and repairing again \
+                             usually clears it.\n\n{}",
+                            suspects, e
+                        ),
+                    );
+                    return;
+                }
+            }
+            broken_nodes = outcome.failures;
+        }
+
+        // What used to say "custom nodes stay untouched" unconditionally. That
+        // was only ever true of the folders, not of what they import, and the
+        // repair now actually restores their dependencies instead of merely
+        // promising it (Runde 5 Folgeposten). What is reported here is
+        // whichever of that restoration and the voice passengers above did NOT
+        // make it back in, so the closing line stays true either way.
+        let node_names: Vec<&str> = broken_nodes.iter().map(|(name, _)| name.as_str()).collect();
+        let mut unrestored: Vec<&str> = lost.clone();
+        unrestored.extend(node_names.iter().copied());
+        let (notice_text, closing) = if unrestored.is_empty() {
             (
                 "Repair finished. ComfyUI is ready.".to_string(),
                 "Environment repaired. ComfyUI now runs from its own venv; start it again."
                     .to_string(),
             )
         } else {
-            let names = lost.join(" and ");
+            let names = unrestored.join(", ");
             (
-                format!("Repair finished, but {} could not be reinstalled.", names),
+                format!("Repair finished, but {} could not be fully restored.", names),
                 format!(
                     "ComfyUI's environment is repaired and can be started again, but {} could not \
-                     be reinstalled into the new venv and {} not available until you install {} \
-                     again from Settings.",
+                     be fully restored into the new venv. Voice packages: reinstall from Settings. \
+                     Custom nodes: reinstalling the node's own dependencies from its README, or \
+                     reinstalling the node, usually fixes it.",
                     names,
-                    if lost.len() == 1 { "is" } else { "are" },
-                    if lost.len() == 1 { "it" } else { "them" },
                 ),
             )
         };
@@ -597,7 +741,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         }
 
         update("installing", "Step 1/3: Pulling the latest ComfyUI...");
-        let mut pull = Command::new("git");
+        let mut pull = crate::process_util::foreign_system_command("git");
         // --ff-only: a user-modified checkout must not silently merge; surface
         // the divergence honestly instead.
         pull.args(["pull", "--ff-only"])
@@ -649,6 +793,29 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
             );
             return;
         }
+
+        // B6 (review Runde 4, Runde 5 Blocker): ComfyUI's own requirements.txt
+        // pulls torch/torchvision/torchaudio, so this pip call needed exactly
+        // the same preflight the install and repair paths already have, or a
+        // venv on an unsupported interpreter got pip's generic wheel-not-found
+        // error again, at this entry point instead of those two. Update does
+        // not rebuild a venv, so `UseInstead` is handled like the existing-venv
+        // branch of Install/Repair: point at Repair rather than silently
+        // switching interpreters under an environment nothing rebuilt.
+        let (_torch_args, _gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Update ComfyUI\" again") {
+            super::torch::TorchPythonDecision::Proceed => {}
+            super::torch::TorchPythonDecision::UseInstead { path, current_version, chosen_version } => {
+                update("error", &super::torch::existing_venv_needs_repair_message(current_version, &path, chosen_version));
+                return;
+            }
+            super::torch::TorchPythonDecision::Blocked(msg) => {
+                update("error", &msg);
+                return;
+            }
+        }
+
         {
             let reqs_str = reqs.to_string_lossy().to_string();
             let req_args = vec![
@@ -750,6 +917,73 @@ fn repair_precheck(comfy_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The total size on disk of everything under `dir`, in bytes. Best-effort:
+/// a file that vanishes mid-walk (a background delete, a concurrent process)
+/// is simply skipped rather than failing the whole measurement, since this
+/// feeds a space ESTIMATE, not an exact accounting.
+fn dir_size(dir: &Path) -> u64 {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Runde 6, B9: the old venv and the new one sit on the same drive at the
+/// same time now, from the moment the old one is retired until the new one
+/// passes verification. `check_install_disk_pressure`'s flat 5 GB estimate
+/// (still shown as a soft warning right after this) never accounted for
+/// that second copy, and it never refused outright either. This does both:
+/// it adds the existing venv's real, measured size to the ~5 GB a fresh
+/// build needs, and it is a REFUSAL, run before `retire_for_rebuild` touches
+/// anything, so a drive that genuinely cannot hold both says so honestly
+/// up front instead of failing part-way through with the old venv already
+/// gone.
+///
+/// `None` both when the drive cannot be identified (same fallback
+/// `check_install_disk_pressure` uses) and when there is no existing venv at
+/// all yet: a first build's own soft warning already covers that case.
+fn check_repair_disk_pressure(comfy_dir: &Path, venv_dir: &Path) -> Option<String> {
+    if !venv_dir.exists() {
+        return None;
+    }
+    use sysinfo::Disks;
+    let disks = Disks::new_with_refreshed_list();
+    let normalized = comfy_dir.to_path_buf();
+    let mut best: Option<&sysinfo::Disk> = None;
+    let mut best_len: usize = 0;
+    for d in &disks {
+        let mp = d.mount_point();
+        if normalized.starts_with(mp) {
+            let len = mp.as_os_str().len();
+            if len > best_len {
+                best_len = len;
+                best = Some(d);
+            }
+        }
+    }
+    let disk = best?;
+    let free_bytes = disk.available_space();
+    let existing_bytes = dir_size(venv_dir);
+    let needed_for_new_build: u64 = 5 * 1024 * 1024 * 1024;
+    let required = needed_for_new_build.saturating_add(existing_bytes);
+    if free_bytes < required {
+        return Some(format!(
+            "Not enough free space to rebuild this environment. The existing environment is \
+             about {:.1} GB, and building a new one alongside it before the old one is removed \
+             needs about 5 GB more ({:.1} GB total); only {:.1} GB is free on {}. Free up space \
+             and try again; nothing was changed.",
+            existing_bytes as f64 / 1_073_741_824.0,
+            required as f64 / 1_073_741_824.0,
+            free_bytes as f64 / 1_073_741_824.0,
+            disk.mount_point().to_string_lossy(),
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,11 +1037,11 @@ mod tests {
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
         let call = src.find(&needle("if let Err(msg) = repair_prech", "eck(&comfy_dir) {"))
             .expect("Repair no longer prechecks at all");
-        let venv = src.find(&needle("\"Removing the old venv (models, outputs", " and custom nodes stay untouched)...\","))
-            .expect("the venv removal step is gone");
-        let torch = src.find(&needle("\"Downloading PyTorch into the fresh venv", " (~2 GB). Live pip output below.\","))
+        let build = src.find(&needle("\"Step 1/4: Setting the existing environ", "ment aside...\");"))
+            .expect("the retire-the-old-venv step is gone");
+        let torch = src.find(&needle("\"Downloading PyTorch into the new env", "ironment (~2 GB). Live pip output below.\","))
             .expect("the PyTorch step is gone");
-        assert!(call < venv, "the precheck runs after the venv is deleted");
+        assert!(call < build, "the precheck runs after the old venv is retired");
         assert!(call < torch, "the precheck runs after the PyTorch download");
 
         // And the guard on the guard: each needle occurs EXACTLY once in the
@@ -816,8 +1050,8 @@ mod tests {
         // became unreachable in the first place.
         for (what, n) in [
             ("the precheck call", needle("if let Err(msg) = repair_prech", "eck(&comfy_dir) {")),
-            ("the venv step", needle("\"Removing the old venv (models, outputs", " and custom nodes stay untouched)...\",")),
-            ("the PyTorch step", needle("\"Downloading PyTorch into the fresh venv", " (~2 GB). Live pip output below.\",")),
+            ("the retire-the-old-venv step", needle("\"Step 1/4: Setting the existing environ", "ment aside...\");")),
+            ("the PyTorch step", needle("\"Downloading PyTorch into the new env", "ironment (~2 GB). Live pip output below.\",")),
         ] {
             assert_eq!(
                 src.matches(&n).count(),
@@ -828,52 +1062,65 @@ mod tests {
     }
 
     #[test]
-    fn the_repair_asks_about_cancel_between_the_delete_and_the_venv() {
-        // P3 (04.09.): Cancel during "Removing the old venv" took 75,8 seconds
-        // and the run carried on into step 1/4 anyway. Both halves of that were
-        // one missing line: the only cancel check in this stretch sat BEHIND
-        // `create_comfyui_venv`, so the delete, the step-1/4 log line and the
-        // whole venv build all happened after the click.
+    fn the_repair_never_discards_the_old_venv_before_the_new_one_is_verified() {
+        // Runde 6, B9: the old venv used to be RENAMED INTO the new venv's
+        // build folder (Runde 5's staging approach), which left every
+        // console script's shebang pointing at a name that no longer
+        // existed. Now the old venv is only ever RETIRED (a reversible
+        // rename, back to the exact name it already had if anything fails)
+        // and the new one is built DIRECTLY at the final `venv` name, never
+        // renamed at all. What still has to hold: the retired old venv is
+        // discarded for good (`finish_rebuild`) only strictly after the new
+        // one, built at the final name, has passed verification.
         //
-        // Same shape as the precheck order test above, and for the same reason:
-        // the body is a thread inside a Tauri command, so the order is read out
-        // of this file. Needles split in half so they never match themselves
-        // here, and each one checked to occur exactly once.
+        // Same shape as the precheck order test above, and for the same
+        // reason: the body is a thread inside a Tauri command, so the order
+        // is read out of this file. Needles split in half so they never
+        // match themselves here.
         let src = include_str!("comfy_repair.rs");
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
-        let removal = needle("\"Removing the old venv (models, outputs", " and custom nodes stay untouched)...\",");
-        let check = needle("update(\"cancelled\", \"Repair cance", "lled.\");");
-        let step_one = needle("\"Step 1/4: Creating a fresh isolated venv", " inside the ComfyUI folder...\",");
-        let build = needle("create_comfyui_venv(&comfy_dir, &python_bin,", " Some(&cancel_flag))");
+        let retire = needle("let retired = match retire_for_reb", "uild(&venv_dir) {");
+        let build = needle("let venv_py = match create_comfyui_v", "env(&comfy_dir, &chosen_python, Some(&cancel_flag)) {");
+        let verify = needle("verify_and_heal_environment(&venv_p", "y, &comfy_dir, &reqs, &install_status, Some(&cancel_flag))");
+        let finish = needle("finish_rebuild(&comfy_d", "ir, retired);");
 
-        let at_removal = src.find(&removal).expect("the venv removal step is gone");
-        let at_check = src.find(&check).expect("the repair no longer stops between the delete and the venv build");
-        let at_step_one = src.find(&step_one).expect("the step 1/4 line is gone");
-        let at_build = src.find(&build).expect("the venv build no longer gets the cancel flag");
+        let at_retire = src.find(&retire).expect("the retire-for-rebuild call is gone");
+        let at_build = src.find(&build).expect("the new venv is no longer built directly at the final name");
+        let at_verify = src.find(&verify).expect("the verify-and-heal call on the new venv is gone");
+        let at_finish = src.find(&finish).expect("the old venv is no longer discarded via finish_rebuild");
 
-        assert!(at_removal < at_check, "the cancel check runs before the old venv is dealt with");
-        assert!(at_check < at_step_one, "the cancel check sits behind the step 1/4 line, so a cancelled run still announces it");
-        assert!(at_check < at_build, "the cancel check sits behind the venv build");
+        assert!(at_retire < at_build, "the old venv is retired after the new one is already being built");
+        assert!(at_build < at_verify, "the new venv is verified before it is even built");
+        assert!(at_verify < at_finish, "the old venv is discarded before the new one is verified");
 
-        // The old way out has to be gone, not merely bypassed. A second path
-        // that deletes the venv in line would bring the 76 seconds back the
-        // next time somebody edits this function.
+        // The old way out has to be gone, not merely bypassed. Any direct
+        // `retire_venv`/`remove_dir_all` on the OLD venv outside of
+        // `retire_for_rebuild`, `restore_after_failed_rebuild` and
+        // `finish_rebuild` would bring back exactly the failure mode this
+        // guards against.
+        assert!(
+            !src.contains(&needle("retire_venv(&venv", "_dir)")),
+            "something in this file still retires the old venv directly, outside retire_for_rebuild"
+        );
         assert!(
             !src.contains(&needle("std::fs::remove_dir_all(&venv", "_dir)")),
-            "the blocking in-line delete of the venv is still in this file"
+            "something in this file still deletes the old venv directly, outside the venv module's own helpers"
         );
 
-        for (what, n) in [
-            ("the venv removal step", removal),
-            ("the cancel check", check),
-            ("the step 1/4 line", step_one),
-            ("the venv build", build),
+        // verify_and_heal_environment runs a SECOND time after the custom
+        // node dependency restore (Runde 6, Folgeposten a); every other
+        // needle is expected exactly once.
+        for (what, n, expected) in [
+            ("the retire call", retire, 1),
+            ("the venv build call", build, 1),
+            ("the verify call", verify, 2),
+            ("the finish_rebuild call", finish, 1),
         ] {
             assert_eq!(
                 src.matches(&n).count(),
-                1,
-                "{what}: the search string finds itself in this test, so its .expect can never fire",
+                expected,
+                "{what}: expected {expected} occurrence(s) in this file",
             );
         }
     }

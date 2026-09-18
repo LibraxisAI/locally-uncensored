@@ -1298,7 +1298,7 @@ fn fetch_musubi_source(
         Err(e) if e == "cancelled" => return Err(e),
         Err(e) => e,
     };
-    let mut git = Command::new("git");
+    let mut git = crate::process_util::foreign_system_command("git");
     git.arg("--version");
     #[cfg(target_os = "windows")]
     git.creation_flags(CREATE_NO_WINDOW);
@@ -1308,7 +1308,7 @@ fn fetch_musubi_source(
     }
     push_log(state, &format!("Could not get the trainer source as an archive ({archive_err}); getting it with git instead."));
     let _ = fs::remove_dir_all(repo_dir(root));
-    let mut clone = Command::new("git");
+    let mut clone = crate::process_util::foreign_system_command("git");
     clone.args(["clone", "--branch", MUSUBI_TAG, "--depth", "1", MUSUBI_REPO])
         .arg(repo_dir(root));
     run_streamed(clone, "git clone", state, cancel, pid_slot)

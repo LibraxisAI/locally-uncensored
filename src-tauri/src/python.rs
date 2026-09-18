@@ -27,6 +27,17 @@ pub fn python_command<S: AsRef<std::ffi::OsStr>>(python_bin: S) -> Command {
     cmd.env("PYTHONUTF8", "1");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
+    // K11/K14: the interpreter this runs is always the SYSTEM Python (or a
+    // venv built from it), never a Python LU bundles itself, so it is a
+    // foreign program in exactly the sense `foreign_system_command` names,
+    // and pip (always invoked as `<python> -m pip`, see install/pip.rs)
+    // rides along for free. `sanitize_appimage_python_env` above cleans
+    // PYTHONHOME/PYTHONPATH globally at startup as a belt-and-braces measure
+    // for anything spawned outside python_command; the full table
+    // (LD_LIBRARY_PATH, SSL_CERT_FILE/DIR, the GLib/GTK/GStreamer module
+    // paths, ...) cannot be cleaned globally because our OWN sidecars need
+    // some of it, so every one of them is stripped here, per child, instead.
+    crate::process_util::strip_appimage_env(&mut cmd);
     cmd
 }
 
@@ -64,9 +75,19 @@ pub fn is_appimage_python_env(value: &str) -> bool {
 /// Drop AppImage-injected Python variables from our own environment, so every
 /// child process we spawn sees the system Python the way a shell would.
 ///
-/// Called once at startup, before any command runs. `LD_LIBRARY_PATH` is left
-/// alone on purpose: the AppImage needs it for our own bundled libraries, and
-/// it was never what broke Python here.
+/// Called once at startup, before any command runs. `LD_LIBRARY_PATH` is NOT
+/// touched globally here on purpose, the AppImage needs it for our own
+/// bundled libraries. That used to read "and it was never what broke Python
+/// here"; K14 (Reddit, 2026-09-17) is the counterexample: a ComfyUI venv's
+/// own `_ssl` extension failed to load under the inherited
+/// `LD_LIBRARY_PATH` after an in-app AppImage update, `import ssl` raised,
+/// and LU's own diagnosis misread that ImportError as "this Python was
+/// built without ssl" instead of an environment collision. The venv's
+/// interpreter is a foreign program in exactly `foreign_system_command`'s
+/// sense, so it does not go through a global unset, `python_command` (this
+/// file) clears it per child instead, alongside every other variable
+/// `strip_appimage_env` knows about (see process_util.rs for the reasoning
+/// this function's old comment used to carry alone).
 pub fn sanitize_appimage_python_env() {
     for key in ["PYTHONHOME", "PYTHONPATH"] {
         if std::env::var(key).is_ok_and(|v| is_appimage_python_env(&v)) {
@@ -213,7 +234,7 @@ pub fn resolve_comfyui_venv_python(comfyui_dir: &Path) -> Option<String> {
 pub fn get_python_bin() -> String {
     for name in crate::os_paths::unix_python_candidates() {
         let Ok(path) = which::which(name) else { continue };
-        let mut cmd = Command::new(&path);
+        let mut cmd = python_command(&path);
         cmd.arg("--version");
         match cmd.output() {
             Ok(output) if output.status.success() => {
@@ -250,18 +271,18 @@ fn verify_python_path(path: &str) -> bool {
     if path.is_empty() || path.contains("WindowsApps") {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = python_command(path);
     cmd.arg("--version");
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// `where python` on PATH, skipping the WindowsApps Store-stub alias.
 #[cfg(target_os = "windows")]
 fn python_via_where() -> Option<String> {
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("python");
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     let output = where_cmd.output().ok()?;
     if !output.status.success() {
         return None;
@@ -284,9 +305,9 @@ fn python_via_where() -> Option<String> {
 /// for venv creation / pip), not the launcher shim.
 #[cfg(target_os = "windows")]
 fn python_via_py_launcher() -> Option<String> {
-    let mut cmd = Command::new("py");
+    let mut cmd = python_command("py");
     cmd.args(["-3", "-c", "import sys; print(sys.executable)"]);
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
@@ -421,16 +442,88 @@ pub fn python_version(exe: &str) -> Option<String> {
 /// Python was 3.14 built the trainer venv from 3.14 and died at step 4/4
 /// (sockenmonster, Discord, August and ticket 0004 on 2026-09-05).
 ///
+/// Runde 3, B1(a): PATH alone missed the exact boxes the torch preflight
+/// exists for. `uv python install` and `pyenv install`, the two commands
+/// the preflight message itself now suggests, put their interpreters
+/// somewhere PATH never sees unless the user also runs `pyenv init` or
+/// `uv python pin`, so a machine that just followed the suggested command
+/// would still show up as "no compatible interpreter found" on the very
+/// next Repair. This walks those install locations directly, plus the
+/// explicit `python3.10`..`python3.13` names (torch's usual served range),
+/// so the install-then-repair loop the message promises actually closes.
+///
 /// Nothing here starts an interpreter beyond the `--version` gate the
 /// existing scans apply; the caller asks each hit for its version.
 #[cfg(not(target_os = "windows"))]
 pub fn python_interpreters() -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
-    for name in crate::os_paths::unix_python_candidates() {
-        let Ok(path) = which::which(name) else { continue };
+    let mut push = |path: PathBuf| {
+        if !path.exists() {
+            return;
+        }
+        // Runde 4, review Runde 3 "Kleinere Punkte zu B1": the `python3.*`
+        // glob patterns below also match `python3.13-config` and
+        // `python3.13-gdb.py`, siblings the real interpreter's own install
+        // drops next to it. Neither ever starts (execution fails, so
+        // `python_version_tuple` returns None), but both would still show
+        // up as "(version unknown)" ghost lines in the customer-facing
+        // preflight message, making it longer and more confusing than the
+        // interpreters actually found warrant. Only the bare `python3` or
+        // `python3.<digits>` shape is a real interpreter name.
+        let is_python_binary_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == "python" || n == "python3" || {
+                n.strip_prefix("python3.").is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+            });
+        if !is_python_binary_name {
+            return;
+        }
         let path = path.to_string_lossy().to_string();
         if !found.contains(&path) {
             found.push(path);
+        }
+    };
+    for name in crate::os_paths::unix_python_candidates() {
+        if let Ok(path) = which::which(name) {
+            push(path);
+        }
+    }
+    // Explicit names beyond what `unix_python_candidates` orders for the
+    // default picker (that list stops at 3.11/3.12/3.13 by design, oldest
+    // first is never its job): 3.10 through 3.13 is the range the torch
+    // preflight message actually needs to reason about.
+    for minor in 10..=13 {
+        if let Ok(path) = which::which(format!("python3.{minor}")) {
+            push(path);
+        }
+    }
+    let home = crate::os_paths::home();
+    // pyenv: every installed version keeps its own bin/ under versions/.
+    for pattern in [
+        home.join(".pyenv/versions/*/bin/python3"),
+        home.join(".pyenv/versions/*/bin/python"),
+        // uv-managed interpreters: `uv python install 3.12` lands here,
+        // named after the exact version instead of a generic "python3".
+        home.join(".local/share/uv/python/*/bin/python3"),
+        home.join(".local/share/uv/python/*/bin/python3.*"),
+    ] {
+        for entry in glob::glob(&pattern.to_string_lossy()).into_iter().flatten().flatten() {
+            push(entry);
+        }
+    }
+    // Fixed, non-PATH-guaranteed locations named in the review: a user's own
+    // pip-installed interpreter (`~/.local/bin`), a distro's optional package
+    // prefix (`/opt/<name>/bin`), and the common source-build prefix
+    // (`/usr/local/bin`), none of which every shell's PATH carries by default.
+    for base in [home.join(".local/bin"), PathBuf::from("/usr/local/bin")] {
+        for minor in 10..=13 {
+            push(base.join(format!("python3.{minor}")));
+        }
+    }
+    for pattern in ["/opt/*/bin/python3", "/opt/*/bin/python3.*"] {
+        for entry in glob::glob(pattern).into_iter().flatten().flatten() {
+            push(entry);
         }
     }
     found
@@ -451,9 +544,9 @@ pub fn python_interpreters() -> Vec<String> {
             found.push(p);
         }
     };
-    let mut launcher = Command::new("py");
+    let mut launcher = python_command("py");
     launcher.arg("-0p");
-    launcher.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut launcher);
     if let Ok(out) = launcher.output() {
         if out.status.success() {
             for p in launcher_list_paths(&String::from_utf8_lossy(&out.stdout)) {
@@ -461,9 +554,9 @@ pub fn python_interpreters() -> Vec<String> {
             }
         }
     }
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("python");
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     if let Ok(out) = where_cmd.output() {
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -556,6 +649,36 @@ mod tests {
             "ohne PYTHONUTF8 bleibt die alte Codepage die Voreinstellung: {envs:?}",
         );
         assert_eq!(cmd.get_program(), "python3", "das Programm darf nicht verloren gehen");
+    }
+
+    #[test]
+    fn python_command_strips_an_appimage_ld_library_path() {
+        // K11: the interpreter python_command builds is always the SYSTEM
+        // python (or a venv on top of it), never something LU bundles, so it
+        // must not inherit an AppImage's own library path the way `git` did
+        // on CachyOS/Arch (K2/K11 field report, mallic 2026-09-16).
+        std::env::set_var("APPDIR", "/tmp/.mount_LocallieGkad");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_LocallieGkad/usr/lib:/usr/local/lib",
+        );
+        let cmd = python_command("python3");
+        let ld = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("LD_LIBRARY_PATH"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(ld.as_deref(), Some("/usr/local/lib"), "the AppImage entry should have been stripped");
+
+        // Negative control: without APPDIR (every platform but a running
+        // Linux AppImage) nothing overrides LD_LIBRARY_PATH at all.
+        std::env::remove_var("APPDIR");
+        let cmd = python_command("python3");
+        assert!(
+            cmd.get_envs().all(|(k, _)| k != std::ffi::OsStr::new("LD_LIBRARY_PATH")),
+            "no APPDIR means LD_LIBRARY_PATH must be left untouched"
+        );
+        std::env::remove_var("LD_LIBRARY_PATH");
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::python::python_command;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tracing::{error, info};
@@ -175,12 +175,16 @@ pub fn needs_cpu_fallback() -> bool {
 
 /// Is an NVIDIA driver present (nvidia-smi exits 0)?
 fn nvidia_present() -> bool {
-    // CREATE_NO_WINDOW: this probe runs on every ComfyUI start — without it an
+    // CREATE_NO_WINDOW: this probe runs on every ComfyUI start, without it an
     // NVIDIA Windows box flashes a console window each time. End users must
     // never see a terminal pop up.
-    let mut cmd = Command::new("nvidia-smi");
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    //
+    // K14 Runde 2, Punkt 5: this exact spot was the one the review found
+    // still using a bare Command::new for nvidia-smi (a foreign vendor CLI)
+    // after the K14 commit claimed the app's nvidia-smi call sites were
+    // covered.
+    let mut cmd = crate::process_util::foreign_system_command("nvidia-smi");
+    crate::process_util::suppress_window(&mut cmd);
     cmd.output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -765,10 +769,9 @@ fn collect_candidate_pythons() -> Vec<String> {
     {
     let mut out: Vec<String> = Vec::new();
     // `where python` candidates (excluding WindowsApps stub).
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("python");
-    #[cfg(target_os = "windows")]
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     if let Ok(output) = where_cmd.output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1215,9 +1218,9 @@ fn kill_port_owner(port: u16) {
     let own_pid = std::process::id();
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = Command::new("netstat");
+        let mut cmd = crate::process_util::foreign_system_command("netstat");
         cmd.args(["-ano", "-p", "tcp"]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        crate::process_util::suppress_window(&mut cmd);
         let Ok(out) = cmd.output() else { return };
         let text = String::from_utf8_lossy(&out.stdout);
         let needle = format!(":{}", port);
@@ -1236,19 +1239,19 @@ fn kill_port_owner(port: u16) {
         }
         for pid in pids {
             println!("[ComfyUI] CORS fix: killing port {} owner pid {}", port, pid);
-            let mut kill = Command::new("taskkill");
+            let mut kill = crate::process_util::foreign_system_command("taskkill");
             kill.args(["/pid", &pid.to_string(), "/T", "/F"]);
-            kill.creation_flags(CREATE_NO_WINDOW);
+            crate::process_util::suppress_window(&mut kill);
             let _ = kill.output();
         }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(out) = Command::new("lsof").args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"]).output() {
+        if let Ok(out) = crate::process_util::foreign_system_command("lsof").args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"]).output() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Ok(pid) = line.trim().parse::<u32>() {
                     if pid != 0 && pid != own_pid {
-                        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+                        let _ = crate::process_util::foreign_system_command("kill").args(["-9", &pid.to_string()]).output();
                     }
                 }
             }
@@ -1303,9 +1306,9 @@ fn fix_comfyui_cors_blocking(state: &AppState) -> Result<serde_json::Value, Stri
             let pid = child.id();
             #[cfg(target_os = "windows")]
             {
-                let mut cmd = Command::new("taskkill");
+                let mut cmd = crate::process_util::foreign_system_command("taskkill");
                 cmd.args(["/pid", &pid.to_string(), "/T", "/F"]);
-                cmd.creation_flags(CREATE_NO_WINDOW);
+                crate::process_util::suppress_window(&mut cmd);
                 let _ = cmd.output();
             }
             #[cfg(not(target_os = "windows"))]
@@ -1391,7 +1394,8 @@ fn start_ollama_blocking(state: &AppState) -> Result<serde_json::Value, String> 
     }
 
     println!("[Ollama] Starting...");
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2146,10 +2150,9 @@ fn stop_comfyui_blocking(state: &AppState) -> Result<serde_json::Value, String> 
     if let Some(ref mut child) = *proc {
         let pid = child.id();
         if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("taskkill");
+            let mut cmd = crate::process_util::foreign_system_command("taskkill");
             cmd.args(["/pid", &pid.to_string(), "/T", "/F"]);
-            #[cfg(target_os = "windows")]
-            cmd.creation_flags(CREATE_NO_WINDOW);
+            crate::process_util::suppress_window(&mut cmd);
             let _ = cmd.output();
         } else {
             let _ = child.kill();
@@ -2659,7 +2662,8 @@ pub fn auto_start_ollama(state: &AppState) {
     }
 
     println!("[Ollama] Starting...");
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -4374,7 +4378,7 @@ mod comfy_adoption_tests {
     ///   not, and the stand-in that does not have the problem is right here.
     #[cfg(unix)]
     fn live_comfy_stand_in(port: u16) -> std::process::Child {
-        Command::new(crate::test_support::park_binary())
+        std::process::Command::new(crate::test_support::park_binary())
             .args([
                 "main.py",
                 "--listen",
@@ -4634,7 +4638,7 @@ mod process_tree_kill_tests {
 
         // A launcher that spawns a long-lived grandchild and then waits —
         // the shape `npx -y <pkg>` has (shim in front, real server behind).
-        let mut launcher = Command::new("/bin/sh")
+        let mut launcher = std::process::Command::new("/bin/sh")
             .args(["-c", "sleep 60 & wait"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())

@@ -502,32 +502,21 @@ pub fn install_searxng(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // On Windows we add CREATE_NO_WINDOW so the docker CLI doesn't flash a
     // console window at the user when they install SearXNG from LU.
     std::thread::spawn(move || {
-        #[cfg(windows)]
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let mut pull_cmd = std::process::Command::new("docker");
+        let mut pull_cmd = crate::process_util::foreign_system_command("docker");
         pull_cmd.args(["pull", "searxng/searxng"]);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            pull_cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        crate::process_util::suppress_window(&mut pull_cmd);
         let pull = pull_cmd.output();
 
         match pull {
             Ok(output) if output.status.success() => {
-                let mut run_cmd = std::process::Command::new("docker");
+                let mut run_cmd = crate::process_util::foreign_system_command("docker");
                 run_cmd.args([
                     "run", "-d", "--name", "searxng",
                     "-p", "8888:8080",
                     "-e", "INSTANCE_NAME=locally-uncensored",
                     "searxng/searxng",
                 ]);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    run_cmd.creation_flags(CREATE_NO_WINDOW);
-                }
+                crate::process_util::suppress_window(&mut run_cmd);
                 let _ = run_cmd.output();
                 println!("[SearXNG] Installed and running on port 8888");
             }

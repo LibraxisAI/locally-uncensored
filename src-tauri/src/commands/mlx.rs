@@ -213,7 +213,7 @@ fn install_mlx_steps(slot: &crate::install_state::InstallSlot) -> Result<(), Str
     if !venv_dir.exists() {
         slot.log(format!("creating venv at {}", venv_dir.display()));
         std::fs::create_dir_all(mlx_root()).map_err(|e| os_error::english(&e))?;
-        let out = Command::new(&python)
+        let out = crate::python::python_command(&python)
             .args(["-m", "venv", venv_dir.to_str().unwrap()])
             .output()
             .map_err(|e| format!("venv create failed to spawn: {}", os_error::english(&e)))?;
@@ -232,7 +232,7 @@ fn install_mlx_steps(slot: &crate::install_state::InstallSlot) -> Result<(), Str
     std::fs::write(&server_path, SERVER_PY).map_err(|e| format!("write server.py: {}", os_error::english(&e)))?;
 
     slot.log("running pip install (this pulls torch + diffusers, ~3 GB)");
-    let out = Command::new(venv_pip())
+    let out = crate::python::python_command(venv_pip())
         .args(["install", "--upgrade", "-r", req_path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("pip install spawn: {}", os_error::english(&e)))?;
@@ -263,7 +263,7 @@ fn install_mlx_steps(slot: &crate::install_state::InstallSlot) -> Result<(), Str
         p = patterns,
     );
     let prefetch = prefetch.as_str();
-    let mut prefetch_cmd = Command::new(venv_python());
+    let mut prefetch_cmd = crate::python::python_command(venv_python());
     prefetch_cmd
         .args(["-c", prefetch])
         .env("HF_HOME", mlx_root().join("cache"))
@@ -298,7 +298,7 @@ fn locate_python_311() -> Option<PathBuf> {
 }
 
 fn python_version(python: &PathBuf) -> Option<String> {
-    let out = Command::new(python).arg("--version").output().ok()?;
+    let out = crate::python::python_command(python).arg("--version").output().ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let v = if v.is_empty() {
         String::from_utf8_lossy(&out.stderr).trim().to_string()
@@ -813,7 +813,7 @@ fn refetch_file(
         f = repair.path,
         v = revision,
     );
-    let mut cmd = Command::new(python);
+    let mut cmd = crate::python::python_command(python);
     cmd.args(["-c", &script]).env("HF_HOME", &cache).env("HF_XET_CACHE", hf_xet_cache_dir());
     apply_hf_token(&mut cmd);
     crate::commands::video::run_streamed(slot, &mut cmd)
@@ -976,7 +976,7 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
             r = entry2.repo,
             p = patterns.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(","),
         );
-        let mut cmd = Command::new(&python);
+        let mut cmd = crate::python::python_command(&python);
         cmd.args(["-c", &script])
             .env("HF_HOME", mlx_root().join("cache"))
         .env("HF_XET_CACHE", hf_xet_cache_dir());
@@ -1210,7 +1210,7 @@ pub fn mlx_start(_state: &AppState, _args: &Value) -> CmdResult {
 
     // The sidecar re-validates every file of a model against the hub when it
     // loads one, so it needs the token as much as the installer does.
-    let mut server_cmd = Command::new(venv_python());
+    let mut server_cmd = crate::python::python_command(venv_python());
     server_cmd
         .arg(&server)
         .env("LU_MLX_PORT", MLX_PORT.to_string())
