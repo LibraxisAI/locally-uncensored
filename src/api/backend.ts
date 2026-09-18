@@ -457,6 +457,10 @@ export async function backendCall<T = unknown>(
     comfyui_status: { path: "/local-api/comfyui-status" },
     comfyui_last_output: { path: "/local-api/comfyui-last-output" },
     find_comfyui: { path: "/local-api/find-comfyui" },
+    // K8 (GH #134): the primary auto-detect ComfyStep.tsx calls before
+    // falling back to find_comfyui above — see dev-server/comfy.ts for why
+    // both were needed, not just one.
+    detect_all_comfyui_installs: { path: "/local-api/detect-all-comfyui-installs" },
     set_comfyui_path: { path: "/local-api/set-comfyui-path", method: "POST" },
     install_comfyui: { path: "/local-api/install-comfyui", method: "POST" },
     install_comfyui_status: { path: "/local-api/install-comfyui" },

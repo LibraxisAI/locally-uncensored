@@ -17,7 +17,27 @@ import { postContentTypeAllowed, postContentTypeError } from '../src/lib/local-a
  * Grund, aus dem er eingeführt wurde: ein fest verdrahteter Port lässt sich
  * kein zweites Mal starten (`LU_DEV_PORT`, siehe vite.config.ts).
  */
-export function createLocalApiGuard(port: number): Connect.NextHandleFunction {
+/**
+ * K8 (GH #134, eloieloie, `npm run dev --host`): a deliberate LAN-exposed dev
+ * server rejected its OWN onboarding write requests with "403 Forbidden:
+ * Invalid Origin (CSRF Protection)" — the page loaded from the machine's LAN
+ * IP (e.g. `http://192.168.1.23:5273`), which is neither `tauri://localhost`
+ * nor the loopback regex below, so every request from it hit the same wall
+ * as a real cross-origin attacker.
+ *
+ * `getLanOrigins`, when given, is called PER REQUEST (not once at guard
+ * creation) and must return only origins the SERVER itself resolved it is
+ * bound to (see dev-server/index.ts — Vite's own `resolvedUrls.network`,
+ * read after listen()), never anything derived from a request header. That
+ * is the whole DNS-rebinding lesson above, applied here too: `--host` widens
+ * what the guard accepts, but the widening still comes from the server's own
+ * configuration, not from what a caller claims. Omitted (or empty) when
+ * `--host` was not passed — the default stays loopback-and-Tauri-only.
+ */
+export function createLocalApiGuard(
+  port: number,
+  getLanOrigins?: () => string[],
+): Connect.NextHandleFunction {
   // Vites eigener Middleware-Typ statt einer geratenen Signatur: `next`
   // ist hier Pflicht, weil dieser Wächter durchreicht statt zu antworten.
   return (req, res, next) => {
@@ -85,11 +105,17 @@ export function createLocalApiGuard(port: number): Connect.NextHandleFunction {
         // der Ablehnung: „Invalid Origin" allein sagt nicht, was erwartet war.
         const allowedOrigins = ['tauri://localhost', 'http://tauri.localhost'];
         const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-        if (!allowedOrigins.includes(origin) && !isLoopback) {
+        // K8: the server's own LAN origin(s) — see the doc comment on
+        // getLanOrigins above. Read fresh on every request; [] when --host
+        // is not active, so a plain `npm run dev` behaves exactly as before.
+        const lanOrigins = getLanOrigins ? getLanOrigins() : [];
+        const isOwnLan = lanOrigins.includes(origin);
+        if (!allowedOrigins.includes(origin) && !isLoopback && !isOwnLan) {
             res.writeHead(403, { 'Content-Type': 'text/plain' });
+            const lanNote = lanOrigins.length > 0 ? `, and this server's own LAN origin (${lanOrigins.join(', ')})` : '';
             res.end(
                 'Forbidden: Invalid Origin (CSRF Protection). Allowed: '
-                + `${allowedOrigins.join(', ')}, and loopback on ANY port (this server: http://localhost:${port}).`,
+                + `${allowedOrigins.join(', ')}, and loopback on ANY port (this server: http://localhost:${port})${lanNote}.`,
             );
             return;
         }

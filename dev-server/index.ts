@@ -50,7 +50,18 @@ export function devServerPlugin({ port }: DevServerOptions): Plugin {
         use: (path, handler) => { server.middlewares.use(path, handler) },
       }
 
-      routes.use('/local-api', createLocalApiGuard(port))
+      // K8 (GH #134): only when `--host` was actually passed does Vite set
+      // `server.config.server.host` — a plain `npm run dev` binds loopback
+      // only and this returns []. `resolvedUrls` populates after listen(),
+      // so this must be read lazily (per request, inside the guard), never
+      // computed once here — see the doc comment on getLanOrigins in guard.ts.
+      const lanOrigins = (): string[] => {
+        if (!server.config.server.host) return []
+        return (server.resolvedUrls?.network ?? [])
+          .map((u) => { try { return new URL(u).origin } catch { return null } })
+          .filter((o): o is string => !!o)
+      }
+      routes.use('/local-api', createLocalApiGuard(port, lanOrigins))
 
       autostartOllama()
       autostartComfy(comfy)
