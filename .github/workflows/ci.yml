@@ -114,6 +114,12 @@ jobs:
   cargo-check:
     runs-on: ${{ matrix.platform }}
     strategy:
+      # E5: without this, one platform's failure cancels the other lane
+      # before it reports anything, so a run that broke on BOTH platforms
+      # only ever shows the first one found — the 3.0.0 release night cost
+      # five rounds finding the second failure only after fixing the first.
+      # Same rationale as tauri-build below, vorbild for this line.
+      fail-fast: false
       matrix:
         platform: [ubuntu-22.04, windows-latest]
 
