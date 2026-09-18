@@ -16,7 +16,7 @@
 
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 
 #[cfg(target_os = "windows")]
@@ -317,7 +317,7 @@ pub fn install_comfyui(
         println!("[Install] Cloning ComfyUI to {:?}", target_dir);
         update("downloading", "Step 1/4: Downloading ComfyUI repository...");
 
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::process_util::foreign_system_command("git");
         cmd.args(["clone", "https://github.com/comfyanonymous/ComfyUI.git"])
             .arg(&target_dir)
             .stdout(Stdio::piped())
@@ -381,7 +381,7 @@ pub fn install_comfyui(
                     update("cancelled", "Install cancelled.");
                     return;
                 }
-                let mut pull = Command::new("git");
+                let mut pull = crate::process_util::foreign_system_command("git");
                 pull.args(["pull"]).current_dir(&target_dir)
                     .stdout(Stdio::piped()).stderr(Stdio::piped());
                 #[cfg(target_os = "windows")]

@@ -27,6 +27,15 @@ pub fn python_command<S: AsRef<std::ffi::OsStr>>(python_bin: S) -> Command {
     cmd.env("PYTHONUTF8", "1");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
+    // K11: the interpreter this runs is always the SYSTEM Python (or a venv
+    // built from it), never a Python LU bundles itself — so it is a foreign
+    // program in exactly the sense `foreign_system_command` names, and pip
+    // (always invoked as `<python> -m pip`, see install/pip.rs) rides along
+    // for free. `sanitize_appimage_python_env` above cleans PYTHONHOME/
+    // PYTHONPATH globally at startup; LD_LIBRARY_PATH cannot be cleaned that
+    // way because our OWN sidecars need it, so it is stripped here, per
+    // child, instead.
+    crate::process_util::strip_appimage_ld_library_path(&mut cmd);
     cmd
 }
 
@@ -556,6 +565,36 @@ mod tests {
             "ohne PYTHONUTF8 bleibt die alte Codepage die Voreinstellung: {envs:?}",
         );
         assert_eq!(cmd.get_program(), "python3", "das Programm darf nicht verloren gehen");
+    }
+
+    #[test]
+    fn python_command_strips_an_appimage_ld_library_path() {
+        // K11: the interpreter python_command builds is always the SYSTEM
+        // python (or a venv on top of it), never something LU bundles, so it
+        // must not inherit an AppImage's own library path the way `git` did
+        // on CachyOS/Arch (K2/K11 field report, mallic 2026-09-16).
+        std::env::set_var("APPDIR", "/tmp/.mount_LocallieGkad");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_LocallieGkad/usr/lib:/usr/local/lib",
+        );
+        let cmd = python_command("python3");
+        let ld = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("LD_LIBRARY_PATH"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(ld.as_deref(), Some("/usr/local/lib"), "the AppImage entry should have been stripped");
+
+        // Negative control: without APPDIR (every platform but a running
+        // Linux AppImage) nothing overrides LD_LIBRARY_PATH at all.
+        std::env::remove_var("APPDIR");
+        let cmd = python_command("python3");
+        assert!(
+            cmd.get_envs().all(|(k, _)| k != std::ffi::OsStr::new("LD_LIBRARY_PATH")),
+            "no APPDIR means LD_LIBRARY_PATH must be left untouched"
+        );
+        std::env::remove_var("LD_LIBRARY_PATH");
     }
 
     #[test]

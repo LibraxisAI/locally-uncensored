@@ -20,7 +20,7 @@
 //! der Nutzer nur "die Sprachausgabe ist plötzlich weg".
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 
 #[cfg(target_os = "windows")]
@@ -597,7 +597,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         }
 
         update("installing", "Step 1/3: Pulling the latest ComfyUI...");
-        let mut pull = Command::new("git");
+        let mut pull = crate::process_util::foreign_system_command("git");
         // --ff-only: a user-modified checkout must not silently merge; surface
         // the divergence honestly instead.
         pull.args(["pull", "--ff-only"])

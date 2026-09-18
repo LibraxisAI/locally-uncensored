@@ -29,6 +29,182 @@ pub fn suppress_window(cmd: &mut Command) {
     }
 }
 
+// ── K11: foreign programs vs. our own bundled sidecars on Linux AppImage ────
+//
+// K2/K11 (Discord, mallic, 2026-09-16, CachyOS/Arch AppImage): after an
+// in-app update, `git clone` inside the app failed with "no version
+// information available" and custom-node installs broke the same way.
+// Reinstalling did not help.
+//
+// linuxdeploy's AppRun exports `LD_LIBRARY_PATH` by PREPENDING
+// `$APPDIR/usr/lib[/x86_64-linux-gnu]` onto whatever the shell already had,
+// so it is inherited by every child process — including a system `git` found
+// on PATH. On Arch/CachyOS, whose `libpcre2-8`/`libssl` are newer than the
+// ones linuxdeploy bundled for the build host, the system `git` binary links
+// against ITS OWN system libpcre2/libssl by SONAME, the dynamic loader finds
+// LU's older bundled copies FIRST because of the inherited path, and either
+// a symbol-versioning mismatch ("no version information available") or an
+// outright crash follows. `python.rs::sanitize_appimage_python_env` already
+// fixed the equivalent bug for `PYTHONHOME`/`PYTHONPATH`, but deliberately
+// leaves `LD_LIBRARY_PATH` alone GLOBALLY — our own bundled sidecars (the
+// llama.cpp server, `whisper_server.py`'s interpreter, ...) need exactly the
+// libraries that variable points at. So this fix is scoped per spawned
+// command instead of touching the process-wide environment: only the one
+// child actually being started gets the cleaned value.
+
+/// The `LD_LIBRARY_PATH` a FOREIGN system program should see, given the
+/// value this process inherited and the AppImage's own mount point, or
+/// `None` when nothing needs to change (nothing in `current` lives under
+/// `appdir`, or `current` is empty).
+///
+/// Pure so the AppImage case is testable on every platform this app builds
+/// for, none of which sets `APPDIR` in CI.
+///
+/// There is no separate variable the AppImage runtime saves the ORIGINAL
+/// `LD_LIBRARY_PATH` under (unlike `APPIMAGE`/`APPDIR`/`OWD`/`ARGV0`, which
+/// `self_migrate.rs` already restores/clears around a relaunch) — the
+/// original value is simply whatever came AFTER the prepended AppDir
+/// entries, which for the ordinary case of LU started from a desktop icon
+/// is nothing at all. So "restore the original" and "strip the AppImage
+/// entries" are the same operation here.
+pub fn appimage_ld_library_path_without_appdir(current: &str, appdir: &str) -> Option<String> {
+    if current.is_empty() {
+        return None;
+    }
+    let appdir = appdir.trim_end_matches('/');
+    if appdir.is_empty() {
+        return None;
+    }
+    let entries: Vec<&str> = current.split(':').collect();
+    let kept: Vec<&str> = entries
+        .iter()
+        .copied()
+        .filter(|entry| !(entry.starts_with(appdir) && !entry.is_empty()))
+        .collect();
+    if kept.len() == entries.len() {
+        return None; // nothing pointed inside the AppImage, leave it untouched
+    }
+    Some(kept.join(":"))
+}
+
+/// Clean a child `Command`'s inherited `LD_LIBRARY_PATH` in place, for a
+/// FOREIGN system program only. No-op whenever `APPDIR` is unset — every
+/// platform and packaging but a running Linux AppImage — so this is safe to
+/// call unconditionally.
+///
+/// Never call this for our OWN bundled sidecars (the llama.cpp server, a
+/// ComfyUI venv we created, ...): they are built against and need exactly
+/// the libraries this strips out. Use [`foreign_system_command`] instead of
+/// touching this directly wherever a plain `Command::new` would do.
+pub fn strip_appimage_ld_library_path(cmd: &mut Command) {
+    let Ok(appdir) = std::env::var("APPDIR") else { return };
+    let Ok(current) = std::env::var("LD_LIBRARY_PATH") else { return };
+    if let Some(clean) = appimage_ld_library_path_without_appdir(&current, &appdir) {
+        cmd.env("LD_LIBRARY_PATH", clean);
+    }
+}
+
+/// Build a `Command` for a FOREIGN system program — `git`, a system Python
+/// interpreter, `pip`, a system `ffmpeg` — anything on `$PATH` that LU did
+/// not build and does not bundle. Use this instead of a bare `Command::new`
+/// at every such call site: it clears an AppImage's own library paths out of
+/// the child's environment (K11) so a foreign binary loads the SYSTEM
+/// libraries it actually links against, never our bundled copies. A no-op
+/// everywhere but a running Linux AppImage.
+///
+/// Do NOT use this for our own bundled sidecars — call `Command::new`
+/// directly for those, exactly as before.
+pub fn foreign_system_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    strip_appimage_ld_library_path(&mut cmd);
+    cmd
+}
+
+#[cfg(test)]
+mod appimage_env_tests {
+    use super::*;
+
+    #[test]
+    fn appimage_entries_are_dropped_and_the_rest_survives() {
+        let appdir = "/tmp/.mount_LocallieGkad";
+        let current = "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu:/usr/local/lib";
+        let clean = appimage_ld_library_path_without_appdir(current, appdir)
+            .expect("appimage entries were present and should have been stripped");
+        assert_eq!(clean, "/usr/local/lib");
+        assert!(!clean.contains(".mount_LocallieGkad"));
+    }
+
+    #[test]
+    fn a_value_with_nothing_from_the_appimage_is_left_alone() {
+        // Negative control: a user who set LD_LIBRARY_PATH themselves, or an
+        // AppImage runtime with nothing prepended, must not be rewritten —
+        // rewriting an unrelated value could break the very thing the user set.
+        assert_eq!(
+            appimage_ld_library_path_without_appdir("/usr/local/lib:/opt/cuda/lib64", "/tmp/.mount_x"),
+            None,
+        );
+        assert_eq!(appimage_ld_library_path_without_appdir("", "/tmp/.mount_x"), None);
+        assert_eq!(appimage_ld_library_path_without_appdir("/usr/local/lib", ""), None);
+    }
+
+    #[test]
+    fn the_ordinary_desktop_launch_case_strips_down_to_nothing() {
+        // The realistic case: LU started from a desktop icon, nothing set
+        // LD_LIBRARY_PATH beforehand, so the AppImage runtime's own prepend
+        // is the WHOLE value. Stripping it must leave an explicit empty
+        // string, not `None` — `None` here would mean "no AppImage prefix
+        // was found", which is false and would keep the poisoned value.
+        let appdir = "/tmp/.mount_LocallieGkad";
+        let current = "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu";
+        assert_eq!(appimage_ld_library_path_without_appdir(current, appdir), Some(String::new()));
+    }
+
+    #[test]
+    fn a_trailing_slash_on_appdir_does_not_break_the_match() {
+        let appdir = "/tmp/.mount_LocallieGkad/";
+        let current = "/tmp/.mount_LocallieGkad/usr/lib:/usr/local/lib";
+        assert_eq!(
+            appimage_ld_library_path_without_appdir(current, appdir),
+            Some("/usr/local/lib".to_string()),
+        );
+    }
+
+    #[test]
+    fn foreign_system_command_is_a_noop_without_appdir() {
+        // Negative control for the whole path: with no APPDIR (every
+        // platform and packaging but a running Linux AppImage), the command
+        // must come back with no LD_LIBRARY_PATH override at all.
+        std::env::remove_var("APPDIR");
+        let cmd = foreign_system_command("git");
+        assert_eq!(cmd.get_envs().count(), 0, "no APPDIR means nothing should be overridden");
+    }
+
+    #[test]
+    fn foreign_system_command_cleans_the_env_a_spawned_git_would_inherit() {
+        // K11/K2 (mallic, CachyOS/Arch AppImage, 2026-09-16): `git` on PATH
+        // inherited the AppImage's LD_LIBRARY_PATH and loaded LU's bundled
+        // libpcre2/libssl instead of the system's, printing "no version
+        // information available". This is the exact call every
+        // `Command::new("git")` in the codebase was switched to.
+        std::env::set_var("APPDIR", "/tmp/.mount_LocallieGkad");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu",
+        );
+        let cmd = foreign_system_command("git");
+        let ld = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("LD_LIBRARY_PATH"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(ld.as_deref(), Some(""), "both entries were inside the AppImage and should be gone");
+        assert_eq!(cmd.get_program(), "git");
+        std::env::remove_var("APPDIR");
+        std::env::remove_var("LD_LIBRARY_PATH");
+    }
+}
+
+
 // ── Reading the process table by COMMAND LINE ───────────────────────────────
 //
 // `System::refresh_processes` does NOT fetch command lines. Its refresh kind is

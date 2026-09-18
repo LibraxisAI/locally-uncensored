@@ -26,7 +26,7 @@ use std::fs;
 use std::path::PathBuf;
 use crate::python::python_command;
 use super::pip::is_permission_denied_pip_error;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -164,7 +164,7 @@ fn install_custom_node_blocking(
     if target_dir.exists() {
         if target_dir.join(".git").exists() {
             println!("[Install] Custom node {} already exists, updating...", node_name);
-            let mut cmd = Command::new("git");
+            let mut cmd = crate::process_util::foreign_system_command("git");
             cmd.args(["pull"]).current_dir(&target_dir)
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             #[cfg(target_os = "windows")]
@@ -194,7 +194,7 @@ fn install_custom_node_blocking(
 
     if fresh_clone {
         println!("[Install] Cloning custom node {} from {}", node_name, repo_url);
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::process_util::foreign_system_command("git");
         cmd.args(["clone", &repo_url]).arg(&target_dir)
             .stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(target_os = "windows")]
