@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Wifi, WifiOff, Loader2, Eye, EyeOff, ChevronDown, Plus, Power, Play, Trash2 } from 'lucide-react'
-import { useProviderStore } from '../../stores/providerStore'
+import { useProviderStore, deobfuscate } from '../../stores/providerStore'
 import { providerRowIds, isReturnableRow } from '../../lib/provider-visibility'
 import {
   slotTakeoverUpdate,
@@ -241,6 +241,20 @@ export function ProviderSettings() {
     run()
   }
 
+  // Opus-Review Nachbesserung 6 (3.0.1, F3): every path below that hands the
+  // shared `openai` slot to a REMEMBERED backend (Remove on the occupant,
+  // Enable on the standby card, Disable swapping it back in) must restore
+  // that backend's own parked key too, not just its name/URL. Through
+  // setProviderApiKey, not a plain field merge: that is the call that keeps
+  // the OS keychain in step with the store, and it has to run AFTER
+  // setProviderConfig so it is the last word on `openai`'s key field. No
+  // parked key (an older `displaced` record, written before this fix, or a
+  // backend that never had one) clears it instead of leaving the key of
+  // whichever backend just left sitting there under a new name.
+  function restoreParkedApiKey(parkedObfuscated: string | undefined) {
+    setProviderApiKey('openai', parkedObfuscated !== undefined ? deobfuscate(parkedObfuscated) : '')
+  }
+
   // Remove on the backend that holds the shared local slot: the slot goes back
   // to what it held before the takeover, and the removed backend is forgotten
   // instead of parked on standby. Offered only where `displaced` knows a state
@@ -249,7 +263,9 @@ export function ProviderSettings() {
   function removeOccupant() {
     const update = slotRemoveOccupantUpdate(providers.openai)
     if (!update) return
+    const parked = providers.openai.displaced?.apiKey
     setProviderConfig('openai', update)
+    restoreParkedApiKey(parked)
     setStatuses(prev => ({ ...prev, openai: 'idle' }))
     setExpandedProvider('openai')
   }
@@ -269,7 +285,9 @@ export function ProviderSettings() {
   function handBackSlot() {
     const update = slotHandbackUpdate(providers.openai)
     if (!update) return
+    const parked = providers.openai.displaced?.apiKey
     setProviderConfig('openai', update)
+    restoreParkedApiKey(parked)
     setStatuses(prev => ({ ...prev, openai: 'idle' }))
     setExpandedProvider('openai')
   }
@@ -343,7 +361,9 @@ export function ProviderSettings() {
     if (!nextEnabled && id === 'openai') {
       const handback = slotDisableOccupantUpdate(providers.openai)
       if (handback) {
+        const parked = providers.openai.displaced?.apiKey
         setProviderConfig('openai', handback)
+        restoreParkedApiKey(parked)
         setStatuses(prev => ({ ...prev, openai: 'idle' }))
         return
       }

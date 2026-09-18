@@ -158,4 +158,46 @@ describe('providerStore keychain (H5)', () => {
     expect(raw).toContain(obf('sk-fail-fallback')) // retained as fallback, NOT stripped
     expect(useStore.getState().getProviderApiKey('anthropic')).toBe('sk-fail-fallback')
   })
+
+  // Opus-Review Nachbesserung 6 (3.0.1, F3): a parked `displaced.apiKey` has
+  // no vault entry of its own (the OS keychain holds one credential per
+  // ProviderId, already spoken for by whichever backend is active), so it
+  // must never reach localStorage in the clear — on ANY platform, keychain
+  // active or not, unlike the active `apiKey` field which at least gets the
+  // localStorage fallback when the vault write fails.
+  it('a parked displaced.apiKey never reaches persisted localStorage, keychain active', async () => {
+    secretGet.mockResolvedValue(null)
+    secretSet.mockResolvedValue(undefined)
+    const useStore = await freshStore()
+    await useStore.getState().hydrateProviderKeys() // keychainReady = true
+
+    useStore.getState().setProviderConfig('openai', {
+      displaced: { name: 'Built-in Engine', baseUrl: 'http://127.0.0.1:8127/v1', isLocal: true, managed: true, apiKey: obf('sk-parked-secret') },
+    })
+
+    const raw = localStorage.getItem('lu-providers') || ''
+    expect(raw).not.toContain('sk-parked-secret')
+    expect(raw).not.toContain(obf('sk-parked-secret'))
+    // The rest of the parked record (name/baseUrl/managed) is not a secret
+    // and still needs to survive a restart — only the key is stripped.
+    expect(raw).toContain('Built-in Engine')
+  })
+
+  it('a parked displaced.apiKey never reaches persisted localStorage, no keychain on this platform either', async () => {
+    // Never probed / probe found nothing usable — keychainReady stays false,
+    // the same path Linux and the web build take. The ACTIVE apiKey field
+    // keeps its localStorage fallback here (unchanged behavior); the parked
+    // one still must not, because there is no vault to have "failed" into.
+    secretGet.mockRejectedValue(new Error('no vault on this platform'))
+    const useStore = await freshStore()
+    await useStore.getState().hydrateProviderKeys() // keychainReady stays false
+
+    useStore.getState().setProviderConfig('openai', {
+      displaced: { name: 'Jan', baseUrl: 'http://localhost:1337/v1', isLocal: true, apiKey: obf('sk-parked-linux') },
+    })
+
+    const raw = localStorage.getItem('lu-providers') || ''
+    expect(raw).not.toContain('sk-parked-linux')
+    expect(raw).not.toContain(obf('sk-parked-linux'))
+  })
 })

@@ -49,6 +49,19 @@ export interface ProviderConfig {
     // then reads DISABLED instead of STANDBY, which is the button that was
     // pressed (Nebenbefund 3, R12/R13 re-measure 2026-08-30).
     disabledByUser?: boolean
+    // Opus-Review Nachbesserung 6 (3.0.1, F3): the pushed-out backend's own
+    // API key, so a takeover does not just stop LEAKING it into the new
+    // occupant's field (the original F3 fix) but also stops DESTROYING it —
+    // handing the slot back used to come back with no key and a silent 401.
+    // Same "obfuscated" representation `apiKey` itself carries, an opaque
+    // blob this app never needs to read as text outside providerStore.ts.
+    // Session-only on purpose: providerStore.ts's `partialize` strips this
+    // field unconditionally before every persist, because there is no vault
+    // entry reserved for a PARKED backend (the OS keychain has exactly one
+    // slot per ProviderId, already spoken for by whichever backend is
+    // active). A key parked here survives Enable/Disable within the running
+    // session; it does not survive a restart, same as before this fix.
+    apiKey?: string
   }
 }
 

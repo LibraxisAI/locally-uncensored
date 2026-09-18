@@ -38,7 +38,12 @@ function obfuscate(key: string): string {
   }
 }
 
-function deobfuscate(encoded: string): string {
+// Exported for ProviderConfig.tsx's handback/removal paths (Opus-Review
+// Nachbesserung 6): `displaced.apiKey` carries the same obfuscated form this
+// function decodes for every other read of a provider's key, and restoring
+// it into the active slot has to go through `setProviderApiKey` (store AND
+// keychain), which takes the PLAIN key.
+export function deobfuscate(encoded: string): string {
   if (!encoded) return ''
   try {
     return atob(encoded).split('').reverse().join('')
@@ -393,15 +398,24 @@ export const useProviderStore = create<ProviderState>()(
       // When the OS keychain is active (H5), strip apiKey so the secret never
       // touches localStorage; otherwise keep the obfuscated key as before.
       partialize: (state) => ({
-        providers: keychainReady
-          ? (Object.fromEntries(
-              Object.entries(state.providers).map(([id, p]) =>
-                // Strip the key (it lives in the vault) UNLESS the vault write
-                // failed for this id — then keep the obfuscated fallback.
-                _keychainFailed.has(id as ProviderId) ? [id, p] : [id, { ...p, apiKey: '' }]
-              )
-            ) as Record<ProviderId, ProviderConfig>)
-          : state.providers,
+        providers: Object.fromEntries(
+          Object.entries(state.providers).map(([id, p]) => {
+            // Strip the ACTIVE key (it lives in the vault) UNLESS the vault
+            // write failed for this id — then keep the obfuscated fallback.
+            const stripActive = keychainReady && !_keychainFailed.has(id as ProviderId)
+            const withActive = stripActive ? { ...p, apiKey: '' } : p
+            // Opus-Review Nachbesserung 6: a PARKED key on the `displaced`
+            // memory has no vault entry of its own — the OS keychain holds
+            // exactly one credential per ProviderId, already spoken for by
+            // whichever backend is active. Persisting it in the clear would
+            // put a secret into localStorage with none of the protection
+            // `apiKey` itself gets, so it never survives a persist, on any
+            // platform. It still restores correctly within the same running
+            // session (ProviderConfig.tsx reads it before this ever runs).
+            if (!withActive.displaced?.apiKey) return [id, withActive]
+            return [id, { ...withActive, displaced: { ...withActive.displaced, apiKey: undefined } }]
+          })
+        ) as Record<ProviderId, ProviderConfig>,
         hideBackendSelector: state.hideBackendSelector,
       }),
     }

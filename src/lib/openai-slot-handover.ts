@@ -61,6 +61,17 @@ export interface SlotOccupant {
    * the card can tell them apart, because the slot itself looks identical.
    */
   disabledByUser?: boolean
+  /**
+   * Opus-Review Nachbesserung 6 (3.0.1, F3): carried through untouched, the
+   * same obfuscated representation `ProviderConfig.apiKey` itself uses. This
+   * module never decodes it — it only moves the value between the slot and
+   * its `displaced` memory, so a takeover stops destroying the pushed-out
+   * backend's key along with clearing the leak the original F3 fix closed.
+   * See ProviderConfig.tsx's `applyPreset`/`handBackSlot` for the actual
+   * store-and-keychain restore, which needs the plain key and therefore
+   * happens OUTSIDE this pure module.
+   */
+  apiKey?: string
 }
 
 /** The part of the `openai` slot this decision reads. */
@@ -138,6 +149,11 @@ export function slotTakeoverUpdate(
       baseUrl: slot.baseUrl,
       isLocal: slot.isLocal,
       managed: slot.managed,
+      // Nachbesserung 6: the outgoing backend's own key travels with it now,
+      // instead of being left to rot in the slot's field for the incoming
+      // backend to inherit (that leak is what `takeoverClearsApiKey` closes)
+      // or simply vanishing the moment something else takes the slot.
+      apiKey: slot.apiKey,
     },
   }
 }

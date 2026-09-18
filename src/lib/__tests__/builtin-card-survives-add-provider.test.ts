@@ -241,4 +241,44 @@ describe('the wiring, so the rule reaches the screen', () => {
     expect(end).toBeGreaterThan(start)
     expect(pane.slice(start, end)).not.toMatch(/[–—]/)
   })
+
+  // Opus-Review Nachbesserung 6 (3.0.1, F3): Enable on the standby card used
+  // to come back with no key and a silent 401 — the slot's name/URL were
+  // restored through slotHandbackUpdate, but nothing ever restored the
+  // parked backend's own apiKey. Every path that hands the slot to a
+  // REMEMBERED backend must read `displaced.apiKey` and push it through
+  // setProviderApiKey (store + keychain), not just merge the plain patch.
+  it('handBackSlot restores the parked key through setProviderApiKey, not a plain merge', () => {
+    const start = pane.indexOf('function handBackSlot()')
+    const end = pane.indexOf('\n  }', start)
+    const body = pane.slice(start, end)
+    expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
+    expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
+    // Reads the parked value BEFORE overwriting `providers.openai` with the
+    // handback patch — read-after-write here would read the NEW (wrong) slot.
+    expect(body.indexOf('const parked')).toBeLessThan(body.indexOf("setProviderConfig('openai', update)"))
+  })
+
+  it('removeOccupant restores the parked key too, same as Enable on standby', () => {
+    const start = pane.indexOf('function removeOccupant()')
+    const end = pane.indexOf('\n  }', start)
+    const body = pane.slice(start, end)
+    expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
+    expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
+  })
+
+  it('Disable swapping the built-in engine back in restores the parked key too', () => {
+    const start = pane.indexOf('const handback = slotDisableOccupantUpdate(providers.openai)')
+    const end = pane.indexOf('\n    }', start)
+    const body = pane.slice(start, end)
+    expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
+    expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
+  })
+
+  it('restoreParkedApiKey decodes the parked value and clears when nothing was parked', () => {
+    const start = pane.indexOf('function restoreParkedApiKey(')
+    const end = pane.indexOf('\n  }', start)
+    const body = pane.slice(start, end)
+    expect(body).toMatch(/setProviderApiKey\('openai', parkedObfuscated !== undefined \? deobfuscate\(parkedObfuscated\) : ''\)/)
+  })
 })
