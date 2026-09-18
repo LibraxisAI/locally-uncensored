@@ -203,6 +203,32 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      # Runde 3, Nachbesserung 7: the self-heal tests in install/pip.rs
+      # (a_ssl_collision_is_retried_once_..., a_genuine_ssl_gap_is_not_
+      # retried_forever) are #[ignore]d, documented in
+      # install/children.rs:148-167 - INSTALLER_CHILDREN is a process-wide
+      # registry, and any AppState drop anywhere in the SAME test binary
+      # SIGKILLs every registered pid, not just its own. That is real under
+      # `cargo test`'s default parallel runner, so the tests skip there
+      # rather than flake. Without this step, though, the plain `cargo
+      # test` above never ran them at all: the self-heal behaviour from
+      # Punkt 11, the actual fix for the customer's ticket, had no gate.
+      # `--test-threads=1` removes the exact hazard the tests are ignored
+      # for, so this step runs them for real.
+      #
+      # Named by filter, NOT a blanket `-- --ignored`: this crate's other
+      # #[ignore]d tests are live/e2e checks that need something this
+      # runner does not have (pep668_e2e_live_detect_and_create_venv wants
+      # LU_PEP668_TEST_PYTHON pointed at a fake interpreter on disk;
+      # commands::proxy's live_strict_aiohttp test wants a local stub
+      # server on 127.0.0.1:18899). Running the whole ignored set here
+      # would turn CI red for a setup problem, not a regression. Two
+      # substring filters are OR'd by the test harness, so both self-heal
+      # tests run and nothing else ignored does.
+      - name: Cargo test (ignored self-heal tests, serial)
+        working-directory: src-tauri
+        run: cargo test -- --ignored --test-threads=1 ssl_collision_is_retried_once genuine_ssl_gap_is_not_retried_forever
+
       # Gating since 01.09.2026 — the debt this comment used to describe is paid.
       # The deny-by-default error sat at src/commands/secret.rs:173, not :108 as
       # the old note said: MAX_UNITS was a `usize` using `usize::MAX` to mean
