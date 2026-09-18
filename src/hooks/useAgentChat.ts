@@ -131,27 +131,52 @@ export function __pendingAgentLoopTimersForTests(): string[] {
   return [...agentLoopTimers.keys()]
 }
 
+/**
+ * One sendAgentMessage() call's own mutable run state, created fresh inside
+ * the call and threaded through the whole turn by closure (the ReAct loop,
+ * the streaming callbacks, the tool executor, the error and finally
+ * handlers) instead of through hook-instance refs.
+ *
+ * B2 NEUER FUND: useAgentChat carried the SAME defect useChat.ts fixed in
+ * commit 1 (a content ref, a thinking ref and a blocks ref, ONE set per hook
+ * instance, and the app mounts exactly one instance), plus a hook-instance
+ * abort controller ref, its owning-conversation ref, and a running flag on
+ * top. Unlike useChat's plain-text path, this one also had an explicit
+ * re-entry guard on that running flag, added 2026-06-16 against a real
+ * double-submit bug. That guard turned the
+ * SAME defect into a worse symptom for a second, DIFFERENT conversation: a
+ * running agent turn in conversation A made a send in conversation B fail
+ * SILENTLY (`agent.duplicate_send_blocked`, no message, no error) instead of
+ * corrupting A's buffers. Named `runState`, not `run`: `run` already names
+ * the AgentRunContext from beginAgentRun() below (the tool-gate scope),
+ * unrelated to this buffer.
+ */
+interface AgentRunState {
+  readonly convId: string
+  content: string
+  thinking: string
+  blocks: AgentBlock[]
+  readonly abort: AbortController
+}
+
+/**
+ * Runs currently in flight, keyed by conversation. Doubles as the re-entry
+ * guard (a key present means that conversation already has a live run) and
+ * as the register stopAgent()/the /loop timer look up by conversation,
+ * same shape as agentLoopTimers above, module scope for the same reason: the
+ * chat view unmounts on a tab switch, so nothing a run needs afterwards can
+ * live in a hook ref.
+ */
+const activeAgentRuns = new Map<string, AgentRunState>()
+
+/** Test-only: which conversations currently have a live agent run. */
+export function __activeAgentRunConvIdsForTests(): string[] {
+  return [...activeAgentRuns.keys()]
+}
+
 export function useAgentChat() {
   const [isAgentRunning, setIsAgentRunning] = useState(false)
   const [pendingApproval, setPendingApproval] = useState<AgentToolCall | null>(null)
-
-  const abortRef = useRef<AbortController | null>(null)
-  /**
-   * Welche Unterhaltung der Lauf oben gehoert. Siehe useChat.ts: `abortRef`,
-   * `runningRef` und `isAgentRunning` gibt es einmal je Hook-Instanz, nicht je
-   * Unterhaltung, und Stop nahm sie unbesehen. Damit brach Stop in einer
-   * zweiten Unterhaltung den Agentenlauf der ersten ab (T1 Punkt 4).
-   */
-  const abortConvRef = useRef<string | null>(null)
-  // "The user pressed stop" lives in lib/run-stop, keyed by conversation, NOT
-  // in a ref of this hook instance — for the same reason agentLoopTimer above
-  // is module scope. It was also never RESET: one stop anywhere in the session
-  // left the flag true forever, so every later /loop in Agent mode silently ran
-  // a single pass and stopped, with no message saying why.
-  const contentRef = useRef('')
-  const thinkingRef = useRef('')
-  const blocksRef = useRef<AgentBlock[]>([])
-  const runningRef = useRef(false)
 
   // ── Approval callbacks ────────────────────────────────────
   //
@@ -202,15 +227,18 @@ export function useAgentChat() {
   }
 
   // ── Add agent block and sync to store ─────────────────────
+  // All three take the CALLING TURN's runState (B2) instead of a hook ref,
+  // so two conversations adding blocks at the same time write into their
+  // own arrays, not a shared one.
 
-  function addBlock(convId: string, msgId: string, block: AgentBlock) {
-    blocksRef.current = [...blocksRef.current, block]
-    useChatStore.getState().updateMessageAgentBlocks(convId, msgId, blocksRef.current)
+  function addBlock(runState: AgentRunState, convId: string, msgId: string, block: AgentBlock) {
+    runState.blocks = [...runState.blocks, block]
+    useChatStore.getState().updateMessageAgentBlocks(convId, msgId, runState.blocks)
   }
 
-  function removeBlock(convId: string, msgId: string, blockId: string) {
-    blocksRef.current = blocksRef.current.filter(b => b.id !== blockId)
-    useChatStore.getState().updateMessageAgentBlocks(convId, msgId, blocksRef.current)
+  function removeBlock(runState: AgentRunState, convId: string, msgId: string, blockId: string) {
+    runState.blocks = runState.blocks.filter(b => b.id !== blockId)
+    useChatStore.getState().updateMessageAgentBlocks(convId, msgId, runState.blocks)
   }
 
 
@@ -220,16 +248,17 @@ export function useAgentChat() {
    * land out of order. Falls back to no-op on unknown id.
    */
   function updateBlockById(
+    runState: AgentRunState,
     convId: string,
     msgId: string,
     blockId: string,
     updates: Partial<AgentBlock>
   ) {
-    const idx = blocksRef.current.findIndex((b) => b.id === blockId)
+    const idx = runState.blocks.findIndex((b) => b.id === blockId)
     if (idx < 0) return
-    const blocks = [...blocksRef.current]
+    const blocks = [...runState.blocks]
     blocks[idx] = { ...blocks[idx], ...updates }
-    blocksRef.current = blocks
+    runState.blocks = blocks
     useChatStore.getState().updateMessageAgentBlocks(convId, msgId, blocks)
   }
 
@@ -337,29 +366,50 @@ export function useAgentChat() {
     // now there is one resolution and every surface calls it.
     const { strategy, modelToUse, modelId, providerId, provider } = await resolveToolCallingStrategy(activeModel)
 
-    // ── Re-entry guard (double-submit) ──────────────────────────────────
+    // Create or get conversation. Resolved HERE, before the guard below, so
+    // the guard is keyed to the conversation this call belongs to instead of
+    // the whole hook instance (B2 NEUER FUND, see the AgentRunState doc
+    // comment above this hook).
+    let convId = store.activeConversationId
+    if (!convId) {
+      convId = store.createConversation(activeModel, persona?.systemPrompt || '')
+    }
+
+    // ── Re-entry guard (double-submit), PER CONVERSATION ─────────────────
     // An accidental double-send (two Enters before the React `isGenerating`
-    // prop flips Send → Stop) used to start a SECOND agent loop on this hook.
-    // Both loops share the streaming refs AND each keeps its OWN per-turn
-    // over-generation caps (maxImageGen/maxVideoGen), so each fired its own
-    // image/video tool — live repro: ONE prompt sent twice ran video_generate
-    // 4× (gemma4:e4b + SVD-XT, David 2026-06-16). Claim the lock synchronously
-    // HERE — strategy resolution above can await, the critical section (message
-    // add, ref reset, the loop) is all below — so the racing second call bails
-    // before duplicating anything. Released in the finally (runningRef=false).
-    if (runningRef.current) {
-      log.info('agent.duplicate_send_blocked', { activeModel })
+    // prop flips Send → Stop) used to start a SECOND agent loop for the SAME
+    // conversation. Both loops shared the streaming refs AND each kept its
+    // OWN per-turn over-generation caps (maxImageGen/maxVideoGen), so each
+    // fired its own image/video tool, live repro: ONE prompt sent twice ran
+    // video_generate 4x (gemma4:e4b + SVD-XT, David 2026-06-16). Claim the
+    // lock synchronously HERE, strategy resolution above can await, the
+    // critical section (message add, run state, the loop) is all below, so
+    // a racing second call for the SAME conversation bails before
+    // duplicating anything.
+    //
+    // B2 NEUER FUND: the guard used to be keyed to the whole hook instance,
+    // not to `convId`. A run in flight for conversation A then blocked a
+    // send in a completely different conversation B just as silently as a
+    // real double-submit, no message, no error, the run simply never
+    // started. Keying it to `convId` restores the original double-submit
+    // protection and drops the cross-conversation false positive.
+    if (activeAgentRuns.has(convId)) {
+      log.info('agent.duplicate_send_blocked', { activeModel, convId })
       return
     }
-    runningRef.current = true
-    // Flip the INPUT gate true in the SAME synchronous beat as the ref (David
-    // 2026-06-16, bug A). The input shows Send vs Stop off `isAgentRunning`,
-    // which used to flip true only ~80 lines down — AFTER the RAG + memory-
-    // retrieval awaits. In that window runningRef was already true (so the guard
-    // silently dropped a resend) while the input still showed Send, so the first
-    // message right after a generation looked like it "didn't go through". Both
-    // signals now go true together here and false together in the finally; the
-    // only early return before the try (no conv) resets both.
+    const abort = new AbortController()
+    const runState: AgentRunState = { convId, content: '', thinking: '', blocks: [], abort }
+    activeAgentRuns.set(convId, runState)
+    // Flip the INPUT gate true in the SAME synchronous beat as the claim
+    // above (David 2026-06-16, bug A). The input shows Send vs Stop off
+    // `isAgentRunning`, which used to flip true only ~80 lines down, AFTER
+    // the RAG + memory-retrieval awaits. In that window the guard was
+    // already claimed (so it silently dropped a resend) while the input
+    // still showed Send, so the first message right after a generation
+    // looked like it "didn't go through". Both signals now go true together
+    // here; "true" means "at least one conversation has a run in flight",
+    // same meaning as before now that more than one CAN be in flight at
+    // once. The only early return before the try (no conv) undoes both.
     setIsAgentRunning(true)
 
     // Z36 finding 2: an agent turn carries the tool catalogue and outgrows
@@ -371,12 +421,6 @@ export function useAgentChat() {
     try {
       await ensureBuiltinAgentCtx(modelToUse)
     } catch { /* run with whatever the engine has */ }
-
-    // Create or get conversation
-    let convId = store.activeConversationId
-    if (!convId) {
-      convId = store.createConversation(activeModel, persona?.systemPrompt || '')
-    }
 
     const memoryScope = store.conversations.find(c => c.id === convId)?.memoryScope
     // A brand-new instruction clears a previous stop; a /loop pass inherits it,
@@ -480,7 +524,11 @@ export function useAgentChat() {
 
     // Build conversation context
     const conv = useChatStore.getState().conversations.find((c) => c.id === convId)
-    if (!conv) { runningRef.current = false; setIsAgentRunning(false); return }
+    if (!conv) {
+      activeAgentRuns.delete(convId)
+      setIsAgentRunning(activeAgentRuns.size > 0)
+      return
+    }
 
     // RAG context injection
     // Per-chat persona toggle — default OFF. Only apply persona prompt
@@ -493,8 +541,9 @@ export function useAgentChat() {
 
     if (ragEnabled) {
       // Guard the lock: a throw here (before the main try/finally below) would
-      // otherwise leave runningRef stuck true and wedge the chat (the re-entry
-      // guard set it above). Degrade gracefully to no RAG context on failure.
+      // otherwise leave activeAgentRuns stuck claimed and wedge the chat (the
+      // re-entry guard set it above). Degrade gracefully to no RAG context on
+      // failure.
       try { await ragState.loadChunksFromDB(convId) } catch (e) { log.error('RAG chunk load failed', { e }) }
       const chunks = ragState.getConversationChunks(convId)
       if (chunks.length > 0) {
@@ -629,8 +678,9 @@ export function useAgentChat() {
     // Caveman mode: append as response style modifier AFTER agent instructions
     // This ensures the model understands its agent role first, then applies terse
     // style. Wrapped so a failed dynamic import can't throw OUT of the setup
-    // region (which runs before the main try/finally) and leave runningRef +
-    // isAgentRunning stuck true — that would wedge the chat (bug A class).
+    // region (which runs before the main try/finally) and leave the
+    // activeAgentRuns claim + isAgentRunning stuck true, that would wedge
+    // the chat (bug A class).
     let cavemanReminder = ''
     try {
       if (settings.cavemanMode && settings.cavemanMode !== 'off') {
@@ -716,16 +766,14 @@ export function useAgentChat() {
     // loop-attached picture), no further vision feedback this run.
     let visionRefused = false
 
-    // Setup
-    const abort = new AbortController()
-    abortRef.current = abort
-    abortConvRef.current = convId
+    // Setup. `abort`/`runState` were already created and claimed at the
+    // re-entry guard above (B2), reused here, not recreated, so Stop is
+    // wired to the SAME controller from the moment the guard let this call
+    // through.
     // Hand Stop to everything this run starts, including the nested ReAct loop
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
     run.abortSignal = abort.signal
-    runningRef.current = true
-    setIsAgentRunning(true)
     // Bind the generating flag to THIS conversation so the typing indicator
     // shows only in the chat whose turn is in flight (David 2026-06-12).
     useGenerationStore.getState().setGenerating(convId, true)
@@ -733,15 +781,15 @@ export function useAgentChat() {
     // requestGenerationCancel too, so a ComfyUI gen the agent kicked off is
     // interrupted when the chat is deleted mid-generation (gated to a no-op when
     // nothing is in flight).
-    useGenerationStore.getState().registerAborter(convId, () => { runningRef.current = false; abort.abort(); requestGenerationCancel() })
+    useGenerationStore.getState().registerAborter(convId, () => { abort.abort(); requestGenerationCancel() })
     // A refusal no retry can fix has to end the loop as well. `return` in the
     // catch does not skip the finally, so without this the driver fires the
     // next pass into the same refusal and the credits dialog reopens every
     // interval until the user finds Stop.
     let loopHalt: string | null = null
-    contentRef.current = ''
-    thinkingRef.current = ''
-    blocksRef.current = []
+    runState.content = ''
+    runState.thinking = ''
+    runState.blocks = []
 
     let frameScheduled = false
 
@@ -751,9 +799,9 @@ export function useAgentChat() {
         requestAnimationFrame(() => {
           const cId = convId!
           const mId = assistantMessage.id
-          useChatStore.getState().updateMessageContent(cId, mId, contentRef.current)
-          if (thinkingRef.current) {
-            useChatStore.getState().updateMessageThinking(cId, mId, thinkingRef.current)
+          useChatStore.getState().updateMessageContent(cId, mId, runState.content)
+          if (runState.thinking) {
+            useChatStore.getState().updateMessageThinking(cId, mId, runState.thinking)
           }
           frameScheduled = false
         })
@@ -885,7 +933,7 @@ export function useAgentChat() {
     // run and the swallowed multimodal refusal below produce the same text.
     const closingSummary = () =>
       summarizeTurn({
-        calls: blocksRef.current
+        calls: runState.blocks
           .filter((b) => b.phase === 'tool_call' && b.toolCall)
           .map((b) => ({
             toolName: b.toolCall!.toolName,
@@ -914,7 +962,12 @@ export function useAgentChat() {
     let stepNo = 0
     try {
       // ── Agent Loop ──────────────────────────────────────────
-      while (runningRef.current && !abort.signal.aborted) {
+      // A separate running flag used to be checked here too; it was only
+      // ever flipped false by the same three places that call
+      // `abort.abort()` (the aborter callback, the finally below,
+      // stopAgent), so the signal alone
+      // is the whole condition.
+      while (!abort.signal.aborted) {
         stepNo++
         // Fertige Hintergrundagenten melden sich hier, oben in der Iteration:
         // vor dem Modellaufruf und nach den Werkzeugantworten der vorigen
@@ -929,8 +982,8 @@ export function useAgentChat() {
         budget.addIteration()
         const exceed = budget.exceeded()
         if (exceed.kind !== 'none') {
-          contentRef.current =
-            (contentRef.current ? contentRef.current + '\n\n' : '') + budget.haltMessage()
+          runState.content =
+            (runState.content ? runState.content + '\n\n' : '') + budget.haltMessage()
           scheduleUIUpdate()
           break
         }
@@ -1087,7 +1140,7 @@ export function useAgentChat() {
         const announceWait = (err: unknown, ms: number) => {
           const asked = (err as { retryAfterMs?: unknown } | null)?.retryAfterMs
           if (typeof asked !== 'number' || ms < 3000) return
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'reflection',
             content: `Rate limited by the server, which asked for ${Math.round(ms / 1000)} seconds. Waiting, then carrying on.`,
@@ -1098,7 +1151,7 @@ export function useAgentChat() {
         if (strategy === 'native') {
           // Show thinking indicator while model processes
           const thinkingBlockId = uuid()
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: thinkingBlockId, phase: 'thinking', content: 'Analyzing...',
             timestamp: Date.now(),
           })
@@ -1174,7 +1227,7 @@ export function useAgentChat() {
             const dropThinkingBlock = () => {
               if (!thinkingBlockRemoved) {
                 thinkingBlockRemoved = true
-                removeBlock(convId!, assistantMessage.id, thinkingBlockId)
+                removeBlock(runState, convId!, assistantMessage.id, thinkingBlockId)
               }
             }
             // Connection-failure retry (David 2026-06-04): right after a VRAM
@@ -1205,7 +1258,7 @@ export function useAgentChat() {
                   },
                   (c) => {
                     dropThinkingBlock()
-                    contentRef.current = c
+                    runState.content = c
                     scheduleUIUpdate()
                   },
                   (t) => {
@@ -1215,7 +1268,7 @@ export function useAgentChat() {
                     // 'always' reasoner: nothing streamed live, then the whole
                     // thought appeared at once when the turn ended.
                     if (keepThinking) {
-                      thinkingRef.current = t
+                      runState.thinking = t
                       scheduleUIUpdate()
                     }
                   },
@@ -1259,7 +1312,7 @@ export function useAgentChat() {
                     },
                     (c) => {
                       dropThinkingBlock()
-                      contentRef.current = c
+                      runState.content = c
                       scheduleUIUpdate()
                     },
                     () => {},
@@ -1304,19 +1357,19 @@ export function useAgentChat() {
             const dropThinkingBlock = () => {
               if (!thinkingBlockRemoved) {
                 thinkingBlockRemoved = true
-                removeBlock(convId!, assistantMessage.id, thinkingBlockId)
+                removeBlock(runState, convId!, assistantMessage.id, thinkingBlockId)
               }
             }
             const onLiveContent = (c: string) => {
               dropThinkingBlock()
-              contentRef.current = c
+              runState.content = c
               scheduleUIUpdate()
             }
             const onLiveThinking = (t: string) => {
               dropThinkingBlock()
               // Same gate as the end-of-turn routing, see the Ollama branch.
               if (keepThinking) {
-                thinkingRef.current = t
+                runState.thinking = t
                 scheduleUIUpdate()
               }
             }
@@ -1412,7 +1465,7 @@ export function useAgentChat() {
           const thinkSink = createTurnThinkingSink()
           const paintThink = () => {
             if (!keepThinking) return
-            thinkingRef.current = thinkSink.live()
+            runState.thinking = thinkSink.live()
             scheduleUIUpdate()
           }
           const feedUI = (chunk: { prose: string; thinking: string }) => {
@@ -1421,7 +1474,7 @@ export function useAgentChat() {
               paintThink()
             }
             if (chunk.prose) shown += chunk.prose
-            contentRef.current = shown
+            runState.content = shown
             scheduleUIUpdate()
           }
           // The tri-state, not a hole. Until the 2.6.7 Denk-Audit this branch
@@ -1503,7 +1556,7 @@ export function useAgentChat() {
         }
 
         // Update UI — but DON'T overwrite contentRef during intermediate
-        // turns. Previously every iteration did `contentRef.current =
+        // turns. Previously every iteration did `runState.content =
         // turnContent`, which wiped any narration the model emitted
         // before a tool call ("I'll create an index, then write the file
         // …") the moment the next iteration produced an empty-content
@@ -1585,7 +1638,7 @@ export function useAgentChat() {
             if (!mediaSteered) {
               mediaSteered = true
               if (turnContent.trim()) {
-                addBlock(convId!, assistantMessage.id, {
+                addBlock(runState, convId!, assistantMessage.id, {
                   id: uuid(), phase: 'reflection', content: turnContent, timestamp: Date.now(),
                 })
               }
@@ -1600,7 +1653,7 @@ export function useAgentChat() {
               } as ChatMessage)
               continue
             }
-            contentRef.current = turnContent
+            runState.content = turnContent
             scheduleUIUpdate()
             break
           }
@@ -1681,7 +1734,7 @@ export function useAgentChat() {
               planReconcilesRemaining--
               if (turnContent.trim()) {
                 agentMessages.push({ role: 'assistant', content: turnContent })
-                addBlock(convId!, assistantMessage.id, {
+                addBlock(runState, convId!, assistantMessage.id, {
                   id: uuid(),
                   phase: 'reflection',
                   content: turnContent,
@@ -1744,7 +1797,7 @@ export function useAgentChat() {
                 linksSteered = true
                 log.info('agent.unbacked_links_steer', { count: invented.length, links: invented })
                 agentMessages.push({ role: 'assistant', content: turnContent })
-                addBlock(convId!, assistantMessage.id, {
+                addBlock(runState, convId!, assistantMessage.id, {
                   id: uuid(),
                   phase: 'reflection',
                   content: turnContent,
@@ -1757,23 +1810,23 @@ export function useAgentChat() {
               useChatStore.getState().updateMessageUnbackedLinks(convId!, assistantMessage.id, invented)
             }
           }
-          contentRef.current = turnContent
+          runState.content = turnContent
           // G21-2: after tool activity the closing thought belongs in the
           // block sequence too, in position before the final answer, not in
           // the one top-of-bubble field. A run with NO tool activity keeps
           // the classic bubble (plain chat look, and the tool-intent hint
           // in MessageBubble reads message.thinking).
           if (executedCallKeys.size > 0 && turnThinking.trim() && keepThinking) {
-            addBlock(convId!, assistantMessage.id, {
+            addBlock(runState, convId!, assistantMessage.id, {
               id: uuid(),
               phase: 'thinking',
               content: turnThinking,
               timestamp: Date.now(),
             })
-            thinkingRef.current = ''
+            runState.thinking = ''
             useChatStore.getState().updateMessageThinking(convId!, assistantMessage.id, '')
           } else {
-            thinkingRef.current = turnThinking
+            runState.thinking = turnThinking
           }
           // Fehler D, Symptom 2, jetzt fuer den Agenten Reiter. Bis hierher war
           // ein Zug, den das Modell nie zu Ende schreiben konnte, von einem
@@ -1789,9 +1842,9 @@ export function useAgentChat() {
             convId ? openPlanGap(useTodoStore.getState().getTodos(convId)) : null,
           )
           if (cutoff && convId) {
-            contentRef.current =
-              (contentRef.current ? contentRef.current + '\n\n' : '') + `_(${cutoff})_`
-            addBlock(convId, assistantMessage.id, {
+            runState.content =
+              (runState.content ? runState.content + '\n\n' : '') + `_(${cutoff})_`
+            addBlock(runState, convId, assistantMessage.id, {
               id: uuid(),
               phase: 'reflection',
               content: `\u26d4 ${cutoff}`,
@@ -1809,7 +1862,7 @@ export function useAgentChat() {
         // the next round's live stream refills it while streaming and lands
         // here again when that round completes.
         if (turnThinking.trim() && keepThinking) {
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'thinking',
             content: turnThinking,
@@ -1817,14 +1870,14 @@ export function useAgentChat() {
           })
         }
         if (turnContent.trim()) {
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'reflection',
             content: turnContent,
             timestamp: Date.now(),
           })
         }
-        thinkingRef.current = ''
+        runState.thinking = ''
         useChatStore.getState().updateMessageThinking(convId!, assistantMessage.id, '')
         scheduleUIUpdate()
 
@@ -1835,7 +1888,7 @@ export function useAgentChat() {
         // them respecting sideEffectKey (file_write same-path serializes,
         // shell/code share an 'exec' queue, image/workflow share 'comfyui',
         // pure reads fully parallel).
-        if (!runningRef.current || abort.signal.aborted) break
+        if (abort.signal.aborted) break
 
         // Same execution-time guard as Code: the catalog filter is not enough on
         // its own, because the loose-parse fallback lifts a call the model wrote
@@ -1874,11 +1927,11 @@ export function useAgentChat() {
               { trimmedReadKeys },
             )
         if (batchVerdict.action === 'halt') {
-          contentRef.current =
-            (contentRef.current ? contentRef.current + '\n\n' : '') +
+          runState.content =
+            (runState.content ? runState.content + '\n\n' : '') +
             `_(halted: ${batchVerdict.reason}. The model is looping. Try a stronger model for multi-step tasks, or rephrase the instruction.)_`
           scheduleUIUpdate()
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'reflection',
             content: `⛔ Loop guard halted the run: ${batchVerdict.reason}.`,
@@ -1888,7 +1941,7 @@ export function useAgentChat() {
         }
         const pendingSteer = batchVerdict.action === 'steer' ? batchVerdict.message : null
         if (pendingSteer) {
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'reflection',
             content: `↻ Loop guard steered the model: ${pendingSteer}`,
@@ -1963,7 +2016,7 @@ export function useAgentChat() {
             status: needsApproval ? 'pending_approval' : 'running',
             timestamp: Date.now(),
           }
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: blockId,
             phase: 'tool_call',
             content: needsApproval
@@ -2020,7 +2073,7 @@ export function useAgentChat() {
             const approved = await waitForApproval(convId!, entry.ac, abort.signal)
             if (approved) {
               entry.ac.status = 'running'
-              updateBlockById(convId!, assistantMessage.id, entry.blockId, {
+              updateBlockById(runState, convId!, assistantMessage.id, entry.blockId, {
                 toolCall: { ...entry.ac },
                 toolCalls: [{ ...entry.ac }],
                 content: `Running: ${entry.ac.toolName}`,
@@ -2094,7 +2147,7 @@ export function useAgentChat() {
                   : result.status === 'rejected'
                     ? `Rejected: ${entry.ac.toolName}`
                     : `Failed: ${entry.ac.toolName}`
-          updateBlockById(convId!, assistantMessage.id, entry.blockId, {
+          updateBlockById(runState, convId!, assistantMessage.id, entry.blockId, {
             toolCall: { ...entry.ac },
             toolCalls: [{ ...entry.ac }],
             content: contentLabel,
@@ -2264,14 +2317,14 @@ export function useAgentChat() {
           results.map((r) => ({ name: r.toolName, failed: r.status === 'failed', error: r.error, args: r.dispatchedArgs })),
         )
         if (failVerdict.action === 'halt') {
-          addBlock(convId!, assistantMessage.id, {
+          addBlock(runState, convId!, assistantMessage.id, {
             id: uuid(),
             phase: 'reflection',
             content: `⛔ Loop guard halted the run: ${failVerdict.reason}.`,
             timestamp: Date.now(),
           })
-          contentRef.current =
-            (contentRef.current ? contentRef.current + '\n\n' : '') +
+          runState.content =
+            (runState.content ? runState.content + '\n\n' : '') +
             `_(halted: ${failVerdict.reason}. The model is looping. Try a stronger model for multi-step tasks, or rephrase the instruction.)_`
           scheduleUIUpdate()
           break
@@ -2329,8 +2382,8 @@ export function useAgentChat() {
         }
 
         // Reset content for next iteration
-        contentRef.current = ''
-        thinkingRef.current = ''
+        runState.content = ''
+        runState.thinking = ''
       }
 
       // Fallback summary — parity with useCodex.ts. When the model's
@@ -2341,7 +2394,7 @@ export function useAgentChat() {
       // tool-call rows but no closing line. Build a concise summary
       // from the actually-completed blocks so there is always a final
       // answer at the bottom of the bubble.
-      if (!contentRef.current.trim()) {
+      if (!runState.content.trim()) {
         // Closing line when the model said nothing itself. Pure logic lives in
         // summarizeTurn so the D#81 rules (a failed picture is not a completed
         // task, and its reason gets shown) are locked by tests.
@@ -2349,7 +2402,7 @@ export function useAgentChat() {
         // spent the run ends with the plan still open, and this line is the
         // last thing the user reads. It may not say "completed" while the
         // PlanBar next to it says otherwise. closingSummary carries that rule.
-        contentRef.current = closingSummary()
+        runState.content = closingSummary()
       }
 
       // Die Werkzeugkette als versteckte Nachrichten ablegen, VOR der
@@ -2377,9 +2430,9 @@ export function useAgentChat() {
       }
 
       // Final store update
-      useChatStore.getState().updateMessageContent(convId!, assistantMessage.id, contentRef.current)
-      if (thinkingRef.current) {
-        useChatStore.getState().updateMessageThinking(convId!, assistantMessage.id, thinkingRef.current)
+      useChatStore.getState().updateMessageContent(convId!, assistantMessage.id, runState.content)
+      if (runState.thinking) {
+        useChatStore.getState().updateMessageThinking(convId!, assistantMessage.id, runState.thinking)
       }
 
     } catch (err) {
@@ -2400,7 +2453,7 @@ export function useAgentChat() {
             convId!, assistantMessage.id,
             reportMultimodalRefusal(visionFeedbackGiven)
               ? MULTIMODAL_UNSUPPORTED_MESSAGE
-              : (contentRef.current.trim() || closingSummary())
+              : (runState.content.trim() || closingSummary())
           )
         } else if ((err as { code?: string })?.code === 'tools_unsupported' || errorMsg.includes('does not support tools')) {
           // G26: record the refusal so the layered resolution (toolStrategyFor)
@@ -2434,7 +2487,7 @@ export function useAgentChat() {
             : ''
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            (contentRef.current ? contentRef.current + '\n\n' : '') + CREDITS_EXHAUSTED_MESSAGE + planLine
+            (runState.content ? runState.content + '\n\n' : '') + CREDITS_EXHAUSTED_MESSAGE + planLine
           )
         } else if ((err as { code?: string })?.code === 'signed_out'
           || (httpStatusOf(err) === 401 && (err as { provider?: string })?.provider === 'lu-cloud')) {
@@ -2451,7 +2504,7 @@ export function useAgentChat() {
             : ''
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            (contentRef.current ? contentRef.current + '\n\n' : '') +
+            (runState.content ? runState.content + '\n\n' : '') +
             'Your LU Cloud session ended and could not be renewed, so the run stopped here. Sign in again in Settings, then carry on.' + planLine
           )
         } else if (httpStatusOf(err) === 429) {
@@ -2467,7 +2520,7 @@ export function useAgentChat() {
             : 'a minute'
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            (contentRef.current ? contentRef.current + '\n\n' : '') +
+            (runState.content ? runState.content + '\n\n' : '') +
             `The server is limiting how many requests this account may send in a short window, and the run waited for it once already. Give it ${when}, then send your message again. Nothing was charged for the refused attempts.`
           )
         } else if (sendRefusal) {
@@ -2478,7 +2531,7 @@ export function useAgentChat() {
           // failure nor a sentence anyone can act on.
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            (contentRef.current ? contentRef.current + '\n\n' : '') + sendRefusal,
+            (runState.content ? runState.content + '\n\n' : '') + sendRefusal,
           )
         } else if (/failed to fetch|connection refused|connection reset|error sending request|proxy_localhost|network ?error|timed out|timeout|tcp connect|llama runner process|backend unreachable|HTTP 5\d\d/i.test(errorMsg)) {
           // Connection-class failure — after the transient retries above this
@@ -2487,21 +2540,26 @@ export function useAgentChat() {
           // gave users nothing to act on (rikki Discord 2026-06-10, Win11).
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            (contentRef.current ? contentRef.current + '\n\n' : '') +
+            (runState.content ? runState.content + '\n\n' : '') +
             `Lost the connection to the local model backend mid-response, it may have crashed, been closed, or was busy swapping models. LU already retried automatically.\n\nCheck that Ollama / LM Studio is running (and the model still loads), then send the message again.\n\nDetails: ${errorMsg}`
           )
         } else {
           useChatStore.getState().updateMessageContent(
             convId!, assistantMessage.id,
-            contentRef.current + '\n\nAgent error: ' + errorMsg
+            runState.content + '\n\nAgent error: ' + errorMsg
           )
         }
       }
     } finally {
       useGenerationStore.getState().clearAborter(convId)
-      runningRef.current = false
-      abortRef.current = null
-      abortConvRef.current = null
+      // Identity check (B2): only release the slot if it is still THIS run's.
+      // stopAgent() can already have deleted and even replaced it (Stop, then
+      // an immediate resend on the same conversation) by the time this
+      // finally runs, and unconditionally deleting would then drop the NEW
+      // run's re-entry protection out from under it.
+      if (activeAgentRuns.get(convId) === runState) {
+        activeAgentRuns.delete(convId)
+      }
       // Chat-tools artifact mode: attach any files the model "wrote" (captured
       // in-memory, NOT on disk) to the assistant message so they render inline
       // with a preview + Download button. takeChatArtifacts drains this run's
@@ -2522,7 +2580,11 @@ export function useAgentChat() {
       // call stays in the statement the old `void flushChatPersist()` occupied
       // rather than moving to the bottom of the block.
       await endTurnDurably(() => {
-        setIsAgentRunning(false)
+        // "true" means "at least one conversation has a run in flight" (see
+        // the claim above), false only once THIS was the last one, so a
+        // still-running conversation B does not lose its Stop button just
+        // because conversation A's turn ended first.
+        setIsAgentRunning(activeAgentRuns.size > 0)
         useGenerationStore.getState().setGenerating(convId, false)
       })
       // Drop the per-run workspace scope so standalone tool calls from
@@ -2538,8 +2600,8 @@ export function useAgentChat() {
       // subscribes to the voice store's isSpeaking churn during playback.
       {
         const voice = useVoiceStore.getState()
-        if (voice.ttsEnabled && voice.autoReadAloud && contentRef.current.trim()) {
-          autoSpeak(contentRef.current)
+        if (voice.ttsEnabled && voice.autoReadAloud && runState.content.trim()) {
+          autoSpeak(runState.content)
         }
       }
 
@@ -2547,8 +2609,8 @@ export function useAgentChat() {
       // the A7 cost policy: no silent lu-cloud call without the opt-in, then
       // the cheapest catalogue model, plus the every-3rd-turn rate limit the
       // agent loop never had.
-      if (contentRef.current.trim() && convId) {
-        void extractMemoriesFromPair(userContent, contentRef.current, convId, { scope: memoryScope }).catch(() => {})
+      if (runState.content.trim() && convId) {
+        void extractMemoriesFromPair(userContent, runState.content, convId, { scope: memoryScope }).catch(() => {})
       }
 
       // ── /loop driver ───────────────────────────────────────────────────
@@ -2567,7 +2629,7 @@ export function useAgentChat() {
         })
       } else if (opts?.loop && convId && !isRunStopped(convId)) {
         const loopState = opts.loop
-        const saidDone = loopPassSaysDone(contentRef.current.trim())
+        const saidDone = loopPassSaysDone(runState.content.trim())
         const cap = Math.max(0, useSettingsStore.getState().settings.loopMaxPasses ?? 0)
         const nextPass = loopState.pass + 1
 
@@ -2590,7 +2652,15 @@ export function useAgentChat() {
             agentLoopTimers.delete(convForLoop)
             // A skipped pass clears the loop store too (audit A3) — leaving
             // it standing painted a LoopBar promising a pass that never came.
-            if (runningRef.current) {
+            //
+            // B2 NEUER FUND: this used to read a single hook-wide running
+            // flag, so a run in an UNRELATED conversation B left
+            // standing at this instant made conversation A's own due pass
+            // look "still running" and skip it, while a genuinely still-
+            // running A could (once B finished first) fire a pass on top of
+            // itself. Keyed to `convForLoop` now, so only A's own run in
+            // flight skips A's own pass.
+            if (activeAgentRuns.has(convForLoop)) {
               useAgentLoopStore.getState().clear(convForLoop)
               return
             }
@@ -2650,17 +2720,18 @@ export function useAgentChat() {
       agentLoopTimers.delete(stoppedConvId ?? '')
     }
     useAgentLoopStore.getState().clear(stoppedConvId ?? '')
-    // NUR den eigenen Lauf. `runningRef`, `abortRef` und `isAgentRunning`
-    // gehoeren der Hook-Instanz, nicht der Unterhaltung; ohne diese Bedingung
-    // beendete Stop in einer zweiten Unterhaltung den Agentenlauf der ersten
-    // (T1 Punkt 4). Laeuft der Agent woanders, hat `stopRun` oben den Stopp
-    // fuer DIESE Unterhaltung vermerkt und mehr ist hier nicht zu tun.
-    if (abortConvRef.current === stoppedConvId) {
-      runningRef.current = false
-      abortRef.current?.abort()
-      abortRef.current = null
-      abortConvRef.current = null
-      setIsAgentRunning(false)
+    // NUR den eigenen Lauf. B2 NEUER FUND: `activeAgentRuns` ist jetzt je
+    // Unterhaltung gefuehrt (vorher zwei Refs plus ein Flag, Eigentum der
+    // Hook-Instanz, nicht der Unterhaltung); ohne den `.get()` auf genau
+    // `stoppedConvId` wuerde Stop in einer zweiten Unterhaltung den
+    // Agentenlauf der ersten treffen (T1 Punkt 4). Laeuft der Agent woanders,
+    // hat `stopRun` oben den Stopp fuer DIESE Unterhaltung vermerkt und mehr
+    // ist hier nicht zu tun.
+    const runToStop = stoppedConvId ? activeAgentRuns.get(stoppedConvId) : undefined
+    if (runToStop) {
+      runToStop.abort.abort()
+      activeAgentRuns.delete(stoppedConvId!)
+      setIsAgentRunning(activeAgentRuns.size > 0)
     }
     // Interrupt any in-flight ComfyUI gen too — the main Stop button only aborted
     // the agent loop before, so a running image/video kept burning unless the user

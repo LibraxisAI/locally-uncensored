@@ -18,11 +18,17 @@
  * Warteschlange liefen zwei lokale Laeufe gegen einen llama-server mit einem
  * einzigen Slot. useChat.ts hat seine Haelfte seit B2 Commit 1/2
  * (ChatRun-Objekt statt Refs, generationStore statt abortRef): siehe
- * useChat-zwei-laeufe-vermischen-nicht.test.ts. useAgentChat.ts und die
- * Warteschlange stehen noch aus. Was hier steht, ist das, was schon vorher
- * richtig wurde: der laufende Chat behaelt Stop und bricht nur sich selbst
- * ab, der andere behaelt seinen Sendeknopf und bekommt einen englischen Satz
- * statt eines stummen Tauschs.
+ * useChat-zwei-laeufe-vermischen-nicht.test.ts. useAgentChat.ts hat seine
+ * Haelfte seit B2 NEUER FUND (AgentRunState-Objekt statt Refs,
+ * activeAgentRuns statt abortRef/abortConvRef/runningRef, Wiedereintritts-
+ * Riegel je Unterhaltung statt app-weit): siehe
+ * useAgentChat-zwei-agentenlaeufe-vermischen-nicht.test.ts. Die
+ * Warteschlange (`runInLane`) steht weiter aus, die Oberflaeche unten haelt
+ * die App-weite Fahne fuer Regenerate/Edit deshalb bewusst, nicht mehr wegen
+ * geteilter Puffer. Was hier steht, ist das, was schon vorher richtig wurde:
+ * der laufende Chat behaelt Stop und bricht nur sich selbst ab, der andere
+ * behaelt seinen Sendeknopf und bekommt einen englischen Satz statt eines
+ * stummen Tauschs.
  *
  * Run: npx vitest run src/components/chat/__tests__/senden-und-stop-je-unterhaltung.test.tsx
  */
@@ -108,21 +114,10 @@ describe('the composer of the chat that IS answering', () => {
 })
 
 /**
- * Die zweite Haelfte des Befunds sitzt (noch, Stand vor B2) in zwei Hooks,
- * deren Abbruchgriffe der Hook-INSTANZ gehoeren und nicht der Unterhaltung.
- * Ein echter Lauf mit zwei gleichzeitigen Unterhaltungen ist von hier aus
- * nicht zu fahren, deshalb steht hier der Quelltext-Waechter auf die
- * Bedingung. Nachgemessen werden muss das an der laufenden App (siehe
- * Bericht).
- *
- * useChat.ts ist seit B2 Commit 2 raus aus dieser Liste: `abortRef` /
- * `abortConvRef` sind entfernt, weil sie erwiesenermassen redundant waren -
- * `generationStore.aborters` ist bereits je Konversation gefuehrt und war
- * schon vorher der Griff, der wirklich abbricht (siehe die
- * `abortConversation`-Zeile, die hier unveraendert blieb). Ein Quelltext-Pin
- * auf die entfernten Refs waere jetzt ein Pin auf toten Code. Der Beweis fuer
- * useChat steht stattdessen als echter Zwei-Unterhaltungen-Lauf in
- * useChat-zwei-laeufe-vermischen-nicht.test.ts.
+ * Die zweite Haelfte des Befunds sass (Stand vor B2) in zwei Hooks, deren
+ * Abbruchgriffe der Hook-INSTANZ gehoerten und nicht der Unterhaltung. Beide
+ * sind seither gefixt (useChat B2 Commit 2, useAgentChat B2 NEUER FUND), der
+ * dritte (useCodex) folgt unten.
  */
 describe('Stop bricht nur die eigene Erzeugung ab', () => {
   it('useChat hat kein Instanz-Ref mehr, das ein zweiter Lauf ueberschreiben koennte', () => {
@@ -134,12 +129,22 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
     expect(chat).toMatch(/useGenerationStore\.getState\(\)\.abortConversation\(convId\)/)
   })
 
-  it('useAgentChat beendet den Agentenlauf nur fuer die eigene Unterhaltung', () => {
+  it('useAgentChat hat kein Instanz-Ref mehr, das ein zweiter Lauf ueberschreiben koennte', () => {
     const agent = src('../../../hooks/useAgentChat.ts')
-    expect(agent).toMatch(/if \(abortConvRef\.current === stoppedConvId\) \{/)
-    expect(agent).toMatch(/abortConvRef\.current = convId/)
-    // setIsAgentRunning(false) darf NICHT mehr unbedingt am Ende stehen: das
-    // war die Zeile, die den fremden Lauf aus der Oberflaeche loeschte.
+    expect(agent).not.toMatch(/abortConvRef/)
+    expect(agent).not.toMatch(/const abortRef = useRef/)
+    expect(agent).not.toMatch(/const runningRef = useRef/)
+    // Der Griff, der wirklich abbricht, ist jetzt je Unterhaltung: eine Map,
+    // keine Hook-Instanz.
+    expect(agent).toMatch(/const activeAgentRuns = new Map<string, AgentRunState>\(\)/)
+    const stopAgent = agent.slice(agent.indexOf('const stopAgent = useCallback'))
+    expect(stopAgent).toMatch(/activeAgentRuns\.get\(stoppedConvId\)/)
+    expect(stopAgent).toMatch(/runToStop\.abort\.abort\(\)/)
+    expect(stopAgent).toMatch(/activeAgentRuns\.delete\(stoppedConvId!\)/)
+    // setIsAgentRunning(false) darf NICHT mehr unbedingt stehen: das war die
+    // Zeile, die den fremden Lauf aus der Oberflaeche loeschte. Es steht nur
+    // noch bedingt, unter demselben `if (runToStop)`, das den eigenen Lauf
+    // gefunden haben muss.
     expect(agent).not.toMatch(/drainApprovals\(stoppedConvId\)\s*\n\s*setIsAgentRunning\(false\)/)
   })
 

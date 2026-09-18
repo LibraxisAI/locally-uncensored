@@ -261,7 +261,7 @@ function reactSchleifenHooks(): string[] {
  * still durchzurutschen.
  */
 const SCHLEIFENKOPF: Record<string, string> = {
-  'useAgentChat.ts': 'while (runningRef.current',
+  'useAgentChat.ts': 'while (!abort.signal.aborted)',
   'useCodex.ts': 'for (let i = 0; i < MAX_CODEX_ITERATIONS',
 }
 
