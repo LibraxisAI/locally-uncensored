@@ -3,7 +3,7 @@
  * fehlte.
  *
  * Was vorher stand (`run-stop.test.ts`, `sub-agent.test.ts`) war ein
- * Quelltext-Grep und eine Aufrufform-Pruefung — beides wird gruen, wenn
+ * Quelltext-Grep und eine Aufrufform-Pruefung, beides wird gruen, wenn
  * `cancelAll` zu einem No-op gemacht wird, solange die Zeile im Quelltext
  * stehenbleibt. Dieser Test laesst stattdessen einen ECHTEN Unteragentenlauf
  * gegen einen gemockten Anbieter mit Schleife laufen (`defaultSubAgentRunner`,
@@ -17,7 +17,7 @@
  *
  * Negativkontrolle (siehe Commit-Text): die Wettlauf-Sperre in
  * `buildDelegateExecutor` (isRunStopped-Pruefung direkt nach `start(...)`)
- * kurz zurueckgenommen — dieser Test bleibt gruen (die Aufgabe stand zum
+ * kurz zurueckgenommen, dieser Test bleibt gruen (die Aufgabe stand zum
  * Stop-Zeitpunkt schon im Store), aber ein eigener Test unten deckt genau die
  * Luecke ab; das `gates.abortSignal`-Threading aus `chatWithTools`
  * zurueckgenommen (den `{ signal: ... }`-Parameter entfernt) macht
@@ -89,10 +89,10 @@ async function warteBis(pruefung: () => boolean, was: string): Promise<void> {
 
 /**
  * Ein Anbieter mit einer echten Schleife: jede Antwort traegt einen
- * Werkzeugaufruf, also bricht `defaultSubAgentRunner` nie von selbst ab —
+ * Werkzeugaufruf, also bricht `defaultSubAgentRunner` nie von selbst ab,
  * nur der Stop kann diese Schleife beenden. Ab dem zweiten Aufruf loest die
  * Implementierung selbst denselben Griff aus, den der Stop-Knopf benutzt,
- * MITTEN in der laufenden Anfrage — genau der Moment, den T4 gemessen hat
+ * MITTEN in der laufenden Anfrage, genau der Moment, den T4 gemessen hat
  * (ein Aufruf, der schon unterwegs war, als Stop gedrueckt wurde).
  */
 function baueSchleifendenAnbieter() {
@@ -102,7 +102,7 @@ function baueSchleifendenAnbieter() {
     calls++
     if (opts?.signal) gesehenesSignal.push(opts.signal)
     if (calls === 2) {
-      // Stop, mitten in dieser (der zweiten) Anfrage — derselbe Griff, den
+      // Stop, mitten in dieser (der zweiten) Anfrage, derselbe Griff, den
       // stopAgent/stopCodex seit der B1-Nachbesserung benutzen.
       useAgentTaskStore.getState().cancelAll(CONV)
       stopRun(CONV)
@@ -140,12 +140,12 @@ describe('Stop mitten in einer laufenden Hintergrundanfrage beendet den Lauf wir
     )
 
     const standNachAbbruch = callCount()
-    // Eine grosszuegige Wartezeit — waere die Sperre am Schleifenkopf
+    // Eine grosszuegige Wartezeit, waere die Sperre am Schleifenkopf
     // (`gates.abortSignal?.aborted`) nicht da, liefe die Schleife bis zum
     // Budget weiter und `callCount()` waechse.
     await new Promise((r) => setTimeout(r, 50))
     expect(callCount()).toBe(standNachAbbruch)
-    // Und nicht einfach "irgendwann aufgehoert" — genau zwei: die erste
+    // Und nicht einfach "irgendwann aufgehoert", genau zwei: die erste
     // Anfrage plus die, die schon unterwegs war, als Stop gedrueckt wurde.
     expect(standNachAbbruch).toBe(2)
   })
@@ -193,7 +193,7 @@ describe('Wettlauf: Stop im Startfenster (Opus-Review, Nachbesserung 2)', () => 
    * Der von Opus gefundene zweite Fall: der Nutzer druecke Stop nicht waehrend
    * eine Anfrage laeuft, sondern GENAU in dem Fenster, in dem die Aufgabe noch
    * gar nicht im Store steht (zwischen `_inFlight++` und `start(...)` liegen
-   * zwei `await`s). Das laesst sich von aussen nicht zeitlich treffen — aber
+   * zwei `await`s). Das laesst sich von aussen nicht zeitlich treffen, aber
    * die Sperre selbst deckt einen strengeren Fall ab: schon VOR dem ersten
    * `runner()`-Aufruf steht der Stop-Merker. `buildDelegateExecutor` prueft
    * `isRunStopped(convId)` direkt nach `start(...)`, also muss der Anbieter in

@@ -1,5 +1,5 @@
 /**
- * K6 (3.0.1): GitHub locally-uncensored #132, AppImage/Ubuntu 24.04 —
+ * K6 (3.0.1): GitHub locally-uncensored #132, AppImage/Ubuntu 24.04,
  * "closing... it looks like it adds models and then breaks the selection
  * field... it's fixed by restarting". A restart-only fix for a component with
  * no error boundary of its own is the signature of an uncaught render throw:
@@ -21,11 +21,11 @@ vi.mock('../../../lib/logger', () => ({
 }))
 
 // A deterministic stand-in for "something in the real grouping pipeline
-// threw" — the point of this test is the try/catch in computeModelGroups
+// threw", the point of this test is the try/catch in computeModelGroups
 // itself, not any particular crash in splitBackendSwitchRows (which is
 // defensively written elsewhere in this codebase; the mock proves the SAFETY
 // NET works regardless of whether today's helper code happens to have a
-// hole tomorrow — a freshly downloaded, not-yet-fully-normalized model entry
+// hole tomorrow, a freshly downloaded, not-yet-fully-normalized model entry
 // is exactly the kind of value that could reach it).
 let throwOnSplit = false
 vi.mock('../../../lib/lu-engine-rows', async (importOriginal) => {
@@ -49,7 +49,7 @@ function textModel(name: string): AIModel {
   } as AIModel
 }
 
-describe('K6 — computeModelGroups never crashes the picker', () => {
+describe('K6: computeModelGroups never crashes the picker', () => {
   beforeEach(() => { vi.clearAllMocks(); throwOnSplit = false })
 
   it('groups normally when nothing throws', () => {
@@ -66,7 +66,7 @@ describe('K6 — computeModelGroups never crashes the picker', () => {
     const { groups, groupingFailed, showHeadings } = computeModelGroups(models, false, null, null)
     expect(groupingFailed).toBe(true)
     expect(showHeadings).toBe(false)
-    // Nothing is lost — the fallback is flat, not empty. This is the
+    // Nothing is lost, the fallback is flat, not empty. This is the
     // difference between "the picker looks a little plain" and "the picker
     // (and with it the whole chat view, see ChatView's ErrorBoundary) is
     // gone until the user restarts the app".

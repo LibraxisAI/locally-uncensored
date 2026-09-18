@@ -5,7 +5,7 @@
  * session survives (api/cloud/supabase.ts, "Signed out, but the saved session
  * could not be removed"). That throw was swallowed and the store was flipped
  * to signed-out regardless, so the app said "signed out" while a valid refresh
- * token stayed in the OS vault — and the 5-minute probe signed the account
+ * token stayed in the OS vault, and the 5-minute probe signed the account
  * back in. On a shared or handed-over machine that is the whole account.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -94,7 +94,7 @@ describe('a sign-out that did not happen', () => {
 describe('a failure that still emptied this machine', () => {
   it('completes the sign-out when the tombstone landed', async () => {
     // removeItem could not delete the entry but did overwrite it, so getItem
-    // reports the session as absent — this machine is clean.
+    // reports the session as absent, this machine is clean.
     signOut.mockRejectedValue(new Error('Signed out, but the saved session could not be removed from the keychain.'))
     getSession.mockResolvedValue({ data: { session: null }, error: null })
 
@@ -113,13 +113,13 @@ describe('a failure that still emptied this machine', () => {
   })
 })
 
-describe('B1 Nachbesserung 1 (Opus-Review) — Abmelden stoppt Hintergrundagenten', () => {
+describe('B1 Nachbesserung 1 (Opus-Review): Abmelden stoppt Hintergrundagenten', () => {
   /**
    * Vor dieser Nachbesserung liess signOutAccount() jeden laufenden
-   * delegate_task-Hintergrundagenten unangetastet — er feuerte nach dem
+   * delegate_task-Hintergrundagenten unangetastet, er feuerte nach dem
    * Abmelden mit einem Konto weiter, das der Nutzer gerade verlassen hat.
    * `stopAllBackgroundWork()` laeuft ueber ALLE Konversationen, nicht nur die
-   * gerade sichtbare — Abmelden trifft die ganze Sitzung.
+   * gerade sichtbare, Abmelden trifft die ganze Sitzung.
    */
   it('a successful sign-out cancels every running background task, in any conversation', async () => {
     signOut.mockResolvedValue({ error: null })

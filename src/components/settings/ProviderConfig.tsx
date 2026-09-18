@@ -99,7 +99,7 @@ export function providerSlotView(id: ProviderId, config: ProviderConfig): SlotVi
 // server is not currently listening on :1234 (user closed the GUI, the
 // server toggle is off, etc.), the previous Settings UI offered only
 // `Test` and `Disable`. The clean Plug-and-Play path is to call the
-// existing `start_lmstudio_server` Tauri command — same surface the
+// existing `start_lmstudio_server` Tauri command, same surface the
 // onboarding's Fix-(d) card uses. This keeps the user inside LU instead
 // of forcing them through Re-run-onboarding to recover from a
 // transient server outage.
@@ -123,7 +123,7 @@ export function ProviderSettings() {
   const [expandedProvider, setExpandedProvider] = useState<ProviderId | null>(null)
 
 
-  // Bug (g) state — LM-Studio-on-disk-but-server-off detection.
+  // Bug (g) state, LM-Studio-on-disk-but-server-off detection.
   const [lmStudioInfo, setLmStudioInfo] = useState<LmStudioServerInfo | null>(null)
   const [startingLmStudioServer, setStartingLmStudioServer] = useState(false)
 
@@ -132,7 +132,7 @@ export function ProviderSettings() {
     try {
       const status = await backendCall<LmStudioServerInfo>('lmstudio_server_status')
       setLmStudioInfo(status)
-    } catch { /* command unavailable on older builds — leave null */ }
+    } catch { /* command unavailable on older builds, leave null */ }
   }
 
   // One status for one slot, and never a verdict nobody earned.
@@ -318,8 +318,7 @@ export function ProviderSettings() {
       // switching to LM Studio/vLLM clears the built-in flag and re-selecting
       // Built-in restores it.
       // F3 (3.0.1, T4 Nebenfund): a real takeover must not leave the
-      // displaced backend's API key sitting in the shared slot's field —
-      // see takeoverClearsApiKey in lib/openai-slot-handover.ts. Checked
+      // displaced backend's API key sitting in the shared slot's field,       // see takeoverClearsApiKey in lib/openai-slot-handover.ts. Checked
       // against the same shape slotTakeoverUpdate itself reads below.
       if (takeoverClearsApiKey(providers.openai, {
         name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed,
@@ -536,7 +535,7 @@ export function ProviderSettings() {
             {/* Expanded config */}
             {isExpanded && (
               <div className="px-2 pb-2 space-y-1.5 border-t border-white/[0.04]">
-                {/* Endpoint — an edit box only where editing it does something.
+                {/* Endpoint, an edit box only where editing it does something.
                     The built-in engine and LU Cloud both run on an address the
                     app pins, so they show it instead of pretending. */}
                 {!view.endpointEditable ? (
@@ -752,7 +751,7 @@ export function ProviderSettings() {
         </button>
         {/* Hellmodus-Luecke aus Welle 2, in f336b91e gemeldet statt
             geaendert. Die Flaeche war `bg-[#363636]` OHNE `dark:`, blieb im
-            Hellmodus also dunkel — waehrend der Rescue-Layer in index.css
+            Hellmodus also dunkel, waehrend der Rescue-Layer in index.css
             die Schrift darin nach unten dreht (`.light .text-gray-500 →
             #374151`). Ergebnis: #374151 auf #363636 = 1,17:1, praktisch
             unsichtbar; jetzt 10,31:1. Kein zweites Literal, sondern

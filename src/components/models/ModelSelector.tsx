@@ -45,7 +45,7 @@ import type { CloudModel as CloudModelMarks } from '../../types/models'
 // ── Local-mode cloud discovery (2.5.8): an "LU Cloud" section at the list's
 // tail. Signed-in accounts show their real hosted chat models (the appMode
 // filter hides them from the selectable list); logged-out shows one generic
-// row. Tapping any row opens the Cloud gate (login → plan → beta) — chat rows
+// row. Tapping any row opens the Cloud gate (login → plan → beta), chat rows
 // skip the teaser sheet, the gate IS the pitch here. Hidden in cloud mode
 // (models are the real list there) and when the discovery layer is off. ──
 function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
@@ -130,7 +130,7 @@ function CloudTeaserSection({ onOpen }: { onOpen: () => void }) {
 // True when `prev` already holds exactly the names in `next`. Lets the 1.5 s
 // loaded-state poll bail out of a state update (return the SAME Set ref) when
 // nothing changed, so React skips the re-render instead of reconciling the whole
-// dropdown every tick — the common case once the user has stopped loading models
+// dropdown every tick, the common case once the user has stopped loading models
 // (vedaiorobotics GH #70: "interface laggy, even when loading models").
 function sameStringSet(prev: Set<string>, next: string[]): boolean {
   if (prev.size !== next.length) return false
@@ -138,12 +138,11 @@ function sameStringSet(prev: Set<string>, next: string[]): boolean {
   return true
 }
 
-// ── Bug Q (v2.4.7 — wakeywakeynow GH #41) ─────────────────────
+// ── Bug Q (v2.4.7, wakeywakeynow GH #41) ─────────────────────
 //
 // Symptom: user has LM Studio installed with models on disk, opens LU's
 // chat model picker, sees only Ollama models, no hint about LM Studio.
-// Root cause: LM Studio's HTTP server doesn't auto-start with the app —
-// the user has to click Developer → Start Server in LM Studio, OR run
+// Root cause: LM Studio's HTTP server doesn't auto-start with the app, // the user has to click Developer → Start Server in LM Studio, OR run
 // `lms server start`. When the server is off, LU's OpenAI-compat probe
 // returns nothing and LM Studio is silently dropped from the dropdown.
 // v2.4.4 added a "Start LM Studio server" hint to onboarding, but the
@@ -160,7 +159,7 @@ function sameStringSet(prev: Set<string>, next: string[]): boolean {
  * Antwort von `lmstudio_server_status`. Deckungsgleich mit der Rust-Seite
  * (`src-tauri/src/commands/install.rs:3379` baut genau diese fuenf Schluessel,
  * alle immer gesetzt). Exportiert, weil das Onboarding denselben Befehl ruft
- * und dort ein `any` stand — eine Antwort, ein Typ.
+ * und dort ein `any` stand, eine Antwort, ein Typ.
  */
 export interface LmStudioServerStatus {
   running: boolean
@@ -210,7 +209,7 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
     setStartError('')
     try {
       await backendCall('start_lmstudio_server')
-      // The CLI takes a second or two to bind 1234 — poll status
+      // The CLI takes a second or two to bind 1234, poll status
       // briefly so the banner replaces itself with the models list
       // instead of leaving the spinner spinning forever.
       for (let i = 0; i < 8; i++) {
@@ -234,7 +233,7 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
     } catch (e) {
       // Hier stand `catch (e: any)` mit `e?.message`. Das las genau EINE Sorte
       // Fehler: ein `Error`-Objekt. Tauris `invoke` lehnt aber mit einem STRING
-      // ab (die Rust-Seite gibt `Result<_, String>` zurueck) — im ausgelieferten
+      // ab (die Rust-Seite gibt `Result<_, String>` zurueck), im ausgelieferten
       // Programm hatte `e.message` deshalb nie einen Wert, und der Grund des
       // Fehlschlags wurde jedes Mal durch das pauschale „Start failed" ersetzt.
       // `detailOf` ist die Stelle, an der dieses Projekt genau diese Frage schon
@@ -313,10 +312,10 @@ function getProviderBadge(model: AIModel) {
 //
 // Users care more about model lineage than about which local backend
 // they're pointing at. "Qwen 3.6 27B" appears once under Qwen whether
-// it came from Ollama or LM Studio — the per-row provider badge
+// it came from Ollama or LM Studio, the per-row provider badge
 // (rendered below) keeps that detail visible.
 //
-// Pure visual grouping — model name + provider still resolve chat
+// Pure visual grouping, model name + provider still resolve chat
 // routing exactly as before.
 
 // Normalize a model name into a comparable base form:
@@ -331,7 +330,7 @@ function normalizeModelName(name: string): string {
     .replace(/:.+$/, '')        // strip :tag suffix
 }
 
-// Ordered — first match wins. Prefixes/infixes on the normalized name.
+// Ordered, first match wins. Prefixes/infixes on the normalized name.
 const FAMILY_MATCHERS: Array<{ family: string; test: RegExp }> = [
   { family: 'Qwen',       test: /^qwen|^qwq/ },
   { family: 'Gemma',      test: /^gemma/ },
@@ -359,7 +358,7 @@ function getModelFamily(modelName: string): string {
   return 'Other'
 }
 
-// Family display order — Qwen/Gemma/Llama surface first since they're
+// Family display order, Qwen/Gemma/Llama surface first since they're
 // the most common local-chat picks; cloud-only families (Claude/GPT)
 // come after the local ones; 'Other' always last.
 const FAMILY_ORDER: string[] = [
@@ -391,7 +390,7 @@ function groupByFamily(models: AIModel[]): { family: string; models: AIModel[] }
 }
 
 /**
- * K6 (3.0.1): GitHub #132, AppImage/Ubuntu 24.04 — "it adds models and then
+ * K6 (3.0.1): GitHub #132, AppImage/Ubuntu 24.04, "it adds models and then
  * breaks the selection field... it's fixed by restarting". Not reproduced in
  * this pass (no Linux box available, see proof doc), but a restart-only fix
  * for a component with no error boundary of its own is the exact signature
@@ -409,7 +408,7 @@ function groupByFamily(models: AIModel[]): { family: string; models: AIModel[] }
  * regression test more than it needs to stay physically inline.
  *
  * On success: real grouping, unchanged behaviour. On a throw: falls back to
- * one flat, ungrouped list (still fully usable — every model is still there
+ * one flat, ungrouped list (still fully usable, every model is still there
  * and still clickable) instead of letting the exception reach React and take
  * the whole chat view with it, and logs which models were in play so the
  * NEXT report carries a stack trace pointing at the real field instead of
@@ -456,11 +455,11 @@ export function computeModelGroups(
 //
 // Extracted as pure module-level functions so the select-time auto-load
 // decision is unit-testable without rendering the whole hook-heavy
-// component (no test harness exists for ModelSelector — it depends on
+// component (no test harness exists for ModelSelector, it depends on
 // several zustand stores + the Tauri bridge).
 
 /**
- * The identifier LM Studio's CLI/bridge uses for `model` — its `lmsKey`
+ * The identifier LM Studio's CLI/bridge uses for `model`, its `lmsKey`
  * when present (the exact key the loaded-list reports), else the model name.
  * Centralised so the row toggle, the loaded check, and the select-time
  * auto-load all agree on one id.
@@ -469,7 +468,7 @@ export function computeModelGroups(
  * provider-scoped form "openai::qwen2.5-0.5b-instruct@q4_k_m" (getProviderForModel
  * routes on that `openai::`), but the `lms` CLI and LM Studio's /api/v0/models use
  * the BARE key "qwen2.5-0.5b-instruct@q4_k_m". Passing the prefixed name to
- * `lms load` matches nothing — pre-`-y` it dropped into the interactive picker and
+ * `lms load` matches nothing, pre-`-y` it dropped into the interactive picker and
  * the command hung forever (stuck "loading…" spinner, no error); post-`-y` it
  * exits 1. The loaded-check `loaded.has(lmsIdOf(...))` also silently failed
  * (bare keys from the API vs. a prefixed id), so rows showed perpetually unloaded
@@ -478,8 +477,8 @@ export function computeModelGroups(
  */
 export function lmsIdOf(model: AIModel): string {
   // `lmsKey` steht auf keinem der vier Glieder von `AIModel`. Seit TS 4.9
-  // verengt `'lmsKey' in model` trotzdem — auf `AIModel & Record<'lmsKey',
-  // unknown>` —, und die `typeof`-Pruefung dahinter macht daraus `string`.
+  // verengt `'lmsKey' in model` trotzdem, auf `AIModel & Record<'lmsKey',
+  // unknown>`, , und die `typeof`-Pruefung dahinter macht daraus `string`.
   // Beide Zusicherungen waren also nur die Handarbeit, die der Compiler seither
   // selbst macht; die aeussere `as string` hat obendrein verdeckt, dass die
   // innere Pruefung ueberhaupt etwas garantiert.
@@ -492,7 +491,7 @@ export function lmsIdOf(model: AIModel): string {
 /**
  * True when selecting `model` must auto-load it into LM Studio first: it's
  * an LM Studio model AND it isn't already in the loaded set. Non-LM-Studio
- * models (Ollama, cloud) always return false — they activate immediately.
+ * models (Ollama, cloud) always return false, they activate immediately.
  */
 export function shouldAutoLoadForSelect(
   model: AIModel,
@@ -509,12 +508,12 @@ export function shouldAutoLoadForSelect(
  *
  * `lms load` WITHOUT `-c` pins the instance at LM Studio's small default
  * (4096 on current builds). That silently breaks tool use: the chat-tools
- * system prompt + the 5 curated tool schemas — let alone the full agent
- * catalog — overflow 4K, and LM Studio answers /v1/chat/completions with a
+ * system prompt + the 5 curated tool schemas, let alone the full agent
+ * catalog, overflow 4K, and LM Studio answers /v1/chat/completions with a
  * context-overflow error that surfaces as the opaque "LM Studio: Request
  * failed", with NO retry (it's a 4xx). Proven live 2026-06-12: gemma-3-4b
  * @4096 failed every chat-tools / agent turn; the identical turn @16384
- * worked first try. So we always request a usable window — capped by the
+ * worked first try. So we always request a usable window, capped by the
  * model's real max so we never ask for more than it supports (an 8K model
  * stays 8K). 16K is enough for the tool schemas + a real conversation while
  * keeping the KV-cache VRAM modest for the small local models LU targets.
@@ -629,7 +628,7 @@ export interface ModelSelectorProps {
    * they do not support tools are left out of the list entirely rather than
    * offered with a warning icon (David 2026-07-25: "Modelle ohne Tool-Support
    * z.B. nicht im Code-Bereich anzeigen"). Local models stay listed on every
-   * surface — there the fallback XML path often still works, and when it does
+   * surface, there the fallback XML path often still works, and when it does
    * not the run says so.
    */
   surface?: 'chat' | 'code'
@@ -644,18 +643,17 @@ export interface ModelSelectorProps {
   answeredBy?: string | null
 }
 
-// `openUpward` flips the dropdown to open above the trigger, right-aligned —
-// used when the picker lives in the composer action bar (bottom of the screen)
+// `openUpward` flips the dropdown to open above the trigger, right-aligned, // used when the picker lives in the composer action bar (bottom of the screen)
 // instead of the header. Header usage keeps the default downward/centered menu.
 export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy = null }: ModelSelectorProps = {}) {
   const { models, activeModel, setActiveModel, fetchModels } = useModels()
   const isModelLoading = useModelStore((s) => s.isModelLoading)
-  // Welle 3, Listen-Ladezustand 3 von 4 — und der einzige, den es vorher gar
+  // Welle 3, Listen-Ladezustand 3 von 4, und der einzige, den es vorher gar
   // nicht gab. `inventoryLoaded` ist die Frage „ist ueberhaupt schon einmal
   // eine Modellliste hier gelandet"; sie steht seit dem Zaehler-Nachschlag
   // (2026-08-29) im Store, aus genau demselben Grund: bis dahin darf man
   // keine Zahl und keine Leermeldung zeigen, sondern nur eine Ladeanzeige.
-  // Ohne sie ging der Waehler direkt von leer auf Liste — und „leer" rendert
+  // Ohne sie ging der Waehler direkt von leer auf Liste, und „leer" rendert
   // hier als „No models available", also als Aussage ueber die Maschine
   // statt ueber den Ladezustand.
   const inventoryLoaded = useModelStore((s) => s.inventoryLoaded)
@@ -675,7 +673,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   const textModelsEmptyRef = useRef(true)
   const [unloading, setUnloading] = useState(false)
   const [unloadDone, setUnloadDone] = useState(false)
-  // B3 — per-model LM Studio load/unload state. `lmsLoaded` is the set
+  // B3, per-model LM Studio load/unload state. `lmsLoaded` is the set
   // of LM Studio model identifiers currently loaded in the server;
   // `togglingLms` is the one we're flipping right now (drives the
   // spinner on the row). LM Studio's HTTP server doesn't have load /
@@ -683,7 +681,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   // bridge's `lmstudio_load_model` / `lmstudio_unload_model` commands.
   const [lmsLoaded, setLmsLoaded] = useState<Set<string>>(new Set())
   const [togglingLms, setTogglingLms] = useState<string | null>(null)
-  // B3/§18 — the LM Studio model we're auto-loading as part of *selecting* it
+  // B3/§18, the LM Studio model we're auto-loading as part of *selecting* it
   // (distinct from `togglingLms`, the explicit power-button flow). Drives the
   // inline "loading…" state on the row and blocks a second click.
   const [selectingLms, setSelectingLms] = useState<string | null>(null)
@@ -706,7 +704,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
    */
   const [imWechselZu, setImWechselZu] = useState<string | null>(null)
   const [selectError, setSelectError] = useState<string | null>(null)
-  // VRAM load state for Ollama rows — parity with `lmsLoaded` above, so
+  // VRAM load state for Ollama rows, parity with `lmsLoaded` above, so
   // every LOCAL model shows a clear on/off load toggle (not just LM Studio).
   // Sourced from /api/ps on dropdown open.
   const [ollamaLoaded, setOllamaLoaded] = useState<Set<string>>(new Set())
@@ -732,15 +730,15 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
 
   // Keep the per-row On/Off LOAD state LIVE while the dropdown is open
   // (David 2026-06-12: "on und offload button sehr delayed und nicht immer
-  // akkurat — gemma4b ist geladen laut ollama aber in LU steht off"). The old
+  // akkurat, gemma4b ist geladen laut ollama aber in LU steht off"). The old
   // code fetched the loaded set ONCE on open, so a model that loaded after the
-  // open — or a slow/transiently-failed first fetch — showed the wrong state
+  // open, or a slow/transiently-failed first fetch, showed the wrong state
   // until the user reopened. Now: fetch immediately, then poll /api/ps + LM
   // Studio every 1.5 s so the toggle self-corrects within a beat. Both calls are
   // cheap loopback requests; we only poll while the panel is actually open.
   useEffect(() => {
     if (!open) return
-    setSelectError(null) // fresh open — drop any stale auto-load error
+    setSelectError(null) // fresh open, drop any stale auto-load error
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     // Consecutive failed probes. A backend that answers keeps the brisk 1.5 s
@@ -752,18 +750,18 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
     let misses = 0
 
     const refresh = async () => {
-      // Skip the tick entirely while the window is hidden/minimized — there's
+      // Skip the tick entirely while the window is hidden/minimized, there's
       // nothing to repaint and we re-sync the moment it's visible again. Stops a
       // backgrounded app from hitting Ollama / LM Studio every 1.5 s (#70).
       if (typeof document !== 'undefined' && document.hidden) return
       // Only probe LM Studio's loaded-state when LM Studio models are actually
       // listed. When its server is down there are NO LM Studio rows, so this
-      // skips the probe entirely — removing the last frontend reason the
+      // skips the probe entirely, removing the last frontend reason the
       // dropdown ever stalled on a down LM Studio (the Rust side is now async +
       // port-pre-checked too). Ollama's /api/ps is a cheap loopback call and
       // always runs.
       // `providerName` steht auf ALLEN vier Gliedern von `AIModel` (auf dreien
-      // optional, auf `CloudModel` verpflichtend) — der `in`-Test und die
+      // optional, auf `CloudModel` verpflichtend), der `in`-Test und die
       // Zusicherung waren beide ueberfluessig. `m.providerName` ist von sich aus
       // `string | undefined`, also genau das, was `isLmStudioProvider` nimmt.
       const hasLmsRows = useModelStore.getState().models.some((m) =>
@@ -867,17 +865,16 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   }
 
   /**
-   * §18 — Select a model, auto-loading it into LM Studio first when needed.
+   * §18, Select a model, auto-loading it into LM Studio first when needed.
    *
    * Routing (getProviderForModel) keys only on the `openai::` prefix, so an
    * LM Studio model's HTTP requests go out regardless of whether the model
-   * is actually loaded in the server — picking an UNloaded one used to fail
+   * is actually loaded in the server, picking an UNloaded one used to fail
    * silently at the HTTP layer (404 from LM Studio). So: if the picked row is
    * an LM Studio model that isn't loaded, load it (await) BEFORE activating,
    * showing an inline "loading…" state; only then setActiveModel + close. On
    * load failure we keep the dropdown open and surface the error instead of
-   * activating a model that can't answer. Non-LM-Studio rows are unaffected —
-   * they activate immediately exactly as before.
+   * activating a model that can't answer. Non-LM-Studio rows are unaffected,    * they activate immediately exactly as before.
    */
   const handleSelectModel = async (model: AIModel) => {
     const id = lmsIdOf(model)
@@ -1164,15 +1161,15 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
       // model id, not just the `provider::model` prefix `displayModelName`
       // already stripped. An Ollama tag ("llama3.1:8b-instruct-q4_K_M") uses
       // a single colon as its OWN separator, so the header showed only
-      // "llama3.1" while the dropdown row below it — which never split on
-      // ':' — showed the real, full name. Dropped the split entirely so the
+      // "llama3.1" while the dropdown row below it, which never split on
+      // ':', showed the real, full name. Dropped the split entirely so the
       // header matches the row (both go through shortModelLabel only).
       shortModelLabel(displayModelName(gezeigtesModell))
     : 'Select Model'
   // Der Punkt folgt demselben Modell wie der Name daneben, sonst haette der
   // Knopf waehrend eines Wechsels zwei Aussagen in sich.
   const activeType = gezeigtesObj?.type || 'text'
-  // Chat dropdown shows TEXT models only — image/video live in the
+  // Chat dropdown shows TEXT models only, image/video live in the
   // Create view's own picker. Everything here is grouped by the model
   // FAMILY (Qwen/Gemma/Llama/…), not by provider, because users pick
   // models by lineage first and the backend that serves them is a
@@ -1236,7 +1233,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
         // Laedt gerade ein Modell: `aria-busy` statt eines eigenen blauen
         // Rezepts mit Leuchtschatten. Das Rezept faerbt die Kante mit dem
         // Akzent, die Aussage steht damit im selben Vokabular wie der Rest
-        // der Leiste — und im Accessibility-Baum, wo sie hingehoert.
+        // der Leiste, und im Accessibility-Baum, wo sie hingehoert.
         aria-busy={wechselLaeuft}
         className="lu-control"
       >
@@ -1245,7 +1242,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
           activeType === 'text' ? 'bg-blue-400' : activeType === 'image' ? 'bg-purple-400' : 'bg-emerald-400'
         } ${wechselLaeuft ? 'animate-pulse' : ''}`} />
 
-        {/* Model name. Keine eigene Textfarbe mehr — sie wird vom Control
+        {/* Model name. Keine eigene Textfarbe mehr, sie wird vom Control
             geerbt, sonst haette der Knopf zwei Graustufen in sich. */}
         <span className="max-w-[140px] truncate leading-none">
           {activeDisplayName}
@@ -1284,7 +1281,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
             exit={{ opacity: 0, y: openUpward ? 6 : -6, scale: 0.98 }}
             transition={{ duration: MOTION_S.fast, ease: 'easeOut' }}
           >
-            {/* Bug Q v2.4.7 — surface "Start LM Studio Server" inline when
+            {/* Bug Q v2.4.7, surface "Start LM Studio Server" inline when
                 LM Studio is on disk but its server is off. wakeywakeynow's
                 "can't choose any models i have installed" symptom. */}
             <LmStudioServerHint onStarted={fetchModels} />
@@ -1300,7 +1297,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
 
             {/* K6: grouping threw and was caught above instead of crashing the
                 whole chat view. Says so, in the dropdown itself, with a way
-                to try again — the fallback list below still works, this is
+                to try again, the fallback list below still works, this is
                 just honesty about why it looks flat. */}
             {groupingFailed && (
               <div className={`px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] ${HINWEIS_TEXT.ruhig} flex items-center justify-between gap-2`}>
@@ -1338,7 +1335,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
               </div>
             )}
 
-            {/* §18 — surfaced when an LM Studio auto-load (on select) failed,
+            {/* §18, surfaced when an LM Studio auto-load (on select) failed,
                 so the user isn't left wondering why the model didn't switch. */}
             {selectError && (
               <div
@@ -1502,7 +1499,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                               {providerBadge.label}
                             </span>
                           )}
-                          {/* 2.5.8 — tool-calling capability at a glance. Text
+                          {/* 2.5.8, tool-calling capability at a glance. Text
                               models only.
 
                               David 2026-08-06: "wieso ist es nicht toolfähig?
@@ -1554,7 +1551,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                               </span>
                             )
                           })()}
-                          {/* §18 — inline load state while we auto-load this
+                          {/* §18, inline load state while we auto-load this
                               LM Studio model on the way to selecting it. */}
                           {isSelectingThis && (
                             <span className="inline-flex items-center gap-0.5 text-[0.5rem] text-blue-400">
@@ -1567,7 +1564,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                         {/* Details on right */}
                         <div className="flex items-center gap-1 shrink-0">
                           {/* `type === 'text'` verengt auf OllamaModel | CloudModel,
-                              `'details' in model` von dort auf OllamaModel — und
+                              `'details' in model` von dort auf OllamaModel, und
                               nur das hat `details`. Der Zugriff braucht deshalb
                               keine Zusicherung; `parameter_size` ist dort als
                               `string` deklariert (types/models.ts:15). */}
@@ -1576,7 +1573,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                               {model.details.parameter_size}
                             </span>
                           )}
-                          {/* On/Off VRAM load toggle for LOCAL models — LM Studio
+                          {/* On/Off VRAM load toggle for LOCAL models, LM Studio
                               AND Ollama both get it now (was LM-Studio-only). The
                               old active-row checkmark is gone; the active model is
                               shown by the row highlight, and the dropdown shows a

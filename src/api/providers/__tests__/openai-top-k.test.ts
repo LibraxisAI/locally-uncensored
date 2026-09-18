@@ -1,7 +1,7 @@
 /**
  * F3 (3.0.1, T4 Nebenfund): the sampling popup's top_k slider reached the
  * request body for local/self-hosted OpenAI-compatible endpoints for
- * temperature and top_p, but never for top_k — the field simply was not on
+ * temperature and top_p, but never for top_k, the field simply was not on
  * OpenAIChatRequest and nothing ever assigned it. The slider promised an
  * effect the server never saw.
  *
@@ -71,7 +71,7 @@ afterEach(() => {
   vi.resetModules()
 })
 
-describe('F3 — top_k reaches an own OpenAI-compatible endpoint', () => {
+describe('F3: top_k reaches an own OpenAI-compatible endpoint', () => {
   it('chatStream sends top_k alongside temperature and top_p', async () => {
     const p = await makeProvider(OWN_ENDPOINT)
     await drain(p.chatStream('m', [{ role: 'user', content: 'hi' }], {
@@ -88,7 +88,7 @@ describe('F3 — top_k reaches an own OpenAI-compatible endpoint', () => {
     expect(sent[0].body.top_k).toBe(20)
   })
 
-  it('never sends top_k to LU Cloud — that protocol genuinely has no such field', async () => {
+  it('never sends top_k to LU Cloud: that protocol genuinely has no such field', async () => {
     const p = await makeProvider({ id: 'lu-cloud', name: 'LU Cloud', apiKey: '', enabled: true, baseUrl: 'https://lu-labs.ai/api/inference/v1', isLocal: false })
     await drain(p.chatStream('m', [{ role: 'user', content: 'hi' }], { topK: 40 }))
     expect('top_k' in sent[0].body).toBe(false)

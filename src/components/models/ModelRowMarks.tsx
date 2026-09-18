@@ -29,8 +29,7 @@ export function ModelRowMarks({ model }: { model: { flash?: CloudModel['flash'];
       {model.unfiltered === 'full' && (
         // K12 (3.0.1): unbeantwortete Discord-Meldung, die Marke war nicht
         // auffindbar. Sie stand als reiner Fliesstext in derselben Groesse
-        // wie jede andere Kleinschrift der Zeile, ohne Icon, ohne Gewicht —
-        // im Sammelbild der Liste ging sie unter. Bleibt auf derselben
+        // wie jede andere Kleinschrift der Zeile, ohne Icon, ohne Gewicht,         // im Sammelbild der Liste ging sie unter. Bleibt auf derselben
         // Stufe der Typo-Leiter (t-micro setzt NUR die Groesse, siehe
         // index.css), bekommt aber ein Icon und Fettung dazu, beides
         // Tailwind-Utilities, die t-micro nicht ueberschreibt.

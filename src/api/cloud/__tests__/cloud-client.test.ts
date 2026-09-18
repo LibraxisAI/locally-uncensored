@@ -20,7 +20,7 @@ beforeEach(() => {
 })
 
 /** A fetch that never answers on its own, and that ends the same way a real
- *  one does when its signal aborts — including a signal that was already
+ *  one does when its signal aborts, including a signal that was already
  *  aborted before the call. */
 function hangingFetch(onAbort?: () => void) {
   return (_url: string, init: RequestInit) =>
@@ -97,7 +97,7 @@ describe('cloudFetch', () => {
     // access token there, over the network, with no deadline of its own. The
     // guard used to be armed AFTER that await, so a refresh whose peer
     // disappeared mid-flight wedged Create exactly the way a hanging fetch did
-    // — one step earlier, and past every clock this file installs.
+    //, one step earlier, and past every clock this file installs.
     vi.useFakeTimers()
     getAccessToken.mockImplementation(() => new Promise(() => {}))
     const settled = cloudFetch('/api/jobs', { method: 'POST', body: '{"x":1}' }).catch(
@@ -180,13 +180,13 @@ describe('cloudFetch', () => {
     const settled = cloudFetch('/api/me', { signal: ac.signal }).catch((e: unknown) => e)
     // Wait for the request to be genuinely in flight before cancelling. The
     // deadline now also covers the token step, so aborting before fetch is
-    // reached (correctly) means no request is ever issued — which is the
+    // reached (correctly) means no request is ever issued, which is the
     // adjacent test, not this one.
     await started
     ac.abort()
     const err = await settled
     expect(seen?.aborted).toBe(true)
-    // A cancelled run is not a timeout — it must not be relabelled as one.
+    // A cancelled run is not a timeout, it must not be relabelled as one.
     expect(err).not.toBeInstanceOf(CloudJobError)
   })
 
@@ -212,7 +212,7 @@ describe('cloudFetch', () => {
     expect((err as CloudJobError).message).toMatch(/could not reach/i)
   })
 
-  it('D2: a deliberate cancel is NOT relabelled — it must stay tellable from a real failure', async () => {
+  it('D2: a deliberate cancel is NOT relabelled: it must stay tellable from a real failure', async () => {
     // Regression guard for the fix above: it must only reword a genuine
     // network failure, never a caller-initiated Stop/teardown, which every
     // existing caller already distinguishes by checking `instanceof
@@ -235,8 +235,8 @@ describe('cloudFetch', () => {
 
   it('D2 Nachbesserung 7: a genuine bug in this file is NOT relabelled as a server outage', async () => {
     // The original condition caught ANY bare rejection, so a programming
-    // error thrown from inside cloudFetch's own try block — a broken
-    // response parser, a bad property access — came back saying "LU Cloud
+    // error thrown from inside cloudFetch's own try block, a broken
+    // response parser, a bad property access, came back saying "LU Cloud
     // server unreachable" forever, hiding a real bug behind the wrong
     // explanation. A TypeError whose message is not one of the network-shaped
     // ones must pass through completely unchanged.
@@ -348,7 +348,7 @@ describe('jobs wrappers', () => {
     expect(path).toBe('uid/abc.png')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe(`${CLOUD_BASE}/api/jobs/upload?role=source`)
-    // WKWebView fails cross-origin FormData(Blob) bodies — the contract is a
+    // WKWebView fails cross-origin FormData(Blob) bodies, the contract is a
     // bare ArrayBuffer with the octet-stream content type.
     expect(init.body).toBeInstanceOf(ArrayBuffer)
     expect((init.headers as Headers).get('content-type')).toBe('application/octet-stream')

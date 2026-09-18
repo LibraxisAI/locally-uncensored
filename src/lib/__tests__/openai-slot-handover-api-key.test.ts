@@ -1,7 +1,7 @@
 /**
  * F3 (3.0.1, T4 Nebenfund): "a freshly added provider comes with a prefilled
  * value". Add Provider pushes a new backend into the shared `openai` slot via
- * `slotTakeoverUpdate`, whose patch never mentions `apiKey` — the plain store
+ * `slotTakeoverUpdate`, whose patch never mentions `apiKey`, the plain store
  * merge in ProviderConfig.tsx's setProviderConfig therefore left whatever key
  * the DISPLACED backend had sitting in the field, so a brand new custom
  * OpenAI-compatible provider showed (and would have submitted) a secret that
@@ -16,8 +16,8 @@ const jan: HandoverSlot = {
   enabled: true, name: 'Jan', baseUrl: 'http://localhost:1337/v1', isLocal: true, managed: false,
 }
 
-describe('F3 — a slot takeover clears the inherited API key', () => {
-  it('a genuinely different backend clears it — the old key belongs elsewhere', () => {
+describe('F3: a slot takeover clears the inherited API key', () => {
+  it('a genuinely different backend clears it: the old key belongs elsewhere', () => {
     const incoming = { name: 'My Server', baseUrl: 'http://localhost:5001/v1', isLocal: true, managed: false }
     expect(takeoverClearsApiKey(jan, incoming)).toBe(true)
   })
@@ -42,14 +42,14 @@ describe('F3 — a slot takeover clears the inherited API key', () => {
 
 /**
  * Opus-Review Nachbesserung 6 (3.0.1, F3): closing the leak by clearing the
- * key on takeover was only half the fix — the DISPLACED backend's own key
+ * key on takeover was only half the fix, the DISPLACED backend's own key
  * has to survive somewhere, or handing the slot back later comes with no key
  * and a silent 401. `displaced.apiKey` is that somewhere; these tests pin the
  * pure carry-through (the actual restore into the store + keychain is
  * ProviderConfig.tsx's job, see das there and background-shutdown-adjacent
  * tests for the store-level partialize stripping).
  */
-describe('Nachbesserung 6 — the displaced backend keeps its own key', () => {
+describe('Nachbesserung 6: the displaced backend keeps its own key', () => {
   it('a real takeover remembers the OUTGOING backend key in displaced.apiKey', () => {
     const janWithKey: HandoverSlot = { ...jan, apiKey: 'obf-jan-key' }
     const incoming = { name: 'My Server', baseUrl: 'http://localhost:5001/v1', isLocal: true, managed: false }
@@ -70,7 +70,7 @@ describe('Nachbesserung 6 — the displaced backend keeps its own key', () => {
       displaced: { name: 'Built-in Engine', baseUrl: 'http://127.0.0.1:8127/v1', isLocal: true, managed: true, apiKey: 'obf-builtin-parked' },
     }
     const update = slotHandbackUpdate(slotWithDisplacedKey)
-    // The base patch itself never carries an apiKey field — ProviderConfig.tsx
+    // The base patch itself never carries an apiKey field, ProviderConfig.tsx
     // reads the parked value straight off `providers.openai.displaced.apiKey`
     // BEFORE calling this, exactly so a plain merge of this patch cannot
     // corrupt the store's separately-obfuscated apiKey field (see the

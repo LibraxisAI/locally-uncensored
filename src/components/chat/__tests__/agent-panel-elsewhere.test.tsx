@@ -2,7 +2,7 @@
 /**
  * B1 (3.0.1, Orchestrator-Entscheid): "Unterhaltung wechseln beendet NICHT"
  * einen Hintergrundauftrag, der Kunde darf ihn bewusst weiterlaufen lassen.
- * Vorher haengte das ganze Panel an `activeConversationId` — beim Wechsel in
+ * Vorher haengte das ganze Panel an `activeConversationId`, beim Wechsel in
  * eine andere Unterhaltung verschwand jede Spur, obwohl anderswo noch etwas
  * lief und Credits kostete. Diese Tests fahren den echten agentTaskStore und
  * das echte AgentPanel, keine Attrappe.
@@ -37,14 +37,14 @@ beforeEach(() => {
   useUIStore.getState().setAgentPanelCollapsed(false)
 })
 
-describe('AgentPanel — background work in another chat stays visible', () => {
+describe('AgentPanel: background work in another chat stays visible', () => {
   it('shows nothing when no conversation has a background task', () => {
     render(<AgentPanel />)
     expect(screen.queryByTestId('agent-panel')).toBeNull()
     expect(screen.queryByTestId('agent-panel-elsewhere-bar')).toBeNull()
   })
 
-  it('the active chat has none, but another chat is still running — the panel says so', () => {
+  it('the active chat has none, but another chat is still running: the panel says so', () => {
     starte('t1', THERE)
     render(<AgentPanel />)
     expect(screen.getByTestId('agent-panel-elsewhere-bar')).toBeTruthy()

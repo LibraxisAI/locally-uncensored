@@ -243,7 +243,7 @@ describe('the wiring, so the rule reaches the screen', () => {
   })
 
   // Opus-Review Nachbesserung 6 (3.0.1, F3): Enable on the standby card used
-  // to come back with no key and a silent 401 — the slot's name/URL were
+  // to come back with no key and a silent 401, the slot's name/URL were
   // restored through slotHandbackUpdate, but nothing ever restored the
   // parked backend's own apiKey. Every path that hands the slot to a
   // REMEMBERED backend must read `displaced.apiKey` and push it through
@@ -255,7 +255,7 @@ describe('the wiring, so the rule reaches the screen', () => {
     expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
     expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
     // Reads the parked value BEFORE overwriting `providers.openai` with the
-    // handback patch — read-after-write here would read the NEW (wrong) slot.
+    // handback patch, read-after-write here would read the NEW (wrong) slot.
     expect(body.indexOf('const parked')).toBeLessThan(body.indexOf("setProviderConfig('openai', update)"))
   })
 

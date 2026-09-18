@@ -79,7 +79,7 @@ describe('stopAllBackgroundWork', () => {
 
     stopAllBackgroundWork()
 
-    // cancelAll only touches 'running' tasks — a done one keeps its own
+    // cancelAll only touches 'running' tasks, a done one keeps its own
     // signal untouched, but the conversation is marked stopped regardless,
     // exactly like a Stop press after the work already finished.
     expect(c.signal.aborted).toBe(false)
@@ -87,7 +87,7 @@ describe('stopAllBackgroundWork', () => {
   })
 })
 
-describe('installBackgroundShutdown — App beenden (pagehide + beforeunload)', () => {
+describe('installBackgroundShutdown: App beenden (pagehide + beforeunload)', () => {
   it('pagehide stops every running background task', () => {
     installBackgroundShutdown()
     const c = laufendeAufgabe('task-x', 'conv-1')
@@ -98,7 +98,7 @@ describe('installBackgroundShutdown — App beenden (pagehide + beforeunload)', 
     expect(isRunStopped('conv-1')).toBe(true)
   })
 
-  it('beforeunload stops every running background task too — the earlier of the pair', () => {
+  it('beforeunload stops every running background task too: the earlier of the pair', () => {
     installBackgroundShutdown()
     const c = laufendeAufgabe('task-y', 'conv-1')
 
@@ -108,7 +108,7 @@ describe('installBackgroundShutdown — App beenden (pagehide + beforeunload)', 
   })
 })
 
-describe('installBackgroundShutdown — Netzabbruch (offline)', () => {
+describe('installBackgroundShutdown: Netzabbruch (offline)', () => {
   it('a dropped connection stops every running background task', () => {
     installBackgroundShutdown()
     const c = laufendeAufgabe('task-z', 'conv-1')
@@ -120,15 +120,15 @@ describe('installBackgroundShutdown — Netzabbruch (offline)', () => {
   })
 })
 
-describe('installBackgroundShutdown — Fenster schliessen (app:hidden, nicht onCloseRequested)', () => {
+describe('installBackgroundShutdown: Fenster schliessen (app:hidden, nicht onCloseRequested)', () => {
   /**
    * main.rs intercepts CloseRequested with api.prevent_close() and hides to
-   * the tray — the window's X does not quit this app. A JS onCloseRequested
+   * the tray, the window's X does not quit this app. A JS onCloseRequested
    * listener would fire on that exact same click and stop every background
    * agent on a plain tray-hide, which is not what "Fenster schliessen" as a
    * Stop trigger should mean here. main.rs already relays that moment to the
    * frontend as `app:hidden` (useVoice.ts listens to it for the identical
-   * reason — mic/playback must not keep running behind a hidden window), so
+   * reason, mic/playback must not keep running behind a hidden window), so
    * this module reuses that signal instead of registering a second listener
    * for the same event.
    */
@@ -154,7 +154,7 @@ describe('installBackgroundShutdown — Fenster schliessen (app:hidden, nicht on
   })
 })
 
-describe('installBackgroundShutdown — idempotent', () => {
+describe('installBackgroundShutdown: idempotent', () => {
   it('installing twice wires only one set of window listeners', () => {
     const addSpy = vi.spyOn(window, 'addEventListener')
     installBackgroundShutdown()

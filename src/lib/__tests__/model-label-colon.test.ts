@@ -1,6 +1,6 @@
 /**
  * F3 (3.0.1, T4 Nebenfund): the chat model button showed only "Model: C" for
- * a name that continues past a colon — ModelSelector.tsx applied
+ * a name that continues past a colon, ModelSelector.tsx applied
  * `.split(':')[0]` on TOP of `displayModelName` (which already strips only
  * the `provider::model` prefix), so an Ollama tag like
  * "llama3.1:8b-instruct-q4_K_M" lost everything from its own colon onward.
@@ -18,7 +18,7 @@ import { resolve } from 'node:path'
 import { shortModelLabel } from '../model-label'
 import { displayModelName } from '../../api/providers/model-name'
 
-describe('F3 — the model header keeps everything after a colon', () => {
+describe('F3: the model header keeps everything after a colon', () => {
   it('a plain Ollama tag survives whole', () => {
     const name = 'llama3.1:8b-instruct-q4_K_M'
     expect(shortModelLabel(displayModelName(name))).toBe('llama3.1:8b-instruct-q4_K_M')

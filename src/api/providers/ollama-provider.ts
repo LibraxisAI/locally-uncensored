@@ -1,5 +1,5 @@
 /**
- * Ollama Provider — wraps existing ollama.ts into the ProviderClient interface.
+ * Ollama Provider, wraps existing ollama.ts into the ProviderClient interface.
  *
  * No behavior change. Pure adapter pattern.
  * Reuses localFetch/localFetchStream from backend.ts for Tauri compatibility.
@@ -36,7 +36,7 @@ export interface OllamaRequestOptions {
 export interface OllamaRequestMessage {
   role: string
   content: string
-  /** base64 payloads only — Ollama takes the data, not our {data,mimeType}. */
+  /** base64 payloads only, Ollama takes the data, not our {data,mimeType}. */
   images?: string[]
   tool_calls?: ToolCall[]
 }
@@ -53,8 +53,7 @@ export interface OllamaChatRequest {
 }
 
 // Was auf dieser Route ZURUECKKOMMT, liegt als `OllamaChatChunk` in ./wire,
-// hinter `parseOllamaChatChunk`. Hier stand dieselbe Form ein zweites Mal —
-// als Typargument an `parseNDJSONStream`, also als BEHAUPTUNG ueber
+// hinter `parseOllamaChatChunk`. Hier stand dieselbe Form ein zweites Mal, // als Typargument an `parseNDJSONStream`, also als BEHAUPTUNG ueber
 // `JSON.parse`, mit drei Feldern (`prompt_eval_duration`, `total_duration`,
 // `load_duration`), die diese Datei nie gelesen hat. Die sieben, die sie
 // liest, kommen jetzt geprueft aus dem Parser. Dass das ueberhaupt auffiel:
@@ -101,7 +100,7 @@ export class OllamaProvider implements ProviderClient {
    *
    * Issue #31 fix: previously this function used `config.baseUrl` in Tauri
    * mode only, and in dev mode always forwarded to the Vite proxy which
-   * itself was hardcoded to localhost:11434 — so a user-configured remote
+   * itself was hardcoded to localhost:11434, so a user-configured remote
    * Ollama never actually got called. Both modes now go through the single
    * ollamaUrl() resolver.
    */
@@ -149,11 +148,11 @@ export class OllamaProvider implements ProviderClient {
     if (options?.topP !== undefined) ollamaOptions.top_p = options.topP
     if (options?.topK !== undefined) ollamaOptions.top_k = options.topK
     if (options?.maxTokens && options.maxTokens > 0) ollamaOptions.num_predict = options.maxTokens
-    // Bug AA v2.5.0 — forward user's context-window override. Without this
+    // Bug AA v2.5.0, forward user's context-window override. Without this
     // Ollama silently uses num_ctx=2048 (its default), which RAG payloads
     // and long-turn chats blow through immediately. Kj103x Discord
     // 2026-05-27: "LU caps VRAM ~5 GB regardless of context window UI
-    // setting" — the UI setting was never wired here. Setting num_ctx
+    // setting", the UI setting was never wired here. Setting num_ctx
     // higher than the loaded model's max is harmless (Ollama clamps).
     // num_ctx comes from the caller (hook): the user override OR the model's
     // real context length (capped for VRAM safety). 0/undefined → Ollama keeps
@@ -169,7 +168,7 @@ export class OllamaProvider implements ProviderClient {
     if (options?.thinking === true) body.think = true
     else if (options?.thinking === false) body.think = false
 
-    // Zeitbombe 4 — the idle watchdog needs something to abort, and a provider
+    // Zeitbombe 4, the idle watchdog needs something to abort, and a provider
     // only ever gets a signal, never the controller behind it. This chains one
     // onto the caller's: Stop still propagates inward, and a stream that goes
     // silent can now cancel its own request (which on the Tauri path is what
@@ -184,7 +183,7 @@ export class OllamaProvider implements ProviderClient {
 
       // Older Ollama builds / non-thinking models reject ANY `think` field
       // with HTTP 400. Retry once without it so the user's request still
-      // succeeds — we just fall back to model-default behaviour.
+      // succeeds, we just fall back to model-default behaviour.
       if (!res.ok && res.status === 400 && 'think' in body) {
         delete body.think
         res = await localFetchStream(this.apiUrl('/chat'), {
@@ -220,7 +219,7 @@ export class OllamaProvider implements ProviderClient {
           const chunk = parseOllamaChatChunk(raw)
 
           // Mid-stream `{"error":"..."}` line (runner crash, OOM) inside an
-          // HTTP-200 stream — surface it instead of yielding a silent empty
+          // HTTP-200 stream, surface it instead of yielding a silent empty
           // chat turn (rikki Discord 2026-06-10, Win11 proxy path). `error`
           // kommt als `string | undefined` aus dem Parser, der `typeof`-Test
           // von frueher sass auf einem `unknown` aus einer Typzusicherung.
@@ -231,7 +230,7 @@ export class OllamaProvider implements ProviderClient {
           // `arguments` arrives as `unknown` from the wire because Ollama is
           // not the only thing that answers on this endpoint: llama.cpp-based
           // and proxied servers send the field as a JSON *string*, and this
-          // path used to hand that string on as `Record<string, any>` — a lie
+          // path used to hand that string on as `Record<string, any>`, a lie
           // `any` was covering for. repairToolCallArgs is the same
           // normalization the non-streaming path below already performs; for a
           // real object it returns the object untouched.
@@ -250,7 +249,7 @@ export class OllamaProvider implements ProviderClient {
             toolCalls: toolCalls?.length ? toolCalls : undefined,
             done: chunk.done || false,
             finishReason: chunk.done_reason || undefined,
-            // Bug M v2.4.7 — pass through server-side generation metrics so the
+            // Bug M v2.4.7, pass through server-side generation metrics so the
             // benchmark can report Ollama's own measurement instead of trusting
             // client-side TTFT, which WebView2 release-mode buffers into
             // uselessness for fast small models.
@@ -269,7 +268,7 @@ export class OllamaProvider implements ProviderClient {
         throw err
       }
 
-      // Truncated NDJSON — no done:true ever arrived. A user-pressed Stop is
+      // Truncated NDJSON, no done:true ever arrived. A user-pressed Stop is
       // not a disconnect, so it gets no terminal chunk (the chat layer has
       // already stopped reading by then anyway).
       if (!sawDone && !options?.signal?.aborted) {
@@ -309,13 +308,13 @@ export class OllamaProvider implements ProviderClient {
       keep_alive: '30m',
     }
 
-    // v2.4.6 Bug L: see chatStream() above — same num_gpu:99 removal.
+    // v2.4.6 Bug L: see chatStream() above, same num_gpu:99 removal.
     const ollamaOptions: OllamaRequestOptions = {}
     if (options?.temperature !== undefined) ollamaOptions.temperature = options.temperature
     if (options?.topP !== undefined) ollamaOptions.top_p = options.topP
     if (options?.topK !== undefined) ollamaOptions.top_k = options.topK
     if (options?.maxTokens && options.maxTokens > 0) ollamaOptions.num_predict = options.maxTokens
-    // Bug AA v2.5.0 — see chatStream() for the why.
+    // Bug AA v2.5.0, see chatStream() for the why.
     // num_ctx comes from the caller (hook): the user override OR the model's
     // real context length (capped for VRAM safety). 0/undefined → Ollama keeps
     // its own default; the hook always passes a real value so a chat never
@@ -324,7 +323,7 @@ export class OllamaProvider implements ProviderClient {
       ollamaOptions.num_ctx = options.contextWindow
     }
     body.options = ollamaOptions
-    // Tri-state think flag — see chatStream() for details.
+    // Tri-state think flag, see chatStream() for details.
     if (options?.thinking === true) body.think = true
     else if (options?.thinking === false) body.think = false
 
@@ -378,7 +377,7 @@ export class OllamaProvider implements ProviderClient {
       thinking: asString(prop(message, 'thinking')) || '',
       toolCalls,
       // Real token usage from the non-streaming response, same fields
-      // chatStream() already forwards — without them the agent TokenCounter
+      // chatStream() already forwards, without them the agent TokenCounter
       // falls back to a char/4 estimate for every Ollama tool turn.
       promptEvalCount: asNumber(prop(data, 'prompt_eval_count')),
       evalCount: asNumber(prop(data, 'eval_count')),
@@ -418,8 +417,8 @@ export class OllamaProvider implements ProviderClient {
       // 'full', and only the cloud catalog path (openai-provider.ts
       // listModels) ever sets that field, because it is the only one backed
       // by a real measurement. Ollama's own /api/tags carries nothing like
-      // it, so a locally installed abliterated/uncensored GGUF — several of
-      // which this app's own Discover catalog tags 'Unfiltered' — can never
+      // it, so a locally installed abliterated/uncensored GGUF, several of
+      // which this app's own Discover catalog tags 'Unfiltered', can never
       // show the mark, even though it deserves it. Rather than guess from
       // the model name (the house rule this app is built against), the mark
       // stays measured-only and simply absent here. Closing this needs a
@@ -439,7 +438,7 @@ export class OllamaProvider implements ProviderClient {
 
   async getContextLength(model: string): Promise<number> {
     // Bug K: dieselbe Cascade-Logik wie in src/api/ollama.ts::getModelContext.
-    // Vorher hat dieser Provider NUR `general.context_length` gecheckt — aber
+    // Vorher hat dieser Provider NUR `general.context_length` gecheckt, aber
     // viele Ollama-Modelle (z.B. qwen2.5:*, llama3.x:*) lassen das leer und
     // setzen stattdessen architecture-specific keys wie `qwen2.context_length`
     // oder `llama.context_length`. Mit dem alten Code zeigte LU 4096 obwohl
@@ -488,15 +487,15 @@ export class OllamaProvider implements ProviderClient {
   /**
    * Classify a non-ok Ollama response and wrap it in `ProviderError`. The
    * resulting error carries:
-   *   - `code` — one of `ollama_missing_blob`, `ollama_stale_manifest`,
+   *   - `code`, one of `ollama_missing_blob`, `ollama_stale_manifest`,
    *     or generic `network` so UI catch sites can branch (and feed the
    *     model-health store via lib/sync-ollama-health.ts) without
    *     re-parsing the message.
-   *   - `model` — threaded through from chatStream/chatWithTools so the
+   *   - `model`, threaded through from chatStream/chatWithTools so the
    *     UI can name the affected model in a one-click "ollama pull <model>"
    *     repair flow. Missing-blob errors only carry the on-disk blob hash,
    *     not the model name, so we pass `model` into parseOllamaError as the
-   *     fallback (Bug C) — that populates `parsed.model`, which
+   *     fallback (Bug C), that populates `parsed.model`, which
    *     chatStyleMessage then uses for the user-facing wording.
    *
    * Pure function: no store side-effects, no UI imports. The caller
@@ -506,7 +505,7 @@ export class OllamaProvider implements ProviderClient {
    * Shares the detection logic with loadModel / unloadModel via
    * ollama-errors. The regex there matches chat, completion, AND generate
    * (the Lichtschalter path uses /api/generate with an empty prompt for
-   * preload — same error class).
+   * preload, same error class).
    */
   private async buildError(res: Response, fallback: string, model?: string): Promise<ProviderError> {
     const status = res.status

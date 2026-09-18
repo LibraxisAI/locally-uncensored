@@ -64,7 +64,7 @@ export interface SlotOccupant {
   /**
    * Opus-Review Nachbesserung 6 (3.0.1, F3): carried through untouched, the
    * same obfuscated representation `ProviderConfig.apiKey` itself uses. This
-   * module never decodes it — it only moves the value between the slot and
+   * module never decodes it, it only moves the value between the slot and
    * its `displaced` memory, so a takeover stops destroying the pushed-out
    * backend's key along with clearing the leak the original F3 fix closed.
    * See ProviderConfig.tsx's `applyPreset`/`handBackSlot` for the actual
@@ -96,8 +96,8 @@ export function isDifferentBackend(slot: SlotOccupant, incoming: SlotOccupant): 
 
 /**
  * F3 (3.0.1, T4 Nebenfund): "a freshly added provider comes with a prefilled
- * value". `slotTakeoverUpdate`'s patch never mentions `apiKey` — it only
- * decides `name`/`baseUrl`/`isLocal`/`managed`/`displaced` — so the plain
+ * value". `slotTakeoverUpdate`'s patch never mentions `apiKey`, it only
+ * decides `name`/`baseUrl`/`isLocal`/`managed`/`displaced`, so the plain
  * store merge in `setProviderConfig` left whatever key the DISPLACED backend
  * had sitting in the shared `openai` slot's `apiKey` field. The new
  * provider's key box then showed, and would have submitted, a secret that
