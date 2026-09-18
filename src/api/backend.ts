@@ -176,10 +176,14 @@ export async function localFetch(
       url,
       method,
       body: options?.body || null,
-      // Snake-case to match the Rust parameter name. Tauri's invoke layer
-      // does NOT auto-convert camelCase here — the Rust command spec uses
-      // explicit field names.
-      timeout_ms: options?.timeoutMs ?? null,
+      // Camel-case, because Tauri's invoke layer DOES auto-convert the
+      // command's snake_case parameter names to camelCase for the JS side
+      // (tauri-macros, command/wrapper.rs: key.to_lower_camel_case(), unless
+      // the command opts out with rename_all). proxy_localhost declares
+      // timeout_ms; sending timeout_ms from here landed in nothing, so
+      // every probe silently ran with the 300 s default instead of its
+      // real timeout (review 2026-09-18, R3 Nachbesserung 4).
+      timeoutMs: options?.timeoutMs ?? null,
       // Forward caller headers (Authorization for keyed OpenAI-compat
       // backends). The proxy silently dropped them before, so a LAN vLLM/
       // TabbyAPI with an api key always got 401 through this path.

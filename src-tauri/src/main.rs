@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_identity;
+mod cancel_registry;
 mod commands;
 mod crash_report;
 mod install_state;

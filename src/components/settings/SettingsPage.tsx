@@ -2454,7 +2454,10 @@ export function UpdateSection() {
 
 // ── B7 Troubleshoot section — one-shot diagnostic probe ───────
 
-interface BackendProbe {
+// Exported so a test can render the real component instead of parsing its
+// source text (review 2026-09-18: a source-text test breaks on an unrelated
+// rename even when the rendered behaviour is unchanged).
+export interface BackendProbe {
   // 'timeout': the connection went through but nothing answered within the
   // probe window -- a cold-starting or busy server, not a dead one (R8/T5,
   // 2026-09-18). Rust's probe_http now tells these apart instead of folding
@@ -2484,7 +2487,7 @@ interface SystemHealthReport {
   lm_studio: BackendProbe
 }
 
-function ProbeBadge({ probe }: { probe: BackendProbe }) {
+export function ProbeBadge({ probe }: { probe: BackendProbe }) {
   // "Not running" und "Not installed" sind beide nur ein Nein und tragen
   // deshalb dasselbe Grau; der Unterschied steht im Wort, nicht in der Farbe.
   // Das Gelb, das "Not running" frueher trug, hat einen ausgeschalteten

@@ -794,32 +794,23 @@ fn guard_builtin_model(
     }
 }
 
-/// Removes `call_id` from the call-token registry on drop, so EVERY exit from
-/// `proxy_localhost` after registration (the success return, an early `?`,
-/// the cancelled branch, or a panic unwinding through the future) leaves the
-/// registry entry cleaned up. A plain "remove after the await" would skip the
-/// error and cancel paths (the `?`s return before reaching it); a guard makes
-/// this exhaustive by construction instead of by enumeration, and it never
-/// holds the map's Mutex across an `.await`, since `Drop::drop` is synchronous.
-struct CallTokenGuard {
-    registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
-    id: String,
-}
-
-impl Drop for CallTokenGuard {
-    fn drop(&mut self) {
-        if let Ok(mut map) = self.registry.lock() {
-            map.remove(&self.id);
-        }
-    }
-}
-
 /// The cancellable core of `proxy_localhost`: send the request, then read the
 /// whole body, each `.await` raced against `token`. Factored out of the
 /// `#[tauri::command]` wrapper (which needs a live `tauri::State` this does
 /// not), so a unit test can drive it against a real hanging TCP stub without
 /// a running Tauri app, the same split `pump_proxy_stream` already uses for
 /// the chunked-stream path.
+///
+/// The up-front `is_cancelled()` check is deliberate and not redundant with
+/// the `select!` below: `token` may already be cancelled when this is
+/// called (a `CancelRegistry::register` that found a tombstone hands back a
+/// pre-cancelled token (review 2026-09-18, R3 Nachbesserung 1, the
+/// cancel-before-register race). `tokio::select!` polls every branch once
+/// and picks whichever is ready, which is USUALLY the already-ready
+/// `cancelled()` future, but not deterministically so, and for a loopback
+/// connect the `request.send()` branch can also complete on its very first
+/// poll. Checking first makes "a pre-cancelled token never sends anything"
+/// a guarantee instead of a race the test would only catch sometimes.
 ///
 /// Dropping the `request.send()` / `resp.text()` future on cancellation drops
 /// the underlying reqwest connection, which is what actually stops the local
@@ -832,6 +823,10 @@ async fn cancellable_request(
     request: reqwest::RequestBuilder,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<String, String> {
+    if token.is_cancelled() {
+        return Err("proxy_localhost: cancelled".to_string());
+    }
+
     let resp = tokio::select! {
         _ = token.cancelled() => return Err("proxy_localhost: cancelled".to_string()),
         r = request.send() => r.map_err(|e| format!("proxy_localhost: {}", os_error::english(&e)))?,
@@ -899,18 +894,19 @@ pub async fn proxy_localhost(
 
     request = apply_body_and_headers(request, body, headers);
 
-    // Register a cancellation token under call_id (mirrors stream_tokens /
-    // proxy_localhost_stream_chunked). The lock is held only for the
-    // insert, a plain MutexGuard temporary, dropped at the end of
-    // this statement, never carried across an `.await`.
-    let token = tokio_util::sync::CancellationToken::new();
-    let _guard = call_id.as_ref().map(|id| {
-        let registry = state.call_tokens.clone();
-        if let Some(old) = registry.lock().unwrap().insert(id.clone(), token.clone()) {
-            old.cancel(); // a stale call under the same id -- cancel it first
+    // Register against the shared CancelRegistry (mirrors stream_tokens /
+    // proxy_localhost_stream_chunked): survives a cancel that arrives before
+    // this line runs, not just one that arrives after (review 2026-09-18, R3
+    // Nachbesserung 1). A caller that sent no call_id gets an uncancellable
+    // token and no registry entry -- the same "opt-in cancellation" shape
+    // the chunked stream path has always had for a missing stream_id.
+    let (token, _guard) = match call_id {
+        Some(id) => {
+            let (token, guard) = state.call_tokens.register(id);
+            (token, Some(guard))
         }
-        CallTokenGuard { registry, id: id.clone() }
-    });
+        None => (tokio_util::sync::CancellationToken::new(), None),
+    };
 
     cancellable_request(request, &token).await
 }
@@ -923,9 +919,7 @@ pub fn cancel_proxy_call(
     state: tauri::State<'_, crate::state::AppState>,
     call_id: String,
 ) -> Result<(), String> {
-    if let Some(token) = state.call_tokens.lock().unwrap().remove(&call_id) {
-        token.cancel();
-    }
+    state.call_tokens.cancel(&call_id);
     Ok(())
 }
 
@@ -1017,16 +1011,22 @@ pub async fn proxy_localhost_stream_chunked(
     let idle = Duration::from_millis(idle_timeout_ms.unwrap_or(IDLE_TIMEOUT_MS));
     let client = proxy_client(Duration::from_secs(7200), allow)?;
 
-    // Register a cancellation token under stream_id (mirrors pull_tokens).
-    let token = tokio_util::sync::CancellationToken::new();
-    let registry = state.stream_tokens.clone();
-    if let Some(id) = stream_id.as_ref() {
-        if let Some(old) = registry.lock().unwrap().insert(id.clone(), token.clone()) {
-            old.cancel(); // a stale stream under the same id — cancel it first
+    // Register against the shared CancelRegistry (mirrors call_tokens /
+    // proxy_localhost). Survives a cancel that arrives before this line
+    // runs, not just one that arrives after (review 2026-09-18, R3
+    // Nachbesserung 1): the registry hands back an already-cancelled token
+    // in that case instead of silently losing the cancel, same guarantee
+    // the non-streaming path now has. The guard replaces the old manual
+    // "remove after the pump" cleanup below.
+    let (token, _guard) = match stream_id {
+        Some(id) => {
+            let (token, guard) = state.stream_tokens.register(id);
+            (token, Some(guard))
         }
-    }
+        None => (tokio_util::sync::CancellationToken::new(), None),
+    };
 
-    let run = pump_proxy_stream(
+    pump_proxy_stream(
         &client,
         &url,
         method,
@@ -1037,12 +1037,7 @@ pub async fn proxy_localhost_stream_chunked(
         FIRST_CHUNK_GRACE,
         &move |chunk| on_chunk.send(chunk).is_ok(),
     )
-    .await;
-
-    if let Some(id) = stream_id.as_ref() {
-        registry.lock().unwrap().remove(id);
-    }
-    run
+    .await
 }
 
 /// The stream pump behind `proxy_localhost_stream_chunked`, with the IPC channel
@@ -1064,6 +1059,15 @@ async fn pump_proxy_stream(
     // single byte of an answer ever reached the renderer.
     let mut seen_first_chunk = false;
     let run = async {
+        if token.is_cancelled() {
+            // Same deterministic short-circuit as cancellable_request: a
+            // token that starts pre-cancelled (a CancelRegistry tombstone
+            // from a cancel that beat the registration, review 2026-09-18,
+            // R3 Nachbesserung 1) must never let request.send() be polled,
+            // not just usually lose the tokio::select! race against it.
+            return Ok(());
+        }
+
         let http_method = method.unwrap_or_else(|| "GET".to_string());
 
         let mut request = match http_method.as_str() {
@@ -1153,14 +1157,16 @@ async fn pump_proxy_stream(
 /// Cancel an in-flight `proxy_localhost_stream_chunked` by its stream id. Fired
 /// from the JS side when the user hits Stop or deletes/closes a chat, so the
 /// upstream Ollama request is actually aborted (not just the JS read-loop).
+/// A stream id with nothing registered yet leaves a tombstone instead of
+/// doing nothing (review 2026-09-18, R3 Nachbesserung 1), so a cancel that
+/// arrives before `proxy_localhost_stream_chunked` reaches its registration
+/// line is not lost.
 #[tauri::command]
 pub fn cancel_proxy_stream(
     state: tauri::State<'_, crate::state::AppState>,
     stream_id: String,
 ) -> Result<(), String> {
-    if let Some(token) = state.stream_tokens.lock().unwrap().remove(&stream_id) {
-        token.cancel();
-    }
+    state.stream_tokens.cancel(&stream_id);
     Ok(())
 }
 
@@ -2176,6 +2182,27 @@ mod tests {
         port
     }
 
+    /// Same shape as `hang_stub`, plus an atomic counter incremented on every
+    /// ACCEPTED connection -- the proof instrument for "the request must
+    /// never have been sent at all", which a mere assertion on the return
+    /// value cannot tell apart from "sent, then aborted mid-flight".
+    async fn counting_hang_stub(connections: std::sync::Arc<std::sync::atomic::AtomicUsize>, hold: Duration) -> u16 {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(hold).await;
+                });
+            }
+        });
+        port
+    }
+
     /// Without R3's fix, `cancellable_request` had no `token` argument at
     /// all: `request.send()` was a bare `.await`, so cancelling never
     /// interrupted anything and this test would only return once the stub's
@@ -2261,9 +2288,19 @@ mod tests {
     }
 
     /// A second, independent call against a server that answers normally
-    /// must be completely unaffected by an earlier call's cancellation --
-    /// same token type, but each `proxy_localhost` invocation gets its own
-    /// `CancellationToken`, so one call's Stop cannot reach another's.
+    /// must be completely unaffected by an earlier call's cancellation.
+    /// This drives the REAL registry on a real `AppState`, the same one
+    /// `proxy_localhost`/`cancel_proxy_call` use, and cancels by id through
+    /// `cancel()` rather than holding two hand-built tokens -- the previous
+    /// version of this test built two separate, never-registered
+    /// `CancellationToken`s and cancelled one of them directly, which is
+    /// true no matter how (or whether) the lookup logic works and proved
+    /// nothing about `state.call_tokens` (review 2026-09-18, R3
+    /// Nachbesserung 2). `cancel_registry::tests::
+    /// cancel_finds_exactly_its_own_call_and_leaves_a_second_registered_
+    /// call_running` covers the registry contract itself in isolation; this
+    /// one proves the SAME contract holds end to end through `cancellable_
+    /// request` and a real socket.
     #[test]
     fn cancelling_one_call_does_not_touch_a_second_unrelated_call() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2279,65 +2316,64 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let cancelled_token = tokio_util::sync::CancellationToken::new();
-            cancelled_token.cancel();
-            let cancelled_req = client.get(format!("http://127.0.0.1:{}/", hanging_port));
-            let cancelled_out = cancellable_request(cancelled_req, &cancelled_token).await;
-            assert!(cancelled_out.is_err());
+            let state = crate::state::AppState::new();
+            let (hanging_token, _hanging_guard) = state.call_tokens.register("hanging-call".to_string());
+            let (ok_token, _ok_guard) = state.call_tokens.register("ok-call".to_string());
 
-            // A fresh, never-cancelled token against a normal server: must
-            // succeed exactly as if the first call never happened.
-            let fresh_token = tokio_util::sync::CancellationToken::new();
-            let fresh_req = client.get(format!("http://127.0.0.1:{}/", ok_port));
-            let fresh_out = cancellable_request(fresh_req, &fresh_token).await;
-            assert_eq!(fresh_out.as_deref(), Ok("ok"), "an unrelated call must go through untouched: {fresh_out:?}");
+            // Cancel by id, through the same registry both real commands
+            // share, not by holding the token directly.
+            state.call_tokens.cancel("hanging-call");
+
+            let hanging_req = client.get(format!("http://127.0.0.1:{}/", hanging_port));
+            let hanging_out = cancellable_request(hanging_req, &hanging_token).await;
+            assert!(hanging_out.is_err());
+
+            // The unrelated, still-registered call must go through exactly
+            // as if "hanging-call" had never existed.
+            assert!(!ok_token.is_cancelled(), "cancel(\"hanging-call\") must not reach the ok-call token");
+            let ok_req = client.get(format!("http://127.0.0.1:{}/", ok_port));
+            let ok_out = cancellable_request(ok_req, &ok_token).await;
+            assert_eq!(ok_out.as_deref(), Ok("ok"), "an unrelated call must go through untouched: {ok_out:?}");
         });
     }
 
-    /// The registry bookkeeping half of R3: `CallTokenGuard` has to remove its
-    /// entry on EVERY exit, including one that returns early (an `Err` from a
-    /// `?`, or the cancelled branch) rather than falling off the end of the
-    /// function -- which is exactly the shape `proxy_localhost` has, and why
-    /// a plain "remove after the last await" was not enough.
+    /// R3 Nachbesserung 1 end to end: a cancel that arrives before
+    /// `proxy_localhost` ever reaches its registration line must still stop
+    /// the request, proven against a real listening socket that counts
+    /// connections -- not just that `CancelRegistry::register` returns an
+    /// already-cancelled token (that half is `cancel_registry::tests::
+    /// a_cancel_before_register_hands_back_an_already_cancelled_token`),
+    /// but that `cancellable_request` then never dials out at all.
     #[test]
-    fn the_call_token_guard_clears_the_registry_on_every_kind_of_exit() {
-        let registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    fn a_cancel_that_arrives_before_registration_never_opens_a_connection() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let port = counting_hang_stub(connections.clone(), Duration::from_secs(10)).await;
 
-        // Normal scope exit (mirrors a successful `proxy_localhost` return).
-        {
-            let token = tokio_util::sync::CancellationToken::new();
-            registry.lock().unwrap().insert("call-a".to_string(), token);
-            let _guard = CallTokenGuard { registry: registry.clone(), id: "call-a".to_string() };
-            assert!(registry.lock().unwrap().contains_key("call-a"));
-        }
-        assert!(registry.lock().unwrap().is_empty(), "normal exit must clear the entry");
+            let state = crate::state::AppState::new();
+            let call_id = "race-before-register".to_string();
 
-        // Early return via `?` (mirrors guard_builtin_model / send() erroring
-        // after the token was already registered) -- a closure standing in
-        // for a function that returns before reaching its last line.
-        fn early_return(
-            registry: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
-        ) -> Result<(), String> {
-            let token = tokio_util::sync::CancellationToken::new();
-            registry.lock().unwrap().insert("call-b".to_string(), token);
-            let _guard = CallTokenGuard { registry: registry.clone(), id: "call-b".to_string() };
-            Err("simulated mid-flight failure".to_string())?;
-            unreachable!()
-        }
-        let _ = early_return(&registry);
-        assert!(registry.lock().unwrap().is_empty(), "an early ? return must still clear the entry");
+            // The cancel arrives FIRST -- the exact startup-window race from
+            // the review: in the real command this window is
+            // ProxyAllowList::snapshot + allow.check + guard_builtin_model +
+            // proxy_client, all of which run before the registration line.
+            state.call_tokens.cancel(&call_id);
 
-        // Panic unwinding through the guard's scope (Rust runs destructors
-        // while unwinding a panic that is not aborting the process).
-        let panicking = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let token = tokio_util::sync::CancellationToken::new();
-            registry.lock().unwrap().insert("call-c".to_string(), token);
-            let _guard = CallTokenGuard { registry: registry.clone(), id: "call-c".to_string() };
-            panic!("simulated panic while the call was in flight");
-        }));
-        assert!(panicking.is_err());
-        assert!(registry.lock().unwrap().is_empty(), "a panic unwinding through the guard must still clear the entry");
+            let (token, _guard) = state.call_tokens.register(call_id);
+            assert!(token.is_cancelled(), "register() after a cancel must hand back an already-cancelled token");
+
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
+            let request = client.get(format!("http://127.0.0.1:{}/", port));
+            let out = cancellable_request(request, &token).await;
+
+            assert!(out.is_err(), "a pre-cancelled token must not report success");
+            assert_eq!(
+                connections.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the request must never have been sent to the stub"
+            );
+        });
     }
 }
 
