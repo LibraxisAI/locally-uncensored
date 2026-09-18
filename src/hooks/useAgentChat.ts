@@ -2667,6 +2667,19 @@ export function useAgentChat() {
           })
           agentLoopTimers.set(convForLoop, setTimeout(() => {
             agentLoopTimers.delete(convForLoop)
+            // Blocker 3 (review-lanes.md): stopAllBackgroundWork() (sign-out,
+            // window close, app quit) clears the loop STORE via
+            // useAgentLoopStore.clear, but this timer lives in a module Map
+            // it never touches; clearTimeout only happens inside stopAgent.
+            // Without this check, a pass whose interval elapses AFTER the
+            // user signed out fired a real paid request into a session the
+            // app had already told the user it ended. isRunStopped is the
+            // same sticky per-conversation flag stopAllBackgroundWork sets
+            // via stopRun(), so it is exactly what survives here.
+            if (isRunStopped(convForLoop)) {
+              useAgentLoopStore.getState().clear(convForLoop)
+              return
+            }
             // A skipped pass clears the loop store too (audit A3) — leaving
             // it standing painted a LoopBar promising a pass that never came.
             //

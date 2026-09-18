@@ -2504,6 +2504,19 @@ export function useCodex() {
           })
           const fireLoopPass = () => {
             codexLoopTimers.delete(convForLoop)
+            // Blocker 3 (review-lanes.md): stopAllBackgroundWork() (sign-out,
+            // window close, app quit) clears the loop STORE via
+            // useAgentLoopStore.clear, but this timer lives in a module Map
+            // it never touches, and the 5s self-extension below (Code tab
+            // not visible) can keep re-arming it past that point too.
+            // isRunStopped is the same sticky per-conversation flag
+            // stopAllBackgroundWork sets via stopRun(), checked first so a
+            // due pass never fires a real request into a session the app
+            // already told the user it ended.
+            if (isRunStopped(convForLoop)) {
+              useAgentLoopStore.getState().clear(convForLoop)
+              return
+            }
             // Bail if THIS conversation is already generating something else
             // meanwhile (a manual send raced the timer). Clear the loop store
             // too, leaving it standing painted a LoopBar that promised a pass

@@ -14,7 +14,7 @@
  *   1. Lauf A startet, registriert seinen Abbrecher unter `convId` in
  *      `generationStore.aborters` (Zeile 784).
  *   2. Nutzer drueckt Stop. `stopAgent` bricht A's `AbortController` ab und
- *      loescht A sofort aus `activeAgentRuns` — aber NICHT aus
+ *      loescht A sofort aus `activeAgentRuns`, aber NICHT aus
  *      `generationStore.aborters`, das raeumt erst A's eigenes `finally` auf.
  *   3. Nutzer sendet SOFORT neu, bevor A's `finally` gelaufen ist (unter
  *      Last braucht `endTurnDurably` 323-545 ms, siehe stores/durability.ts).
@@ -89,7 +89,7 @@ function controllableSSE() {
     },
     // Real fetch rejects a request's stream when its AbortSignal fires; this
     // mock does not do that automatically (unlike the browser), so the test
-    // controls the moment by hand instead — that IS the "verspaetetes
+    // controls the moment by hand instead; that IS the "verspaetetes
     // finally" window Blocker 2 describes, made deterministic.
     error(err: unknown) {
       controller.error(err)
@@ -171,7 +171,7 @@ describe('Stop, dann sofort neu senden auf derselben Unterhaltung', () => {
     expect(callsA).toBe(1)
     expect(useGenerationStore.getState().aborters[convA]).toBeDefined()
 
-    // Stop run 1 — deletes it from activeAgentRuns and aborts its
+    // Stop run 1: deletes it from activeAgentRuns and aborts its
     // AbortController synchronously, but generationStore.aborters[convA]
     // still holds run 1's (now-stale) aborter; only run 1's OWN finally
     // clears that, and it has not run yet (the stream has not errored).
@@ -192,7 +192,7 @@ describe('Stop, dann sofort neu senden auf derselben Unterhaltung', () => {
 
     // NOW run 1's stream actually fails (the abort finally reaches the
     // fetch/reader), so its `finally` runs LATE, after run 2 is already
-    // registered — the exact race Blocker 2 describes.
+    // registered, the exact race Blocker 2 describes.
     await act(async () => {
       streamA.error(new DOMException('The operation was aborted.', 'AbortError'))
       await runA.catch(() => {})
