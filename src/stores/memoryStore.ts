@@ -576,7 +576,7 @@ const MD_ITEM =
  * kept the `- **Title**,` prefix, the middle ones had no `- ` prefix at all,
  * and the LAST one carried `*(source)*, date` but no leading dash. `importFromMarkdown`
  * scans line by line with `MD_ITEM`'s `^...$` anchors, so only the first line
- * matched anything \u2014 the rest of the content, the source and the date were
+ * matched anything, the rest of the content, the source and the date were
  * silently dropped, not just truncated.
  *
  * The fix keeps every memory to exactly one physical line in the export,
@@ -584,14 +584,52 @@ const MD_ITEM =
  * content becomes the two-character escape `\n`; a literal backslash the
  * content already contained is doubled first so it can never be misread as
  * the start of that escape. `unescapeMdContent` reverses both in one pass.
+ *
+ * Opus-Review Nachbesserung 5 (3.0.1): `\n` alone was not the whole data-loss
+ * class. `.` in a JS regex without the `s` flag never matches a LINE
+ * TERMINATOR, and the spec's line terminator set is four characters, not one:
+ * `\n`, `\r`, U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR). A
+ * Windows/browser/PDF paste routinely carries CRLF, and MD_ITEM's `(.+?)`
+ * groups silently refuse to match any of the other three exactly the way
+ * they refused `\n` before this file's first fix \u2014 the whole entry, title,
+ * source and date included, vanished on import with no error. All four are
+ * escaped now, the same one-pass, backslash-doubled-first scheme as before.
  */
 function escapeMdContent(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
+const MD_ESCAPE = /\\\\|\\r|\\n|\\u2028|\\u2029/g
+const MD_ESCAPE_BACK: Record<string, string> = {
+  '\\\\': '\\', '\\r': '\r', '\\n': '\n', '\\u2028': '\u2028', '\\u2029': '\u2029',
 }
 
 function unescapeMdContent(s: string): string {
-  return s.replace(/\\\\|\\n/g, (m) => (m === '\\n' ? '\n' : '\\'))
+  return s.replace(MD_ESCAPE, (m) => MD_ESCAPE_BACK[m])
 }
+
+/**
+ * Opus-Review Nachbesserung 5, second half: backward compatibility.
+ *
+ * Before this file's first R2-25 fix, an export with a LITERAL two-character
+ * `\n` already in the content (a Windows path like `C:\nope`, a code snippet
+ * with `print("a\nb")`) went out unescaped \u2014 because nothing escaped
+ * anything yet. Running today's `unescapeMdContent` over such an OLD file
+ * would silently rewrite that literal `\n` into a real line break: not data
+ * loss, but a silent mutation of a file nobody asked to have rewritten.
+ *
+ * The marker below is written by every export from this fix onward and read
+ * by every import: present means "this file's `\n`/`\r`/backslash sequences
+ * are `escapeMdContent`'s doing, undo them", absent means "leave every
+ * character exactly as written, this predates escaping".
+ */
+const MD_FORMAT_MARKER = '<!-- lu-memory-format: 2 -->'
+const MD_FORMAT_MARKER_RE = /<!--\s*lu-memory-format:\s*2\s*-->/
 
 /**
  * The date the export writes: `YYYY-MM-DD`, not a locale string.
@@ -1004,7 +1042,10 @@ export const useMemoryStore = create<MemoryState>()(
           user: 'User', feedback: 'Feedback', project: 'Project', reference: 'References',
         }
 
-        let md = '# Memory\n\n'
+        // An HTML comment: invisible in a rendered preview, does not match
+        // `##` headers or MD_ITEM, and survives a round trip through any
+        // markdown-preserving editor. See MD_FORMAT_MARKER above.
+        let md = `# Memory\n\n${MD_FORMAT_MARKER}\n\n`
 
         for (const type of typeOrder) {
           const typeEntries = entries.filter(e => e.type === type)
@@ -1033,6 +1074,12 @@ export const useMemoryStore = create<MemoryState>()(
       },
 
       importFromMarkdown: (markdown) => {
+        // Opus-Review Nachbesserung 5: only a file THIS fix wrote carries
+        // escaped `\n`/`\r`/backslash sequences that need undoing. An older
+        // export (or a hand-written one) never escaped anything, so its
+        // literal backslash-n is content, not a line break waiting to be
+        // restored — see MD_FORMAT_MARKER's comment.
+        const escaped = MD_FORMAT_MARKER_RE.test(markdown)
         const lines = markdown.split('\n')
         const pool: MemoryFile[] = [...get().entries]
         const newEntries: MemoryFile[] = []
@@ -1058,8 +1105,10 @@ export const useMemoryStore = create<MemoryState>()(
             const title = itemMatch[1] || itemMatch[2].substring(0, 60)
             // R2-25: undo escapeMdContent's `\n`/backslash escaping so a
             // multi-line memory comes back with its real line breaks instead
-            // of the literal two-character escape.
-            const content = unescapeMdContent(itemMatch[2].trim())
+            // of the literal two-character escape. Only when the format
+            // marker says this file was escaped in the first place — see
+            // MD_FORMAT_MARKER.
+            const content = escaped ? unescapeMdContent(itemMatch[2].trim()) : itemMatch[2].trim()
             const tags = itemMatch[3] ? itemMatch[3].split(',').map(t => t.trim()).filter(Boolean) : []
             const source = itemMatch[4] || 'import'
             const stand = isoBack(itemMatch[5]) ?? Date.now()

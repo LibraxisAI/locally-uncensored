@@ -72,3 +72,96 @@ describe('memory markdown round trip — multi-line content', () => {
     expect(itemLines).toHaveLength(1)
   })
 })
+
+/**
+ * Opus-Review Nachbesserung 5: `\n` alone was not the whole data-loss class.
+ * A JS regex's `.` refuses every LINE TERMINATOR the spec defines, not just
+ * `\n` — `\r`, U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR)
+ * silently dropped the entire entry the same way `\n` used to. This is the
+ * property test the review asked for: round trip a list of hostile contents
+ * and require content, source, date and title all identical afterward.
+ */
+describe('memory markdown round trip — the whole data-loss class (Opus-Review Nachbesserung 5)', () => {
+  beforeEach(reset)
+
+  const HOSTILE_CONTENTS: Array<[string, string]> = [
+    ['CRLF (Windows paste)', 'Erste Zeile.\r\nZweite Zeile.\r\nDritte Zeile.'],
+    ['bare CR (old Mac paste)', 'Erste Zeile.\rZweite Zeile.'],
+    ['tabs', 'Spalte1\tSpalte2\tSpalte3'],
+    ['backslashes', 'C:\\Users\\david\\Desktop\\LU'],
+    ['an escape sequence already spelled out', 'the literal text is \\n not a newline'],
+    ['a markdown list marker at line start', '- this looks like another item\n- and this too'],
+    ['U+2028 LINE SEPARATOR', 'Erste Zeile.\u2028Zweite Zeile.'],
+    ['U+2029 PARAGRAPH SEPARATOR', 'Erster Absatz.\u2029Zweiter Absatz.'],
+    ['an empty line in the middle', 'Erste Zeile.\n\nDritte Zeile nach einer Leerzeile.'],
+    ['a very long line', 'x'.repeat(5000)],
+    ['every escape character mixed together', 'a\\b\rc\nd\u2028e\u2029f\\n\\r literal'],
+  ]
+
+  for (const [label, content] of HOSTILE_CONTENTS) {
+    it(`survives: ${label}`, () => {
+      useMemoryStore.getState().addMemory({
+        type: 'reference', title: `Fall: ${label}`, description: content.slice(0, 120), content,
+        tags: ['evil'], source: 'hostile-test',
+      })
+      const before = useMemoryStore.getState().entries[0]
+
+      const md = useMemoryStore.getState().exportAsMarkdown()
+      reset()
+      const result = useMemoryStore.getState().importFromMarkdown(md)
+
+      expect(result.added).toBe(1)
+      const after = useMemoryStore.getState().entries[0]
+      expect(after.content).toBe(content)
+      expect(after.content).toBe(before.content)
+      expect(after.title).toBe(before.title)
+      expect(after.source).toBe(before.source)
+      // The date round trips to DAY precision only (see isoTag/isoBack) —
+      // that is the export format, not a bug this test should flag.
+      const beforeDay = new Date(before.updatedAt).toISOString().slice(0, 10)
+      const afterDay = new Date(after.updatedAt).toISOString().slice(0, 10)
+      expect(afterDay).toBe(beforeDay)
+    })
+  }
+})
+
+describe('memory markdown import — Rueckwaertskompatibilitaet (Opus-Review Nachbesserung 5)', () => {
+  beforeEach(reset)
+
+  it('an old export (no format marker) is read back without mutating a literal backslash-n', () => {
+    // Handwritten to look exactly like a PRE-fix export: no
+    // `<!-- lu-memory-format: 2 -->` marker, and the content below was never
+    // escaped because escapeMdContent did not exist yet when it was written.
+    const altesExport =
+      '# Memory\n\n## User\n\n'
+      + '- **Alter Pfad**, the path is C:\\nope\\here *(legacy-export)*, 2026-01-01\n\n'
+
+    const result = useMemoryStore.getState().importFromMarkdown(altesExport)
+
+    expect(result.added).toBe(1)
+    const back = useMemoryStore.getState().entries[0]
+    // A real fix must not silently turn this file's literal backslash-n into
+    // a line break — that would be a silent mutation of a file nobody asked
+    // to have rewritten, not a bug fix.
+    expect(back.content).toBe('the path is C:\\nope\\here')
+  })
+
+  it('a fresh export from this build carries the format marker', () => {
+    useMemoryStore.getState().addMemory({
+      type: 'user', title: 'x', description: 'y', content: 'y', tags: [], source: 'unit-test',
+    })
+    const md = useMemoryStore.getState().exportAsMarkdown()
+    expect(md).toContain('<!-- lu-memory-format: 2 -->')
+  })
+
+  it('a marked export still unescapes a real multi-line entry (the marker does not just suppress escaping)', () => {
+    const multiline = 'Zeile eins.\nZeile zwei.'
+    useMemoryStore.getState().addMemory({
+      type: 'user', title: 'x', description: multiline, content: multiline, tags: [], source: 'unit-test',
+    })
+    const md = useMemoryStore.getState().exportAsMarkdown()
+    reset()
+    useMemoryStore.getState().importFromMarkdown(md)
+    expect(useMemoryStore.getState().entries[0].content).toBe(multiline)
+  })
+})
