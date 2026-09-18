@@ -280,7 +280,6 @@ export function useCodex() {
    * A. Dieselbe Klammer wie in useChat und useAgentChat.
    */
   const abortConvRef = useRef<string | null>(null)
-  const runningRef = useRef(false)
   // "The user pressed stop" lives in lib/run-stop, keyed by conversation, NOT
   // in a ref of this hook instance. The Code view unmounts on every tab switch,
   // and the /loop driver's finally runs in the closure of the instance that
@@ -861,7 +860,6 @@ export function useCodex() {
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
     run.abortSignal = abort.signal
-    runningRef.current = true
     setIsRunning(true)
     codexStore.setThreadStatus(convId, 'running')
     // Bind the generating flag to THIS conversation so the typing indicator +
@@ -875,7 +873,6 @@ export function useCodex() {
     // same conversation. With the store aborter, stopCodex (any instance) and
     // chat deletion both reach the real controller. Cleared in finally.
     useGenerationStore.getState().registerAborter(convId, () => {
-      runningRef.current = false
       abort.abort()
       requestGenerationCancel()
     })
@@ -1066,7 +1063,7 @@ export function useCodex() {
       // is checked at the top of the loop body; this bound is the runaway
       // backstop. Floor of 1 so a stray 0 setting can't zero the loop.
       const MAX_CODEX_ITERATIONS = Math.max(settings.agentMaxIterations ?? 200, 1)
-      for (let i = 0; i < MAX_CODEX_ITERATIONS && runningRef.current && !abort.signal.aborted; i++) {
+      for (let i = 0; i < MAX_CODEX_ITERATIONS && !abort.signal.aborted && !isRunStopped(convId); i++) {
         // Fertige Hintergrundagenten melden sich hier, oben in der Iteration:
         // vor dem Modellaufruf und nach den Werkzeugantworten der vorigen
         // Runde. Als NUTZER-Material — die Begruendung steht in
@@ -1810,7 +1807,7 @@ export function useCodex() {
         }
 
         // Phase 5b (v2.4.0), parallel tool execution via tool-executor.
-        if (!runningRef.current || abort.signal.aborted) break
+        if (abort.signal.aborted || isRunStopped(convId)) break
 
         // Every call carries an id from here on. Only the NATIVE channel gives
         // us one; a call recovered from prose or rebuilt from Hermes XML had
@@ -2414,7 +2411,6 @@ export function useCodex() {
       }
 
       useGenerationStore.getState().clearAborter(convId)
-      runningRef.current = false
       abortRef.current = null
       abortConvRef.current = null
       // Close THIS run. The process-wide mirror is only cleared when this run
@@ -2508,10 +2504,18 @@ export function useCodex() {
           })
           const fireLoopPass = () => {
             codexLoopTimers.delete(convForLoop)
-            // Bail if the user moved on or started something else meanwhile.
-            // Clear the loop store too — leaving it standing painted a LoopBar
-            // that promised a pass which was never coming (audit A3).
-            if (runningRef.current) {
+            // Bail if THIS conversation is already generating something else
+            // meanwhile (a manual send raced the timer). Clear the loop store
+            // too — leaving it standing painted a LoopBar that promised a pass
+            // which was never coming (audit A3).
+            //
+            // B2 Commit 6: was a single running flag shared by the whole HOOK
+            // INSTANCE rather than scoped per run — CodexView is not
+            // remounted on a conversation switch, so ANY conversation running
+            // on this instance used to cancel every OTHER conversation's
+            // pending pass, not just its own. Reading the store here asks
+            // about the one conversation this pass actually belongs to.
+            if (useGenerationStore.getState().generating[convForLoop]) {
               useAgentLoopStore.getState().clear(convForLoop)
               return
             }
@@ -2601,7 +2605,6 @@ export function useCodex() {
     // richtigen Griff gezogen, und der Lauf in der anderen Unterhaltung laeuft
     // weiter.
     if (abortConvRef.current === stoppedConvId) {
-      runningRef.current = false
       abortRef.current?.abort()
       abortRef.current = null
       setIsRunning(false)
