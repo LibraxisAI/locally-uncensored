@@ -179,6 +179,38 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             update("installing", &warning);
         }
 
+        // Runde 3, Nachbesserung 6: the torch/Python preflight used to run
+        // AFTER the old venv was already gone (`torch_python_preflight` sat
+        // right before Step 2's download, well past the delete below). A
+        // repair that then turned out to have no usable interpreter left the
+        // customer with a freshly emptied venv folder and a failed run, the
+        // exact "a healthy venv must never be destroyed for a run that then
+        // fails anyway" case. Moving the check here, before `venv_dir` is
+        // touched at all, means a repair that cannot proceed leaves the old
+        // venv exactly as it was. Also folds in B1(b): LU picks the newest
+        // interpreter that actually has a torch wheel itself, no Settings
+        // picker, and the picked interpreter is what builds the new venv
+        // further down instead of always `python_bin`.
+        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs) {
+            super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
+            super::torch::TorchPythonDecision::UseInstead(p) => {
+                update(
+                    "installing",
+                    &format!(
+                        "The default Python ({python_bin}) does not have a PyTorch wheel for \
+                         this machine yet; using {p} instead, found on this machine already."
+                    ),
+                );
+                p
+            }
+            super::torch::TorchPythonDecision::Blocked(msg) => {
+                update("error", &msg);
+                return;
+            }
+        };
+
         // A broken venv must go entirely: pip inside it would report the
         // damaged packages as already satisfied, which is the exact dead end
         // this command exists to break.
@@ -301,7 +333,7 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             "installing",
             "Step 1/4: Creating a fresh isolated venv inside the ComfyUI folder...",
         );
-        let venv_py = match create_comfyui_venv(&comfy_dir, &python_bin, Some(&cancel_flag)) {
+        let venv_py = match create_comfyui_venv(&comfy_dir, &chosen_python, Some(&cancel_flag)) {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) if e == "cancelled" => {
                 update("cancelled", "Repair cancelled while the new venv was being created.");
@@ -340,16 +372,7 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
             let _ = deleting.join();
         }
 
-        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
         update("installing", &format!("Step 2/4: {}", gpu_info));
-
-        // Runde 2, Nachbesserung 12: same preflight as the first install,
-        // before the repair spends 2 GB on a download that cannot land.
-        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
-        if let Some(msg) = super::torch::torch_python_preflight(&venv_py, torch_index.as_deref(), &torch_package_refs) {
-            update("error", &msg);
-            return;
-        }
 
         update(
             "installing",

@@ -220,63 +220,129 @@ fn fetch_index_python_versions(index_url: Option<&str>, package: &str) -> Result
     Ok(python_versions_from_index_html(&html))
 }
 
-/// One line per interpreter found on the box, for the "here is what LU can
-/// see instead" half of the preflight message.
-fn interpreter_inventory_lines() -> Vec<String> {
+/// One `(path, version)` pair per interpreter `python_interpreters()` found,
+/// the version resolved eagerly so both the picker and the message below
+/// read it once instead of re-spawning each interpreter a second time.
+fn interpreter_inventory() -> Vec<(String, Option<(u32, u32)>)> {
     crate::python::python_interpreters()
         .into_iter()
-        .map(|path| match python_version_tuple(&path) {
-            Some((maj, min)) => format!("  - {path} (Python {maj}.{min})"),
-            None => format!("  - {path} (version unknown)"),
+        .map(|path| {
+            let v = python_version_tuple(&path);
+            (path, v)
         })
         .collect()
 }
 
-/// Runs right before the real `pip install` for PyTorch. `None` means
-/// proceed; `Some(message)` means the venv's Python is not on the channel
-/// `plan_pytorch_install` chose and pip's own generic "no matching
-/// distribution" would send the user chasing a PATH or proxy problem that
-/// does not exist.
-///
-/// Fails OPEN on anything it cannot establish (offline, index unreachable,
-/// version probe failed): a preflight that blocks installs whenever the
-/// network hiccups is worse than the gap it closes. This is the "was du
-/// ohne Netz nicht messen kannst, als solches markieren" rule applied to a
-/// live check instead of a written report: the honest answer to "can I
-/// tell" is sometimes "no", and the function returns exactly that as
-/// `None`, not a false pass dressed up as a positive one.
-pub(crate) fn torch_python_preflight(python_bin: &str, index_url: Option<&str>, packages: &[&str]) -> Option<String> {
-    let (maj, min) = python_version_tuple(python_bin)?;
+fn format_interpreter_lines(interpreters: &[(String, Option<(u32, u32)>)]) -> String {
+    if interpreters.is_empty() {
+        return "  (none found)".to_string();
+    }
+    interpreters
+        .iter()
+        .map(|(path, v)| match v {
+            Some((maj, min)) => format!("  - {path} (Python {maj}.{min})"),
+            None => format!("  - {path} (version unknown)"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Runde 3, B1: the newest interpreter this machine has for which the live
+/// index actually serves a wheel, among the ones `python_interpreters`
+/// found; `None` when nothing qualifies. Pure over an already-resolved
+/// inventory so it is testable without spawning anything.
+pub(crate) fn pick_newest_supported_interpreter(
+    interpreters: &[(String, Option<(u32, u32)>)],
+    supported: &std::collections::BTreeSet<(u32, u32)>,
+) -> Option<String> {
+    interpreters
+        .iter()
+        .filter_map(|(path, v)| v.filter(|v| supported.contains(v)).map(|v| (v, path.clone())))
+        .max_by_key(|(v, _)| *v)
+        .map(|(_, path)| path)
+}
+
+/// The honest end of B1(c): no Settings claim (there is no picker), no
+/// invented button. States what was found, what torch actually serves today
+/// (from the live query, never a hardcoded table), and a concrete next step
+/// that does not name a distro package this code never verified: `uv
+/// python install` and `pyenv install` are cross-distro and both take the
+/// exact version string already in hand. `python312`-style package names are
+/// deliberately NOT suggested: on Arch that name is in the AUR, not pacman,
+/// and no other distro's naming was checked either.
+pub(crate) fn no_compatible_interpreter_message(
+    current: (u32, u32),
+    interpreters: &[(String, Option<(u32, u32)>)],
+    supported: &std::collections::BTreeSet<(u32, u32)>,
+) -> String {
+    let mut versions: Vec<String> = supported.iter().map(|(a, b)| format!("{a}.{b}")).collect();
+    versions.sort();
+    let newest = versions.last().cloned().unwrap_or_else(|| "a supported version".to_string());
+    format!(
+        "This environment's Python is {maj}.{min}, and the PyTorch build LU needs for this \
+         machine currently ships wheels only for Python {versions_joined}. LU checked every \
+         Python interpreter it could find on this machine and none of them is on that list, so \
+         it cannot pick one for you automatically.\n\n\
+         Python interpreters LU found:\n{interpreters_block}\n\n\
+         Install one of the versions above, for example \"uv python install {newest}\" (uv finds \
+         it on its own after that) or \"pyenv install {newest}\" if you use pyenv - not a \
+         distro package name, those are not verified here and vary by distro (python312, for \
+         example, is on Arch's AUR, not in pacman). Once a supported interpreter is on this \
+         machine, press Repair again; LU finds it and uses it automatically, nothing else to \
+         configure.",
+        maj = current.0,
+        min = current.1,
+        versions_joined = versions.join(", "),
+        interpreters_block = format_interpreter_lines(interpreters),
+        newest = newest,
+    )
+}
+
+/// What the caller should do about the venv it is about to build (or is
+/// already using) for the PyTorch install.
+pub(crate) enum TorchPythonDecision {
+    /// This interpreter serves torch fine, or the check could not be made
+    /// (offline, index unreachable, version probe failed) and therefore
+    /// fails open rather than blocking on a network hiccup, same rule as
+    /// the old `torch_python_preflight` documented.
+    Proceed,
+    /// A DIFFERENT interpreter this machine already has serves torch and
+    /// `current` does not; the caller should build (or rebuild) the venv
+    /// from this path instead: B1(b), no Settings picker, LU decides.
+    UseInstead(String),
+    /// Nothing on this machine serves torch for the chosen channel. The
+    /// message is ready to show as-is.
+    Blocked(String),
+}
+
+/// Runde 3, B1: replaces the old report-only `torch_python_preflight`. Where
+/// that function only ever said "this is broken, here is what LU found",
+/// this one first asks whether something ELSE LU found would work, and only
+/// falls back to the message when nothing does: the Sackgasse Opus found
+/// (Runde 2 left the customer at a Settings picker that does not exist).
+pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>, packages: &[&str]) -> TorchPythonDecision {
+    let Some(current) = python_version_tuple(current_python) else {
+        return TorchPythonDecision::Proceed;
+    };
+    let Some(first_package) = packages.first() else {
+        return TorchPythonDecision::Proceed;
+    };
     // The AMD Windows channel serves "torch[device-all]"; strip any extra so
     // the index lookup is against the real package directory.
-    let package = packages.first()?.split('[').next().unwrap_or("torch");
+    let package = first_package.split('[').next().unwrap_or("torch");
     let supported = match fetch_index_python_versions(index_url, package) {
         Ok(s) if !s.is_empty() => s,
         // Empty or unreachable: cannot tell, so do not block (see doc above).
-        _ => return None,
+        _ => return TorchPythonDecision::Proceed,
     };
-    if supported.contains(&(maj, min)) {
-        return None;
+    if supported.contains(&current) {
+        return TorchPythonDecision::Proceed;
     }
-    let mut versions: Vec<String> = supported.iter().map(|(a, b)| format!("{a}.{b}")).collect();
-    versions.sort();
-    let interpreters = interpreter_inventory_lines();
-    let interpreters_block = if interpreters.is_empty() {
-        "  (none found)".to_string()
-    } else {
-        interpreters.join("\n")
-    };
-    Some(format!(
-        "This environment's Python is {maj}.{min}, and the PyTorch build LU needs for this \
-         machine currently ships wheels only for Python {versions}. Installing torch would \
-         fail with a generic pip error, so LU is stopping before that and offering to rebuild \
-         the virtual environment with a supported interpreter instead - your models and custom \
-         nodes are untouched either way, only the venv folder is recreated.\n\n\
-         Python interpreters LU found on this machine:\n{interpreters_block}\n\n\
-         Pick one of the versions above in Settings and press Repair, or install a supported \
-         Python and press Repair again.",
-        versions = versions.join(", "),
-    ))
+    let interpreters = interpreter_inventory();
+    match pick_newest_supported_interpreter(&interpreters, &supported) {
+        Some(path) => TorchPythonDecision::UseInstead(path),
+        None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, &supported)),
+    }
 }
 
 #[cfg(test)]
@@ -471,5 +537,85 @@ mod tests {
     fn a_lone_cp_tag_without_the_repeated_abi_tag_is_not_counted() {
         let html = r#"<a href="/cp312/some-other-thing">not a wheel</a>"#;
         assert!(python_versions_from_index_html(html).is_empty());
+    }
+
+    // ── Runde 3, B1: auto-selection instead of a Settings picker ────────
+
+    fn supported_3_10_through_13() -> std::collections::BTreeSet<(u32, u32)> {
+        [(3, 10), (3, 11), (3, 12), (3, 13)].into_iter().collect()
+    }
+
+    /// Required test from the coordinator's Runde 3 instructions: only 3.14
+    /// on the box, nothing torch serves today, message required.
+    #[test]
+    fn only_3_14_present_yields_no_pick_and_a_message() {
+        let interpreters = vec![("/usr/bin/python3".to_string(), Some((3, 14)))];
+        let supported = supported_3_10_through_13();
+        assert_eq!(pick_newest_supported_interpreter(&interpreters, &supported), None);
+        let msg = no_compatible_interpreter_message((3, 14), &interpreters, &supported);
+        assert!(msg.contains("3.14"), "{msg}");
+        assert!(msg.contains("3.10, 3.11, 3.12, 3.13"), "{msg}");
+        assert!(msg.contains("uv python install 3.13"), "{msg}");
+        assert!(msg.contains("pyenv install 3.13"), "{msg}");
+        assert!(msg.contains("Repair"), "{msg}");
+        // B1(c): no Settings claim, no distro package name asserted as real.
+        assert!(!msg.to_lowercase().contains("settings"), "{msg}");
+        assert!(!msg.contains("pacman -S"), "{msg}");
+        assert!(!msg.contains("apt install"), "{msg}");
+    }
+
+    /// Required test from the coordinator's Runde 3 instructions: 3.14 plus
+    /// 3.12 (the pyenv shape) on the box picks 3.12 silently, no message.
+    #[test]
+    fn a_14_plus_pyenv_12_picks_12_without_a_message() {
+        let interpreters = vec![
+            ("/usr/bin/python3".to_string(), Some((3, 14))),
+            (
+                "/home/user/.pyenv/versions/3.12.7/bin/python3".to_string(),
+                Some((3, 12)),
+            ),
+        ];
+        let supported = supported_3_10_through_13();
+        assert_eq!(
+            pick_newest_supported_interpreter(&interpreters, &supported),
+            Some("/home/user/.pyenv/versions/3.12.7/bin/python3".to_string())
+        );
+    }
+
+    /// Two compatible interpreters: the NEWEST one wins, not the first one
+    /// `python_interpreters()` happened to list.
+    #[test]
+    fn the_newest_compatible_interpreter_wins_over_an_older_one() {
+        let interpreters = vec![
+            ("/usr/bin/python3.10".to_string(), Some((3, 10))),
+            ("/usr/local/bin/python3.13".to_string(), Some((3, 13))),
+            ("/usr/bin/python3.11".to_string(), Some((3, 11))),
+        ];
+        let supported = supported_3_10_through_13();
+        assert_eq!(
+            pick_newest_supported_interpreter(&interpreters, &supported),
+            Some("/usr/local/bin/python3.13".to_string())
+        );
+    }
+
+    /// An interpreter whose version could not be read (`None`) must never be
+    /// picked, and must never panic the max-by-key comparison.
+    #[test]
+    fn an_interpreter_with_an_unknown_version_is_never_picked() {
+        let interpreters = vec![
+            ("/broken/python".to_string(), None),
+            ("/usr/bin/python3.12".to_string(), Some((3, 12))),
+        ];
+        let supported = supported_3_10_through_13();
+        assert_eq!(
+            pick_newest_supported_interpreter(&interpreters, &supported),
+            Some("/usr/bin/python3.12".to_string())
+        );
+    }
+
+    #[test]
+    fn no_interpreters_at_all_still_yields_a_readable_message() {
+        let msg = no_compatible_interpreter_message((3, 14), &[], &supported_3_10_through_13());
+        assert!(msg.contains("(none found)"), "{msg}");
     }
 }

@@ -442,16 +442,70 @@ pub fn python_version(exe: &str) -> Option<String> {
 /// Python was 3.14 built the trainer venv from 3.14 and died at step 4/4
 /// (sockenmonster, Discord, August and ticket 0004 on 2026-09-05).
 ///
+/// Runde 3, B1(a): PATH alone missed the exact boxes the torch preflight
+/// exists for. `uv python install` and `pyenv install`, the two commands
+/// the preflight message itself now suggests, put their interpreters
+/// somewhere PATH never sees unless the user also runs `pyenv init` or
+/// `uv python pin`, so a machine that just followed the suggested command
+/// would still show up as "no compatible interpreter found" on the very
+/// next Repair. This walks those install locations directly, plus the
+/// explicit `python3.10`..`python3.13` names (torch's usual served range),
+/// so the install-then-repair loop the message promises actually closes.
+///
 /// Nothing here starts an interpreter beyond the `--version` gate the
 /// existing scans apply; the caller asks each hit for its version.
 #[cfg(not(target_os = "windows"))]
 pub fn python_interpreters() -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
-    for name in crate::os_paths::unix_python_candidates() {
-        let Ok(path) = which::which(name) else { continue };
+    let mut push = |path: PathBuf| {
+        if !path.exists() {
+            return;
+        }
         let path = path.to_string_lossy().to_string();
         if !found.contains(&path) {
             found.push(path);
+        }
+    };
+    for name in crate::os_paths::unix_python_candidates() {
+        if let Ok(path) = which::which(name) {
+            push(path);
+        }
+    }
+    // Explicit names beyond what `unix_python_candidates` orders for the
+    // default picker (that list stops at 3.11/3.12/3.13 by design, oldest
+    // first is never its job): 3.10 through 3.13 is the range the torch
+    // preflight message actually needs to reason about.
+    for minor in 10..=13 {
+        if let Ok(path) = which::which(format!("python3.{minor}")) {
+            push(path);
+        }
+    }
+    let home = crate::os_paths::home();
+    // pyenv: every installed version keeps its own bin/ under versions/.
+    for pattern in [
+        home.join(".pyenv/versions/*/bin/python3"),
+        home.join(".pyenv/versions/*/bin/python"),
+        // uv-managed interpreters: `uv python install 3.12` lands here,
+        // named after the exact version instead of a generic "python3".
+        home.join(".local/share/uv/python/*/bin/python3"),
+        home.join(".local/share/uv/python/*/bin/python3.*"),
+    ] {
+        for entry in glob::glob(&pattern.to_string_lossy()).into_iter().flatten().flatten() {
+            push(entry);
+        }
+    }
+    // Fixed, non-PATH-guaranteed locations named in the review: a user's own
+    // pip-installed interpreter (`~/.local/bin`), a distro's optional package
+    // prefix (`/opt/<name>/bin`), and the common source-build prefix
+    // (`/usr/local/bin`), none of which every shell's PATH carries by default.
+    for base in [home.join(".local/bin"), PathBuf::from("/usr/local/bin")] {
+        for minor in 10..=13 {
+            push(base.join(format!("python3.{minor}")));
+        }
+    }
+    for pattern in ["/opt/*/bin/python3", "/opt/*/bin/python3.*"] {
+        for entry in glob::glob(pattern).into_iter().flatten().flatten() {
+            push(entry);
         }
     }
     found

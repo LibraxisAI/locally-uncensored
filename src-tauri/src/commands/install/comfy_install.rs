@@ -466,6 +466,16 @@ pub fn install_comfyui(
             }
             crate::python::ComfyVenv::Absent => None,
         };
+
+        // Step 2's GPU probe + wheel choice, pulled up here (Runde 3,
+        // Nachbesserung 6): a venv must never be built from an interpreter
+        // the preflight below is about to reject, so the channel has to be
+        // known BEFORE any venv decision, not after. `plan_pytorch_install`
+        // does not touch disk or venv state, only nvidia-smi/GPU facts, so
+        // moving it earlier is free.
+        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+
         let effective_python = if let Some(venv_py) = existing_venv {
             update(
                 "installing",
@@ -473,55 +483,69 @@ pub fn install_comfyui(
                     "This ComfyUI already has its own environment. Installing into {venv_py}."
                 ),
             );
+            // An existing venv is not silently rebuilt here (it may carry
+            // custom nodes' own state): B1(b)'s auto-selection is for a
+            // venv this run is about to build, not one that already exists.
             venv_py
-        } else if is_pep668_protected(&python_bin) {
-            update(
-                "installing",
-                "Python is PEP 668 protected (Arch / Debian 12+ / Fedora 38+ / \
-                 Ubuntu 23.04+). Creating an isolated venv at ComfyUI/venv so \
-                 pip can install PyTorch + ComfyUI deps without touching your \
-                 system Python …",
-            );
-            match create_comfyui_venv(&target_dir, &python_bin, Some(&cancel_flag)) {
-                Ok(venv_py) => {
-                    let p = venv_py.to_string_lossy().to_string();
+        } else {
+            // B1(b): LU picks the interpreter itself, no Settings picker.
+            // Runs BEFORE `create_comfyui_venv`/PEP-668 detection so a
+            // healthy choice never gets discarded for one that cannot serve
+            // torch (Nachbesserung 6).
+            let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs) {
+                super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
+                super::torch::TorchPythonDecision::UseInstead(p) => {
                     update(
                         "installing",
-                        &format!("venv ready, using {} for the install.", p),
+                        &format!(
+                            "The default Python ({python_bin}) does not have a PyTorch wheel for \
+                             this machine yet; using {p} instead, found on this machine already."
+                        ),
                     );
                     p
                 }
-                // A cancel the user asked for is not a failed install. Without
-                // this arm the new cancel path inside `create_comfyui_venv`
-                // would arrive here as the card "Installing ComfyUI did not
-                // finish", over a run that stopped because they said so.
-                Err(e) if e == "cancelled" => {
-                    update("cancelled", "Install cancelled while the venv was being created.");
+                super::torch::TorchPythonDecision::Blocked(msg) => {
+                    update("error", &msg);
                     return;
                 }
-                Err(e) => {
-                    update("error", &format!("venv creation failed.\n\n{}", e));
-                    return;
+            };
+            if is_pep668_protected(&chosen_python) {
+                update(
+                    "installing",
+                    "Python is PEP 668 protected (Arch / Debian 12+ / Fedora 38+ / \
+                     Ubuntu 23.04+). Creating an isolated venv at ComfyUI/venv so \
+                     pip can install PyTorch + ComfyUI deps without touching your \
+                     system Python …",
+                );
+                match create_comfyui_venv(&target_dir, &chosen_python, Some(&cancel_flag)) {
+                    Ok(venv_py) => {
+                        let p = venv_py.to_string_lossy().to_string();
+                        update(
+                            "installing",
+                            &format!("venv ready, using {} for the install.", p),
+                        );
+                        p
+                    }
+                    // A cancel the user asked for is not a failed install. Without
+                    // this arm the new cancel path inside `create_comfyui_venv`
+                    // would arrive here as the card "Installing ComfyUI did not
+                    // finish", over a run that stopped because they said so.
+                    Err(e) if e == "cancelled" => {
+                        update("cancelled", "Install cancelled while the venv was being created.");
+                        return;
+                    }
+                    Err(e) => {
+                        update("error", &format!("venv creation failed.\n\n{}", e));
+                        return;
+                    }
                 }
+            } else {
+                chosen_python
             }
-        } else {
-            python_bin.clone()
         };
 
-        // Step 2: Detect GPU and install PyTorch (probe + wheel choice shared
-        // with repair_comfyui_env via plan_pytorch_install).
-        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
         println!("[Install] {}", gpu_info);
         update("installing", &format!("Step 2/4: {}", gpu_info));
-
-        // Runde 2, Nachbesserung 12: before spending 2 GB and several minutes
-        // on a download pip would refuse anyway, check whether this Python
-        // is even on the chosen channel's version list.
-        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
-        if let Some(msg) = super::torch::torch_python_preflight(&effective_python, torch_index.as_deref(), &torch_package_refs) {
-            update("error", &msg);
-            return;
-        }
 
         update(
             "installing",
