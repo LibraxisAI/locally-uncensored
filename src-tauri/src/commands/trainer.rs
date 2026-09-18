@@ -164,6 +164,68 @@ fn trainer_root(app: &tauri::AppHandle) -> PathBuf {
         .join("musubi")
 }
 
+/// pip, Hugging Face and torch each keep a cache of their own, and left at
+/// their OS defaults every one of them lands under the user's profile
+/// (`%LOCALAPPDATA%` on Windows), regardless of where [`trainer_root`]
+/// itself points (K5 Punkt 13, Trainer-Folgeauftrag). This is a pure
+/// function of `root` alone: `<root>/cache/pip`,
+/// `<root>/cache/huggingface[/xet]`, `<root>/cache/torch`, plus
+/// `XDG_CACHE_HOME` at `<root>/cache` itself (the base every XDG-aware tool
+/// falls back to for a cache this list has not named directly).
+///
+/// A version of this existed until `4b01feaf` and was deleted rather than
+/// left unwired, per the house rule against dead code (it built the paths
+/// but nothing ever called it). Reintroduced here WIRED IN this time, see
+/// [`apply_trainer_cache_env`] for the one rule that keeps it from silently
+/// orphaning an existing multi-GB cache.
+pub(crate) fn trainer_cache_env(root: &Path) -> [(&'static str, PathBuf); 5] {
+    let cache = root.join("cache");
+    let hf = cache.join("huggingface");
+    [
+        ("PIP_CACHE_DIR", cache.join("pip")),
+        ("HF_HOME", hf.clone()),
+        ("HF_XET_CACHE", hf.join("xet")),
+        ("TORCH_HOME", cache.join("torch")),
+        ("XDG_CACHE_HOME", cache),
+    ]
+}
+
+/// Whether the user actually moved `trainer_root` away from the built-in
+/// default: a persisted, non-empty `trainer_root` config value. Mirrors
+/// exactly the check [`trainer_root`] itself makes to decide whether to use
+/// the override.
+///
+/// This is the migration guard for [`apply_trainer_cache_env`]: a customer
+/// who never touched the setting must not have pip/HF/torch's caches
+/// silently redirected out from under an install that predates this
+/// feature. Their existing `~/.cache/huggingface` (or the platform
+/// equivalent) already holds every base model and dependency this app
+/// asked pip/HF for before this fix landed; redirecting it unconditionally
+/// would leave that multi-GB cache empty at the new path and pay for the
+/// same downloads a second time the moment the trainer runs again. Only a
+/// customer who deliberately set `trainer_root` to move the trainer off a
+/// small system drive gets the caches moved with it, because for that
+/// customer a cache still filling up the old drive is the bug, not a
+/// feature.
+fn trainer_root_is_customized() -> bool {
+    read_config_value("trainer_root").map(|p| !p.trim().is_empty()).unwrap_or(false)
+}
+
+/// Sets pip/HF/torch's caches on `cmd` to the SAME configured root as the
+/// trainer folder itself, but ONLY when `customized` is true. Pure over
+/// that argument (rather than reading `trainer_root_is_customized()`
+/// itself) so the migration rule is a plain unit test instead of one that
+/// has to fake a config file on disk; every real call site below passes
+/// `trainer_root_is_customized()` for the actual decision.
+fn apply_trainer_cache_env(cmd: &mut Command, root: &Path, customized: bool) {
+    if !customized {
+        return;
+    }
+    for (name, path) in trainer_cache_env(root) {
+        cmd.env(name, path);
+    }
+}
+
 fn venv_python(root: &Path) -> PathBuf {
     #[cfg(target_os = "windows")]
     { root.join("venv").join("Scripts").join("python.exe") }
@@ -1783,10 +1845,11 @@ struct ProbeOutcome {
 /// given, pins this probe to the same single card the run itself trains on
 /// (Opus review of K3: the VRAM check has to measure the card that trains,
 /// not whatever the driver puts at index 0).
-fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, device: Option<&TrainerGpuChoice>, label: &str) -> ProbeOutcome {
+fn probe_trainer_env(root: &Path, vpy: &Path, gpu: Option<&str>, device: Option<&TrainerGpuChoice>, label: &str) -> ProbeOutcome {
     let mut probe = foreign_system_command(vpy);
     probe.args(["-c", TORCH_PREFLIGHT_PY]);
     trainer_child_env(&mut probe);
+    apply_trainer_cache_env(&mut probe, root, trainer_root_is_customized());
     if let Some(choice) = device {
         pin_trainer_gpu(&mut probe, choice);
     }
@@ -2023,6 +2086,7 @@ fn provision_trainer_env(
         || {
             let mut torch = foreign_system_command(&vpy_for_torch);
             torch.args(&torch_args);
+            apply_trainer_cache_env(&mut torch, root, trainer_root_is_customized());
             torch
         },
         "torch install",
@@ -2039,6 +2103,7 @@ fn provision_trainer_env(
             let mut pkg = foreign_system_command(&vpy_for_pkg);
             pkg.args(["-m", "pip", "install", "--progress-bar", "off", "--no-input", "-e", "."])
                 .current_dir(repo_dir(root));
+            apply_trainer_cache_env(&mut pkg, root, trainer_root_is_customized());
             pkg
         },
         "musubi install",
@@ -2055,7 +2120,7 @@ fn provision_trainer_env(
     set_status(state, status_kind, &format!("{tag}: checking that PyTorch loads..."));
     let gpu = training_gpu_label();
     let venv_exe = venv_python(root);
-    if let Preflight::TorchBroken(first_tail) = probe_trainer_env(&venv_exe, gpu, device, "after setup").verdict {
+    if let Preflight::TorchBroken(first_tail) = probe_trainer_env(root, &venv_exe, gpu, device, "after setup").verdict {
         let mut tail = first_tail;
         if std::env::consts::OS == "windows" && runtime_library_missing(&tail) {
             set_status(
@@ -2068,7 +2133,7 @@ fn provision_trainer_env(
                 Err(e) if e == "cancelled" => return Err(e),
                 Err(e) => push_log(state, &format!("LU could not install the Visual C++ runtime: {}", useful_tail(&e))),
             }
-            match probe_trainer_env(&venv_exe, gpu, device, "after the runtime install").verdict {
+            match probe_trainer_env(root, &venv_exe, gpu, device, "after the runtime install").verdict {
                 Preflight::TorchBroken(again) => tail = again,
                 _ => return Ok(()),
             }
@@ -2439,7 +2504,7 @@ pub fn start_character_training(
         }
 
         set_status(&run, "running", "Checking the training environment...");
-        let first = probe_trainer_env(&vpy, gpu_label, device.as_ref(), "first check");
+        let first = probe_trainer_env(&root, &vpy, gpu_label, device.as_ref(), "first check");
         let verdict = first.verdict;
         let mut vram_mib = first.vram_mib;
         let mut cap = first.cap;
@@ -2466,7 +2531,7 @@ pub fn start_character_training(
             // Only a SECOND failure is a dead end. Report what is still wrong
             // plus the tail of the repair log, so the message names the cause
             // instead of the symptom.
-            let repaired = probe_trainer_env(&vpy, gpu_label, device.as_ref(), "after repair");
+            let repaired = probe_trainer_env(&root, &vpy, gpu_label, device.as_ref(), "after repair");
             let after = repaired.verdict;
             vram_mib = repaired.vram_mib;
             cap = repaired.cap;
@@ -2530,6 +2595,11 @@ pub fn start_character_training(
             return;
         }
 
+        // K5 Punkt 13: read once and reused by every step below, rather than
+        // re-reading config.json four times for what has to be the same
+        // answer within one run.
+        let cache_customized = trainer_root_is_customized();
+
         // 1) latent cache
         set_status(&run, "running", "Step 1/4: Caching image latents...");
         let mut c1 = foreign_system_command(&vpy_s);
@@ -2538,6 +2608,7 @@ pub fn start_character_training(
             "--dataset_config", &toml_s,
             "--vae", &vae_s,
         ]);
+        apply_trainer_cache_env(&mut c1, &root, cache_customized);
         if let Some(d) = &device {
             pin_trainer_gpu(&mut c1, d);
         }
@@ -2560,6 +2631,7 @@ pub fn start_character_training(
             "--batch_size", "8",
             "--fp8_llm",
         ]);
+        apply_trainer_cache_env(&mut c2, &root, cache_customized);
         if let Some(d) = &device {
             pin_trainer_gpu(&mut c2, d);
         }
@@ -2608,6 +2680,7 @@ pub fn start_character_training(
             out_name: &out_name,
             precision,
         });
+        apply_trainer_cache_env(&mut c3, &root, cache_customized);
         if let Some(d) = &device {
             pin_trainer_gpu(&mut c3, d);
         }
@@ -2637,6 +2710,7 @@ pub fn start_character_training(
             "--output", &final_path.to_string_lossy(),
             "--target", "other",
         ]);
+        apply_trainer_cache_env(&mut c4, &root, cache_customized);
         if let Some(d) = &device {
             pin_trainer_gpu(&mut c4, d);
         }
@@ -3236,6 +3310,17 @@ mod tests {
         let _ = fs::remove_dir_all(&root2);
     }
 
+    /// `config.json` is one real file on disk, shared by every test in this
+    /// module, and `cargo test` runs them concurrently on one process. Any
+    /// test that reads or writes the `trainer_root` key through
+    /// `read_config_value`/`write_config_value` takes this lock first, or
+    /// two such tests can interleave their reads and writes of the same
+    /// file.
+    fn config_json_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// The environment of a built command, as pairs a test can read.
     fn env_of(cmd: &std::process::Command) -> Vec<(String, Option<String>)> {
         cmd.get_envs()
@@ -3344,6 +3429,106 @@ mod tests {
         );
         std::env::remove_var("APPDIR");
         std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    // ── B2 (K5 Punkt 13): pip/HF/torch caches follow trainer_root ──────────
+
+    /// The five cache variables, all under the SAME root, none collapsing
+    /// onto each other.
+    #[test]
+    fn every_cache_follows_the_configured_root() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let env = super::trainer_cache_env(root);
+        assert_eq!(env.len(), 5);
+        for (name, path) in &env {
+            assert!(
+                path.starts_with(root),
+                "{name} ({}) is not under the configured trainer_root {}",
+                path.display(),
+                root.display(),
+            );
+        }
+        let names: Vec<&str> = env.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["PIP_CACHE_DIR", "HF_HOME", "HF_XET_CACHE", "TORCH_HOME", "XDG_CACHE_HOME"]);
+        let hf_home = &env[1].1;
+        let hf_xet = &env[2].1;
+        assert!(hf_xet.starts_with(hf_home), "HF_XET_CACHE must live under HF_HOME: {hf_xet:?} / {hf_home:?}");
+    }
+
+    /// Negative control: two DIFFERENT roots must not collapse onto the same
+    /// cache directory. A function that ignored its argument and always
+    /// returned a fixed path would still pass the "under root" check above
+    /// for a single root; this catches that.
+    #[test]
+    fn two_different_roots_get_two_different_cache_trees() {
+        let a = super::trainer_cache_env(Path::new("/data/a"));
+        let b = super::trainer_cache_env(Path::new("/data/b"));
+        for ((_, pa), (_, pb)) in a.iter().zip(b.iter()) {
+            assert_ne!(pa, pb, "{pa:?} should differ from {pb:?}");
+        }
+    }
+
+    /// Migration case: the user DID set a custom `trainer_root`, so the
+    /// caches are meant to follow it there. Behavioural test against
+    /// `apply_trainer_cache_env` itself (not the real config file), the same
+    /// function every real call site calls with `trainer_root_is_customized()`.
+    #[test]
+    fn a_customized_root_redirects_every_cache_onto_it() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let mut cmd = std::process::Command::new("python");
+        super::apply_trainer_cache_env(&mut cmd, root, true);
+        let envs = env_of(&cmd);
+        for (name, path) in super::trainer_cache_env(root) {
+            assert!(
+                envs.contains(&(name.to_string(), Some(path.to_string_lossy().into_owned()))),
+                "{name} must point under the customized root: {envs:?}",
+            );
+        }
+    }
+
+    /// Negative control, the actual point of B2: on the DEFAULT root
+    /// (`customized: false`), nothing is set at all. A customer who never
+    /// touched the `trainer_root` setting keeps pip/HF/torch pointed at
+    /// wherever they already were; setting these variables unconditionally
+    /// would silently orphan a multi-GB cache already sitting at the OS
+    /// default location and pay for the same downloads a second time.
+    #[test]
+    fn the_default_root_leaves_every_cache_variable_unset() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let mut cmd = std::process::Command::new("python");
+        super::apply_trainer_cache_env(&mut cmd, root, false);
+        assert_eq!(cmd.get_envs().count(), 0, "the default root must not touch the child's environment at all");
+    }
+
+    /// `trainer_root_is_customized` mirrors exactly the check `trainer_root`
+    /// itself makes on the same config key: present and non-empty is
+    /// customized, missing or blank ("", an explicitly cleared override,
+    /// distinct from a missing key, and `trainer_root` itself treats the
+    /// two identically, falling through to its default join in both cases)
+    /// is the default. Exercised against the REAL `config.json`
+    /// `read_config_value`/`write_config_value` read and write (there is no
+    /// dependency injection for it in this file), guarded so a run on a
+    /// machine that already has a `trainer_root` override set does not lose
+    /// it.
+    #[test]
+    fn trainer_root_is_customized_matches_trainer_roots_own_override_check() {
+        let _guard = config_json_test_guard();
+        let backup = super::read_config_value("trainer_root");
+        super::write_config_value("trainer_root", "");
+        assert!(!super::trainer_root_is_customized(), "an explicitly empty override must read as the default, not as customized");
+        super::write_config_value("trainer_root", "/mnt/big-drive/musubi");
+        assert!(super::trainer_root_is_customized(), "a real override must read as customized");
+        match backup {
+            Some(value) => super::write_config_value("trainer_root", &value),
+            None => {
+                // write_config_value has no delete: put back an empty
+                // override, which trainer_root_is_customized reads the same
+                // way as "the key was never there" (see the doc comment
+                // above), so a machine with no prior override is left
+                // exactly as it started.
+                super::write_config_value("trainer_root", "");
+            }
+        }
     }
 
     /// The priority order the review asked for: the Hardware tab's own pick
@@ -4390,7 +4575,7 @@ mod journey_tests {
         assert!(!body.contains("Command::new(\"git\")"), "provision itself must not require git");
         assert!(body.contains("disk_room_message(root, free, needed_gib)"), "room is asked before the first byte");
         assert_eq!(body.matches("pip_with_retry(").count(), 2, "both pip steps retry a dropped download");
-        assert!(body.contains("probe_trainer_env(&venv_exe, gpu, device, \"after setup\")"), "the setup proves the environment loads");
+        assert!(body.contains("probe_trainer_env(root, &venv_exe, gpu, device, \"after setup\")"), "the setup proves the environment loads");
         assert!(body.contains("winget_install(\"Microsoft.VCRedist.2015+.x64\", false"), "the runtime is installed, not linked");
         let base = &src[src.find("fn trainer_base_python(").expect("base")..];
         let base = &base[..base.find("fn musubi_source_marker").expect("end of base")];
