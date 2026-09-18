@@ -181,9 +181,9 @@ fn install_ollama_windows_impl<F: Fn(&str, &str)>(
         return;
     }
     update("installing", "Download complete. Installing Ollama...");
-    let mut cmd = Command::new(&installer_path);
+    let mut cmd = crate::process_util::foreign_system_command(&installer_path);
     cmd.arg("/S");
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     match cmd.output() {
         Ok(o) => {
             let code = o.status.code().unwrap_or(-1);

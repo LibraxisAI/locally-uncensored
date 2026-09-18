@@ -17,10 +17,7 @@
 //! Studio einmal von Hand öffnen und den Server-Schalter umlegen.
 
 use std::fs;
-use std::process::{Command, Stdio};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::process::Stdio;
 
 use tauri::State;
 
@@ -30,8 +27,6 @@ use crate::state::AppState;
 use super::download::{download_file_blocking, verify_downloaded_installer};
 use super::lmstudio::{lmstudio_gui_exe, lmstudio_lms_path, lmstudio_server_running,
     LMSTUDIO_DEFAULT_PORT};
-#[cfg(target_os = "windows")]
-use super::CREATE_NO_WINDOW;
 
 /// SHA-256 of the LM Studio installer at [`LMSTUDIO_INSTALLER_URL`].
 ///
@@ -271,10 +266,9 @@ pub fn install_lmstudio(state: State<'_, AppState>) -> Result<serde_json::Value,
 
                     // electron-builder NSIS supports /S for silent install. Ignore exit
                     // code: real failures surface via the absence of lms.exe afterwards.
-                    let mut cmd = Command::new(&installer_path);
+                    let mut cmd = crate::process_util::foreign_system_command(&installer_path);
                     cmd.arg("/S");
-                    #[cfg(target_os = "windows")]
-                    cmd.creation_flags(CREATE_NO_WINDOW);
+                    crate::process_util::suppress_window(&mut cmd);
                     match cmd.output() {
                         Ok(_) => println!("[LMStudio] Installer finished"),
                         Err(e) => {
@@ -305,10 +299,9 @@ pub fn install_lmstudio(state: State<'_, AppState>) -> Result<serde_json::Value,
                 let initial_lms = lmstudio_lms_path();
                 match &initial_lms {
                     Some(p) => {
-                        let mut bs = Command::new(p);
+                        let mut bs = crate::process_util::foreign_system_command(p);
                         bs.arg("bootstrap");
-                        #[cfg(target_os = "windows")]
-                        bs.creation_flags(CREATE_NO_WINDOW);
+                        crate::process_util::suppress_window(&mut bs);
                         let _ = bs.output();
                     }
                     None => {
@@ -338,9 +331,8 @@ pub fn install_lmstudio(state: State<'_, AppState>) -> Result<serde_json::Value,
                         "Launching LM Studio briefly to finalise CLI setup (you may see the window flash)...",
                     );
                     if let Some(gui) = lmstudio_gui_exe() {
-                        let mut g = Command::new(&gui);
-                        #[cfg(target_os = "windows")]
-                        g.creation_flags(CREATE_NO_WINDOW);
+                        let mut g = crate::process_util::foreign_system_command(&gui);
+                        crate::process_util::suppress_window(&mut g);
                         let _ = g.spawn();
                     }
 
@@ -361,10 +353,9 @@ pub fn install_lmstudio(state: State<'_, AppState>) -> Result<serde_json::Value,
                     // After GUI launch the .lmstudio dir might already contain a
                     // launcher; if not, the pre-bootstrap path is still valid.
                     if let Some(p) = lmstudio_lms_path() {
-                        let mut bs = Command::new(&p);
+                        let mut bs = crate::process_util::foreign_system_command(&p);
                         bs.arg("bootstrap");
-                        #[cfg(target_os = "windows")]
-                        bs.creation_flags(CREATE_NO_WINDOW);
+                        crate::process_util::suppress_window(&mut bs);
                         let _ = bs.output();
                     }
                 }
@@ -377,13 +368,12 @@ pub fn install_lmstudio(state: State<'_, AppState>) -> Result<serde_json::Value,
                 // promoted us from the pre-bootstrap path to ~/.lmstudio/bin/lms.exe.
                 update("starting", "Starting LM Studio server on port 1234...");
                 if let Some(p) = lmstudio_lms_path() {
-                    let mut srv = Command::new(&p);
+                    let mut srv = crate::process_util::foreign_system_command(&p);
                     srv.args(["server", "start", "--cors", "--port"])
                         .arg(LMSTUDIO_DEFAULT_PORT.to_string())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null());
-                    #[cfg(target_os = "windows")]
-                    srv.creation_flags(CREATE_NO_WINDOW);
+                    crate::process_util::suppress_window(&mut srv);
                     let _ = srv.spawn();
                 }
 
