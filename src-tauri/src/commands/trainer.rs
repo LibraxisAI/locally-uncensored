@@ -64,7 +64,26 @@ const TRAINER_REINSTALL_NEEDS_GIB: u64 = 7;
 /// checkpointing, 8 bit optimizer) was proven on has 12 GB. Below that the run
 /// gets through both cache steps and dies with CUDA out of memory in the first
 /// training step, after ten minutes of work. Asked before the first step.
-const TRAINER_VRAM_FLOOR_MIB: u64 = 11 * 1024;
+const TRAINER_VRAM_FLOOR_MIB_FP8: u64 = 11 * 1024;
+
+/// Nachbesserung Runde 2: `TRAINER_VRAM_FLOOR_MIB_FP8` assumes fp8 weight
+/// storage is on, which `train_precision_for_capability` now guarantees for
+/// every measured card (see its doc comment). This floor is only reached
+/// for the one case where it is off: an unmeasured card (`cap: None`), the
+/// fully conservative fallback. musubi has no zimage-specific number for
+/// running WITHOUT `--fp8_base`; the only concrete figure in its docs is
+/// `docs/hunyuan_video.md:236`, "without --fp8_base, 24 GB VRAM or more is
+/// recommended" -- a different model, not measured for zimage on our own
+/// box. Read honestly as an upper estimate rather than invented precision.
+const TRAINER_VRAM_FLOOR_MIB_NO_FP8: u64 = 24 * 1024;
+
+/// The floor `vram_verdict` checks against, coupled to the precision that
+/// will actually run: a card refused for lacking fp8-recipe memory when fp8
+/// storage is in fact on (or the reverse) was praezisionsblind, exactly the
+/// Runde-2 review's finding.
+fn vram_floor_mib(precision: &TrainPrecision) -> u64 {
+    if precision.fp8 { TRAINER_VRAM_FLOOR_MIB_FP8 } else { TRAINER_VRAM_FLOOR_MIB_NO_FP8 }
+}
 
 /// Known Z-Image training-base files, resolved by exact filename from the
 /// trainer root's models dir or the active ComfyUI models tree.
@@ -1679,15 +1698,24 @@ pub(crate) fn runtime_library_missing(tail: &str) -> bool {
     )
 }
 
-/// The card's memory as the probe reports it, against the recipe's floor.
-pub(crate) fn vram_verdict(vram_mib: Option<u64>) -> Option<String> {
+/// The card's memory as the probe reports it, against the floor the CHOSEN
+/// precision actually needs (Nachbesserung Runde 2: a fixed floor was
+/// precision-blind, see `vram_floor_mib`).
+pub(crate) fn vram_verdict(vram_mib: Option<u64>, precision: &TrainPrecision) -> Option<String> {
     let mib = vram_mib?;
-    if mib >= TRAINER_VRAM_FLOOR_MIB {
+    let floor = vram_floor_mib(precision);
+    if mib >= floor {
         return None;
     }
+    let recipe = if precision.fp8 {
+        "it was proven on a 12 GB card with fp8 weights and block swapping"
+    } else {
+        "without fp8 weight storage this needs noticeably more headroom"
+    };
     Some(format!(
-        "This card has {:.0} GB of memory and the local training recipe needs 12 GB: it was proven on a 12 GB card with fp8 weights and block swapping, and below that the first training step runs out of memory after both cache steps. Character Studio in Cloud mode trains the same character without this limit.",
-        mib as f64 / 1024.0
+        "This card has {:.0} GB of memory and the local training recipe needs {:.0} GB: {recipe}, and below that the first training step runs out of memory after both cache steps. Character Studio in Cloud mode trains the same character without this limit.",
+        mib as f64 / 1024.0,
+        floor as f64 / 1024.0,
     ))
 }
 
@@ -1788,6 +1816,32 @@ fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, device: Option<&TrainerGpuCh
     }
 }
 
+/// bitsandbytes' own minimum for its CUDA build: "SM60+ minimum, SM75+
+/// recommended" (`bitsandbytes-foundation/bitsandbytes` README.md, GPU
+/// requirements table, read on 2026-09-18). musubi's `pyproject.toml` does
+/// not pin a bitsandbytes version, so this is the one floor we can actually
+/// cite rather than guess; a card below it cannot be proven to run
+/// `--optimizer_type adamw8bit` at all. SM60 is compute capability 6.0,
+/// which is Pascal itself (the P100 sdrairsoft reported on): Pascal clears
+/// this floor, it is the generation before it (Maxwell, Kepler) that does not.
+const TRAINER_MIN_PROVEN_COMPUTE_CAP: (u32, u32) = (6, 0);
+
+/// Refuses a card below `TRAINER_MIN_PROVEN_COMPUTE_CAP` in plain English,
+/// before a single byte of torch downloads. Pure so the wording is a unit
+/// test; the caller reads `cap` with `nvidia-smi --query-gpu=compute_cap`
+/// (`detect_nvidia_compute_cap`), which needs no torch on disk, so this runs
+/// even on a machine that has never had the trainer environment set up.
+pub(crate) fn capability_floor_refusal(cap: (u32, u32), card_name: &str) -> Option<String> {
+    let (major, minor) = cap;
+    let (min_major, min_minor) = TRAINER_MIN_PROVEN_COMPUTE_CAP;
+    if major > min_major || (major == min_major && minor >= min_minor) {
+        return None;
+    }
+    Some(format!(
+        "{card_name} has compute capability {major}.{minor}. Local character training needs at least compute capability {min_major}.{min_minor} (bitsandbytes' own minimum GPU requirement for the 8 bit optimizer the trainer uses, and musubi does not pin a version that would lower it). This is a hardware floor, not a broken install; Character Studio in Cloud mode trains the same character without it."
+    ))
+}
+
 /// The four install steps, idempotent by design: an existing checkout and a
 /// WORKING venv are kept, the two pip steps always run. One function because
 /// the training run repairs its own environment with it (A2), and a repair
@@ -1813,6 +1867,18 @@ fn provision_trainer_env(
     device: Option<&TrainerGpuChoice>,
 ) -> Result<(), String> {
     let tag = if repairing { "Repairing the trainer environment" } else { "Setting up the trainer" };
+
+    // Nachbesserung Runde 2, the honest refusal for a card genuinely below
+    // the floor: read BEFORE anything downloads, including the 2.5 GB torch
+    // install, with nvidia-smi alone so it needs no torch on disk yet. See
+    // `capability_floor_refusal` for the floor and its source.
+    if let Some(choice) = device {
+        if let Some(cap) = crate::commands::install::detect_nvidia_compute_cap() {
+            if let Some(msg) = capability_floor_refusal(cap, &choice.name) {
+                return Err(msg);
+            }
+        }
+    }
 
     // Decided first, before a clone, a venv and 2.5 GB of wheels: a machine
     // whose card has no PyTorch build should not have to pay for all of that
@@ -2080,20 +2146,37 @@ pub fn clear_training_set(app: tauri::AppHandle, setId: String) -> Result<(), St
 /// The mixed-precision recipe a card's own compute capability can run.
 /// Nachbesserung after the Opus review of `0e826c22`/`4a3ba7a0`: `--mixed_precision
 /// bf16 --fp8_base --fp8_scaled --optimizer_type adamw8bit` used to be fixed
-/// regardless of the card, and a Tesla P100 (compute capability 6.0, the
-/// concrete melder sdrairsoft's card) has no hardware for any of the three --
-/// it would reach this step, past the K3 fix, and die with a new, silent
-/// error instead of the process-group one.
+/// regardless of the card. `bf16` is a real hardware requirement; `fp8` in
+/// this recipe is NOT, and gating it on compute capability was a Runde-2
+/// correction of the Runde-1 fix, which had it wrong.
 ///
 /// bf16 tensor cores exist from Ampere (compute capability 8.0) up; musubi's
 /// `--mixed_precision` also accepts `fp16` (`parser_common.py`, `choices=
 /// ["no", "fp16", "bf16"]`), which every CUDA-capable card since Kepler runs.
-/// fp8 storage needs Ada Lovelace / Hopper (8.9) -- the same floor
-/// accelerate's own fp8 path enforces (`check_cuda_fp8_capability`,
-/// `accelerate/state.py`: "requires ... compute capability of 8.9 or
-/// higher"). bitsandbytes' 8-bit optimizers need at least Pascal (6.0); below
-/// that `--optimizer_type AdamW` is musubi's own plain fallback
-/// (`training/trainer_base.py`, `optimizer_type == "AdamW".lower()`).
+///
+/// `--fp8_base`/`--fp8_scaled` are weight STORAGE, not a compute path: read
+/// in the trainer's own source, `src/musubi_tuner/modules/fp8_optimization_utils.py:365-433`
+/// (`fp8_linear_forward_patch`). SM 8.9 is required only for `use_scaled_mm`
+/// (`torch._scaled_mm`, lines 409/411), which this recipe never sets; the
+/// default path (lines 418-433) dequantizes the stored fp8 weight back to
+/// bf16/fp16 and calls plain `F.linear`, which runs on any CUDA card. Every
+/// musubi doc treats `--fp8_base` as a memory saver, not a capability gate
+/// (`docs/zimage.md`, `docs/kandinsky5.md:271`; `docs/hunyuan_video.md:236`
+/// says outright that without it, 24 GB or more is recommended). Gating fp8
+/// at 8.9 would drop it for every Ampere card, our own proof box (RTX 3060
+/// 12 GB, CC 8.6) included, and that card has never trained without it. fp8
+/// storage therefore stays on for any measured card; only bf16 depends on
+/// capability.
+///
+/// bitsandbytes' 8-bit optimizers need at least SM 6.0 (Pascal): the
+/// project's own README states "SM60+ minimum" for its CUDA build
+/// (`bitsandbytes-foundation/bitsandbytes/README.md`, GPU requirements
+/// table; musubi's `pyproject.toml` does not pin a bitsandbytes version, so
+/// this is the floor bitsandbytes itself claims, not a guess). Below that,
+/// `--optimizer_type AdamW` is musubi's own plain fallback
+/// (`training/trainer_base.py`, `optimizer_type == "AdamW".lower()`), and a
+/// card that old is refused before any download; see
+/// `capability_floor_refusal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrainPrecision {
     pub(crate) mixed_precision: &'static str,
@@ -2103,21 +2186,22 @@ pub(crate) struct TrainPrecision {
 }
 
 /// `cap` is `None` only when the preflight could not read one at all (a
-/// probe that failed to run), which should never reach step 3 -- kept
+/// probe that failed to run), which should never reach step 3: kept
 /// conservative (fp16, no fp8, plain AdamW) rather than assuming the best
-/// case on an unmeasured card.
+/// case on an unmeasured card. Any MEASURED card keeps fp8 storage, see the
+/// doc comment on `TrainPrecision` for why that is safe.
 pub(crate) fn train_precision_for_capability(cap: Option<(u32, u32)>) -> TrainPrecision {
     let Some((major, minor)) = cap else {
         return TrainPrecision { mixed_precision: "fp16", save_precision: "fp16", fp8: false, optimizer_type: "AdamW" };
     };
     let at_least = |want_major: u32, want_minor: u32| major > want_major || (major == want_major && minor >= want_minor);
     let bf16 = at_least(8, 0);
-    let fp8 = at_least(8, 9);
+    let fp8 = true;
     let optimizer_type = if at_least(6, 0) { "adamw8bit" } else { "AdamW" };
     if bf16 {
         TrainPrecision { mixed_precision: "bf16", save_precision: "bf16", fp8, optimizer_type }
     } else {
-        TrainPrecision { mixed_precision: "fp16", save_precision: "fp16", fp8: false, optimizer_type }
+        TrainPrecision { mixed_precision: "fp16", save_precision: "fp16", fp8, optimizer_type }
     }
 }
 
@@ -2386,15 +2470,9 @@ pub fn start_character_training(
         } else {
             env_broken.store(false, Ordering::SeqCst);
         }
-        // The card's memory, before ten minutes of caching: the recipe is a
-        // 12 GB recipe, and a smaller card dies in the first training step.
-        if let Some(msg) = vram_verdict(vram_mib) {
-            set_status(&run, "error", &msg);
-            return;
-        }
-
-        // The recipe itself, chosen from the same capability the preflight
-        // just read. See `train_precision_for_capability` for the floors.
+        // The recipe first, chosen from the same capability the preflight
+        // just read: the VRAM floor right below depends on it (Runde 2, a
+        // fixed 12 GB floor was precision-blind).
         let precision = train_precision_for_capability(cap);
         push_log(&run, &format!(
             "Training recipe: {} mixed precision, fp8 weights {}, optimizer {}.",
@@ -2402,6 +2480,13 @@ pub fn start_character_training(
             if precision.fp8 { "on" } else { "off" },
             precision.optimizer_type,
         ));
+
+        // The card's memory, before ten minutes of caching: below the
+        // recipe's own floor the run dies in the first training step.
+        if let Some(msg) = vram_verdict(vram_mib, &precision) {
+            set_status(&run, "error", &msg);
+            return;
+        }
 
         // Cancel can arrive while no child is alive: during the environment
         // probe (a plain Command::output, nothing in pid_slot) or between two
@@ -2963,6 +3048,33 @@ mod tests {
         assert!(!v.needs_torch_reinstall());
     }
 
+    /// Nachbesserung Runde 2: the pre-download refusal, entirely separate
+    /// from `CardBelowKernelFloor` above (that one reads torch's OWN kernel
+    /// list, after ~2.5 GB already downloaded; this one reads nvidia-smi
+    /// alone, before any of it).
+    #[test]
+    fn capability_floor_refuses_a_card_below_bitsandbytes_own_minimum() {
+        use super::capability_floor_refusal;
+        // Maxwell, compute capability 5.0: below bitsandbytes' documented
+        // SM60+ minimum.
+        let msg = capability_floor_refusal((5, 0), "Tesla M40").expect("below the floor");
+        assert!(msg.contains("Tesla M40"), "{msg}");
+        assert!(msg.contains("5.0"), "{msg}");
+        assert!(msg.contains("6.0"), "names the floor: {msg}");
+        assert!(msg.contains("bitsandbytes"), "names the source: {msg}");
+    }
+
+    #[test]
+    fn capability_floor_clears_pascal_the_concrete_melder_case() {
+        use super::capability_floor_refusal;
+        // Tesla P100, sdrairsoft's card: compute capability 6.0, exactly the
+        // floor. Must NOT be refused: bitsandbytes' README states SM60+ as
+        // its minimum, not its recommendation, and Pascal clears it.
+        assert!(capability_floor_refusal((6, 0), "Tesla P100").is_none());
+        // Anything above the floor clears it too.
+        assert!(capability_floor_refusal((8, 6), "GeForce RTX 3060").is_none());
+    }
+
     #[test]
     fn preflight_catches_the_trainer_package_a_healthy_torch_hides() {
         use super::{preflight_verdict, Preflight};
@@ -3322,43 +3434,48 @@ mod tests {
         );
     }
 
-    // ── Nachbesserung 1: the recipe was fixed regardless of the card ────────
-    // sdrairsoft's Tesla P100 (compute capability 6.0) is the concrete melder
-    // the review named: even past the K3 fix, this card would have reached
-    // step 3 and died on bf16/fp8, silently and without the process-group
-    // traceback to go by.
+    // ── Nachbesserung 1 (Runde 2 corrected): bf16 is capability-gated, fp8 is
+    // not ─────────────────────────────────────────────────────────────────
+    // Runde 1 gated fp8 storage on compute capability 8.9, which was wrong:
+    // fp8_base/fp8_scaled dequantize on the default path and never call
+    // torch._scaled_mm, so they run on any CUDA card (see the doc comment on
+    // TrainPrecision). Gating it at 8.9 would have dropped fp8 for our own
+    // proof box, an RTX 3060 (CC 8.6). Only bf16 depends on the capability.
 
     #[test]
-    fn train_precision_below_ampere_drops_bf16_and_fp8() {
+    fn train_precision_below_ampere_keeps_fp8_drops_bf16() {
         use super::train_precision_for_capability;
-        // Tesla P100, sdrairsoft's card: compute capability 6.0.
+        // Tesla P100, sdrairsoft's card: compute capability 6.0. fp8 storage
+        // stays on (it is the memory saver Pascal needs most), only bf16
+        // falls back to fp16.
         let p100 = train_precision_for_capability(Some((6, 0)));
         assert_eq!(p100.mixed_precision, "fp16");
         assert_eq!(p100.save_precision, "fp16");
-        assert!(!p100.fp8, "Pascal has no fp8 tensor cores");
-        assert_eq!(p100.optimizer_type, "adamw8bit", "bitsandbytes supports Pascal");
+        assert!(p100.fp8, "fp8 storage dequantizes on the default path, it needs no tensor cores");
+        assert_eq!(p100.optimizer_type, "adamw8bit", "bitsandbytes' own README states SM60+ minimum");
         // RTX 20xx, compute capability 7.5: still below Ampere.
         let turing = train_precision_for_capability(Some((7, 5)));
         assert_eq!(turing.mixed_precision, "fp16");
-        assert!(!turing.fp8);
+        assert!(turing.fp8);
     }
 
     #[test]
-    fn train_precision_ampere_gets_bf16_without_fp8() {
+    fn train_precision_ampere_keeps_fp8_alongside_bf16() {
         use super::train_precision_for_capability;
-        // RTX 3090 Ti, compute capability 8.6: bf16 exists, fp8 tensor cores
-        // do not (those start at 8.9, Ada Lovelace).
+        // RTX 3090 Ti / RTX 3060, compute capability 8.6: bf16 exists AND
+        // fp8 storage stays on. This is the exact case Runde 1 would have
+        // broken (our own proof box is a 3060).
         let ampere = train_precision_for_capability(Some((8, 6)));
         assert_eq!(ampere.mixed_precision, "bf16");
         assert_eq!(ampere.save_precision, "bf16");
-        assert!(!ampere.fp8, "Ampere has no fp8 tensor cores");
+        assert!(ampere.fp8, "fp8 storage must not be gated on 8.9, the 3060 proof box needs it");
         assert_eq!(ampere.optimizer_type, "adamw8bit");
     }
 
     #[test]
     fn train_precision_ada_and_above_keeps_the_original_recipe() {
         use super::train_precision_for_capability;
-        // RTX 4090, compute capability 8.9: the exact floor fp8 needs.
+        // RTX 4090, compute capability 8.9.
         let ada = train_precision_for_capability(Some((8, 9)));
         assert_eq!(ada.mixed_precision, "bf16");
         assert!(ada.fp8);
@@ -3371,10 +3488,12 @@ mod tests {
     #[test]
     fn train_precision_below_pascal_falls_back_to_plain_adamw() {
         use super::train_precision_for_capability;
-        // Maxwell, compute capability 5.0: below bitsandbytes' floor.
+        // Maxwell, compute capability 5.0: below bitsandbytes' own SM60+
+        // floor. In practice this card is refused before any download (see
+        // capability_floor_refusal), but the recipe itself stays honest too.
         let maxwell = train_precision_for_capability(Some((5, 0)));
         assert_eq!(maxwell.optimizer_type, "AdamW", "musubi's own plain fallback, not the 8-bit one");
-        assert!(!maxwell.fp8);
+        assert!(maxwell.fp8, "fp8 storage is still a plain dequantize, unrelated to the optimizer floor");
         assert_eq!(maxwell.mixed_precision, "fp16");
     }
 
@@ -3383,16 +3502,17 @@ mod tests {
         use super::train_precision_for_capability;
         let unknown = train_precision_for_capability(None);
         assert_eq!(unknown.mixed_precision, "fp16");
-        assert!(!unknown.fp8);
+        assert!(!unknown.fp8, "an unmeasured card gets the fully conservative recipe, fp8 included");
         assert_eq!(unknown.optimizer_type, "AdamW");
     }
 
     /// Positive control for the fix itself: the training command built for a
-    /// Pascal card carries fp16, no fp8 flags, and the plain optimizer --
-    /// this is what "kartenabhaengig machen" actually changes on the command
-    /// line, not just the struct the review asked to see.
+    /// Pascal card carries fp16, the fp8 storage flags (Runde 2: these are
+    /// NOT capability-gated), and the plain optimizer -- this is what
+    /// "kartenabhaengig machen" actually changes on the command line, not
+    /// just the struct the review asked to see.
     #[test]
-    fn the_training_command_drops_bf16_and_fp8_on_a_pascal_card() {
+    fn the_training_command_drops_bf16_but_keeps_fp8_on_a_pascal_card() {
         let cmd = super::training_command(
             "/tmp/venv/bin/python",
             std::path::Path::new("/tmp/musubi-tuner"),
@@ -3408,14 +3528,38 @@ mod tests {
             },
         );
         let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert!(!args.iter().any(|a| a == "--fp8_base"), "fp8 must not reach a Pascal card: {args:?}");
-        assert!(!args.iter().any(|a| a == "--fp8_scaled"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--fp8_base"), "fp8 storage must reach a Pascal card too: {args:?}");
+        assert!(args.iter().any(|a| a == "--fp8_scaled"), "{args:?}");
         let mp = args.iter().position(|a| a == "--mixed_precision").expect("--mixed_precision present");
-        assert_eq!(args[mp + 1], "fp16");
+        assert_eq!(args[mp + 1], "fp16", "bf16 needs Ampere, Pascal must not get it");
         let sp = args.iter().position(|a| a == "--save_precision").expect("--save_precision present");
         assert_eq!(args[sp + 1], "fp16");
         let opt = args.iter().position(|a| a == "--optimizer_type").expect("--optimizer_type present");
         assert_eq!(args[opt + 1], "adamw8bit");
+    }
+
+    /// Negative control for the same fix, the other direction: an Ampere
+    /// card (our own proof box, RTX 3060 12 GB) must still get fp8 on the
+    /// command line. Runde 1 would have failed this one.
+    #[test]
+    fn the_training_command_keeps_fp8_on_an_ampere_card() {
+        let cmd = super::training_command(
+            "/tmp/venv/bin/python",
+            std::path::Path::new("/tmp/musubi-tuner"),
+            &super::TrainStep {
+                dit: "/m/dit.safetensors",
+                vae: "/m/ae.safetensors",
+                text_encoder: "/m/qwen.safetensors",
+                dataset: "/t/set.toml",
+                steps: "400",
+                out_dir: "/t/out",
+                out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 6))),
+            },
+        );
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "--fp8_base"), "the 3060 proof box needs fp8 to fit in 12 GB: {args:?}");
+        assert!(args.iter().any(|a| a == "--fp8_scaled"), "{args:?}");
     }
 
     #[test]
@@ -4098,13 +4242,32 @@ mod journey_tests {
         assert!(TORCH_PREFLIGHT_PY.contains("VRAM_MIB"), "the probe script has to print it");
         assert_eq!(parse_vram_mib("TORCH_OK 2.5.1\nCUDA 1\nCAP 8 6\nARCHS sm_86\nVRAM_MIB 12288\n"), Some(12288));
         assert_eq!(parse_vram_mib("TORCH_OK 2.5.1\nCUDA 0\n"), None);
-        assert!(vram_verdict(Some(12288)).is_none(), "the box's 12 GB card trains");
-        assert!(vram_verdict(Some(16 * 1024)).is_none());
-        assert!(vram_verdict(None).is_none(), "no card reported is the processor case, handled elsewhere");
-        let small = vram_verdict(Some(8 * 1024)).expect("8 GB is below the floor");
+        let fp8_on = train_precision_for_capability(Some((8, 6)));
+        assert!(vram_verdict(Some(12288), &fp8_on).is_none(), "the box's 12 GB card trains");
+        assert!(vram_verdict(Some(16 * 1024), &fp8_on).is_none());
+        assert!(vram_verdict(None, &fp8_on).is_none(), "no card reported is the processor case, handled elsewhere");
+        let small = vram_verdict(Some(8 * 1024), &fp8_on).expect("8 GB is below the floor");
         assert!(small.contains("8 GB"), "{small}");
         assert!(small.contains("12 GB"), "{small}");
         assert!(small.contains("Cloud mode"), "names the way that works: {small}");
+    }
+
+    /// Nachbesserung Runde 2: the floor moves with the precision that will
+    /// actually run. An unmeasured card (fp8 off, the fully conservative
+    /// fallback) needs more headroom than the fp8-on floor the 3060 box
+    /// proved -- a card between the two floors must be refused only in the
+    /// no-fp8 case, not the fp8 one.
+    #[test]
+    fn vram_floor_follows_the_chosen_precision_not_a_fixed_number() {
+        let fp8_on = train_precision_for_capability(Some((8, 6)));
+        let fp8_off = train_precision_for_capability(None);
+        assert!(fp8_on.fp8);
+        assert!(!fp8_off.fp8);
+        let between = 16 * 1024; // 16 GB: above the fp8 floor, below the no-fp8 one.
+        assert!(vram_verdict(Some(between), &fp8_on).is_none(), "16 GB trains fine with fp8 on");
+        let msg = vram_verdict(Some(between), &fp8_off).expect("16 GB is below the no-fp8 floor");
+        assert!(msg.contains("16 GB"), "{msg}");
+        assert!(msg.contains("24 GB"), "names the higher floor: {msg}");
     }
 
     #[test]
