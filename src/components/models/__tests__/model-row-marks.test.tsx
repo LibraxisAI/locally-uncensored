@@ -33,6 +33,17 @@ describe('ModelRowMarks', () => {
     expect(screen.getByText('No refusals')).toBeTruthy()
   })
 
+  // K12 (3.0.1): the Discord report was "can't find it", not "it's wrong" —
+  // plain text at the smallest size on a crowded row, no icon at all. An
+  // icon is the cheapest signal that survives a quick scan of the list; the
+  // text itself and the typography ladder step stay unchanged (see the
+  // comment on the mark in ModelRowMarks.tsx).
+  it('carries a findable icon, not just plain text (K12)', () => {
+    render(<ModelRowMarks model={{ unfiltered: 'full' }} />)
+    const mark = screen.getByText('No refusals').closest('[data-mark="unfiltered"]')
+    expect(mark?.querySelector('svg')).toBeTruthy()
+  })
+
   it('stays silent on partial and on a model with nothing measured', () => {
     for (const unfiltered of ['partial', undefined] as const) {
       cleanup()

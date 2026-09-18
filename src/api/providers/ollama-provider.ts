@@ -413,6 +413,18 @@ export class OllamaProvider implements ProviderClient {
       // and not `true` when the field is absent. openai-provider.ts already
       // works exactly this way.
       supportsTools: Array.isArray(m.capabilities) ? m.capabilities.includes('tools') : undefined,
+      // K12 (3.0.1): no `unfiltered` here, on purpose but with a real gap
+      // behind it. The "No refusals" mark (ModelRowMarks.tsx) only fires for
+      // 'full', and only the cloud catalog path (openai-provider.ts
+      // listModels) ever sets that field, because it is the only one backed
+      // by a real measurement. Ollama's own /api/tags carries nothing like
+      // it, so a locally installed abliterated/uncensored GGUF — several of
+      // which this app's own Discover catalog tags 'Unfiltered' — can never
+      // show the mark, even though it deserves it. Rather than guess from
+      // the model name (the house rule this app is built against), the mark
+      // stays measured-only and simply absent here. Closing this needs a
+      // real curated measurement feeding local models too, not a heuristic
+      // bolted onto this method.
     }))
   }
 
