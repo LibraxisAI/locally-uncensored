@@ -16,12 +16,12 @@
 //! `proxy_client`, ...), a cancel can arrive for an id that is not in the map
 //! yet. Before this module existed, that cancel found nothing, did nothing,
 //! and the request that registered moments later ran to completion
-//! regardless — the same class of bug R3 fixed for "Stop while the request is
+//! regardless, the same class of bug R3 fixed for "Stop while the request is
 //! already running", just shifted a few hundred microseconds earlier.
 //!
 //! The fix: a cancel for an unknown id leaves a *tombstone* (the instant it
 //! arrived) instead of a no-op. `register` checks for one and, if found,
-//! hands back an ALREADY-CANCELLED token — never the token from an older,
+//! hands back an ALREADY-CANCELLED token, never the token from an older,
 //! unrelated call, only ever the fresh one this exact `register` call just
 //! created. Tombstones expire on their own (`TOMBSTONE_TTL`) so a cancel for
 //! an id nobody ever registers (a bogus id, or a request that failed before
@@ -71,18 +71,18 @@ impl CancelRegistry {
 
     /// Register a fresh token under `id`. The returned token is:
     ///  - already cancelled, if a `cancel(id)` arrived before this call (the
-    ///    startup-window race this module exists for) — the NEW token is the
+    ///    startup-window race this module exists for), the NEW token is the
     ///    one that gets cancelled, never a leftover from elsewhere;
     ///  - fresh and live otherwise.
     ///
     /// A stale `Active` entry already sitting under `id` (a previous call
-    /// that registered but was never cleaned up — should not happen given
+    /// that registered but was never cleaned up, should not happen given
     /// the guard below, but a defensive case worth keeping, and the
     /// pre-existing behaviour this preserves) has ITS OLD token cancelled,
     /// same as before this module existed.
     ///
     /// Returns the token to race the request against, and a `Guard` whose
-    /// `Drop` removes this registration — hold the guard for exactly the
+    /// `Drop` removes this registration, hold the guard for exactly the
     /// lifetime of the request, same shape as `CallTokenGuard` before this
     /// module, just shared instead of duplicated.
     pub fn register(&self, id: String) -> (CancellationToken, Guard) {
@@ -132,7 +132,7 @@ fn sweep_expired(map: &mut HashMap<String, Entry>) {
     map.retain(|_, v| !matches!(v, Entry::Tombstone(at) if now.duration_since(*at) > TOMBSTONE_TTL));
 }
 
-/// Removes this registration from its registry on drop — the success path,
+/// Removes this registration from its registry on drop, the success path,
 /// an early `?` return, the cancelled branch, and a panic unwinding through
 /// the future all go through here, because `Drop::drop` is synchronous and
 /// unconditional. Twin of the `CallTokenGuard` this replaces, generalised to
@@ -147,7 +147,7 @@ impl Drop for Guard {
         if let Ok(mut map) = self.registry.entries.lock() {
             // Only remove OUR entry. A `cancel(id)` that raced in after this
             // request already finished (the id got reused by a brand new,
-            // unrelated call before this guard dropped — possible if the
+            // unrelated call before this guard dropped, possible if the
             // caller reuses ids, which none of ours do, but nothing here
             // should assume that) may have written a fresh Tombstone or a
             // new Active entry for the SAME id; blindly removing would
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn the_tombstone_cancels_the_new_token_not_some_old_one() {
-        // There never WAS an old token for this id — the only way this test
+        // There never WAS an old token for this id: the only way this test
         // can pass is if `register` cancels the token it just created.
         let registry = CancelRegistry::new();
         registry.cancel("never-registered-before");
@@ -223,7 +223,7 @@ mod tests {
 
     /// Replaces the old `cancelling_one_call_does_not_touch_a_second_
     /// unrelated_call`, which built two Tokens by hand and never went
-    /// through a registry at all — trivially true regardless of whether the
+    /// through a registry at all, trivially true regardless of whether the
     /// lookup logic worked. This drives `register`/`cancel` exactly as the
     /// real commands do: two ids registered against the SAME registry, one
     /// cancelled by id, and the other proven to still be running.
