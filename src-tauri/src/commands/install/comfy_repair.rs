@@ -756,6 +756,32 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
             }
         }
 
+        // Runde 6, F8 (review Runde 5, same objection as Runde 4 raised for
+        // the Install path): this preflight used to sit AFTER `git pull
+        // --ff-only`, so an update on a venv with no compatible interpreter
+        // still mutated the checkout (fast-forwarded to a newer ComfyUI)
+        // before telling the customer their environment cannot be updated
+        // at all. The check itself only needs `python_bin` (already known)
+        // and the live index, neither of which depends on the pull having
+        // happened, so it moves ahead of it: a run that is going to refuse
+        // now refuses before touching the repository, exactly the "nothing
+        // was changed" property Install and Repair already have.
+        let (_torch_args, _gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        // Runde 6, F11: Update never rebuilds the venv, so the light probe
+        // (ssl, pip) applies, not the ensurepip probe a venv build would need.
+        match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Update ComfyUI\" again", false) {
+            super::torch::TorchPythonDecision::Proceed => {}
+            super::torch::TorchPythonDecision::UseInstead { path, current_version, chosen_version } => {
+                update("error", &super::torch::existing_venv_needs_repair_message(current_version, &path, chosen_version));
+                return;
+            }
+            super::torch::TorchPythonDecision::Blocked(msg) => {
+                update("error", &msg);
+                return;
+            }
+        }
+
         update("installing", "Step 1/3: Pulling the latest ComfyUI...");
         let mut pull = crate::process_util::foreign_system_command("git");
         // --ff-only: a user-modified checkout must not silently merge; surface
@@ -808,30 +834,6 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
                 ),
             );
             return;
-        }
-
-        // B6 (review Runde 4, Runde 5 Blocker): ComfyUI's own requirements.txt
-        // pulls torch/torchvision/torchaudio, so this pip call needed exactly
-        // the same preflight the install and repair paths already have, or a
-        // venv on an unsupported interpreter got pip's generic wheel-not-found
-        // error again, at this entry point instead of those two. Update does
-        // not rebuild a venv, so `UseInstead` is handled like the existing-venv
-        // branch of Install/Repair: point at Repair rather than silently
-        // switching interpreters under an environment nothing rebuilt.
-        let (_torch_args, _gpu_info, torch_index, torch_packages) = plan_pytorch_install();
-        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
-        // Runde 6, F11: Update never rebuilds the venv, so the light probe
-        // (ssl, pip) applies, not the ensurepip probe a venv build would need.
-        match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Update ComfyUI\" again", false) {
-            super::torch::TorchPythonDecision::Proceed => {}
-            super::torch::TorchPythonDecision::UseInstead { path, current_version, chosen_version } => {
-                update("error", &super::torch::existing_venv_needs_repair_message(current_version, &path, chosen_version));
-                return;
-            }
-            super::torch::TorchPythonDecision::Blocked(msg) => {
-                update("error", &msg);
-                return;
-            }
         }
 
         {
@@ -1166,5 +1168,26 @@ mod tests {
         let at_state_read = src[update_fn_start..].find(&venv_state_read).map(|i| i + update_fn_start).expect("update_comfyui no longer reads the venv state");
 
         assert!(at_recovery < at_state_read, "orphan recovery must run before update_comfyui reads the venv state");
+    }
+
+    /// Runde 6, F8 (review Runde 5, same objection as Runde 4 raised for
+    /// Install): Update used to run `git pull --ff-only` before the torch
+    /// preflight, so an update on a venv with no compatible interpreter
+    /// still fast-forwarded the checkout before telling the customer
+    /// anything. The preflight (`choose_torch_python`) needs only
+    /// `python_bin`, already known before the pull, so it must run first.
+    #[test]
+    fn update_checks_the_interpreter_before_pulling_the_repository() {
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let preflight_call = needle("choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, \"press \\\"Update", " ComfyUI\\\" again\", false)");
+        let pull_start = needle("Pulling the latest Comfy", "UI...");
+
+        let at_preflight = src[update_fn_start..].find(&preflight_call).map(|i| i + update_fn_start).expect("update_comfyui no longer checks torch/Python compatibility");
+        let at_pull = src[update_fn_start..].find(&pull_start).map(|i| i + update_fn_start).expect("the git pull step marker is gone");
+
+        assert!(at_preflight < at_pull, "the interpreter preflight must run before git pull touches the checkout");
     }
 }
