@@ -84,6 +84,23 @@ export function isDifferentBackend(slot: SlotOccupant, incoming: SlotOccupant): 
 }
 
 /**
+ * F3 (3.0.1, T4 Nebenfund): "a freshly added provider comes with a prefilled
+ * value". `slotTakeoverUpdate`'s patch never mentions `apiKey` — it only
+ * decides `name`/`baseUrl`/`isLocal`/`managed`/`displaced` — so the plain
+ * store merge in `setProviderConfig` left whatever key the DISPLACED backend
+ * had sitting in the shared `openai` slot's `apiKey` field. The new
+ * provider's key box then showed, and would have submitted, a secret that
+ * belongs to a completely different endpoint.
+ *
+ * Same condition `slotTakeoverUpdate` itself uses to decide anything changed
+ * at all: re-selecting the SAME backend that is already in the slot must not
+ * wipe a key the user already entered for it, only a REAL takeover should.
+ */
+export function takeoverClearsApiKey(slot: HandoverSlot, incoming: SlotOccupant): boolean {
+  return slot.enabled && isDifferentBackend(slot, incoming)
+}
+
+/**
  * The patch Add Provider writes into the `openai` slot, including the memory
  * of who was pushed out.
  *

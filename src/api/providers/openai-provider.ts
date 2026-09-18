@@ -90,6 +90,12 @@ export interface OpenAIChatRequest {
   stream: boolean
   temperature?: number
   top_p?: number
+  /** F3 (3.0.1): not part of the official OpenAI spec, but every self-hosted
+   *  OpenAI-compatible server this app talks to (llama.cpp, vLLM, KoboldCpp,
+   *  LM Studio, the built-in engine) accepts it as an extension the same way
+   *  it accepts top_p. Omitted when unset, same as top_p, so a real OpenAI
+   *  endpoint that 400s on unknown fields never sees it. */
+  top_k?: number
   max_tokens?: number
   tools?: ToolDefinition[]
   tool_choice?: 'auto' | 'none' | 'required'
@@ -774,6 +780,9 @@ export class OpenAIProvider implements ProviderClient {
 
     if (options?.temperature !== undefined) body.temperature = options.temperature
     if (options?.topP !== undefined) body.top_p = options.topP
+    // F3: temperature and top_p reached the request, top_k never did —
+    // the sampling popup's slider promised an effect that never happened.
+    if (options?.topK !== undefined) body.top_k = options.topK
     // Streaming tool turn: same wire shape as chatWithTools, but the calls
     // come back as deltas which the accumulator below already merges.
     if (options?.tools?.length) {
@@ -984,6 +993,9 @@ export class OpenAIProvider implements ProviderClient {
 
     if (options?.temperature !== undefined) body.temperature = options.temperature
     if (options?.topP !== undefined) body.top_p = options.topP
+    // F3: temperature and top_p reached the request, top_k never did —
+    // the sampling popup's slider promised an effect that never happened.
+    if (options?.topK !== undefined) body.top_k = options.topK
     await this.applyMaxTokens(model, body, options)
     // Same reasoning_effort gate as chatStream.
     const effort = this.thinkingEffort(model, options?.thinking, options)

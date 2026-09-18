@@ -1097,7 +1097,14 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   const gezeigtesObj = models.find((m) => m.name === gezeigtesModell)
   const activeDisplayName = gezeigtesModell
     ? (gezeigtesObj && 'displayName' in gezeigtesObj && gezeigtesObj.displayName) ||
-      shortModelLabel(displayModelName(gezeigtesModell).split(':')[0])
+      // F3 (3.0.1): `.split(':')[0]` here truncated at the FIRST colon in the
+      // model id, not just the `provider::model` prefix `displayModelName`
+      // already stripped. An Ollama tag ("llama3.1:8b-instruct-q4_K_M") uses
+      // a single colon as its OWN separator, so the header showed only
+      // "llama3.1" while the dropdown row below it — which never split on
+      // ':' — showed the real, full name. Dropped the split entirely so the
+      // header matches the row (both go through shortModelLabel only).
+      shortModelLabel(displayModelName(gezeigtesModell))
     : 'Select Model'
   // Der Punkt folgt demselben Modell wie der Name daneben, sonst haette der
   // Knopf waehrend eines Wechsels zwei Aussagen in sich.

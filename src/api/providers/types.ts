@@ -156,7 +156,11 @@ export interface ToolCall {
 export interface ChatOptions {
   temperature?: number
   topP?: number
-  topK?: number         // Ollama/Anthropic support this, OpenAI doesn't
+  // Ollama/Anthropic support this. The real OpenAI API does not, but F3
+  // (3.0.1): the OpenAI-COMPATIBLE provider (self-hosted endpoints —
+  // llama.cpp, vLLM, KoboldCpp, LM Studio, the built-in engine) sends it as
+  // an extension field, the same way it already sends top_p.
+  topK?: number
   maxTokens?: number
   thinking?: boolean    // Enable model thinking/reasoning mode
   /**
