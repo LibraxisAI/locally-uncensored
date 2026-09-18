@@ -249,6 +249,33 @@ jobs:
             exit 1
           }
 
+      # Runde 6, F15 (review Runde 6, Abschnitt 7): the B9 real-venv proof
+      # (`a_rebuilt_venvs_scripts_point_at_the_final_path_not_a_staging_name`,
+      # install/venv.rs) is `#[ignore]`d for the same INSTALLER_CHILDREN
+      # reason as the self-heal tests above, and it never had a CI gate at
+      # all, only a note in the review that someone ran it by hand once. That
+      # means the actual proof that a rebuilt venv's `bin/pip` names the
+      # final path instead of a vanished staging folder could regress
+      # silently, exactly the shape of the bug it exists to catch. Same
+      # pattern as the self-heal step: named by filter, serial, and the
+      # summary line is grep'd for the exact passed count so a rename or
+      # deletion turns this step red instead of leaving it quietly green on
+      # "0 passed". Linux only: it needs a real `python3` on the runner (the
+      # test itself skips gracefully without one, but that would make the
+      # count check ambiguous between "skipped" and "ran"), and this is the
+      # platform review-engine.md's Beweisliste actually exercises it on.
+      - name: Cargo test (ignored B9 real venv proof, serial)
+        if: runner.os == 'Linux'
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          out="$(cargo test -- --ignored --test-threads=1 a_rebuilt_venvs_scripts_point_at_the_final_path_not_a_staging_name 2>&1)"
+          echo "$out"
+          echo "$out" | grep -Eq '^test result: ok\. 1 passed; 0 failed;' || {
+            echo "::error::expected exactly 1 passed B9 real-venv test, the filter matched a different count (renamed or deleted test?)"
+            exit 1
+          }
+
       # Gating since 01.09.2026 — the debt this comment used to describe is paid.
       # The deny-by-default error sat at src/commands/secret.rs:173, not :108 as
       # the old note said: MAX_UNITS was a `usize` using `usize::MAX` to mean
