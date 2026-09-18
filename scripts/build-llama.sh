@@ -129,7 +129,16 @@ cmake_flags_for() {
     x86_64-pc-windows-msvc)
       echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON" ;;
     x86_64-unknown-linux-gnu)
-      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON" ;;
+      # CMAKE_BUILD_RPATH_USE_ORIGIN=ON (BLOCKER B3): without it,
+      # CMAKE_BUILD_WITH_INSTALL_RPATH's OFF default still makes CMake write
+      # an RPATH into every linked .so/exe, and that RPATH is an ABSOLUTE
+      # path into the CI runner's own build directory (a path that will not
+      # exist once shipped) unless told to compute an $ORIGIN-relative one
+      # instead. This is not visible by grepping CMakeLists.txt for the word
+      # RPATH, since no CMakeLists.txt line requests it either way, it is
+      # CMake's own default: only readelf on the actual output proves what
+      # landed (see check_no_absolute_build_rpath in verify-sidecar-isa.sh).
+      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON" ;;
     *)
       die "unsupported target triple: $triple" ;;
   esac
@@ -328,6 +337,25 @@ stage_dynamic_isa_companions() {
   done < <(find -L "$bin_out_dir" -maxdepth 1 -type f -iname "$lib_glob")
   [ -n "$found_any" ] \
     || die "GGML_BACKEND_DL build for $triple produced no $lib_glob next to $exe_out: the dynamic CPU-variant libraries are missing, the sidecar would only run on the build host's own CPU"
+
+  # Belt and suspenders for BLOCKER B3, Linux only: CMAKE_BUILD_RPATH_USE_ORIGIN
+  # (see cmake_flags_for) should already have made every .so carry an
+  # $ORIGIN-relative RPATH, but that flag depends on the cmake/linker version
+  # on the build host honouring it. Force the point with patchelf when it is
+  # on PATH, so the staged, shippable copy is right even if the build-time
+  # flag was silently ignored upstream. Best-effort: patchelf is not
+  # installed on every dev machine, only on the Linux CI runner (release.yml
+  # already apt-gets it), and this repo does not want a build TOOL to be a
+  # hard requirement for staging files that were already produced.
+  case "$triple" in
+    *-linux-*)
+      if command -v patchelf >/dev/null 2>&1; then
+        while IFS= read -r staged_so; do
+          patchelf --set-rpath '$ORIGIN' "$staged_so" 2>/dev/null || true
+        done < <(find "$companions_dir" -maxdepth 1 -type f -iname '*.so*')
+      fi
+      ;;
+  esac
 }
 
 build_triple() {
@@ -394,7 +422,22 @@ check_binary() {
     run_dir="$(resource_llama_dir_for "$triple")"
     [ -d "$run_dir" ] || die "no companion libraries at $run_dir, build first"
   fi
-  ( cd "$run_dir" && "$bin" --version >/dev/null 2>&1 ) || die "$bin --version failed (run from $run_dir)"
+  # N1: the exe itself (in $BIN_DIR) and its companion libraries (in
+  # $run_dir) live in DIFFERENT directories once bundled (deb/AppImage), the
+  # same split engine.rs's apply_engine_backend_dir sets LD_LIBRARY_PATH for
+  # at the real spawn site. cwd alone (what this check used before) only
+  # covers the dlopen'd ggml-cpu-*/ggml-vulkan companions, which ggml itself
+  # searches for beside the exe and in cwd (ggml-backend-reg.cpp:479-486);
+  # it does not cover the exe's own DT_NEEDED libs (libggml-base.so etc, on
+  # a triple where $ORIGIN does not reach across directories), which the
+  # loader needs before main() ever runs. Mirror the real environment here
+  # too, or this check can pass for a reason the shipped app does not share.
+  if [ "${triple}" = "x86_64-unknown-linux-gnu" ]; then
+    local ld_path="$run_dir"
+    [ -z "${LD_LIBRARY_PATH:-}" ] || ld_path="$run_dir:$LD_LIBRARY_PATH"
+    export LD_LIBRARY_PATH="$ld_path"
+  fi
+  ( cd "$run_dir" && "$bin" --version >/dev/null 2>&1 ) || die "$bin --version failed (run from $run_dir, LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset})"
   local port=8129
   log "boot check: $bin on 127.0.0.1:$port, cwd=$run_dir (no model, router mode, /health only)"
   ( cd "$run_dir" && "$bin" --host 127.0.0.1 --port "$port" >/dev/null 2>&1 ) &

@@ -227,6 +227,30 @@ jobs:
         shell: bash
         run: bash scripts/verify-sidecar-isa.sh ${{ matrix.sidecar_triple }}
 
+      # BLOCKER B3 (review-sidecar.md, Beweisliste Punkt 3): a boot-smoke run
+      # from the ORIGINAL build directory proves nothing about the RPATH fix,
+      # because that directory still exists on this very runner and a
+      # leftover absolute build-tree RPATH would "work" by accident. Copy the
+      # staged companions and the exe into a directory with a DIFFERENT name
+      # (not merely a different path under the same tree) before booting, so
+      # a passing run here is evidence the $ORIGIN-relative RPATH (and, for
+      # the exe, LD_LIBRARY_PATH) actually carries the layout, not that the
+      # build directory happened to still be around.
+      - name: Boot-smoke from a moved directory (K1, BLOCKER B3)
+        if: matrix.sidecar_triple == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          moved="$RUNNER_TEMP/moved-away-from-build-tree"
+          rm -rf "$moved"
+          mkdir -p "$moved"
+          cp "src-tauri/bin/lu-llama-server-${{ matrix.sidecar_triple }}" "$moved/"
+          cp -r "src-tauri/resources/llama/${{ matrix.sidecar_triple }}" "$moved/llama"
+          chmod +x "$moved/lu-llama-server-${{ matrix.sidecar_triple }}"
+          export LD_LIBRARY_PATH="$moved/llama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ( cd "$moved/llama" && "$moved/lu-llama-server-${{ matrix.sidecar_triple }}" --version )
+          echo "OK: sidecar boots from $moved, nowhere near the build directory it was compiled in"
+
       # ── App build ────────────────────────────────────────────────────────
       - name: Install npm dependencies
         run: npm ci
