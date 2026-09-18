@@ -299,14 +299,21 @@ export function ProviderSettings() {
       // for it. `managed` is still set explicitly in both directions, so
       // switching to LM Studio/vLLM clears the built-in flag and re-selecting
       // Built-in restores it.
-      const incoming = { name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed }
       // F3 (3.0.1, T4 Nebenfund): a real takeover must not leave the
       // displaced backend's API key sitting in the shared slot's field —
-      // see takeoverClearsApiKey in lib/openai-slot-handover.ts.
-      if (takeoverClearsApiKey(providers.openai, incoming)) {
+      // see takeoverClearsApiKey in lib/openai-slot-handover.ts. Checked
+      // against the same shape slotTakeoverUpdate itself reads below.
+      if (takeoverClearsApiKey(providers.openai, {
+        name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed,
+      })) {
         setProviderApiKey('openai', '')
       }
-      setProviderConfig('openai', slotTakeoverUpdate(providers.openai, incoming))
+      setProviderConfig('openai', slotTakeoverUpdate(providers.openai, {
+        name: preset.name,
+        baseUrl: preset.baseUrl,
+        isLocal: preset.isLocal,
+        managed: preset.managed,
+      }))
     }
 
     setDropdownOpen(false)

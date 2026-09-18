@@ -4,6 +4,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useAgentTaskStore } from '../../stores/agentTaskStore'
 import { isTerminal, taskElapsedSeconds, type AgentTask } from '../../lib/agent-tasks'
+import { HINWEIS_TEXT } from '../../lib/hinweis'
 
 /**
  * Die rechte Spalte für Hintergrundagenten.
@@ -112,7 +113,10 @@ function ElsewhereBar({ byConv, activeConvId }: {
   return (
     <div
       data-testid="agent-panel-elsewhere-bar"
-      className="flex items-center gap-1.5 px-2 py-1 border-b border-gray-200 dark:border-white/[0.04] bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400"
+      // Kein Gelb (David, 04.09.2026, Hausregel in lib/hinweis.ts): das ist
+      // eine ruhige Auskunft, kein Fehler, also derselbe gedaempfte Ton wie
+      // jede andere Hinweiszeile im Haus, nicht eine dritte Farbe.
+      className={`flex items-center gap-1.5 px-2 py-1 border-b border-gray-200 dark:border-white/[0.04] ${HINWEIS_TEXT.ruhig}`}
     >
       <Loader2 size={10} className="animate-spin shrink-0" />
       <span className="t-micro flex-1">
@@ -122,7 +126,7 @@ function ElsewhereBar({ byConv, activeConvId }: {
         onClick={() => { for (const [id] of elsewhere) cancelAll(id) }}
         title="Stop every running agent in other chats"
         data-testid="agent-panel-elsewhere-stop-all"
-        className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors shrink-0"
+        className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/5 transition-colors shrink-0"
       >
         <Square size={9} />
       </button>
@@ -205,7 +209,7 @@ export function AgentPanel() {
             onClick={() => setCollapsed(false)}
             title={`${anderswoLaufend} running in other chats · costs credits`}
             data-testid="agent-panel-elsewhere-badge"
-            className="mt-1 flex flex-col items-center text-amber-500"
+            className="mt-1 flex flex-col items-center text-gray-400 dark:text-gray-500"
           >
             <Loader2 size={10} className="animate-spin" />
             <span className="t-mono">{anderswoLaufend}</span>

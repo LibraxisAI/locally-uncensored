@@ -2567,9 +2567,7 @@ export function useCodex() {
     // and the module-scoped stop is readable from its loop driver's finally,
     // which lives in that instance's closure and can read no ref of this one.
     stopRun(stoppedConvId)
-    // B1 (3.0.1): siehe useAgentChat.ts stopAgent, derselbe Griff fuer den
-    // Code-Tab. Ein per delegate_task background gestarteter Unteragent
-    // dieser Unterhaltung lief bisher nach Stop unbemerkt weiter.
+    // B1: cancels a delegate_task background agent too, see useAgentChat.ts.
     useAgentTaskStore.getState().cancelAll(stoppedConvId ?? '')
     useGenerationStore.getState().abortConversation(stoppedConvId)
     if (codexLoopTimer) {

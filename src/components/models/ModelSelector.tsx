@@ -1303,7 +1303,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                 to try again — the fallback list below still works, this is
                 just honesty about why it looks flat. */}
             {groupingFailed && (
-              <div className="px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] text-amber-600 dark:text-amber-400 flex items-center justify-between gap-2">
+              <div className={`px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] ${HINWEIS_TEXT.ruhig} flex items-center justify-between gap-2`}>
                 <span>Couldn't group the model list, showing it flat.</span>
                 <button
                   onClick={() => void fetchModels()}

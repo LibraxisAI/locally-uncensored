@@ -782,7 +782,10 @@ export class OpenAIProvider implements ProviderClient {
     if (options?.topP !== undefined) body.top_p = options.topP
     // F3: temperature and top_p reached the request, top_k never did —
     // the sampling popup's slider promised an effect that never happened.
-    if (options?.topK !== undefined) body.top_k = options.topK
+    // LU Cloud is excluded on purpose: its proxy protocol genuinely has no
+    // such field (sampling-reaches-the-cloud-body.test.ts), unlike a real
+    // self-hosted llama.cpp/vLLM/KoboldCpp/LM-Studio/built-in-engine server.
+    if (options?.topK !== undefined && this.config.id !== 'lu-cloud') body.top_k = options.topK
     // Streaming tool turn: same wire shape as chatWithTools, but the calls
     // come back as deltas which the accumulator below already merges.
     if (options?.tools?.length) {
@@ -995,7 +998,10 @@ export class OpenAIProvider implements ProviderClient {
     if (options?.topP !== undefined) body.top_p = options.topP
     // F3: temperature and top_p reached the request, top_k never did —
     // the sampling popup's slider promised an effect that never happened.
-    if (options?.topK !== undefined) body.top_k = options.topK
+    // LU Cloud is excluded on purpose: its proxy protocol genuinely has no
+    // such field (sampling-reaches-the-cloud-body.test.ts), unlike a real
+    // self-hosted llama.cpp/vLLM/KoboldCpp/LM-Studio/built-in-engine server.
+    if (options?.topK !== undefined && this.config.id !== 'lu-cloud') body.top_k = options.topK
     await this.applyMaxTokens(model, body, options)
     // Same reasoning_effort gate as chatStream.
     const effort = this.thinkingEffort(model, options?.thinking, options)

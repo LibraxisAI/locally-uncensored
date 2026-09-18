@@ -88,6 +88,12 @@ describe('F3 — top_k reaches an own OpenAI-compatible endpoint', () => {
     expect(sent[0].body.top_k).toBe(20)
   })
 
+  it('never sends top_k to LU Cloud — that protocol genuinely has no such field', async () => {
+    const p = await makeProvider({ id: 'lu-cloud', name: 'LU Cloud', apiKey: '', enabled: true, baseUrl: 'https://lu-labs.ai/api/inference/v1', isLocal: false })
+    await drain(p.chatStream('m', [{ role: 'user', content: 'hi' }], { topK: 40 }))
+    expect('top_k' in sent[0].body).toBe(false)
+  })
+
   it('omits top_k entirely when the caller did not set it, same as top_p', async () => {
     const p = await makeProvider(OWN_ENDPOINT)
     await drain(p.chatStream('m', [{ role: 'user', content: 'hi' }], {}))
