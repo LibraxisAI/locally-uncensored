@@ -13,7 +13,7 @@
 //! überhaupt eine eigene Funktion ist: die beiden dürfen nie
 //! auseinanderlaufen.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -58,7 +58,8 @@ pub(crate) fn parse_compute_cap_output(s: &str) -> Option<(u32, u32)> {
 }
 
 pub(crate) fn detect_nvidia_compute_cap() -> Option<(u32, u32)> {
-    let mut cmd = Command::new("nvidia-smi");
+    // K14: a foreign vendor CLI, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("nvidia-smi");
     cmd.args(["--query-gpu=compute_cap", "--format=csv,noheader,nounits"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

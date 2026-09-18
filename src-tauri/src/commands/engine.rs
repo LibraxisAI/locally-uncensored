@@ -1571,9 +1571,7 @@ pub(crate) fn start_failure_message(
         // start_after_stop). The cause and the next step both go in this one
         // sentence, since the log line stderr would otherwise add is empty:
         // the child never gets far enough to print anything.
-        format!(
-            "The LU Engine exited immediately with an illegal-instruction fault (Windows STATUS_ILLEGAL_INSTRUCTION, 0xC000001D). This CPU is missing an instruction set the bundled engine's build requires (for example AVX2); the app did not retry, since the same binary would fail the same way again. Open Settings, AI Backends and use a different backend (for example Ollama) on this machine, and check Settings, Troubleshoot for the CPU features line in the log."
-        )
+        "The LU Engine exited immediately with an illegal-instruction fault (Windows STATUS_ILLEGAL_INSTRUCTION, 0xC000001D). This CPU is missing an instruction set the bundled engine's build requires (for example AVX2); the app did not retry, since the same binary would fail the same way again. Open Settings, AI Backends and use a different backend (for example Ollama) on this machine, and check Settings, Troubleshoot for the CPU features line in the log.".to_string()
     } else if failure.port_taken {
         format!(
             "Port {port} answers health checks, but the engine this app just started exited immediately. Another llama-server (likely left over from a previous session or crash) is occupying the port. Quit that process or reboot, then try again."

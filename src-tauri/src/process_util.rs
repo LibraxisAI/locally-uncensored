@@ -29,7 +29,7 @@ pub fn suppress_window(cmd: &mut Command) {
     }
 }
 
-// ── K11: foreign programs vs. our own bundled sidecars on Linux AppImage ────
+// ── K11/K14: foreign programs vs. our own bundled sidecars on Linux AppImage ─
 //
 // K2/K11 (Discord, mallic, 2026-09-16, CachyOS/Arch AppImage): after an
 // in-app update, `git clone` inside the app failed with "no version
@@ -44,30 +44,78 @@ pub fn suppress_window(cmd: &mut Command) {
 // against ITS OWN system libpcre2/libssl by SONAME, the dynamic loader finds
 // LU's older bundled copies FIRST because of the inherited path, and either
 // a symbol-versioning mismatch ("no version information available") or an
-// outright crash follows. `python.rs::sanitize_appimage_python_env` already
-// fixed the equivalent bug for `PYTHONHOME`/`PYTHONPATH`, but deliberately
-// leaves `LD_LIBRARY_PATH` alone GLOBALLY — our own bundled sidecars (the
-// llama.cpp server, `whisper_server.py`'s interpreter, ...) need exactly the
-// libraries that variable points at. So this fix is scoped per spawned
-// command instead of touching the process-wide environment: only the one
-// child actually being started gets the cleaned value.
+// outright crash follows. Our own bundled sidecars (the llama.cpp server,
+// `whisper_server.py`'s interpreter, ...) need exactly the libraries that
+// variable points at, so this fix is scoped per spawned command instead of
+// touching the process-wide environment: only the one child actually being
+// started gets the cleaned value.
+//
+// K14 (Reddit, Linux, 2026-09-17) is the same bug one variable over: a
+// ComfyUI venv's own `_ssl` extension failed to load under the same
+// inherited `LD_LIBRARY_PATH`, and LU's diagnosis misread the resulting
+// ImportError as "this Python was built without ssl". The original fix
+// above covered only `LD_LIBRARY_PATH` because that was the one variable
+// K11's report named; K14 generalises it to the whole table linuxdeploy's
+// AppRun is known to set (below), since nothing about the git bug was
+// specific to that one variable.
 
-/// The `LD_LIBRARY_PATH` a FOREIGN system program should see, given the
-/// value this process inherited and the AppImage's own mount point, or
-/// `None` when nothing needs to change (nothing in `current` lives under
-/// `appdir`, or `current` is empty).
+/// K14 (Reddit, Linux, 2026-09-17): the same poisoning K11 fixed for
+/// `LD_LIBRARY_PATH` also broke a ComfyUI venv's own `_ssl` extension after
+/// an in-app AppImage update — `import ssl` failed inside a bundled
+/// `LD_LIBRARY_PATH`, and LU's own diagnosis then misread that as "this
+/// Python was built without ssl" and sent the customer to reinstall Python,
+/// which fixes nothing. `LD_LIBRARY_PATH` was never the only variable
+/// linuxdeploy's AppRun exports for the bundle: PATH, PYTHONHOME, PYTHONPATH,
+/// the GLib/GTK/GStreamer module-search variables, XDG_DATA_DIRS and the two
+/// SSL_CERT_* variables (the last a common source of a Python that "loses"
+/// its certificate bundle after being pointed at an AppImage-internal one)
+/// are all in the same boat: a foreign program that inherits them looks
+/// inside the AppImage mount for things that live at a different version, or
+/// not at all, there.
 ///
-/// Pure so the AppImage case is testable on every platform this app builds
-/// for, none of which sets `APPDIR` in CI.
+/// Two shapes, because the two kinds of variable break differently:
+///   * `PathList` — colon-separated, like `LD_LIBRARY_PATH`. Only the
+///     AppImage-mount ENTRIES are removed, the rest of the list survives.
+///   * `SingleValue` — one path. If it points inside the AppImage mount at
+///     all, the whole variable is unset: there is no "the rest of it" to
+///     keep, and a foreign program reading it half-stripped would be reading
+///     a path segment, not a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarShape {
+    PathList,
+    SingleValue,
+}
+
+/// Every environment variable a linuxdeploy-built AppRun is known to set or
+/// prepend onto, in the order a foreign spawn should have them cleaned.
+pub const APPIMAGE_ENV_VARS: &[(&str, VarShape)] = &[
+    ("LD_LIBRARY_PATH", VarShape::PathList),
+    ("PATH", VarShape::PathList),
+    ("PYTHONHOME", VarShape::SingleValue),
+    ("PYTHONPATH", VarShape::PathList),
+    ("GIO_MODULE_DIR", VarShape::SingleValue),
+    ("GTK_PATH", VarShape::PathList),
+    ("GTK_EXE_PREFIX", VarShape::SingleValue),
+    ("GDK_PIXBUF_MODULE_FILE", VarShape::SingleValue),
+    ("GST_PLUGIN_SYSTEM_PATH", VarShape::PathList),
+    ("GST_PLUGIN_SYSTEM_PATH_1_0", VarShape::PathList),
+    ("XDG_DATA_DIRS", VarShape::PathList),
+    ("SSL_CERT_FILE", VarShape::SingleValue),
+    ("SSL_CERT_DIR", VarShape::SingleValue),
+];
+
+/// What a single foreign-spawn variable should become, given the value this
+/// process inherited and the AppImage's own mount point.
 ///
-/// There is no separate variable the AppImage runtime saves the ORIGINAL
-/// `LD_LIBRARY_PATH` under (unlike `APPIMAGE`/`APPDIR`/`OWD`/`ARGV0`, which
-/// `self_migrate.rs` already restores/clears around a relaunch) — the
-/// original value is simply whatever came AFTER the prepended AppDir
-/// entries, which for the ordinary case of LU started from a desktop icon
-/// is nothing at all. So "restore the original" and "strip the AppImage
-/// entries" are the same operation here.
-pub fn appimage_ld_library_path_without_appdir(current: &str, appdir: &str) -> Option<String> {
+/// Pure and testable off any platform: no `std::env` read happens here, only
+/// in [`strip_appimage_env`] which calls this once per variable in
+/// [`APPIMAGE_ENV_VARS`]. Returns:
+///   * `None` — leave the variable exactly as inherited.
+///   * `Some(None)` — remove the variable (a `SingleValue` that pointed
+///     inside the AppImage, or a `PathList` whose every entry did).
+///   * `Some(Some(v))` — set the variable to `v` (a `PathList` with only its
+///     AppImage entries removed).
+pub fn sanitized_env_value(shape: VarShape, current: &str, appdir: &str) -> Option<Option<String>> {
     if current.is_empty() {
         return None;
     }
@@ -75,48 +123,68 @@ pub fn appimage_ld_library_path_without_appdir(current: &str, appdir: &str) -> O
     if appdir.is_empty() {
         return None;
     }
-    let entries: Vec<&str> = current.split(':').collect();
-    let kept: Vec<&str> = entries
-        .iter()
-        .copied()
-        .filter(|entry| !(entry.starts_with(appdir) && !entry.is_empty()))
-        .collect();
-    if kept.len() == entries.len() {
-        return None; // nothing pointed inside the AppImage, leave it untouched
+    match shape {
+        VarShape::SingleValue => {
+            if current.starts_with(appdir) {
+                Some(None)
+            } else {
+                None
+            }
+        }
+        VarShape::PathList => {
+            let entries: Vec<&str> = current.split(':').collect();
+            let kept: Vec<&str> = entries
+                .iter()
+                .copied()
+                .filter(|entry| !entry.starts_with(appdir) || entry.is_empty())
+                .collect();
+            if kept.len() == entries.len() {
+                None
+            } else if kept.is_empty() {
+                Some(None)
+            } else {
+                Some(Some(kept.join(":")))
+            }
+        }
     }
-    Some(kept.join(":"))
 }
 
-/// Clean a child `Command`'s inherited `LD_LIBRARY_PATH` in place, for a
-/// FOREIGN system program only. No-op whenever `APPDIR` is unset — every
-/// platform and packaging but a running Linux AppImage — so this is safe to
-/// call unconditionally.
-///
-/// Never call this for our OWN bundled sidecars (the llama.cpp server, a
-/// ComfyUI venv we created, ...): they are built against and need exactly
-/// the libraries this strips out. Use [`foreign_system_command`] instead of
-/// touching this directly wherever a plain `Command::new` would do.
-pub fn strip_appimage_ld_library_path(cmd: &mut Command) {
+/// Clean every variable in [`APPIMAGE_ENV_VARS`] on a child `Command` for a
+/// FOREIGN system program. No-op whenever `APPDIR` is unset — every platform
+/// and packaging but a running Linux AppImage — so this is safe to call
+/// unconditionally. Supersedes [`strip_appimage_ld_library_path`], which
+/// stays only as the narrower helper its own tests pin.
+pub fn strip_appimage_env(cmd: &mut Command) {
     let Ok(appdir) = std::env::var("APPDIR") else { return };
-    let Ok(current) = std::env::var("LD_LIBRARY_PATH") else { return };
-    if let Some(clean) = appimage_ld_library_path_without_appdir(&current, &appdir) {
-        cmd.env("LD_LIBRARY_PATH", clean);
+    for &(var, shape) in APPIMAGE_ENV_VARS {
+        let Ok(current) = std::env::var(var) else { continue };
+        match sanitized_env_value(shape, &current, &appdir) {
+            Some(Some(clean)) => {
+                cmd.env(var, clean);
+            }
+            Some(None) => {
+                cmd.env_remove(var);
+            }
+            None => {}
+        }
     }
 }
 
 /// Build a `Command` for a FOREIGN system program — `git`, a system Python
-/// interpreter, `pip`, a system `ffmpeg` — anything on `$PATH` that LU did
-/// not build and does not bundle. Use this instead of a bare `Command::new`
-/// at every such call site: it clears an AppImage's own library paths out of
-/// the child's environment (K11) so a foreign binary loads the SYSTEM
-/// libraries it actually links against, never our bundled copies. A no-op
-/// everywhere but a running Linux AppImage.
+/// interpreter, `pip`, a system `ffmpeg`, `nvidia-smi`, `rocm-smi`,
+/// `xdg-open`, `uv` — anything on `$PATH` that LU did not build and does not
+/// bundle. Use this instead of a bare `Command::new` at every such call
+/// site: it clears the AppImage's own environment out of the child (K11,
+/// K14) so a foreign binary loads the SYSTEM libraries and modules it
+/// actually links against, never our bundled copies. A no-op everywhere but
+/// a running Linux AppImage.
 ///
 /// Do NOT use this for our own bundled sidecars — call `Command::new`
-/// directly for those, exactly as before.
+/// directly for those, exactly as before: they are built against and need
+/// exactly the AppImage-bundled libraries this strips out.
 pub fn foreign_system_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
     let mut cmd = Command::new(program);
-    strip_appimage_ld_library_path(&mut cmd);
+    strip_appimage_env(&mut cmd);
     cmd
 }
 
@@ -124,12 +192,23 @@ pub fn foreign_system_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command 
 mod appimage_env_tests {
     use super::*;
 
+    /// `APPDIR` and friends are PROCESS-WIDE `std::env` state, and cargo runs
+    /// this file's tests concurrently on one binary. Every test below that
+    /// sets or reads `APPDIR` takes this first, or it can observe another
+    /// thread's `APPDIR` mid-mutation (an intermittent failure that has
+    /// nothing to do with the code under test).
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     #[test]
     fn appimage_entries_are_dropped_and_the_rest_survives() {
         let appdir = "/tmp/.mount_LocallieGkad";
         let current = "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu:/usr/local/lib";
-        let clean = appimage_ld_library_path_without_appdir(current, appdir)
-            .expect("appimage entries were present and should have been stripped");
+        let clean = sanitized_env_value(VarShape::PathList, current, appdir)
+            .expect("appimage entries were present and should have been stripped")
+            .expect("one entry survives, so this is a Some(value), not a removal");
         assert_eq!(clean, "/usr/local/lib");
         assert!(!clean.contains(".mount_LocallieGkad"));
     }
@@ -140,23 +219,11 @@ mod appimage_env_tests {
         // AppImage runtime with nothing prepended, must not be rewritten —
         // rewriting an unrelated value could break the very thing the user set.
         assert_eq!(
-            appimage_ld_library_path_without_appdir("/usr/local/lib:/opt/cuda/lib64", "/tmp/.mount_x"),
+            sanitized_env_value(VarShape::PathList, "/usr/local/lib:/opt/cuda/lib64", "/tmp/.mount_x"),
             None,
         );
-        assert_eq!(appimage_ld_library_path_without_appdir("", "/tmp/.mount_x"), None);
-        assert_eq!(appimage_ld_library_path_without_appdir("/usr/local/lib", ""), None);
-    }
-
-    #[test]
-    fn the_ordinary_desktop_launch_case_strips_down_to_nothing() {
-        // The realistic case: LU started from a desktop icon, nothing set
-        // LD_LIBRARY_PATH beforehand, so the AppImage runtime's own prepend
-        // is the WHOLE value. Stripping it must leave an explicit empty
-        // string, not `None` — `None` here would mean "no AppImage prefix
-        // was found", which is false and would keep the poisoned value.
-        let appdir = "/tmp/.mount_LocallieGkad";
-        let current = "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu";
-        assert_eq!(appimage_ld_library_path_without_appdir(current, appdir), Some(String::new()));
+        assert_eq!(sanitized_env_value(VarShape::PathList, "", "/tmp/.mount_x"), None);
+        assert_eq!(sanitized_env_value(VarShape::PathList, "/usr/local/lib", ""), None);
     }
 
     #[test]
@@ -164,8 +231,8 @@ mod appimage_env_tests {
         let appdir = "/tmp/.mount_LocallieGkad/";
         let current = "/tmp/.mount_LocallieGkad/usr/lib:/usr/local/lib";
         assert_eq!(
-            appimage_ld_library_path_without_appdir(current, appdir),
-            Some("/usr/local/lib".to_string()),
+            sanitized_env_value(VarShape::PathList, current, appdir),
+            Some(Some("/usr/local/lib".to_string())),
         );
     }
 
@@ -173,7 +240,8 @@ mod appimage_env_tests {
     fn foreign_system_command_is_a_noop_without_appdir() {
         // Negative control for the whole path: with no APPDIR (every
         // platform and packaging but a running Linux AppImage), the command
-        // must come back with no LD_LIBRARY_PATH override at all.
+        // must come back with no environment override at all.
+        let _guard = env_guard();
         std::env::remove_var("APPDIR");
         let cmd = foreign_system_command("git");
         assert_eq!(cmd.get_envs().count(), 0, "no APPDIR means nothing should be overridden");
@@ -186,21 +254,141 @@ mod appimage_env_tests {
         // libpcre2/libssl instead of the system's, printing "no version
         // information available". This is the exact call every
         // `Command::new("git")` in the codebase was switched to.
+        let _guard = env_guard();
         std::env::set_var("APPDIR", "/tmp/.mount_LocallieGkad");
         std::env::set_var(
             "LD_LIBRARY_PATH",
             "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu",
         );
         let cmd = foreign_system_command("git");
-        let ld = cmd
-            .get_envs()
-            .find(|(k, _)| *k == std::ffi::OsStr::new("LD_LIBRARY_PATH"))
-            .and_then(|(_, v)| v)
-            .map(|v| v.to_string_lossy().into_owned());
-        assert_eq!(ld.as_deref(), Some(""), "both entries were inside the AppImage and should be gone");
+        // K14: the generalised strip_appimage_env removes a PathList
+        // variable outright once every entry was inside the mount, rather
+        // than setting it to an explicit "" the way the narrower
+        // strip_appimage_ld_library_path used to — see
+        // a_path_list_variable_with_every_entry_inside_the_mount_is_removed_not_emptied
+        // for why that is the better of the two for a reader that treats an
+        // empty search list differently from an unset one.
+        let ld = cmd.get_envs().find(|(k, _)| *k == std::ffi::OsStr::new("LD_LIBRARY_PATH"));
+        assert_eq!(
+            ld,
+            Some((std::ffi::OsStr::new("LD_LIBRARY_PATH"), None)),
+            "both entries were inside the AppImage: the variable should be removed, not merely emptied"
+        );
         assert_eq!(cmd.get_program(), "git");
         std::env::remove_var("APPDIR");
         std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    // ── K14: the generalised sanitizer, as a pure function over a map ──────
+    //
+    // These never touch std::env — sanitized_env_value is given the current
+    // value and the mount point directly, exactly as strip_appimage_env
+    // reads them, so the whole APPIMAGE_ENV_VARS table is testable on every
+    // platform this app builds for, CI included.
+
+    #[test]
+    fn a_single_value_variable_pointing_inside_the_mount_is_removed_entirely() {
+        // PYTHONHOME/SSL_CERT_FILE/etc: there is no "rest of the value" to
+        // keep once the ONE path it names is inside the AppImage. K14's
+        // customer case: a bundled cert bundle or module dir shadows the
+        // system one and a foreign Python reads garbage or nothing.
+        let appdir = "/tmp/.mount_LU";
+        let current = "/tmp/.mount_LU/usr/lib/python3.11";
+        assert_eq!(sanitized_env_value(VarShape::SingleValue, current, appdir), Some(None));
+    }
+
+    #[test]
+    fn a_single_value_variable_outside_the_mount_is_left_alone() {
+        // Negative control: a user's own SSL_CERT_FILE (a corporate proxy's
+        // CA bundle, say) must survive untouched.
+        let appdir = "/tmp/.mount_LU";
+        let current = "/etc/ssl/certs/ca-certificates.crt";
+        assert_eq!(sanitized_env_value(VarShape::SingleValue, current, appdir), None);
+    }
+
+    #[test]
+    fn a_path_list_variable_with_every_entry_inside_the_mount_is_removed_not_emptied() {
+        // XDG_DATA_DIRS etc: emptying a PathList variable to "" is not the
+        // same as removing it for every reader — some tools treat an EMPTY
+        // XDG_DATA_DIRS as "search nothing" rather than "use the default",
+        // which is worse than never having set it. So a PathList that
+        // becomes empty after stripping is removed outright, same as a
+        // SingleValue.
+        let appdir = "/tmp/.mount_LU";
+        let current = "/tmp/.mount_LU/usr/share:/tmp/.mount_LU/usr/share/gio-modules";
+        assert_eq!(sanitized_env_value(VarShape::PathList, current, appdir), Some(None));
+    }
+
+    #[test]
+    fn a_path_list_variable_keeps_its_non_appimage_entries() {
+        let appdir = "/tmp/.mount_LU";
+        let current = "/tmp/.mount_LU/usr/share:/usr/local/share:/usr/share";
+        assert_eq!(
+            sanitized_env_value(VarShape::PathList, current, appdir),
+            Some(Some("/usr/local/share:/usr/share".to_string()))
+        );
+    }
+
+    #[test]
+    fn every_appimage_env_var_is_covered_exactly_once() {
+        // Guards the table itself: no duplicate entries (a second sanitize
+        // pass overwriting the first's cleaned value with the raw one from
+        // std::env would be silent), and every name in it is one linuxdeploy
+        // is actually known to touch.
+        let names: Vec<&str> = APPIMAGE_ENV_VARS.iter().map(|(n, _)| *n).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "a variable appears twice in APPIMAGE_ENV_VARS");
+        assert!(names.contains(&"LD_LIBRARY_PATH"));
+        assert!(names.contains(&"PYTHONHOME"));
+        assert!(names.contains(&"SSL_CERT_FILE"));
+        assert!(names.contains(&"SSL_CERT_DIR"));
+        assert!(names.contains(&"XDG_DATA_DIRS"));
+    }
+
+    #[test]
+    fn strip_appimage_env_cleans_every_poisoned_variable_at_once() {
+        // K14 end to end: several of the table's variables poisoned together
+        // (the realistic AppRun shape), one strip_appimage_env call, every
+        // one of them comes back clean or gone.
+        let _guard = env_guard();
+        let appdir = "/tmp/.mount_LU2";
+        std::env::set_var("APPDIR", appdir);
+        std::env::set_var("LD_LIBRARY_PATH", format!("{appdir}/usr/lib:/usr/local/lib"));
+        std::env::set_var("PYTHONHOME", format!("{appdir}/usr"));
+        std::env::set_var("SSL_CERT_FILE", format!("{appdir}/usr/ssl/cacert.pem"));
+        std::env::set_var("XDG_DATA_DIRS", format!("{appdir}/usr/share"));
+        // A variable this AppImage never touched, present only because the
+        // shell it launched from set it — must survive untouched.
+        std::env::set_var("SSL_CERT_DIR", "/etc/ssl/certs");
+
+        let mut cmd = Command::new("python3");
+        strip_appimage_env(&mut cmd);
+        let envs: std::collections::HashMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect();
+
+        assert_eq!(envs.get("LD_LIBRARY_PATH").and_then(|v| v.clone()), Some("/usr/local/lib".to_string()));
+        // An explicit removal shows up in get_envs() as the key mapped to
+        // `None` (Command::env_remove), which is Some(None) once wrapped in
+        // this test's outer HashMap — distinct from the key being absent,
+        // which would mean "left untouched", the wrong outcome here.
+        assert_eq!(envs.get("PYTHONHOME"), Some(&None), "PYTHONHOME must be explicitly removed");
+        assert_eq!(envs.get("SSL_CERT_FILE"), Some(&None), "SSL_CERT_FILE must be explicitly removed");
+        assert_eq!(envs.get("XDG_DATA_DIRS"), Some(&None), "the whole list was inside the mount, so it is removed");
+        assert!(
+            !envs.contains_key("SSL_CERT_DIR"),
+            "SSL_CERT_DIR pointed outside the mount and must not appear as an override at all"
+        );
+
+        std::env::remove_var("APPDIR");
+        std::env::remove_var("LD_LIBRARY_PATH");
+        std::env::remove_var("PYTHONHOME");
+        std::env::remove_var("SSL_CERT_FILE");
+        std::env::remove_var("XDG_DATA_DIRS");
+        std::env::remove_var("SSL_CERT_DIR");
     }
 }
 

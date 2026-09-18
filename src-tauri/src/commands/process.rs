@@ -1391,7 +1391,8 @@ fn start_ollama_blocking(state: &AppState) -> Result<serde_json::Value, String> 
     }
 
     println!("[Ollama] Starting...");
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2659,7 +2660,8 @@ pub fn auto_start_ollama(state: &AppState) {
     }
 
     println!("[Ollama] Starting...");
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

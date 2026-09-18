@@ -13,7 +13,6 @@
 
 use crate::state::AppState;
 use serde::Serialize;
-use std::process::Command;
 use std::time::Duration;
 use sysinfo::{Disks, System};
 use tauri::State;
@@ -172,7 +171,8 @@ fn parse_nvidia_vram_csv(s: &str) -> Option<(f64, f64)> {
 /// fine since this is one local subprocess, but we still hide the console
 /// window on Windows so it doesn't flash.
 fn query_nvidia_vram() -> Option<(f64, f64)> {
-    let mut cmd = Command::new("nvidia-smi");
+    // K14: a foreign vendor CLI, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("nvidia-smi");
     cmd.args([
         "--query-gpu=memory.total,memory.free",
         "--format=csv,noheader,nounits",

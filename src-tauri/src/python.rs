@@ -27,15 +27,17 @@ pub fn python_command<S: AsRef<std::ffi::OsStr>>(python_bin: S) -> Command {
     cmd.env("PYTHONUTF8", "1");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    // K11: the interpreter this runs is always the SYSTEM Python (or a venv
-    // built from it), never a Python LU bundles itself — so it is a foreign
-    // program in exactly the sense `foreign_system_command` names, and pip
-    // (always invoked as `<python> -m pip`, see install/pip.rs) rides along
-    // for free. `sanitize_appimage_python_env` above cleans PYTHONHOME/
-    // PYTHONPATH globally at startup; LD_LIBRARY_PATH cannot be cleaned that
-    // way because our OWN sidecars need it, so it is stripped here, per
-    // child, instead.
-    crate::process_util::strip_appimage_ld_library_path(&mut cmd);
+    // K11/K14: the interpreter this runs is always the SYSTEM Python (or a
+    // venv built from it), never a Python LU bundles itself — so it is a
+    // foreign program in exactly the sense `foreign_system_command` names,
+    // and pip (always invoked as `<python> -m pip`, see install/pip.rs)
+    // rides along for free. `sanitize_appimage_python_env` above cleans
+    // PYTHONHOME/PYTHONPATH globally at startup as a belt-and-braces measure
+    // for anything spawned outside python_command; the full table
+    // (LD_LIBRARY_PATH, SSL_CERT_FILE/DIR, the GLib/GTK/GStreamer module
+    // paths, ...) cannot be cleaned globally because our OWN sidecars need
+    // some of it, so every one of them is stripped here, per child, instead.
+    crate::process_util::strip_appimage_env(&mut cmd);
     cmd
 }
 
@@ -73,9 +75,19 @@ pub fn is_appimage_python_env(value: &str) -> bool {
 /// Drop AppImage-injected Python variables from our own environment, so every
 /// child process we spawn sees the system Python the way a shell would.
 ///
-/// Called once at startup, before any command runs. `LD_LIBRARY_PATH` is left
-/// alone on purpose: the AppImage needs it for our own bundled libraries, and
-/// it was never what broke Python here.
+/// Called once at startup, before any command runs. `LD_LIBRARY_PATH` is NOT
+/// touched globally here on purpose — the AppImage needs it for our own
+/// bundled libraries. That used to read "and it was never what broke Python
+/// here"; K14 (Reddit, 2026-09-17) is the counterexample: a ComfyUI venv's
+/// own `_ssl` extension failed to load under the inherited
+/// `LD_LIBRARY_PATH` after an in-app AppImage update, `import ssl` raised,
+/// and LU's own diagnosis misread that ImportError as "this Python was
+/// built without ssl" instead of an environment collision. The venv's
+/// interpreter is a foreign program in exactly `foreign_system_command`'s
+/// sense, so it does not go through a global unset — `python_command` (this
+/// file) clears it per child instead, alongside every other variable
+/// `strip_appimage_env` knows about (see process_util.rs for the reasoning
+/// this function's old comment used to carry alone).
 pub fn sanitize_appimage_python_env() {
     for key in ["PYTHONHOME", "PYTHONPATH"] {
         if std::env::var(key).is_ok_and(|v| is_appimage_python_env(&v)) {

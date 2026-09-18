@@ -174,7 +174,10 @@ pub fn log_reveal() -> Result<(), String> {
     };
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = {
-        let mut c = std::process::Command::new("xdg-open");
+        // K14: a foreign desktop-integration program, never something LU
+        // bundles, and exactly the kind of Linux foreign spawn this posten
+        // is about.
+        let mut c = crate::process_util::foreign_system_command("xdg-open");
         c.arg(&dir);
         c
     };
