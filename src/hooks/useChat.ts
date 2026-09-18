@@ -274,6 +274,32 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
   }
 }
 
+/**
+ * One `sendMessage()` call's own mutable streaming state, created fresh
+ * inside the call and threaded through the whole turn by closure (the
+ * `for await` loop, the `requestAnimationFrame` flush, the error and
+ * `finally` handlers) instead of through hook-instance refs.
+ *
+ * B2: `contentRef` / `thinkingRef` / `isThinkingRef` / `discardedThinkBufRef`
+ * used to be ONE set of `useRef`s per `useChat()` instance, and the app
+ * mounts exactly one instance. Two overlapping `sendMessage()` calls — send
+ * in conversation A, switch tabs, send in conversation B before A's stream
+ * ends — wrote into the SAME refs, and a chunk from either run could land in
+ * either bubble depending on which call's flush ran last (see
+ * useChat-zwei-laeufe-vermischen-nicht.test.ts). A plain local variable
+ * captured by closure is exactly as fast and cannot be shared between two
+ * calls, because there is no second call it could belong to.
+ */
+interface ChatRun {
+  readonly convId: string
+  content: string
+  thinking: string
+  isThinking: boolean
+  /** Chars of a `<think>…</think>` block we're discarding (Thinking toggled
+   *  off) but still have to scan, to detect the closing tag. */
+  discardedThinkBuf: string
+}
+
 export function useChat() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [isLoadingModel, setIsLoadingModel] = useState(false)
@@ -288,12 +314,6 @@ export function useChat() {
    * Griff dieser Instanz ueberhaupt zur genannten Unterhaltung gehoert.
    */
   const abortConvRef = useRef<string | null>(null)
-  const contentRef = useRef("")
-  const thinkingRef = useRef("")
-  const isThinkingRef = useRef(false)
-  // Buffer for <think>…</think> chars we're throwing away because the
-  // user toggled Thinking OFF — we still need to detect the closing tag.
-  const discardedThinkBufRef = useRef("")
 
   // Agent mode composition
   const agentChat = useAgentChat()
@@ -793,10 +813,10 @@ export function useChat() {
     useGenerationStore.getState().setGenerating(convId, true)
     setIsLoadingModel(true)
     useModelStore.getState().setIsModelLoading(true)
-    contentRef.current = ""
-    thinkingRef.current = ""
-    isThinkingRef.current = false
-    discardedThinkBufRef.current = ""
+    // Owns this turn's streamed text end to end — see the ChatRun doc comment
+    // above. `convId` is fixed at this point: the `if (!convId)` branch above
+    // already resolved it to a real string.
+    const run: ChatRun = { convId, content: "", thinking: "", isThinking: false, discardedThinkBuf: "" }
 
     try {
       // ── Multi-Provider: resolve provider for active model ──
@@ -951,7 +971,7 @@ export function useChat() {
         // Ollama native thinking field (Gemma 4, Qwen 3.5, etc.) or the
         // cloud reasoning channel (delta.reasoning_content via the provider).
         if (chunk.thinking && keepThinking) {
-          thinkingRef.current += chunk.thinking
+          run.thinking += chunk.thinking
         } else if (chunk.thinking) {
           hiddenThinking += chunk.thinking
         }
@@ -960,27 +980,27 @@ export function useChat() {
           const text = chunk.content
 
           for (const char of text) {
-            if (!isThinkingRef.current) {
-              contentRef.current += char
-              if (contentRef.current.endsWith("<think>")) {
-                contentRef.current = contentRef.current.slice(0, -7)
-                isThinkingRef.current = true
+            if (!run.isThinking) {
+              run.content += char
+              if (run.content.endsWith("<think>")) {
+                run.content = run.content.slice(0, -7)
+                run.isThinking = true
               }
             } else {
               if (keepThinking) {
-                thinkingRef.current += char
-                if (thinkingRef.current.endsWith("</think>")) {
-                  thinkingRef.current = thinkingRef.current.slice(0, -8)
-                  isThinkingRef.current = false
+                run.thinking += char
+                if (run.thinking.endsWith("</think>")) {
+                  run.thinking = run.thinking.slice(0, -8)
+                  run.isThinking = false
                 }
               } else {
                 // Discard char-by-char but still detect tag close so the
                 // state machine resumes sending to content afterwards.
                 hiddenThinking += char
-                discardedThinkBufRef.current += char
-                if (discardedThinkBufRef.current.endsWith("</think>")) {
-                  discardedThinkBufRef.current = ""
-                  isThinkingRef.current = false
+                run.discardedThinkBuf += char
+                if (run.discardedThinkBuf.endsWith("</think>")) {
+                  run.discardedThinkBuf = ""
+                  run.isThinking = false
                 }
               }
             }
@@ -996,17 +1016,17 @@ export function useChat() {
         if ((chunk.content || (chunk.thinking && keepThinking)) && !frameScheduled) {
           frameScheduled = true
           requestAnimationFrame(() => {
-            const cId = convId!
+            const cId = run.convId
             const mId = assistantMessage.id
             // Always strip non-canonical thinking markers (Gemma channel
             // tags, `<thought>`, `<reasoning>`, `<reflect>`, `<deepthink>`)
             // from the streaming bubble. The canonical `<think>…</think>`
             // is already handled by the char-by-char state-machine above,
             // so we leave those alone here.
-            const displayContent = stripNonCanonicalTags(contentRef.current)
+            const displayContent = stripNonCanonicalTags(run.content)
             useChatStore.getState().updateMessageContent(cId, mId, displayContent)
-            if (keepThinking && thinkingRef.current) {
-              useChatStore.getState().updateMessageThinking(cId, mId, thinkingRef.current)
+            if (keepThinking && run.thinking) {
+              useChatStore.getState().updateMessageThinking(cId, mId, run.thinking)
             }
             frameScheduled = false
           })
@@ -1015,7 +1035,7 @@ export function useChat() {
         if (chunk.done) {
           if (chunk.finishReason) {
             finishReason = chunk.finishReason
-            useChatStore.getState().updateMessageFinishReason(convId!, assistantMessage.id, chunk.finishReason)
+            useChatStore.getState().updateMessageFinishReason(run.convId, assistantMessage.id, chunk.finishReason)
           }
           // Final settlement, the shared one, so plain chat catches the same
           // orphan shapes the agent loops do. Before this the char-by-char
@@ -1024,17 +1044,17 @@ export function useChat() {
           // in the prompt left the whole reasoning plus a raw closer standing
           // in the answer with the Think button ON and the block empty.
           {
-            const settled = settleThinking(contentRef.current, thinkingRef.current, keepThinking)
-            contentRef.current = settled.content
-            thinkingRef.current = settled.thinking
+            const settled = settleThinking(run.content, run.thinking, keepThinking)
+            run.content = settled.content
+            run.thinking = settled.thinking
           }
           useChatStore
             .getState()
-            .updateMessageContent(convId!, assistantMessage.id, contentRef.current)
-          if (thinkingRef.current) {
+            .updateMessageContent(run.convId, assistantMessage.id, run.content)
+          if (run.thinking) {
             useChatStore
               .getState()
-              .updateMessageThinking(convId!, assistantMessage.id, thinkingRef.current)
+              .updateMessageThinking(run.convId, assistantMessage.id, run.thinking)
           }
           // Real token usage from the model's final chunk — promptEvalCount is
           // the FULL consumed context (system+tools+RAG+history+input), so the
@@ -1044,7 +1064,7 @@ export function useChat() {
             const completionTokens = chunk.evalCount || 0
             useChatStore
               .getState()
-              .updateMessageUsage(convId!, assistantMessage.id, {
+              .updateMessageUsage(run.convId, assistantMessage.id, {
                 promptTokens,
                 completionTokens,
                 totalTokens: promptTokens + completionTokens,
@@ -1060,8 +1080,8 @@ export function useChat() {
       // an honest explanation (MessageBubble renders the thinking block + an
       // Enable-Agent nudge when the reasoning is tool intent) instead of
       // leaving the user staring at silent dead air forever.
-      if (!abort.signal.aborted && contentRef.current.trim() === "") {
-        const captured = (thinkingRef.current || finalStripThinkingTags(hiddenThinking, false)).trim()
+      if (!abort.signal.aborted && run.content.trim() === "") {
+        const captured = (run.thinking || finalStripThinkingTags(hiddenThinking, false)).trim()
         // Honest, reason-specific note for the empty bubble. Before this, a
         // thought-only turn with Thinking ON stored the reasoning but left
         // content EMPTY — the user saw a collapsed Thinking pill and nothing
@@ -1073,10 +1093,10 @@ export function useChat() {
           // (the collapsed thinking pill alone reads as dead air).
           useChatStore
             .getState()
-            .updateMessageThinking(convId!, assistantMessage.id, captured)
+            .updateMessageThinking(run.convId, assistantMessage.id, captured)
           useChatStore
             .getState()
-            .updateMessageContent(convId!, assistantMessage.id, explanation)
+            .updateMessageContent(run.convId, assistantMessage.id, explanation)
         } else if (captured) {
           // Thinking OFF but the model still reasoned (Gemma keeps reasoning when
           // we pass `think:undefined`) and produced no visible answer. David
@@ -1086,14 +1106,14 @@ export function useChat() {
           // won't reach here; this covers a plain Q&A that thought itself out.)
           useChatStore
             .getState()
-            .updateMessageContent(convId!, assistantMessage.id, explanation)
+            .updateMessageContent(run.convId, assistantMessage.id, explanation)
         } else if (finishReason === 'length' || finishReason === 'disconnect') {
           // No reasoning captured either — the turn produced literally
           // nothing because the budget ran out / the stream was cut. Still
           // explain instead of leaving dead air.
           useChatStore
             .getState()
-            .updateMessageContent(convId!, assistantMessage.id, explanation)
+            .updateMessageContent(run.convId, assistantMessage.id, explanation)
         }
       }
     } catch (err) {
@@ -1127,7 +1147,7 @@ export function useChat() {
         // the raw 400 JSON (gthvidsten, GH Discussion #67).
         if (isMultimodalUnsupportedError(errorMsg)) {
           useChatStore.getState().updateMessageContent(
-            convId!,
+            run.convId,
             assistantMessage.id,
             MULTIMODAL_UNSUPPORTED_MESSAGE
           )
@@ -1135,9 +1155,9 @@ export function useChat() {
         // the dialog that offers the top-up (lib/credits-exhausted.ts).
         } else if ((err as { code?: string })?.code === 'credits_exhausted') {
           useChatStore.getState().updateMessageContent(
-            convId!,
+            run.convId,
             assistantMessage.id,
-            (contentRef.current ? contentRef.current + '\n\n' : '') + CREDITS_EXHAUSTED_MESSAGE
+            (run.content ? run.content + '\n\n' : '') + CREDITS_EXHAUSTED_MESSAGE
           )
         // Show user-friendly message for thinking errors
         // Bug B3 round 2: same treatment as the agent path. A template that
@@ -1145,26 +1165,26 @@ export function useChat() {
         // answer to anything the user asked.
         } else if (sendRefusal) {
           useChatStore.getState().updateMessageContent(
-            convId!,
+            run.convId,
             assistantMessage.id,
-            (contentRef.current ? contentRef.current + "\n\n" : "") + sendRefusal,
+            (run.content ? run.content + "\n\n" : "") + sendRefusal,
           )
         } else if (errorMsg.includes('does not support thinking')) {
           useChatStore.getState().updateMessageContent(
-            convId!,
+            run.convId,
             assistantMessage.id,
             'This model does not support thinking mode. Disable the Think button or switch to a compatible model (Qwen 3, DeepSeek-R1, Gemma 4).'
           )
         } else {
           useChatStore.getState().updateMessageContent(
-            convId!,
+            run.convId,
             assistantMessage.id,
-            contentRef.current + "\n\n" + errorMsg
+            run.content + "\n\n" + errorMsg
           )
         }
       }
     } finally {
-      useGenerationStore.getState().clearAborter(convId)
+      useGenerationStore.getState().clearAborter(run.convId)
       setIsLoadingModel(false)
       useModelStore.getState().setIsModelLoading(false)
       abortRef.current = null
@@ -1189,7 +1209,7 @@ export function useChat() {
       // button turning back into Send, not the text.
       await endTurnDurably(() => {
         setIsGenerating(false)
-        useGenerationStore.getState().setGenerating(convId, false)
+        useGenerationStore.getState().setGenerating(run.convId, false)
       })
 
       // Auto-read the finished response when the user opted in (#77, ElBiggus).
@@ -1198,15 +1218,15 @@ export function useChat() {
       // churn during playback.
       {
         const voice = useVoiceStore.getState()
-        if (voice.ttsEnabled && voice.autoReadAloud && contentRef.current.trim()) {
-          autoSpeak(contentRef.current)
+        if (voice.ttsEnabled && voice.autoReadAloud && run.content.trim()) {
+          autoSpeak(run.content)
         }
       }
 
       // Auto-extract memories (fire-and-forget)
       const memSettings = useMemoryStore.getState().settings
-      if (memSettings.autoExtractEnabled && memSettings.autoExtractInAllModes && contentRef.current.trim() && convId) {
-        extractAndSave(content, contentRef.current, convId, { scope: memoryScope }).catch(() => {})
+      if (memSettings.autoExtractEnabled && memSettings.autoExtractInAllModes && run.content.trim() && run.convId) {
+        extractAndSave(content, run.content, run.convId, { scope: memoryScope }).catch(() => {})
       }
     }
     // Alle drei Referenzen sind konstant: `extractAndSave` kommt aus dem
