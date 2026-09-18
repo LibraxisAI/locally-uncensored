@@ -42,7 +42,7 @@ import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { composerBusy } from '../../lib/composer-busy'
-import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../lib/run-idle'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition, useLocalLaneHolderWaitsForApproval, useLocalLaneHolderId } from '../../lib/run-idle'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { displayModelName } from '../../api/providers'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -136,6 +136,14 @@ export function ChatView() {
   // of Send while it waits.
   const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
   const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
+  // Runde 5 (review-lanes.md, Runde 2 Antwort zu Punkt 1): the waiting line
+  // must not claim a model is thinking when the holder is really stuck on a
+  // person's tool approval.
+  const waitingOnApproval = useLocalLaneHolderWaitsForApproval(activeConversationId)
+  const localLaneHolderId = useLocalLaneHolderId(activeConversationId)
+  const localLaneHolderTitle = useChatStore((s) =>
+    localLaneHolderId ? s.conversations.find((c) => c.id === localLaneHolderId)?.title : undefined
+  )
 
   const docCount = useRAGStore((s) =>
     activeConversationId ? (s.documents[activeConversationId] || []).length : 0
@@ -646,6 +654,8 @@ export function ChatView() {
               isGenerating={busy.thisChat || queuedForLocalLane}
               waitingForLocalLane={queuedForLocalLane}
               localLaneQueuePosition={localLaneQueuePosition}
+              waitingOnApproval={waitingOnApproval}
+              waitingOnApprovalIn={localLaneHolderTitle}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}

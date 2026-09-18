@@ -44,6 +44,17 @@ interface Props {
    * to the plain sentence.
    */
   localLaneQueuePosition?: number | null
+  /**
+   * The conversation holding the local lane ahead of THIS one is not
+   * generating, it is stuck on a tool approval from a person (Runde 5,
+   * review-lanes.md Runde 2 Antwort zu Punkt 1). "Waiting for the local
+   * model to finish another answer" is false in that window: no model is
+   * thinking, and there is no bound on how long a person takes to click.
+   */
+  waitingOnApproval?: boolean
+  /** The holder's own title, for "waiting on <title>'s approval", falling
+   *  back to the generic wording when unavailable. */
+  waitingOnApprovalIn?: string
   pendingApproval?: AgentToolCall | null
   onApprove?: () => void
   onReject?: () => void
@@ -111,7 +122,7 @@ function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   })
 }
 
-export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, localLaneQueuePosition, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
+export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, localLaneQueuePosition, waitingOnApproval, waitingOnApprovalIn, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -470,7 +481,13 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, l
           {waitingForLocalLane && (
             <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-waiting-local-lane">
               <span className="flex-1 min-w-0">
-                Waiting for the local model to finish another answer.
+                {waitingOnApproval ? (
+                  waitingOnApprovalIn
+                    ? `Waiting: "${waitingOnApprovalIn}" is holding the local model while it waits for your approval.`
+                    : 'Waiting: another conversation is holding the local model while it waits for your approval.'
+                ) : (
+                  'Waiting for the local model to finish another answer.'
+                )}
                 {!!localLaneQueuePosition && localLaneQueuePosition > 1 && (
                   ` ${localLaneQueuePosition - 1} more chat${localLaneQueuePosition - 1 === 1 ? '' : 's'} ahead of this one.`
                 )}

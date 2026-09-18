@@ -30,10 +30,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { cleanup, fireEvent, render, screen, renderHook, act } from '@testing-library/react'
 import { ChatInput } from '../ChatInput'
-import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../../lib/run-idle'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition, useLocalLaneHolderWaitsForApproval, useLocalLaneHolderId } from '../../../lib/run-idle'
 import { admit, release, __resetRunLanesForTests } from '../../../lib/run-lanes'
+import { enqueueApproval, dequeueApproval, resetApprovals } from '../../../lib/approval-queue'
 
-beforeEach(() => __resetRunLanesForTests())
+beforeEach(() => { __resetRunLanesForTests(); resetApprovals() })
 afterEach(() => cleanup())
 
 describe('ChatInput waehrend des Wartens auf die lokale Spur', () => {
@@ -79,6 +80,105 @@ describe('ChatInput waehrend des Wartens auf die lokale Spur', () => {
     )
     const line = screen.getByTestId('composer-waiting-local-lane')
     expect(line.textContent).not.toMatch(/ahead of/)
+  })
+
+  // Runde 5 (review-lanes.md, Runde 2 Antwort zu Punkt 1): the line must not
+  // say "the model is thinking" when the holder is really stuck on a human.
+  it('sagt statt der Modell-Zeile, dass der Halter auf eine Freigabe wartet', () => {
+    render(
+      <ChatInput
+        onSend={() => {}}
+        onStop={() => {}}
+        isGenerating={true}
+        waitingForLocalLane={true}
+        waitingOnApproval={true}
+      />,
+    )
+    const line = screen.getByTestId('composer-waiting-local-lane')
+    expect(line.textContent).toContain('waits for your approval')
+    expect(line.textContent).not.toContain('finish another answer')
+  })
+
+  it('nennt die Unterhaltung des Halters, wenn sie bekannt ist', () => {
+    render(
+      <ChatInput
+        onSend={() => {}}
+        onStop={() => {}}
+        isGenerating={true}
+        waitingForLocalLane={true}
+        waitingOnApproval={true}
+        waitingOnApprovalIn="Refactor the billing module"
+      />,
+    )
+    const line = screen.getByTestId('composer-waiting-local-lane')
+    expect(line.textContent).toContain('"Refactor the billing module" is holding the local model')
+  })
+
+  // GEGENPROBE: ohne `waitingOnApproval` bleibt die alte, richtige Zeile fuer
+  // den Normalfall stehen (der Halter generiert wirklich).
+  it('GEGENPROBE: ohne waitingOnApproval bleibt es bei der Modell-Zeile', () => {
+    render(
+      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={true} waitingForLocalLane={true} />,
+    )
+    const line = screen.getByTestId('composer-waiting-local-lane')
+    expect(line.textContent).toContain('finish another answer')
+    expect(line.textContent).not.toContain('approval')
+  })
+})
+
+describe('useLocalLaneHolderWaitsForApproval reagiert auf Spur UND Freigabe-Warteschlange', () => {
+  it('wird erst wahr, wenn die eigene Unterhaltung wartet UND der Halter auf eine Freigabe haengt', () => {
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useLocalLaneHolderWaitsForApproval(id), {
+      initialProps: { id: 'conv-b' },
+    })
+    expect(result.current).toBe(false)
+
+    act(() => {
+      admit('local', 'conv-a', () => {})
+      admit('local', 'conv-b', () => {})
+    })
+    rerender({ id: 'conv-b' })
+    // conv-b wartet jetzt, aber conv-a (der Halter) generiert noch, wartet auf
+    // keine Freigabe: die alte, richtige Zeile gilt weiter.
+    expect(result.current).toBe(false)
+
+    const entry = { toolCall: { id: 't1', toolName: 'shell', args: {} } as never, resolve: () => {} }
+    act(() => { enqueueApproval('conv-a', entry) })
+    rerender({ id: 'conv-b' })
+    expect(result.current).toBe(true)
+
+    // Die Freigabe wird beantwortet: der Halter generiert wieder, die Zeile
+    // faellt zurueck auf die Modell-Wortlaut.
+    act(() => { dequeueApproval('conv-a') })
+    rerender({ id: 'conv-b' })
+    expect(result.current).toBe(false)
+
+    // GEGENPROBE: eine Freigabe in einer DRITTEN, unbeteiligten Unterhaltung
+    // darf conv-b's Zeile nicht umschreiben.
+    act(() => { enqueueApproval('conv-z', entry) })
+    rerender({ id: 'conv-b' })
+    expect(result.current).toBe(false)
+  })
+})
+
+describe('useLocalLaneHolderId reagiert auf die echte Warteschlange', () => {
+  it('nennt den Halter nur, waehrend die eigene Unterhaltung wartet', () => {
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useLocalLaneHolderId(id), {
+      initialProps: { id: 'conv-b' },
+    })
+    expect(result.current).toBeNull()
+
+    act(() => {
+      admit('local', 'conv-a', () => {})
+      admit('local', 'conv-b', () => {})
+    })
+    rerender({ id: 'conv-b' })
+    expect(result.current).toBe('conv-a')
+
+    act(() => { release('conv-a') })
+    rerender({ id: 'conv-b' })
+    // conv-b haelt die Spur jetzt selbst: kein Halter mehr ueber ihm.
+    expect(result.current).toBeNull()
   })
 })
 
