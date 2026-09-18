@@ -58,38 +58,75 @@ case "$TRIPLE" in
   *-windows-*)
     EXPECTED_VARIANTS=(x64 sse42 sandybridge haswell skylakex cannonlake cascadelake icelake alderlake)
     LIB_EXT="dll"
+    LIB_PREFIX=""
     ;;
   *)
     EXPECTED_VARIANTS=(x64 sse42 sandybridge ivybridge piledriver haswell skylakex cannonlake cascadelake icelake cooperlake zen4 alderlake sapphirerapids)
     LIB_EXT="so"
+    LIB_PREFIX="lib"
     ;;
 esac
 
 COMPANIONS_DIR="$(resource_llama_dir_for "$TRIPLE")"
 [ -d "$COMPANIONS_DIR" ] || vdie "no companion directory at $COMPANIONS_DIR, build first (scripts/build-llama.sh $TRIPLE)"
 
-# Companion files are named ggml-cpu-<variant>.<ext> on Windows, but
-# libggml-cpu-<variant>.<ext> on Linux: ggml/CMakeLists.txt only strips the
-# "lib" prefix "if (WIN32)", so a pattern with no leading wildcard never
-# matches on Linux at all (this was BLOCKER B1: the guard never ran
-# correctly there, neither green nor red for the right reason). The leading
-# "*" makes an optional "lib" prefix match on both platforms; the variant
-# name and extension stay anchored so the widened glob cannot accidentally
-# pick up an unrelated file (a name that merely contains the variant name
-# as a substring, or a file with a different extension, still fails to
-# match). Possibly with a version suffix on Linux (SONAME symlinks,
-# dereferenced to real files by stage_dynamic_isa_companions, see there).
+# BLOCKER B5 (review-sidecar.md, Runde 2): this must match EXACTLY the
+# filename ggml itself opens, not merely a file that contains the right
+# substring. Read at the pin (ggml-backend-reg.cpp:472-520,
+# ggml_backend_load_best):
+#   - CPU variants are found by a SCAN: every regular file in the search
+#     directory is a candidate if `filename.find(file_prefix) == 0` (the
+#     name starts with "[lib]ggml-cpu-") AND `entry.path().extension() ==
+#     file_extension` (the extension is EXACTLY ".so"/".dll", not ".so.0").
+#     A versioned SONAME copy like "libggml-cpu-x64.so.0" has extension
+#     ".0", so ggml never even considers it: the loader would see NO CPU
+#     backend at all and the app would die on the first model load, while a
+#     guard that matches "*ggml-cpu-x64.so*" (Runde 2's version) stays
+#     green.
+#   - "vulkan" (and any other backend without per-CPU variants) is NOT
+#     found by that scan at all: "libggml-vulkan.so" does not start with
+#     "libggml-vulkan-" (the scan prefix always has a trailing hyphen
+#     because it is built for "<name>-<variant>" files). It is only found
+#     through the FALLBACK branch a few lines down, which requires the
+#     single EXACT filename "[lib]ggml-vulkan.<ext>" to exist verbatim in
+#     one of the two search paths.
+# So the guard's own filename check must be exact-match, not substring: the
+# only wildcard-worthy part is the "lib" prefix, and that is not even a
+# wildcard, it is a fixed, platform-determined string
+# (ggml/CMakeLists.txt:79-83 strips it only "if (WIN32)", so it is "lib" on
+# every other platform, never optional or ambiguous).
+#
+# Both helpers below end in an explicit `return 0`, not just the bare `[ -f
+# ... ] && printf ...` their body used to be: under `set -e` (this whole
+# script runs with it) a simple command whose last action is a failed `[ -f
+# ]` test aborts the ENTIRE SCRIPT right there, silently, the moment
+# `f="$(find_variant_file "$variant")"` captures its output, because a
+# failing command substitution assigned to a variable is not exempt from
+# `set -e`. "no file found" here is an expected, ordinary outcome (the
+# caller collects it into `missing[]` and reports it properly), not an
+# error the shell should treat as fatal. Found the hard way: the very
+# first real end-to-end run of this rewrite (a missing variant) exited
+# with status 1 and NO message at all, instead of the intended "expected
+# CPU variant(s) missing: ..." from vdie.
 find_variant_file() {
   local variant="$1"
-  find "$COMPANIONS_DIR" -maxdepth 1 -type f -iname "*ggml-cpu-${variant}.${LIB_EXT}*" -print -quit
+  local exact="$COMPANIONS_DIR/${LIB_PREFIX}ggml-cpu-${variant}.${LIB_EXT}"
+  if [ -f "$exact" ]; then
+    printf '%s\n' "$exact"
+  fi
+  return 0
 }
 
-# Same "lib" prefix rule applies to every other companion module name
+# Same exact-match rule for every other named companion module
 # (ggml-base, ggml-vulkan, ...), so every lookup in this script goes
-# through one of these two helpers rather than re-typing the glob.
+# through one of these two helpers rather than re-typing the pattern.
 find_named_module() {
   local name="$1"
-  find "$COMPANIONS_DIR" -maxdepth 1 -type f -iname "*${name}.${LIB_EXT}*" -print -quit
+  local exact="$COMPANIONS_DIR/${LIB_PREFIX}${name}.${LIB_EXT}"
+  if [ -f "$exact" ]; then
+    printf '%s\n' "$exact"
+  fi
+  return 0
 }
 
 missing=()
@@ -112,23 +149,61 @@ GGML_BASE_FILE="$(find_named_module ggml-base)"
 [ -n "$GGML_BASE_FILE" ] || vdie "ggml-base.$LIB_EXT missing from $COMPANIONS_DIR, the shared runtime every backend links against did not build"
 vlog "ggml-base.$LIB_EXT present at $GGML_BASE_FILE"
 
-# --- RPATH/RUNPATH: no leftover build-tree path (BLOCKER B3) ---------------
+# --- RPATH/RUNPATH: no leftover build-tree path (BLOCKER B3, widened B4) --
 #
 # CMake writes a build-tree RPATH into linked ELF files by default, even
 # with no explicit RPATH line anywhere in CMakeLists.txt
 # (CMAKE_BUILD_WITH_INSTALL_RPATH defaults to OFF). That build-tree RPATH is
 # very often an ABSOLUTE path into the CI runner's own build directory, a
 # path that will not exist once the sidecar ships. Grepping CMakeLists.txt
-# source for the literal word "RPATH" (what this project did before) cannot
-# see this: it is CMake's own default, not a line anyone wrote. The only
-# way to know is to read what actually landed in the binary.
+# source for the literal word "RPATH" (what Runde 1 did) cannot see this:
+# it is CMake's own default, not a line anyone wrote. The only way to know
+# is to read what actually landed in the binary.
+#
+# BLOCKER B4 (review-sidecar.md, Runde 2): Runde 2 only ran this check on
+# ggml-base and the exe, the two files that structurally NEVER need a
+# sibling RPATH (ggml-base only needs system libraries; the exe's own
+# cross-directory need is covered by LD_LIBRARY_PATH, not RPATH). The
+# fourteen ggml-cpu-* variants and ggml-vulkan are exactly the files that DO
+# need $ORIGIN to find libggml-base.so.N beside them, and Runde 2 never
+# looked at any of them: a broken CMAKE_BUILD_RPATH_USE_ORIGIN combined
+# with a missing patchelf would silently leave them all with an absolute
+# build-tree RUNPATH, and this guard would stay green regardless (it would
+# still report "no RPATH/RUNPATH entry" on the two files it DOES check).
+# Now every staged companion is checked (see the call site below), and a
+# file that is missing an RPATH/RUNPATH entry is only accepted if it also
+# has no sibling dependency to resolve locally: a file that NEEDS a
+# sibling .so but carries no RPATH/RUNPATH at all is exactly the silent
+# failure mode this guard exists to catch.
 check_no_absolute_build_rpath() {
   local file="$1"
-  command -v readelf >/dev/null 2>&1 || { vlog "readelf not available, skipping RPATH check for $file"; return 0; }
+  local dir; dir="$(dirname "$file")"
+  command -v readelf >/dev/null 2>&1 \
+    || vdie "readelf not found, cannot verify RPATH/RUNPATH for $file (a guard that silently skips its own check when its tool is missing is worse than no guard, N4)"
+  local dyn
+  dyn="$(readelf -d "$file" 2>/dev/null)" || vdie "readelf -d failed to read the dynamic section of $file"
   local tag_lines
-  tag_lines="$(readelf -d "$file" 2>/dev/null | grep -E '\(RPATH\)|\(RUNPATH\)' || true)"
+  tag_lines="$(grep -E '\(RPATH\)|\(RUNPATH\)' <<<"$dyn" || true)"
+
+  # A NEEDED entry whose SONAME also exists as a FILE right next to this one
+  # is a same-package sibling dependency (a ggml-cpu-* module needing
+  # libggml-base.so.N, say). The dynamic linker can only resolve that via
+  # RPATH/RUNPATH or LD_LIBRARY_PATH, never via a plain system search path,
+  # so a file with a sibling NEEDED entry MUST carry an RPATH/RUNPATH.
+  # Checking "does a file with this exact SONAME exist beside me" instead
+  # of hardcoding a list of library-name prefixes means this keeps working
+  # if the pin ever renames, adds, or removes a shared library.
+  local sibling_needed=""
+  while IFS= read -r soname; do
+    [ -n "$soname" ] || continue
+    [ -e "$dir/$soname" ] && sibling_needed="$sibling_needed $soname"
+  done < <(sed -nE 's/.*\(NEEDED\)[^]]*Shared library: \[([^]]*)\].*/\1/p' <<<"$dyn")
+
   if [ -z "$tag_lines" ]; then
-    vlog "$file: no RPATH/RUNPATH entry"
+    if [ -n "$sibling_needed" ]; then
+      vdie "$file needs sibling librar$([ "$(wc -w <<<"$sibling_needed")" -eq 1 ] && echo y || echo ies) ($sibling_needed) but carries NO RPATH/RUNPATH entry at all: it cannot resolve them on its own, only via the caller's LD_LIBRARY_PATH, which the dlopen'd ggml-cpu-*/ggml-vulkan modules cannot rely on"
+    fi
+    vlog "$file: no RPATH/RUNPATH entry (no sibling dependency to resolve, nothing missing)"
     return 0
   fi
   # readelf prints the entry as e.g.
@@ -142,6 +217,12 @@ check_no_absolute_build_rpath() {
 }
 
 if [[ "$TRIPLE" == *-linux-* ]]; then
+  for variant in "${EXPECTED_VARIANTS[@]}"; do
+    variant_file="$(find_variant_file "$variant")"
+    [ -n "$variant_file" ] && check_no_absolute_build_rpath "$variant_file"
+  done
+  vulkan_file="$(find_named_module ggml-vulkan)"
+  [ -n "$vulkan_file" ] && check_no_absolute_build_rpath "$vulkan_file"
   check_no_absolute_build_rpath "$GGML_BASE_FILE"
   exe_check_path="$BIN_DIR/$(out_name_for "$TRIPLE")"
   [ -f "$exe_check_path" ] && check_no_absolute_build_rpath "$exe_check_path"
