@@ -874,7 +874,12 @@ export function useCodex() {
     // chat deletion both reach the real controller. Cleared in finally.
     useGenerationStore.getState().registerAborter(convId, () => {
       abort.abort()
-      requestGenerationCancel()
+      // Blocker 4 (review-lanes.md): scoped to THIS conversation's own media
+      // generation. Passed bare (no arg) this used to cancel whichever
+      // generation happened to be running app-wide, so Stop in one Code
+      // conversation could kill an image/video another conversation's agent
+      // was still producing.
+      requestGenerationCancel(convId)
     })
 
     // Architect / RepoMap pre-pass (B8 + B9). Both inject into the

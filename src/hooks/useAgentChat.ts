@@ -780,8 +780,11 @@ export function useAgentChat() {
     // Register so deleting/closing this chat stops the agent loop (Bug C).
     // requestGenerationCancel too, so a ComfyUI gen the agent kicked off is
     // interrupted when the chat is deleted mid-generation (gated to a no-op when
-    // nothing is in flight).
-    useGenerationStore.getState().registerAborter(convId, () => { abort.abort(); requestGenerationCancel() })
+    // nothing is in flight). Scoped to THIS conversation (Blocker 4,
+    // review-lanes.md): passed bare this used to cancel whichever generation
+    // happened to be running app-wide, so Stop in conversation B could kill an
+    // image/video conversation A's agent was still producing.
+    useGenerationStore.getState().registerAborter(convId, () => { abort.abort(); requestGenerationCancel(convId) })
     // A refusal no retry can fix has to end the loop as well. `return` in the
     // catch does not skip the finally, so without this the driver fires the
     // next pass into the same refusal and the credits dialog reopens every
@@ -2766,7 +2769,11 @@ export function useAgentChat() {
     // Interrupt any in-flight ComfyUI gen too — the main Stop button only aborted
     // the agent loop before, so a running image/video kept burning unless the user
     // happened to click the small in-chat tool Stop. Now both Stops agree.
-    requestGenerationCancel()
+    // Scoped to stoppedConvId (Blocker 4, review-lanes.md): a bare call used
+    // to cancel whichever generation happened to be running app-wide, so a
+    // Stop in conversation B killed conversation A's still-producing
+    // image/video.
+    requestGenerationCancel(stoppedConvId)
     drainApprovals(stoppedConvId)
   }, [])
 

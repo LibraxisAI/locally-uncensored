@@ -10,7 +10,7 @@
  * (`useAgentChat.ts`) und `codexLoopTimers` (`useCodex.ts`), und bisher
  * loeschten nur `stopAgent`/`stopCodex` sie. Der faellige Rueckruf pruefte
  * beim Feuern nur, ob DIESE Unterhaltung schon etwas generiert und ob sie die
- * sichtbare ist — nicht, ob der Nutzer den Lauf per Stop-Merker
+ * sichtbare ist, nicht, ob der Nutzer den Lauf per Stop-Merker
  * (`lib/run-stop.ts`) beendet hat. Nach Abmelden, Fenster schliessen oder App
  * beenden feuerte der Zeitgeber also trotzdem und schickte eine bezahlte
  * Cloud-Anfrage in eine Sitzung, die die App dem Nutzer bereits als beendet
@@ -68,7 +68,7 @@ const sse = (payload: object) =>
     status: 200, headers: { 'content-type': 'text/event-stream' },
   })
 // Never says the /loop magic-done word, so the driver always schedules
-// another pass — that is what gives Blocker 3 something real to prevent.
+// another pass, that is what gives Blocker 3 something real to prevent.
 const textZug = () => sse({ choices: [{ delta: { content: 'weiter beim naechsten Mal' } }] })
 
 function seed(): string {

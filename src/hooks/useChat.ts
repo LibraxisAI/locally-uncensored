@@ -810,7 +810,11 @@ export function useChat() {
     // review-lanes.md): Stop, then an immediate resend on the same
     // conversation, can register a NEW aborter here before this run's
     // `finally` executes, and the old run's cleanup must not reach past it.
-    const myAborter = () => { abort.abort(); requestGenerationCancel() }
+    // Blocker 4 (review-lanes.md): scoped to THIS conversation. A bare call
+    // used to cancel whichever generation happened to be running app-wide,
+    // so Stop in one chat could kill an image/video another chat's agent
+    // was still producing.
+    const myAborter = () => { abort.abort(); requestGenerationCancel(convId) }
     useGenerationStore.getState().registerAborter(convId, myAborter)
     setIsGenerating(true)
     // Bind the generating flag to THIS conversation so the typing indicator
@@ -1297,8 +1301,11 @@ export function useChat() {
     useGenerationStore.getState().abortConversation(convId)
     // Also interrupt an in-flight ComfyUI image/video gen, not just the JS loop —
     // otherwise the main Stop button leaves ComfyUI burning (only the in-chat
-    // tool Stop did this before; now both affordances agree).
-    requestGenerationCancel()
+    // tool Stop did this before; now both affordances agree). Scoped to convId
+    // (Blocker 4, review-lanes.md): a bare call used to cancel whichever
+    // generation happened to be running app-wide, killing another
+    // conversation's still-producing image/video.
+    requestGenerationCancel(convId)
   }, [stopAgent])
 
   /**

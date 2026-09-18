@@ -570,6 +570,27 @@ let _cancelSignal: Promise<typeof CANCELLED> = new Promise<typeof CANCELLED>(() 
 // dequeues — its per-run resetCancel() clears the flag, but the epoch persists.
 let _genSeq = 0
 let _cancelledThrough = 0
+
+/**
+ * Blocker 4 (review-lanes.md, 3.0.1 lanes Runde 3): every generation, queued
+ * or running, remembers the conversation that started it. Without this,
+ * `requestGenerationCancel()` had no way to tell "conversation A's still-
+ * running image" from "conversation B's just-pressed Stop" apart; a Stop in
+ * B killed A's render, literally the B2 "Abbrueche landen in der falschen
+ * Unterhaltung" failure case. `null` means "no conversation context" (a
+ * caller outside a chat, e.g. the Create tab); it still matches only other
+ * `null`-owned generations, never a real conversation's.
+ */
+const _genOwner = new Map<number, string | null>()
+/** Seqs cancelled by a conversation-scoped requestGenerationCancel(convId)
+ *  call, as opposed to the app-wide `_cancelledThrough` epoch below (still
+ *  used by callers that pass no conversation at all). Cleared per-seq once
+ *  that generation's own runHandoff body has finished. */
+const _cancelledSeqs = new Set<number>()
+/** The conversation that owns the generation ACTUALLY executing right now
+ *  (set at the top of runHandoff, cleared in its finally): generations are
+ *  strictly serialised through `_inFlight`, so there is at most one. */
+let _currentGenConvId: string | null = null
 /**
  * The ComfyUI job THIS lane has in flight, or null.
  *
@@ -602,28 +623,61 @@ function raceCancel<T>(p: Promise<T>): Promise<T | typeof CANCELLED> {
   return Promise.race([p, _cancelSignal])
 }
 
-export function requestGenerationCancel(): void {
-  _genCancelRequested = true
-  _cancelledThrough = _genSeq  // cancel every gen created so far (running + queued)
-  _cancelNotify?.()            // wake every pending raceCancel immediately
-  // Only touch ComfyUI when a chat-initiated generation is actually running.
-  // A plain text-chat Stop must NOT reach ComfyUI at all.
-  if (_activeHandoffs > 0 && _currentPromptId) {
-    // OUR job, by id — never `/interrupt` + `clear: true`. Those took down the
-    // Create tab's render and the user's own ComfyUI tab along with ours, and
-    // still missed ours whenever it sat behind someone else's in the queue.
-    void abandonPrompt(_currentPromptId)
+/**
+ * `conversationId` scopes the cancel (Blocker 4, review-lanes.md): passing
+ * it cancels only THAT conversation's own generations, running or still
+ * queued behind another conversation's, and leaves everyone else's alone.
+ * Omitting the argument entirely keeps the pre-3.0.1 app-wide behaviour
+ * (every generation, any conversation) for callers with no conversation
+ * context of their own (`ToolCallBlock`'s "nuke everything" Stop already
+ * iterates every conversation's aborter right after this call, so it is
+ * meant to be app-wide). Pass `null` for "no conversation, but scoped": it
+ * only ever matches another `null`-owned generation, never a real one.
+ */
+export function requestGenerationCancel(conversationId?: string | null): void {
+  if (conversationId === undefined) {
+    _genCancelRequested = true
+    _cancelledThrough = _genSeq  // cancel every gen created so far (running + queued)
+    _cancelNotify?.()            // wake every pending raceCancel immediately
+    if (_activeHandoffs > 0 && _currentPromptId) void abandonPrompt(_currentPromptId)
+    return
+  }
+  // Mark every STILL-PENDING generation (queued or running) that belongs to
+  // this conversation. runHandoff removes its own seq from `_genOwner` the
+  // moment it finishes, so this never touches a generation that already
+  // completed.
+  for (const [seq, owner] of _genOwner) {
+    if (owner === conversationId) _cancelledSeqs.add(seq)
+  }
+  // Only reach into ComfyUI / the live cancel channel when the ACTIVELY
+  // running generation is this conversation's own; otherwise this call
+  // owns nothing that is currently executing, and touching `_cancelNotify`
+  // or `abandonPrompt` would hit whichever OTHER conversation is running.
+  if (conversationId === _currentGenConvId) {
+    _genCancelRequested = true
+    _cancelNotify?.()
+    if (_activeHandoffs > 0 && _currentPromptId) {
+      // OUR job, by id, never `/interrupt` + `clear: true`. Those took down
+      // the Create tab's render and the user's own ComfyUI tab along with
+      // ours, and still missed ours whenever it sat behind someone else's in
+      // the queue.
+      void abandonPrompt(_currentPromptId)
+    }
   }
   // No prompt id yet means nothing was submitted; the pre-submit check in
   // submitCancellable is what keeps it that way.
 }
 
-/** Every generation created at or before the last Stop is cancelled — the flag
- *  is per-run and cleared by resetCancel(), the epoch is not. An abandoned
- *  promise from a cancelled run must consult THIS, not the flag, or the next
- *  run's resetCancel() would quietly re-authorise it to submit. */
+/** Every generation created at or before the last app-wide Stop is
+ *  cancelled via the epoch, every generation individually marked by a
+ *  conversation-scoped Stop is cancelled via `_cancelledSeqs`, and the
+ *  per-run flag (cleared by resetCancel(), unlike either of those) covers
+ *  the generation currently executing when ITS OWN conversation was
+ *  targeted. An abandoned promise from a cancelled run must consult THIS,
+ *  not the flag, or the next run's resetCancel() would quietly
+ *  re-authorise it to submit. */
 function cancelledFor(seq: number): boolean {
-  return _genCancelRequested || seq <= _cancelledThrough
+  return _genCancelRequested || seq <= _cancelledThrough || _cancelledSeqs.has(seq)
 }
 
 /**
@@ -676,6 +730,9 @@ export function __resetGenerationStateForTests(): void {
   _genCancelRequested = false
   _currentPromptId = null
   _lastImageFilename = null
+  _genOwner.clear()
+  _cancelledSeqs.clear()
+  _currentGenConvId = null
 }
 
 // ── Public orchestrator ───────────────────────────────────────────
@@ -701,32 +758,59 @@ export interface VramHandoffArgs {
 /**
  * Orchestrate one image/video generation with VRAM hand-off. Always resolves to
  * a result string (never rejects) so the agent loop gets a clean tool message.
+ *
+ * `conversationId` (Blocker 4, review-lanes.md) is the conversation this
+ * generation belongs to, or `null` when there is none (e.g. the Create tab).
+ * It is what lets `requestGenerationCancel(convId)` tell this generation
+ * apart from one running for a different conversation.
  */
-export async function vramHandoffGenerate(kind: 'image' | 'video', args: VramHandoffArgs): Promise<string> {
+export async function vramHandoffGenerate(
+  kind: 'image' | 'video', args: VramHandoffArgs, conversationId: string | null = null,
+): Promise<string> {
   // Serialise. We park on the previous call's settled promise (success OR
   // failure — `.catch` swallows so a prior error doesn't reject our chain),
   // then run our own body and expose it as the new tail.
   const seq = ++_genSeq
+  _genOwner.set(seq, conversationId)
   const run = _inFlight
     .catch(() => {})
-    .then(() => runHandoff(kind, args, seq))
+    .then(() => runHandoff(kind, args, seq, conversationId))
     // Defensive: runHandoff is written to always RETURN a string (the finally
     // block never rethrows), but if anything unexpected slips through we still
     // hand the agent a clean tool message instead of rejecting the chain.
     .catch((e) => `${kind === 'video' ? 'Video' : 'Image'} generation failed: ${e instanceof Error ? e.message : String(e)}`)
+    // Centralised here rather than inside runHandoff's own try/finally:
+    // runHandoff has several early returns BEFORE that try (no model
+    // installed, ComfyUI unreachable, etc.), and every one of them needs
+    // this same cleanup or a finished generation would keep answering
+    // "yes" to `requestGenerationCancel`'s ownership checks forever.
+    .finally(() => {
+      _genOwner.delete(seq)
+      _cancelledSeqs.delete(seq)
+      if (_currentGenConvId === conversationId) _currentGenConvId = null
+    })
   _inFlight = run.catch(() => {})
   return run
 }
 
-async function runHandoff(kind: 'image' | 'video', args: VramHandoffArgs, seq: number): Promise<string> {
+async function runHandoff(
+  kind: 'image' | 'video', args: VramHandoffArgs, seq: number, conversationId: string | null,
+): Promise<string> {
   // Fresh run — re-arm the cancel channel (clears any flag/notify left over from
   // a previous cancelled gen).
   resetCancel()
   // If Stop arrived while THIS gen was still queued behind another (its seq was
-  // created at/before the cancel), bail now. resetCancel() above just cleared the
-  // per-run flag, but the cancel epoch persists — without this, a back-to-back
-  // gen survives the user's Stop.
-  if (seq <= _cancelledThrough) return `${label(kind)} generation cancelled.`
+  // created at/before the cancel, app-wide epoch, or its OWN conversation
+  // cancelled it specifically), bail now. resetCancel() above just cleared the
+  // per-run flag, but neither the epoch nor a conversation-scoped mark persist
+  // past this check; without it, a back-to-back gen survives the user's Stop.
+  if (seq <= _cancelledThrough || _cancelledSeqs.has(seq)) {
+    return `${label(kind)} generation cancelled.`
+  }
+  // From here on, THIS conversation owns the actively-running generation;
+  // requestGenerationCancel(convId) reaches ComfyUI/the live cancel channel
+  // only when convId matches this.
+  _currentGenConvId = conversationId
   // Robustness for small local models (gemma4:e4b live): they frequently emit a
   // snake_case `input_image` alias and sometimes omit `prompt` on a video call.
   // Normalize the alias so the I2V path still finds the source image.

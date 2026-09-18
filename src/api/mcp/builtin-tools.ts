@@ -1273,7 +1273,7 @@ async function executeScreenshot(): Promise<string> {
   return JSON.stringify(data)
 }
 
-async function executeImageGenerate(args: ToolArgs): Promise<string> {
+async function executeImageGenerate(args: ToolArgs, run?: AgentRunContext): Promise<string> {
   // Feature EE (v2.5.0): the whole generation flow now goes through the VRAM
   // hand-off orchestrator. It resolves the image model (args.model or first
   // installed), decides whether the resident local text model has to be evicted
@@ -1301,10 +1301,13 @@ async function executeImageGenerate(args: ToolArgs): Promise<string> {
   const picked = await pickModelForGeneration('image', merged)
   if (picked) merged.model = picked
   const { vramHandoffGenerate } = await import('../vram-handoff')
-  return vramHandoffGenerate('image', merged)
+  // Blocker 4 (review-lanes.md): thread the owning conversation through so
+  // requestGenerationCancel(convId) can tell this generation apart from one
+  // a DIFFERENT conversation's agent started.
+  return vramHandoffGenerate('image', merged, run?.conversationId ?? null)
 }
 
-async function executeVideoGenerate(args: ToolArgs): Promise<string> {
+async function executeVideoGenerate(args: ToolArgs, run?: AgentRunContext): Promise<string> {
   // Feature EE (v2.5.0): text-to-video via the same hand-off orchestrator.
   // Picks the first installed video model (or args.model), detects the video
   // backend (Wan / AnimateDiff), evicts the local text model from VRAM if it
@@ -1333,7 +1336,8 @@ async function executeVideoGenerate(args: ToolArgs): Promise<string> {
   const picked = await pickModelForGeneration('video', merged)
   if (picked) merged.model = picked
   const { vramHandoffGenerate } = await import('../vram-handoff')
-  return vramHandoffGenerate('video', merged)
+  // Blocker 4 (review-lanes.md): see executeImageGenerate above.
+  return vramHandoffGenerate('video', merged, run?.conversationId ?? null)
 }
 
 // ── macOS MLX generation (hard rule: local image/video on Mac is MLX only,
