@@ -88,6 +88,15 @@ describe('classifyModel', () => {
     expect(classifyModel('ernie_image_turbo_bf16.safetensors')).toBe('ernie_image')
   })
 
+  // K9 (GH #136, eloieloie): Krea 2 checkpoints fell through to 'unknown' and
+  // got CheckpointLoaderSimple with no CLIP wired in ("clip input is invalid:
+  // None"). Filenames from the reporter's own install (krea-2, krea2, KREA_2).
+  it('classifies Krea 2 models (K9, GH #136)', () => {
+    expect(classifyModel('krea-2-dev-fp8.safetensors')).toBe('krea2')
+    expect(classifyModel('krea2_dev_bf16.safetensors')).toBe('krea2')
+    expect(classifyModel('KREA_2_base.safetensors')).toBe('krea2')
+  })
+
   it('returns unknown for unrecognized models', () => {
     expect(classifyModel('totally_custom_model.safetensors')).toBe('unknown')
   })
@@ -109,7 +118,7 @@ describe('classifyModel', () => {
 
 describe('isVideoModelType', () => {
   const videoTypes = ['wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'cogvideo', 'svd', 'framepack', 'pyramidflow', 'allegro'] as const
-  const imageTypes = ['flux', 'flux2', 'zimage', 'ernie_image', 'sdxl', 'sd15', 'unknown'] as const
+  const imageTypes = ['flux', 'flux2', 'krea2', 'zimage', 'ernie_image', 'sdxl', 'sd15', 'unknown'] as const
 
   for (const t of videoTypes) {
     it(`${t} is a video model type`, () => {
@@ -157,7 +166,12 @@ describe('MODEL_TYPE_DEFAULTS', () => {
 // ─── COMPONENT_REGISTRY ───
 
 describe('COMPONENT_REGISTRY', () => {
-  const allTypes = ['sd15', 'sdxl', 'flux', 'flux2', 'zimage', 'ernie_image', 'wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'cogvideo', 'svd', 'framepack', 'pyramidflow', 'allegro', 'unknown']
+  // K9/component-registry consolidation: krea2 and wan22 are included here —
+  // wan22 was the drift the two duplicate registries had already accumulated
+  // (present in discover.ts's copy, missing from comfyui.ts's) before they
+  // were merged into one file (component-registry.ts); a loop like this one
+  // would have caught it.
+  const allTypes = ['sd15', 'sdxl', 'flux', 'flux2', 'krea2', 'zimage', 'ernie_image', 'wan', 'wan22', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'cogvideo', 'svd', 'framepack', 'pyramidflow', 'allegro', 'unknown']
 
   for (const t of allTypes) {
     it(`${t} has a registry entry`, () => {

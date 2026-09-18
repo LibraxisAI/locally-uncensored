@@ -51,6 +51,20 @@ describe('dynamic-workflow — determineStrategy', () => {
       const result = determineStrategy('zimage', false, makeNodes(), makeModels())
       expect(result.strategy).toBe('unet_zimage')
     })
+
+    // K9 (GH #136, eloieloie): Krea 2 checkpoints classified 'unknown' fell
+    // back to CheckpointLoaderSimple without a CLIP loader ("clip input is
+    // invalid: None"). krea2 now has its own branch, same shape as flux/flux2.
+    it('krea2 model -> unet_krea2 strategy', () => {
+      const result = determineStrategy('krea2', false, makeNodes(), makeModels())
+      expect(result.strategy).toBe('unet_krea2')
+    })
+
+    it('krea2 without VAELoader -> unavailable', () => {
+      const nodes = makeNodes({ loaders: ['UNETLoader', 'CLIPLoader'] })
+      const result = determineStrategy('krea2', false, nodes, makeModels())
+      expect(result.strategy).toBe('unavailable')
+    })
   })
 
   // ─── Checkpoint variants ───
@@ -192,6 +206,19 @@ describe('dynamic-workflow — determineStrategy', () => {
       const models = makeModels({ motionModels: [] })
       const result = determineStrategy('unknown' as ModelType, false, nodes, models)
       expect(result.strategy).toBe('unavailable')
+    })
+
+    // K9: an unrecognized architecture with UNET+CLIP+VAE but no checkpoint
+    // loader used to fall through to 'unet_flux' on the unstated assumption
+    // that any UNET-only file is a FLUX model — silently applying FLUX's CLIP
+    // type and VAE match patterns to a model that might not be FLUX at all.
+    // It must now say honestly that it would not guess, never fall back.
+    it('unrecognized architecture (UNET+CLIP+VAE, no checkpoint loader) -> unavailable, never a guessed unet_flux', () => {
+      const nodes = makeNodes({ loaders: ['UNETLoader', 'CLIPLoader', 'VAELoader'] })
+      const result = determineStrategy('unknown' as ModelType, false, nodes, makeModels())
+      expect(result.strategy).toBe('unavailable')
+      expect(result.strategy).not.toBe('unet_flux')
+      expect(result.reason.toLowerCase()).toContain('could not determine')
     })
 
     it('wan without VAELoader -> unavailable', () => {

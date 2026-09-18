@@ -58,6 +58,7 @@ import { promptFilenamePrefix, videoDecodeNode } from './comfyui-graph'
 export type WorkflowStrategy =
   | 'unet_flux'       // FLUX 1: UNETLoader + CLIPLoader + VAELoader + EmptySD3LatentImage
   | 'unet_flux2'      // FLUX 2: UNETLoader + CLIPLoader + VAELoader + EmptyFlux2LatentImage
+  | 'unet_krea2'      // Krea 2: UNETLoader + CLIPLoader(type="krea2") + VAELoader + EmptyLatentImage (GH #136)
   | 'unet_zimage'     // Z-Image: UNETLoader + CLIPLoader(qwen_image) + VAELoader + EmptySD3LatentImage
   | 'unet_ernie_image' // ERNIE-Image: UNETLoader + CLIPLoader(flux2) + VAELoader + EmptyFlux2LatentImage + ConditioningZeroOut
   | 'unet_video'      // Wan/Hunyuan: UNETLoader + CLIPLoader + VAELoader + EmptyHunyuanLatentVideo
@@ -130,6 +131,14 @@ export function determineStrategy(
       return { strategy: 'unet_flux', reason: 'FLUX model → UNETLoader pipeline' }
     }
     return { strategy: 'unavailable', reason: 'FLUX requires UNETLoader + CLIPLoader + VAELoader nodes' }
+  }
+
+  // Krea 2 (K9, GH #136) → UNET + CLIPLoader(type="krea2") + VAE + EmptyLatentImage
+  if (modelType === 'krea2') {
+    if (hasUNET && hasCLIPLoader && hasVAELoader) {
+      return { strategy: 'unet_krea2', reason: 'Krea 2 model → UNETLoader + CLIPLoader(krea2)' }
+    }
+    return { strategy: 'unavailable', reason: 'Krea 2 requires UNETLoader + CLIPLoader + VAELoader nodes' }
   }
 
   // LTX Video → UNET + LTXVLatentVideo (no separate VAE needed)
@@ -265,9 +274,21 @@ export function determineStrategy(
     return { strategy: 'checkpoint', reason: 'Checkpoint-based pipeline' }
   }
 
-  // Last resort: try UNET if available
+  // K9: this used to fall back to 'unet_flux' whenever CheckpointLoaderSimple
+  // was missing (rare — it is a core node, present on virtually every real
+  // install), on the unstated assumption that any UNET-only file must be a
+  // FLUX model. For a genuinely unrecognized architecture that is a silent
+  // guess: it picks FLUX's CLIP type and VAE match patterns for a model that
+  // may not be FLUX at all, which either fails confusingly or "succeeds"
+  // with a wrong text encoder. classifyModel returning 'unknown' means LU
+  // could not name this model's architecture — say so honestly instead of
+  // routing it through a guessed pipeline. A real architecture (Krea 2,
+  // FLUX 2, Z-Image, ...) has its own branch above and never reaches here.
   if (hasUNET && hasCLIPLoader && hasVAELoader) {
-    return { strategy: 'unet_flux', reason: 'Fallback to UNETLoader (no checkpoint loader)' }
+    return {
+      strategy: 'unavailable',
+      reason: `LU could not determine this model's architecture, so it will not guess a ComfyUI pipeline for it. If this is a known model family, please report it so LU can recognize it.`,
+    }
   }
 
   return { strategy: 'unavailable', reason: 'No compatible loader nodes found in ComfyUI' }
@@ -473,7 +494,7 @@ export async function buildDynamicWorkflow(
     vaeOutputSlot = 2
     samplerModelId = modelNodeId
 
-  } else if (strategy === 'unet_flux' || strategy === 'unet_flux2' || strategy === 'unet_zimage' || strategy === 'unet_ernie_image' || strategy === 'unet_video' || strategy === 'unet_ltx'
+  } else if (strategy === 'unet_flux' || strategy === 'unet_flux2' || strategy === 'unet_krea2' || strategy === 'unet_zimage' || strategy === 'unet_ernie_image' || strategy === 'unet_video' || strategy === 'unet_ltx'
     || strategy === 'unet_mochi' || strategy === 'unet_cosmos') {
     // Separate loaders
     const unetId = String(n++)
@@ -482,6 +503,7 @@ export async function buildDynamicWorkflow(
     const clipType = type === 'zimage' ? 'qwen_image'
       : type === 'ernie_image' ? 'flux2'
       : type === 'flux2' ? 'flux2'
+      : type === 'krea2' ? 'krea2'
       : type === 'flux' ? 'flux'
       : type === 'ltx' ? 'ltxv'
       : (type === 'wan' || type === 'hunyuan') ? 'wan'

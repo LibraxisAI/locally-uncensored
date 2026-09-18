@@ -23,6 +23,11 @@ import type { ModelType } from '../../../api/comfyui'
 export const TYPE_BADGE: Record<ModelType, { label: string; color: string }> = {
   flux: { label: 'FLUX', color: 'bg-purple-500/15 text-purple-300' },
   flux2: { label: 'FLUX 2', color: 'bg-purple-500/15 text-purple-300' },
+  // K9 (GH #136): every bright tone above is taken by a different family, and
+  // amber/yellow are the two the comment above rules out (they read as a
+  // warning, not a badge — see the cogvideo history). zinc is the one
+  // neutral family still free (slate/stone already carry ernie_image/cogvideo).
+  krea2: { label: 'Krea 2', color: 'bg-zinc-500/15 text-zinc-300' },
   zimage: { label: 'Z-Image', color: 'bg-rose-500/15 text-rose-300' },
   ernie_image: { label: 'Ernie', color: 'bg-slate-500/15 text-slate-300' },
   sdxl: { label: 'SDXL', color: 'bg-blue-500/15 text-blue-300' },
