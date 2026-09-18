@@ -631,6 +631,7 @@ fn main() {
             commands::proxy::fetch_external,
             commands::proxy::fetch_external_bytes,
             commands::proxy::proxy_localhost,
+            commands::proxy::cancel_proxy_call,
             commands::proxy::proxy_localhost_stream,
             commands::proxy::proxy_localhost_stream_chunked,
             commands::proxy::cancel_proxy_stream,

@@ -794,8 +794,68 @@ fn guard_builtin_model(
     }
 }
 
+/// Removes `call_id` from the call-token registry on drop, so EVERY exit from
+/// `proxy_localhost` after registration (the success return, an early `?`,
+/// the cancelled branch, or a panic unwinding through the future) leaves the
+/// registry entry cleaned up. A plain "remove after the await" would skip the
+/// error and cancel paths (the `?`s return before reaching it); a guard makes
+/// this exhaustive by construction instead of by enumeration, and it never
+/// holds the map's Mutex across an `.await`, since `Drop::drop` is synchronous.
+struct CallTokenGuard {
+    registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
+    id: String,
+}
+
+impl Drop for CallTokenGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.registry.lock() {
+            map.remove(&self.id);
+        }
+    }
+}
+
+/// The cancellable core of `proxy_localhost`: send the request, then read the
+/// whole body, each `.await` raced against `token`. Factored out of the
+/// `#[tauri::command]` wrapper (which needs a live `tauri::State` this does
+/// not), so a unit test can drive it against a real hanging TCP stub without
+/// a running Tauri app, the same split `pump_proxy_stream` already uses for
+/// the chunked-stream path.
+///
+/// Dropping the `request.send()` / `resp.text()` future on cancellation drops
+/// the underlying reqwest connection, which is what actually stops the local
+/// engine from continuing to generate, the point of this whole fix (review
+/// 2026-09-18, "Loch 3": a non-streaming tool call against the built-in
+/// engine/Ollama read `options.signal` nowhere, so Stop settled the JS
+/// promise as "cancelled" while the GPU kept computing an answer to
+/// completion).
+async fn cancellable_request(
+    request: reqwest::RequestBuilder,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<String, String> {
+    let resp = tokio::select! {
+        _ = token.cancelled() => return Err("proxy_localhost: cancelled".to_string()),
+        r = request.send() => r.map_err(|e| format!("proxy_localhost: {}", os_error::english(&e)))?,
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, text));
+    }
+
+    // Also race the body read: a slow/hanging generator can accept the
+    // request and then sit on the response body, and Stop must cut that off
+    // too, not just the connect phase.
+    tokio::select! {
+        _ = token.cancelled() => Err("proxy_localhost: cancelled".to_string()),
+        r = resp.text() => r.map_err(|e| os_error::english(&e)),
+    }
+}
+
 /// Generic localhost proxy — fetch any localhost or configured-backend URL
-/// bypassing CORS. Used for Ollama and ComfyUI API calls in production mode.
+/// bypassing CORS. Used for Ollama and ComfyUI API calls in production mode,
+/// including a non-streaming tool call's `chatWithTools` against the
+/// built-in engine or Ollama.
 ///
 /// `timeout_ms` (optional) overrides the default 300 s timeout. Backend
 /// detection passes 2000 — without that override the onboarding "Searching
@@ -804,6 +864,11 @@ fn guard_builtin_model(
 /// never replies HTTP (Discord report — Docker dev container on 8000,
 /// firewall throttling, another LLM tool with a slow health endpoint, ...).
 /// Long-running calls (Ollama pull, ComfyUI generate) keep the 300 s default.
+///
+/// `call_id` (optional) is the same callId/cancel mechanic the chunked stream
+/// path already has (`proxy_localhost_stream_chunked` + `cancel_proxy_stream`,
+/// David 2026-06-15): the caller mints an id, sends it here, and fires
+/// `cancel_proxy_call(call_id)` when the user hits Stop.
 #[tauri::command]
 pub async fn proxy_localhost(
     url: String,
@@ -811,6 +876,7 @@ pub async fn proxy_localhost(
     body: Option<String>,
     timeout_ms: Option<u64>,
     headers: Option<std::collections::HashMap<String, String>>,
+    call_id: Option<String>,
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<String, String> {
     let allow = ProxyAllowList::snapshot(&state);
@@ -833,18 +899,34 @@ pub async fn proxy_localhost(
 
     request = apply_body_and_headers(request, body, headers);
 
-    let resp = request
-        .send()
-        .await
-        .map_err(|e| format!("proxy_localhost: {}", os_error::english(&e)))?;
+    // Register a cancellation token under call_id (mirrors stream_tokens /
+    // proxy_localhost_stream_chunked). The lock is held only for the
+    // insert, a plain MutexGuard temporary, dropped at the end of
+    // this statement, never carried across an `.await`.
+    let token = tokio_util::sync::CancellationToken::new();
+    let _guard = call_id.as_ref().map(|id| {
+        let registry = state.call_tokens.clone();
+        if let Some(old) = registry.lock().unwrap().insert(id.clone(), token.clone()) {
+            old.cancel(); // a stale call under the same id -- cancel it first
+        }
+        CallTokenGuard { registry, id: id.clone() }
+    });
 
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {}", status, text));
+    cancellable_request(request, &token).await
+}
+
+/// Cancel an in-flight non-streaming `proxy_localhost` call by its `call_id`.
+/// Twin of `cancel_proxy_stream` for the non-chunked path, fired from the JS
+/// side's `AbortSignal` listener when the user hits Stop.
+#[tauri::command]
+pub fn cancel_proxy_call(
+    state: tauri::State<'_, crate::state::AppState>,
+    call_id: String,
+) -> Result<(), String> {
+    if let Some(token) = state.call_tokens.lock().unwrap().remove(&call_id) {
+        token.cancel();
     }
-
-    resp.text().await.map_err(|e| os_error::english(&e))
+    Ok(())
 }
 
 /// Streaming localhost proxy — BUFFERS the whole body (no streaming). Kept for
@@ -2069,6 +2151,193 @@ mod tests {
         assert_eq!(configured_host("192.168.1.50"), "192.168.1.50");
         assert_eq!(configured_host("HTTP://Host.LAN:8080"), "host.lan");
         assert_eq!(configured_host("  nas  "), "nas");
+    }
+
+    // ── R3: the non-streaming proxy_localhost path is actually cancellable ──
+
+    /// A loopback stub that accepts the connection, reads the request, and
+    /// then says nothing at all for `hold`, what a local engine/Ollama looks
+    /// like mid-generation from the client side of a non-streaming call
+    /// (`request.send()` is still awaiting the response headers).
+    async fn hang_stub(hold: Duration) -> u16 {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(hold).await;
+                    // Socket dropped here without ever writing a response.
+                });
+            }
+        });
+        port
+    }
+
+    /// Without R3's fix, `cancellable_request` had no `token` argument at
+    /// all: `request.send()` was a bare `.await`, so cancelling never
+    /// interrupted anything and this test would only return once the stub's
+    /// hold elapsed (here 10 s) or the client's own timeout fired. The fix
+    /// races the send against the token, so cancelling ~150 ms in must return
+    /// almost immediately and well inside the 2 s outer bound.
+    #[test]
+    fn cancelling_during_send_returns_almost_immediately_against_a_hanging_server() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let port = hang_stub(Duration::from_secs(10)).await;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap();
+            let token = tokio_util::sync::CancellationToken::new();
+            let cancel_token = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                cancel_token.cancel();
+            });
+
+            let start = std::time::Instant::now();
+            let request = client.get(format!("http://127.0.0.1:{}/", port));
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(2),
+                cancellable_request(request, &token),
+            )
+            .await;
+            let elapsed = start.elapsed();
+
+            let result = outcome.expect(
+                "cancellable_request did not return within 2s of a 150ms cancel \
+                 against a server that holds for 10s -- the abort did not reach reqwest",
+            );
+            assert!(result.is_err(), "a cancelled call must not report success: {result:?}");
+            assert!(
+                elapsed < Duration::from_millis(1000),
+                "cancellation took {elapsed:?}, expected well under 1s"
+            );
+        });
+    }
+
+    /// Same shape, but the hang is on the response BODY (headers already
+    /// sent) rather than on connect/send: the second `tokio::select!` in
+    /// `cancellable_request`, around `resp.text()`.
+    #[test]
+    fn cancelling_during_body_read_returns_almost_immediately() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Headers claim a body that never fully arrives -- Content-Length
+            // promises more bytes than are ever written, then the socket
+            // holds open, so `resp.text()` sits waiting for the rest.
+            let port = raw_stub(
+                "HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\nstart",
+                Some(Duration::from_secs(10)),
+            )
+            .await;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap();
+            let token = tokio_util::sync::CancellationToken::new();
+            let cancel_token = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                cancel_token.cancel();
+            });
+
+            let start = std::time::Instant::now();
+            let request = client.get(format!("http://127.0.0.1:{}/", port));
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(2),
+                cancellable_request(request, &token),
+            )
+            .await;
+            let elapsed = start.elapsed();
+
+            let result = outcome.expect("cancellable_request must not hang on a stalled body");
+            assert!(result.is_err(), "a cancelled call must not report success: {result:?}");
+            assert!(elapsed < Duration::from_millis(1000), "took {elapsed:?}");
+        });
+    }
+
+    /// A second, independent call against a server that answers normally
+    /// must be completely unaffected by an earlier call's cancellation --
+    /// same token type, but each `proxy_localhost` invocation gets its own
+    /// `CancellationToken`, so one call's Stop cannot reach another's.
+    #[test]
+    fn cancelling_one_call_does_not_touch_a_second_unrelated_call() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let hanging_port = hang_stub(Duration::from_secs(10)).await;
+            let ok_port = raw_stub(
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                None,
+            )
+            .await;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap();
+
+            let cancelled_token = tokio_util::sync::CancellationToken::new();
+            cancelled_token.cancel();
+            let cancelled_req = client.get(format!("http://127.0.0.1:{}/", hanging_port));
+            let cancelled_out = cancellable_request(cancelled_req, &cancelled_token).await;
+            assert!(cancelled_out.is_err());
+
+            // A fresh, never-cancelled token against a normal server: must
+            // succeed exactly as if the first call never happened.
+            let fresh_token = tokio_util::sync::CancellationToken::new();
+            let fresh_req = client.get(format!("http://127.0.0.1:{}/", ok_port));
+            let fresh_out = cancellable_request(fresh_req, &fresh_token).await;
+            assert_eq!(fresh_out.as_deref(), Ok("ok"), "an unrelated call must go through untouched: {fresh_out:?}");
+        });
+    }
+
+    /// The registry bookkeeping half of R3: `CallTokenGuard` has to remove its
+    /// entry on EVERY exit, including one that returns early (an `Err` from a
+    /// `?`, or the cancelled branch) rather than falling off the end of the
+    /// function -- which is exactly the shape `proxy_localhost` has, and why
+    /// a plain "remove after the last await" was not enough.
+    #[test]
+    fn the_call_token_guard_clears_the_registry_on_every_kind_of_exit() {
+        let registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+        // Normal scope exit (mirrors a successful `proxy_localhost` return).
+        {
+            let token = tokio_util::sync::CancellationToken::new();
+            registry.lock().unwrap().insert("call-a".to_string(), token);
+            let _guard = CallTokenGuard { registry: registry.clone(), id: "call-a".to_string() };
+            assert!(registry.lock().unwrap().contains_key("call-a"));
+        }
+        assert!(registry.lock().unwrap().is_empty(), "normal exit must clear the entry");
+
+        // Early return via `?` (mirrors guard_builtin_model / send() erroring
+        // after the token was already registered) -- a closure standing in
+        // for a function that returns before reaching its last line.
+        fn early_return(
+            registry: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
+        ) -> Result<(), String> {
+            let token = tokio_util::sync::CancellationToken::new();
+            registry.lock().unwrap().insert("call-b".to_string(), token);
+            let _guard = CallTokenGuard { registry: registry.clone(), id: "call-b".to_string() };
+            Err("simulated mid-flight failure".to_string())?;
+            unreachable!()
+        }
+        let _ = early_return(&registry);
+        assert!(registry.lock().unwrap().is_empty(), "an early ? return must still clear the entry");
+
+        // Panic unwinding through the guard's scope (Rust runs destructors
+        // while unwinding a panic that is not aborting the process).
+        let panicking = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let token = tokio_util::sync::CancellationToken::new();
+            registry.lock().unwrap().insert("call-c".to_string(), token);
+            let _guard = CallTokenGuard { registry: registry.clone(), id: "call-c".to_string() };
+            panic!("simulated panic while the call was in flight");
+        }));
+        assert!(panicking.is_err());
+        assert!(registry.lock().unwrap().is_empty(), "a panic unwinding through the guard must still clear the entry");
     }
 }
 

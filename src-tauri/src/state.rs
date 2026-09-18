@@ -258,6 +258,15 @@ pub struct AppState {
     /// stream is dropped → Ollama actually stops generating (David 2026-06-15:
     /// "Aktivität komplett stoppen"; aborting only stopped the JS loop before).
     pub stream_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Per-call cancellation tokens for the NON-streaming `proxy_localhost`
+    /// command (a tool call against the built-in engine / Ollama runs this
+    /// path, not the chunked one). Same registry shape as `stream_tokens`,
+    /// kept separate so a stream id and a call id can never collide. Without
+    /// this, Stop only aborted the JS-side promise while the Rust proxy sent
+    /// the already-issued request to completion against the local engine,
+    /// so a stopped agent turn still burned the full generation on the GPU
+    /// (review 2026-09-18, "Loch 3": the local engine ignores Stop).
+    pub call_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub install_status: Arc<Mutex<InstallState>>,
     /// Cancel flag for the ComfyUI installer (Bug #1, techx69 v2.4.3).
     /// `install_comfyui` polls this between steps; setting it from
@@ -418,6 +427,7 @@ impl AppState {
             download_tokens: Arc::new(Mutex::new(HashMap::new())),
             pull_tokens: Arc::new(Mutex::new(HashMap::new())),
             stream_tokens: Arc::new(Mutex::new(HashMap::new())),
+            call_tokens: Arc::new(Mutex::new(HashMap::new())),
             install_status: Arc::new(Mutex::new(InstallState::default())),
             comfyui_install_cancel: Arc::new(AtomicBool::new(false)),
             ollama_install: Arc::new(Mutex::new(InstallState::default())),
