@@ -1703,7 +1703,7 @@ pub(crate) fn start_failure_message(
             "The LU Engine exited immediately with an illegal-instruction fault. {missing_sentence} \
              The app did not retry, since the same binary would fail the same way again. Until a \
              build with broader CPU support is available, use LU Cloud or a custom endpoint for this \
-             machine instead: open Settings, AI Backends and switch away from the built-in engine. \
+             machine instead: open Settings, AI Backends and switch away from the LU Engine. \
              Check Settings, Troubleshoot for the CPU features line in the log."
         )
     } else if failure.port_taken {
