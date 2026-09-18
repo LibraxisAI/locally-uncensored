@@ -560,10 +560,11 @@ pub(crate) fn python_without_ssl_hint(diagnosis: &SslDiagnosis) -> String {
         SslDiagnosis::EnvironmentCollision =>
             "pip could not reach pypi.org because Python's ssl module failed to load, \
              but re-checked in a cleaned environment, the SAME interpreter imports ssl \
-             just fine. This was an environment problem, not a broken Python install. \
-             Restart LU and press Repair environment again; if you still see this after \
-             restarting, tell us which Linux distro and packaging (AppImage, deb, ...) \
-             you're running.".to_string(),
+             just fine. This is an environment problem, not a broken Python install, and \
+             LU already retried the step automatically once the environment checked out \
+             clean; it failed the same way again. Tell us which Linux distro and \
+             packaging (AppImage, deb, ...) you're running so we can find what keeps \
+             poisoning the ssl module on your machine.".to_string(),
         SslDiagnosis::GenuinelyMissing(err) =>
             format!(
                 "This Python really was built without the ssl module, so pip cannot reach \
@@ -640,6 +641,10 @@ pub(crate) fn pip_install_streaming_with_retry_raw(
 ) -> Result<(), PipFailure> {
     let mut delay_seconds = 10u64;
     let mut last_stderr = String::new();
+    // Review Runde 2, Punkt 11: bounded to ONE retry, and only for this one
+    // specific diagnosis, so a genuinely broken environment cannot loop
+    // forever chasing the same failure.
+    let mut ssl_collision_retry_used = false;
 
     for attempt in 1..=max_attempts {
         if cancel.as_ref().map(|c| c.load(Ordering::SeqCst)).unwrap_or(false) {
@@ -825,6 +830,27 @@ pub(crate) fn pip_install_streaming_with_retry_raw(
             .unwrap_or_default();
 
         if !is_transient_pip_error(&last_stderr) {
+            // Review Runde 2, Punkt 11: "Restart LU and press Repair
+            // environment again" was dead advice: python_command already
+            // cleans every spawn's environment, this run's own included, so
+            // a python_without_ssl_hint::EnvironmentCollision verdict means
+            // the run that just failed was ALREADY clean and a restart
+            // changes nothing. Self-heal before error message (harte Regel
+            // feedback-fix-the-whole-journey): run the SAME step again once
+            // instead of telling the customer to do something that cannot
+            // help. If it fails the same way twice, it genuinely needs a
+            // human, and the message below says so honestly.
+            let ssl_collision = !ssl_collision_retry_used
+                && pip_failure_kind(&last_stderr) == PipFailureKind::PythonWithoutSsl
+                && matches!(diagnose_python_ssl(python_bin), SslDiagnosis::EnvironmentCollision);
+            if ssl_collision {
+                ssl_collision_retry_used = true;
+                push_install_log(
+                    install_state,
+                    "Python's ssl module failed to load once; the environment checks out clean, retrying now...",
+                );
+                continue;
+            }
             return Err(PipFailure {
                 diagnosis: diagnose_pip_error_for(&last_stderr, Some(python_bin)),
                 stderr: last_stderr,
@@ -1250,7 +1276,7 @@ mod tests {
         // under --all-targets, the exact flag the CI runs
         // (ci.yml:222) and this branch's own gate script skipped. It was
         // also factually wrong: python.org's Windows installer registers
-        // "python", not "python3" — "python3.exe" on Windows is usually the
+        // "python", not "python3": "python3.exe" on Windows is usually the
         // Microsoft Store placeholder that exits 9009, which would have made
         // diagnose_python_ssl return Unknown on the Windows CI runner and
         // failed this very test there.
@@ -1265,6 +1291,108 @@ mod tests {
             "the real system python has ssl, so this must read as an environment problem: {msg}"
         );
         assert!(!msg.to_lowercase().contains("really was built without"), "{msg}");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_ssl_collision_is_retried_once_instead_of_just_telling_the_customer_to_restart() {
+        // Review Runde 2, Punkt 11: the OLD behaviour returned the collision
+        // diagnosis straight to the caller with "Restart LU and press Repair
+        // environment again", advice that cannot possibly help since the
+        // failed run was already clean. This proves the self-heal actually
+        // runs the step again and that a second, successful attempt is
+        // reported as success, not as a diagnosis.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("calls");
+        let fake = dir.path().join("fake-python-ssl-collision.sh");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"-c\" ]; then exit 0; fi\n\
+                 COUNT=$(cat '{marker}' 2>/dev/null || echo 0)\n\
+                 COUNT=$((COUNT + 1))\n\
+                 echo $COUNT > '{marker}'\n\
+                 if [ \"$COUNT\" = \"1\" ]; then\n\
+                 echo 'WARNING: pip is configured with locations that require TLS/SSL, however the ssl module in Python is not available.' 1>&2\n\
+                 exit 1\n\
+                 fi\n\
+                 exit 0\n",
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let result = pip_install_streaming_with_retry_raw(
+            &["-m", "pip", "install", "torch"],
+            &fake.to_string_lossy(),
+            3,
+            &state,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "the retried attempt should have succeeded: {}",
+            result.as_ref().err().map(|e| e.diagnosis.as_str()).unwrap_or("")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().trim(),
+            "2",
+            "the pip step must have run exactly twice: the failing attempt and the self-heal retry"
+        );
+        let logged = state.lock().unwrap().logs.join("\n");
+        assert!(
+            logged.contains("retrying now"),
+            "the self-heal must say what it is doing: {logged}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_genuine_ssl_gap_is_not_retried_forever() {
+        // Negative control: when the recheck ALSO fails (a real ssl-less
+        // interpreter), the self-heal branch must never fire, and the loop
+        // must not spin, it fails on the first non-transient error like any
+        // other GenuinelyMissing case.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("calls");
+        let fake = dir.path().join("fake-python-no-ssl.sh");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"-c\" ]; then exit 1; fi\n\
+                 COUNT=$(cat '{marker}' 2>/dev/null || echo 0)\n\
+                 COUNT=$((COUNT + 1))\n\
+                 echo $COUNT > '{marker}'\n\
+                 echo 'WARNING: pip is configured with locations that require TLS/SSL, however the ssl module in Python is not available.' 1>&2\n\
+                 exit 1\n",
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let result = pip_install_streaming_with_retry_raw(
+            &["-m", "pip", "install", "torch"],
+            &fake.to_string_lossy(),
+            3,
+            &state,
+            None,
+        );
+        assert!(result.is_err(), "a genuinely missing ssl module must not succeed");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().trim(),
+            "1",
+            "the pip step must have run exactly once: no self-heal retry for a real gap"
+        );
     }
 
     #[test]
