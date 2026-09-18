@@ -25,6 +25,8 @@ import { loadVectors } from '../lib/memoryEmbedDB'
 import { silentCallAllowed, pickSilentCallModel } from '../lib/silent-model-calls'
 import type { MemoryFile } from '../types/agent-mode'
 import { useCloudAuthStore } from '../stores/cloudAuthStore'
+import { runInLane } from '../lib/run-slot'
+import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
 
 interface MemoryWriteGuard {
   current: () => boolean
@@ -135,71 +137,109 @@ export async function extractMemoriesFromPair(
       wrote: () => { expectedEntries = useMemoryStore.getState().entries },
     }
 
-    // Same num_ctx as the chat that just ran on this model. Ollama reloads the
-    // model whenever num_ctx changes between requests, so an options-less
-    // extraction call silently dropped the user's context back to the default
-    // and paid a second model load per turn. Resolved for the model this call
-    // ACTUALLY runs on — on lu-cloud that is the cheap one, whose window has
-    // nothing to do with the active model's.
-    const numCtx = await resolveAgentNumCtx(
-      modelId,
-      getProviderIdFromModel(callModel),
-      useSettingsStore.getState().settings.contextWindowOverride,
-      callModel,
-    )
-    if (!guard.current()) return
-
-    // Re-read immediately before the request; protected or other-project
-    // titles must not leak through the extraction deduplication summary.
-    const existingSummary = useMemoryStore.getState().entries
-      .filter(e => !e.sensitive && !e.stale && e.scope === scope)
-      .slice(-20).map(e => `- [${e.type}] ${e.title}`).join('\n')
-    const messages = buildExtractionPrompt(userMessage, assistantResponse, existingSummary)
-    // Collect full response via streaming
-    let fullResponse = ''
-    const stream = provider.chatStream(modelId, messages, {
-      temperature: 0.1,
-      // 800 tokens leaves headroom for models that pad the JSON with prose or a
-      // short think block. At 500 the extraction tore off mid-object and the
-      // whole turn was lost without a word. Same number as the web.
-      maxTokens: 800,
-      contextWindow: numCtx,
-    })
-
-    for await (const chunk of stream) {
-      if (!guard.current()) return
-      if (chunk.content) fullResponse += chunk.content
-      if (chunk.done) break
-    }
-
-    // Parse and save — each memory goes through embedding-based write-decision
-    // resolution (ADD / UPDATE / NOOP) instead of a blind addMemory.
-    const result = parseExtractionResponse(fullResponse)
-    if (result.shouldSave) {
-      for (const memory of result.memories) {
+    // Runde 4 (review-lanes.md Blocker 1+6): this silent call books into the
+    // local lane too. Before this it ran straight against
+    // `provider.chatStream`, unregistered anywhere run-lanes.ts could see it.
+    // The visible turn that triggers it (`void extractMemoriesFromPair(...)`
+    // in useAgentChat.ts and useCodex.ts) fires this call WHILE ITS OWN
+    // `runInLane` body is still running, unawaited. An unmanaged local call
+    // here could then land on the built-in engine or Ollama at the exact
+    // moment the visible turn finishes and the next queued conversation gets
+    // admitted: the VRAM-swap race this whole module exists to prevent,
+    // started one level up from where run-lanes.ts can see it.
+    //
+    // The booking identity below is deliberately NOT `conversationId` itself.
+    // `run-slot.ts` tracks same-conversation re-entry with a depth counter so
+    // a foreground sub-agent can call back into its own parent's lane without
+    // deadlocking; that counter is still greater than zero right now, because
+    // the visible turn's own `runInLane` body has not returned yet. Booking
+    // under the real id would silently take the fast re-entry path, run this
+    // call immediately, and register nothing that keeps the lane held once
+    // the visible turn's own body finishes and releases behind it: exactly
+    // the unmanaged race this change is meant to close. A distinct suffixed
+    // id is a different identity to `admit`, so it queues for real behind
+    // whichever run currently holds the lane (the visible turn, still
+    // running) and gets its own real `release`. It cannot deadlock the way
+    // the sub-agent case can: extraction never blocks the visible turn on
+    // itself (it is `void`-fired, never awaited by the turn), so there is no
+    // cycle for a real queue wait to close.
+    //
+    // No real abort: this call has nothing running yet to interrupt when it
+    // is still queued, and a fire-and-forget extraction was never stoppable
+    // from the UI to begin with, so `stopAllBackgroundWork` draining it out
+    // of the queue (it just never runs) is the whole contract.
+    await runInLane(
+      { conversationId: `${conversationId}::memory-extraction`, lane: laneOf(callModel, currentLaneFacts()), abort: () => {} },
+      async () => {
+        // Same num_ctx as the chat that just ran on this model. Ollama reloads
+        // the model whenever num_ctx changes between requests, so an
+        // options-less extraction call silently dropped the user's context
+        // back to the default and paid a second model load per turn. Resolved
+        // for the model this call ACTUALLY runs on: on lu-cloud that is the
+        // cheap one, whose window has nothing to do with the active model's.
+        const numCtx = await resolveAgentNumCtx(
+          modelId,
+          getProviderIdFromModel(callModel),
+          useSettingsStore.getState().settings.contextWindowOverride,
+          callModel,
+        )
         if (!guard.current()) return
-        // Serial per-memory so the second (resolution) LLM call is bounded and
-        // we don't fire N concurrent inferences. Each is wrapped so one bad
-        // memory never aborts the rest.
-        try {
-          await resolveAndSaveMemory(memory, conversationId, scope, sourceKind, guard)
-        } catch {
+
+        // Re-read immediately before the request; protected or other-project
+        // titles must not leak through the extraction deduplication summary.
+        const existingSummary = useMemoryStore.getState().entries
+          .filter(e => !e.sensitive && !e.stale && e.scope === scope)
+          .slice(-20).map(e => `- [${e.type}] ${e.title}`).join('\n')
+        const messages = buildExtractionPrompt(userMessage, assistantResponse, existingSummary)
+        // Collect full response via streaming
+        let fullResponse = ''
+        const stream = provider.chatStream(modelId, messages, {
+          temperature: 0.1,
+          // 800 tokens leaves headroom for models that pad the JSON with prose
+          // or a short think block. At 500 the extraction tore off mid-object
+          // and the whole turn was lost without a word. Same number as the web.
+          maxTokens: 800,
+          contextWindow: numCtx,
+        })
+
+        for await (const chunk of stream) {
           if (!guard.current()) return
-          // Per-memory failure → fall back to a plain add so the fact isn't lost.
-          memState.addMemory({
-            type: memory.type,
-            title: memory.title,
-            description: memory.description,
-            content: memory.content,
-            tags: memory.tags,
-            source: conversationId,
-            scope,
-            sourceKind,
-          })
-          guard.wrote()
+          if (chunk.content) fullResponse += chunk.content
+          if (chunk.done) break
         }
-      }
-    }
+
+        // Parse and save: each memory goes through embedding-based
+        // write-decision resolution (ADD / UPDATE / NOOP) instead of a blind
+        // addMemory.
+        const result = parseExtractionResponse(fullResponse)
+        if (result.shouldSave) {
+          for (const memory of result.memories) {
+            if (!guard.current()) return
+            // Serial per-memory so the second (resolution) LLM call is
+            // bounded and we don't fire N concurrent inferences. Each is
+            // wrapped so one bad memory never aborts the rest.
+            try {
+              await resolveAndSaveMemory(memory, conversationId, scope, sourceKind, guard)
+            } catch {
+              if (!guard.current()) return
+              // Per-memory failure: fall back to a plain add so the fact
+              // isn't lost.
+              memState.addMemory({
+                type: memory.type,
+                title: memory.title,
+                description: memory.description,
+                content: memory.content,
+                tags: memory.tags,
+                source: conversationId,
+                scope,
+                sourceKind,
+              })
+              guard.wrote()
+            }
+          }
+        }
+      },
+    )
   } catch {
     // Extraction failures are non-critical — silently swallowed
   } finally {
