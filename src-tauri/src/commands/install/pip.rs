@@ -1245,7 +1245,16 @@ mod tests {
     fn a_verified_ssl_collision_and_a_verified_genuine_gap_read_differently() {
         // End to end through diagnose_pip_error_for, the function the real
         // install failure path calls (pip_install_streaming_with_retry_raw).
-        let python = if cfg!(windows) { "python3" } else { "python3" };
+        // Review Runde 2, Punkt 1 (BLOCKER): this used to name "python3" on
+        // both branches, which clippy's if_same_then_else correctly flagged
+        // under --all-targets, the exact flag the CI runs
+        // (ci.yml:222) and this branch's own gate script skipped. It was
+        // also factually wrong: python.org's Windows installer registers
+        // "python", not "python3" — "python3.exe" on Windows is usually the
+        // Microsoft Store placeholder that exits 9009, which would have made
+        // diagnose_python_ssl return Unknown on the Windows CI runner and
+        // failed this very test there.
+        let python = if cfg!(windows) { "python" } else { "python3" };
         let msg = diagnose_pip_error_for(
             "WARNING: pip is configured with locations that require TLS/SSL, \
              however the ssl module in Python is not available.",
