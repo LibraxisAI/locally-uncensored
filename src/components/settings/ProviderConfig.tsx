@@ -120,6 +120,9 @@ export function ProviderSettings() {
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
   const [showCloudWarning, setShowCloudWarning] = useState(false)
   const [pendingPreset, setPendingPreset] = useState<typeof PROVIDER_PRESETS[0] | null>(null)
+  // Review-Runde 2, Punkt 5: a takeover the OS keychain cannot durably park.
+  // See wouldLoseApiKeyOnRestart below for why this exists.
+  const [showKeyLossWarning, setShowKeyLossWarning] = useState(false)
   const [expandedProvider, setExpandedProvider] = useState<ProviderId | null>(null)
 
 
@@ -292,11 +295,31 @@ export function ProviderSettings() {
     setExpandedProvider('openai')
   }
 
+  // Review-Runde 2, Punkt 5: whether accepting `preset` into the shared
+  // `openai` slot would destroy a currently-set, non-empty API key with no
+  // way to bring it back. The displaced key only survives in
+  // `displaced.apiKey` for the running session (F3 Nachbesserung 6); a
+  // restart between takeover and handback still loses it, because the OS
+  // keychain layer (src-tauri/src/commands/secret.rs) only accepts a fixed,
+  // exact-match set of account names and refuses a synthetic per-backend
+  // "parked key" entry by design. Told up front, so the loss is a choice
+  // made with eyes open instead of a 401 the next time the backend returns.
+  function wouldLoseApiKeyOnRestart(preset: typeof PROVIDER_PRESETS[0]): boolean {
+    if (preset.providerId === 'ollama' || preset.providerId === 'anthropic') return false
+    const incoming = { name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed }
+    return takeoverClearsApiKey(providers.openai, incoming) && getProviderApiKey('openai') !== ''
+  }
+
   // Add a preset (enable a provider without disabling others)
   function selectPreset(preset: typeof PROVIDER_PRESETS[0]) {
     if (!preset.isLocal) {
       setPendingPreset(preset)
       setShowCloudWarning(true)
+      return
+    }
+    if (wouldLoseApiKeyOnRestart(preset)) {
+      setPendingPreset(preset)
+      setShowKeyLossWarning(true)
       return
     }
     applyPreset(preset)
@@ -826,13 +849,48 @@ export function ProviderSettings() {
             </button>
             <button
               onClick={() => {
-                if (pendingPreset) applyPreset(pendingPreset)
                 setShowCloudWarning(false)
+                if (pendingPreset && wouldLoseApiKeyOnRestart(pendingPreset)) {
+                  setShowKeyLossWarning(true)
+                  return
+                }
+                if (pendingPreset) applyPreset(pendingPreset)
                 setPendingPreset(null)
               }}
               className="px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
             >
               Continue
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Review-Runde 2, Punkt 5: standby key not surviving a restart */}
+      <Modal open={showKeyLossWarning} onClose={() => { setShowKeyLossWarning(false); setPendingPreset(null) }} title="">
+        <div className="space-y-4 text-center" data-testid="key-loss-warning-modal">
+          <h3 className="text-base font-semibold text-white">API Key Will Be Lost</h3>
+          <p className="text-[12px] text-gray-400 leading-relaxed">
+            The current OpenAI-compatible backend has an API key set. Switching backends clears it from this slot, and it will NOT survive an app restart while parked.
+          </p>
+          <p className="text-[12px] text-gray-400 leading-relaxed">
+            If you switch back to this backend later, you will need to enter the key again.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => { setShowKeyLossWarning(false); setPendingPreset(null) }}
+              className="px-4 py-1.5 rounded-lg text-[0.7rem] text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                if (pendingPreset) applyPreset(pendingPreset)
+                setShowKeyLossWarning(false)
+                setPendingPreset(null)
+              }}
+              className="px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
+            >
+              Switch Anyway
             </button>
           </div>
         </div>

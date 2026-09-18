@@ -281,4 +281,52 @@ describe('the wiring, so the rule reaches the screen', () => {
     const body = pane.slice(start, end)
     expect(body).toMatch(/setProviderApiKey\('openai', parkedObfuscated !== undefined \? deobfuscate\(parkedObfuscated\) : ''\)/)
   })
+
+  // Review-Runde 2, Punkt 5: displaced.apiKey only survives in memory for the
+  // running session (Nachbesserung 6). The OS keychain layer
+  // (src-tauri/src/commands/secret.rs) enforces a fixed, exact-match account
+  // allowlist and refuses a synthetic "parked key" entry, so a restart
+  // between takeover and handback still loses the displaced key. Since a
+  // durable per-backend keychain entry needs a Rust change out of scope
+  // here, the takeover instead warns before it happens.
+  it('a takeover that would clear a non-empty key is guarded before it runs', () => {
+    const start = pane.indexOf('function wouldLoseApiKeyOnRestart(')
+    const end = pane.indexOf('\n  }', start)
+    const body = pane.slice(start, end)
+    expect(body).toMatch(/takeoverClearsApiKey\(providers\.openai, incoming\)/)
+    expect(body).toMatch(/getProviderApiKey\('openai'\) !== ''/)
+  })
+
+  it('selectPreset asks before a local preset takeover that would lose the key', () => {
+    const start = pane.indexOf('function selectPreset(')
+    const end = pane.indexOf('\n  }', start)
+    const body = pane.slice(start, end)
+    expect(body).toMatch(/if \(wouldLoseApiKeyOnRestart\(preset\)\)/)
+    expect(body).toMatch(/setShowKeyLossWarning\(true\)/)
+  })
+
+  it('the cloud warning Continue button checks key loss before applying too', () => {
+    const cloudModalStart = pane.indexOf('{/* Cloud privacy warning popup */}')
+    const keyLossModalStart = pane.indexOf('{/* Review-Runde 2, Punkt 5')
+    expect(cloudModalStart).toBeGreaterThan(-1)
+    expect(keyLossModalStart).toBeGreaterThan(cloudModalStart)
+    const between = pane.slice(cloudModalStart, keyLossModalStart)
+    expect(between).toMatch(/if \(pendingPreset && wouldLoseApiKeyOnRestart\(pendingPreset\)\)/)
+    expect(between).toMatch(/setShowKeyLossWarning\(true\)/)
+  })
+
+  it('the key loss card is visible and in English, and asks for confirmation', () => {
+    const keyLossModalStart = pane.indexOf('{/* Review-Runde 2, Punkt 5')
+    const end = pane.indexOf('</Modal>', keyLossModalStart)
+    const body = pane.slice(keyLossModalStart, end)
+    expect(body).toMatch(/API Key Will Be Lost/)
+    expect(body).toMatch(/will NOT survive an app restart/)
+    expect(body).toMatch(/Switch Anyway/)
+  })
+
+  it('NEGATIVE CONTROL: no em dash in the key loss warning copy', () => {
+    const keyLossModalStart = pane.indexOf('{/* Review-Runde 2, Punkt 5')
+    const end = pane.indexOf('</Modal>', keyLossModalStart)
+    expect(pane.slice(keyLossModalStart, end)).not.toMatch(/[\u2013\u2014]/)
+  })
 })
