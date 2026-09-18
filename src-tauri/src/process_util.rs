@@ -123,27 +123,36 @@ fn inside_appdir(entry: &str, appdir: &str) -> bool {
 pub const APPIMAGE_PATH_FALLBACK: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// What a single foreign-spawn variable should become, given the value this
-/// process inherited, the AppImage's own mount point, the runtime-saved
-/// original value when one exists (Review Runde 2, Punkt 8: several AppRun
-/// builds export `APPIMAGE_ORIGINAL_<VAR>` for exactly this), and a fallback
-/// to use if stripping would otherwise leave nothing at all (PATH only,
-/// Punkt 10 above; every other variable passes `None` here since an unset
+/// process inherited, the AppImage's own mount point, and a fallback to use
+/// if stripping would otherwise leave nothing at all (PATH only, Punkt 10
+/// above; every other variable passes `None` here since an unset
 /// PYTHONHOME/SSL_CERT_FILE/... is a perfectly normal, correct state).
+///
+/// Runde 3, Nachbesserung 8: this used to also accept a runtime-saved
+/// `original: Option<&str>` and restore `APPIMAGE_ORIGINAL_<VAR>` when
+/// present (Review Runde 2, Punkt 8's comment claimed "several AppRun
+/// builds export" that variable). That claim could not be substantiated:
+/// no AppRun source is vendored in this tree, and neither linuxdeploy's nor
+/// AppImageKit's public repositories (checked by code search) define or
+/// reference `APPIMAGE_ORIGINAL_` anywhere. Per the coordinator's explicit
+/// instruction for an unbelegte claim like this, the branch is removed
+/// rather than kept as unverified, dead-in-practice logic; the safe half
+/// (filtering out entries under the AppImage mount, PATH's fallback to a
+/// fixed base list) is unaffected and is all that remains.
 ///
 /// Pure and testable off any platform: no `std::env` read happens here, only
 /// in [`strip_appimage_env`] which calls this once per variable in
 /// [`APPIMAGE_ENV_VARS`]. Returns:
 ///   * `None`: leave the variable exactly as inherited.
 ///   * `Some(None)`: remove the variable (a `SingleValue` that pointed
-///     inside the AppImage with no saved original, or a `PathList` whose
-///     every entry did and had no original or fallback).
-///   * `Some(Some(v))`: set the variable to `v`, either the restored
-///     original, the fallback, or (a `PathList`) whatever survived filtering.
+///     inside the AppImage, or a `PathList` whose every entry did and had
+///     no fallback).
+///   * `Some(Some(v))`: set the variable to `v`, either the fallback or (a
+///     `PathList`) whatever survived filtering.
 pub fn sanitized_env_value(
     shape: VarShape,
     current: &str,
     appdir: &str,
-    original: Option<&str>,
     empty_fallback: Option<&str>,
 ) -> Option<Option<String>> {
     if current.is_empty() {
@@ -155,12 +164,10 @@ pub fn sanitized_env_value(
     }
     match shape {
         VarShape::SingleValue => {
-            if !inside_appdir(current, appdir) {
-                None
-            } else if let Some(orig) = original {
-                Some(Some(orig.to_string()))
-            } else {
+            if inside_appdir(current, appdir) {
                 Some(None)
+            } else {
+                None
             }
         }
         VarShape::PathList => {
@@ -174,8 +181,6 @@ pub fn sanitized_env_value(
                 None
             } else if !kept.is_empty() {
                 Some(Some(kept.join(":")))
-            } else if let Some(orig) = original {
-                Some(Some(orig.to_string()))
             } else if let Some(fallback) = empty_fallback {
                 Some(Some(fallback.to_string()))
             } else {
@@ -214,9 +219,8 @@ fn apply_appimage_env(read_env: &dyn Fn(&str) -> Option<String>, mut apply: impl
     let Some(appdir) = read_env("APPDIR") else { return };
     for &(var, shape) in APPIMAGE_ENV_VARS {
         let Some(current) = read_env(var) else { continue };
-        let original = read_env(&format!("APPIMAGE_ORIGINAL_{var}"));
         let fallback = if var == "PATH" { Some(APPIMAGE_PATH_FALLBACK) } else { None };
-        match sanitized_env_value(shape, &current, &appdir, original.as_deref(), fallback) {
+        match sanitized_env_value(shape, &current, &appdir, fallback) {
             Some(Some(clean)) => apply(var, Some(&clean)),
             Some(None) => apply(var, None),
             None => {}
@@ -281,10 +285,10 @@ mod appimage_env_tests {
     }
 
     /// Most tests below care only about the mount-stripping behaviour, not
-    /// about a saved original or a fallback: this pins the old three-arg
-    /// call shape so those tests stay readable.
+    /// about a fallback: this pins the common call shape so those tests
+    /// stay readable.
     fn sanitize(shape: VarShape, current: &str, appdir: &str) -> Option<Option<String>> {
-        sanitized_env_value(shape, current, appdir, None, None)
+        sanitized_env_value(shape, current, appdir, None)
     }
 
     #[test]
@@ -345,39 +349,18 @@ mod appimage_env_tests {
         );
     }
 
-    // ── Review Runde 2, Punkt 8: restore a runtime-saved original ──────────
+    // ── Runde 3, Nachbesserung 8: no APPIMAGE_ORIGINAL_* restore ────────────
+    //
+    // The restore branch (Review Runde 2, Punkt 8) is gone: unverifiable
+    // against real AppRun/linuxdeploy source, see sanitized_env_value's doc
+    // comment. A single-value variable inside the mount is always removed
+    // now, with no "unless a saved original exists" exception left to test.
 
     #[test]
-    fn a_single_value_var_is_restored_to_its_saved_original_when_one_exists() {
+    fn a_single_value_var_inside_the_mount_is_always_removed() {
         let appdir = "/tmp/.mount_LU";
         let current = "/tmp/.mount_LU/etc/ssl/cert.pem";
-        let original = "/etc/ssl/cert.pem";
-        assert_eq!(
-            sanitized_env_value(VarShape::SingleValue, current, appdir, Some(original), None),
-            Some(Some(original.to_string())),
-            "a saved original beats plain removal"
-        );
-    }
-
-    #[test]
-    fn without_a_saved_original_a_single_value_var_still_falls_back_to_removal() {
-        // Negative control: most AppRun builds do not export
-        // APPIMAGE_ORIGINAL_<VAR>, so the common case must still behave like
-        // before this feature existed.
-        let appdir = "/tmp/.mount_LU";
-        let current = "/tmp/.mount_LU/etc/ssl/cert.pem";
-        assert_eq!(sanitized_env_value(VarShape::SingleValue, current, appdir, None, None), Some(None));
-    }
-
-    #[test]
-    fn a_path_list_var_emptied_by_stripping_prefers_a_saved_original_over_removal() {
-        let appdir = "/tmp/.mount_LU";
-        let current = "/tmp/.mount_LU/usr/share";
-        let original = "/usr/share:/usr/local/share";
-        assert_eq!(
-            sanitized_env_value(VarShape::PathList, current, appdir, Some(original), None),
-            Some(Some(original.to_string()))
-        );
+        assert_eq!(sanitized_env_value(VarShape::SingleValue, current, appdir, None), Some(None));
     }
 
     // ── Review Runde 2, Punkt 10: PATH never goes fully empty ──────────────
@@ -387,20 +370,8 @@ mod appimage_env_tests {
         let appdir = "/tmp/.mount_LU";
         let current = "/tmp/.mount_LU/usr/bin";
         assert_eq!(
-            sanitized_env_value(VarShape::PathList, current, appdir, None, Some(APPIMAGE_PATH_FALLBACK)),
+            sanitized_env_value(VarShape::PathList, current, appdir, Some(APPIMAGE_PATH_FALLBACK)),
             Some(Some(APPIMAGE_PATH_FALLBACK.to_string()))
-        );
-    }
-
-    #[test]
-    fn a_saved_original_still_wins_over_the_fallback_for_a_fully_poisoned_path() {
-        let appdir = "/tmp/.mount_LU";
-        let current = "/tmp/.mount_LU/usr/bin";
-        let original = "/usr/bin:/bin";
-        assert_eq!(
-            sanitized_env_value(VarShape::PathList, current, appdir, Some(original), Some(APPIMAGE_PATH_FALLBACK)),
-            Some(Some(original.to_string())),
-            "a real saved original is a better answer than the generic fallback"
         );
     }
 
@@ -412,7 +383,7 @@ mod appimage_env_tests {
         // this feature was never meant to touch.
         let appdir = "/tmp/.mount_LU";
         let current = "/tmp/.mount_LU/usr/share";
-        assert_eq!(sanitized_env_value(VarShape::PathList, current, appdir, None, None), Some(None));
+        assert_eq!(sanitized_env_value(VarShape::PathList, current, appdir, None), Some(None));
     }
 
     #[test]
