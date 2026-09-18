@@ -387,6 +387,22 @@ pub(crate) fn write_core_package_constraints(python_bin: &str) -> Option<PathBuf
 /// [`CORE_PACKAGES`], for exactly the reason every other network- or
 /// process-touching function in this codebase splits its parsing out:
 /// testable against a canned string, no pip and no venv required.
+///
+/// Runde 6, F14 (review Runde 6, Abschnitt 9): `pip freeze` prints a package
+/// installed from a local wheel or a direct URL as a PEP 508 direct
+/// reference, `torch @ file:///.../torch-2.7.0-cp312-cp312-linux_x86_64.whl`
+/// rather than `torch==2.7.0`. The name-matching filter still finds "torch"
+/// in that line (the split on `' '` catches the name before the `@` is ever
+/// reached), so it used to sail into the constraints file unchanged. pip
+/// refuses a `@` line in a CONSTRAINTS file outright ("links are not allowed
+/// as constraints"), and that refusal is not per-package: it fails the whole
+/// `-c <file>` argument, so EVERY custom node's own install would start
+/// failing, not just the one node that happens to touch a core package. A
+/// venv built the normal way, from the index, never produces this shape (see
+/// `write_core_package_constraints`'s own doc: it only ever reads THIS
+/// venv's `pip freeze` after this repair's own build), so this is a defensive
+/// skip for a shape that should not occur today, not a shape this file
+/// exercises against a real freeze.
 fn core_constraint_lines(freeze: &str) -> Vec<&str> {
     freeze
         .lines()
@@ -396,7 +412,7 @@ fn core_constraint_lines(freeze: &str) -> Vec<&str> {
                 .next()
                 .unwrap_or("")
                 .to_lowercase();
-            CORE_PACKAGES.contains(&name.as_str())
+            CORE_PACKAGES.contains(&name.as_str()) && !line.contains('@')
         })
         .collect()
 }
@@ -603,6 +619,21 @@ mod tests {
         let freeze = "torchsde==0.2.6\ntorchdiffeq==0.2.4\ntorch==2.7.0\n";
         let lines = core_constraint_lines(freeze);
         assert_eq!(lines, vec!["torch==2.7.0"]);
+    }
+
+    /// Runde 6, F14 (review Runde 6, Abschnitt 9): a package installed from a
+    /// local wheel or a direct URL freezes as a PEP 508 direct reference
+    /// (`torch @ file:///...`). pip's own name-splitting still finds "torch"
+    /// in that line, so without the `@` check this line would sail into the
+    /// constraints file, and pip refuses a `@` line in a constraints file
+    /// outright ("links are not allowed as constraints"), failing every
+    /// node's install, not only the one that touches torch.
+    #[test]
+    fn a_direct_url_reference_line_is_skipped_even_though_its_name_matches() {
+        let freeze = "torch @ file:///tmp/torch-2.7.0-cp312-cp312-linux_x86_64.whl\n\
+                      numpy==1.26.4\n";
+        let lines = core_constraint_lines(freeze);
+        assert_eq!(lines, vec!["numpy==1.26.4"], "the @ line must not appear in the constraints at all: {lines:?}");
     }
 
     // ── permission-denied → --user retry (Motion install card, 2026-07-19) ──
