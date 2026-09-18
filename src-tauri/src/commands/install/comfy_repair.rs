@@ -554,7 +554,13 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
                 );
                 return;
             }
-            if outcome.failures.is_empty() && !outcome.reinstalled.is_empty() {
+            // Runde 6, F13 (review Runde 6, Abschnitt 5): see
+            // `NodeReinstallOutcome::needs_reverification`'s own doc. This
+            // gate used to run only when EVERY node succeeded, which skipped
+            // it whenever an unrelated node failed even though a different
+            // node had already installed something that could have damaged
+            // the environment.
+            if outcome.needs_reverification() {
                 update(
                     "installing",
                     "Re-checking the environment after restoring custom node dependencies...",

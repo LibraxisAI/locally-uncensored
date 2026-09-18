@@ -415,6 +415,19 @@ pub(crate) struct NodeReinstallOutcome {
     pub(crate) cancelled: bool,
 }
 
+impl NodeReinstallOutcome {
+    /// Runde 6, F13 (review Runde 6, Abschnitt 5): the second verification
+    /// gate after the node loop used to run only when EVERY node succeeded
+    /// (`failures.is_empty()`), so one unrelated node failure skipped the
+    /// gate even though a DIFFERENT node had already installed something and
+    /// could have quietly downgraded a core package. What decides whether
+    /// there is anything new to re-verify is whether at least one node's
+    /// requirements actually got installed, not whether every node did.
+    pub(crate) fn needs_reverification(&self) -> bool {
+        !self.reinstalled.is_empty()
+    }
+}
+
 /// Runde 5 (review-engine.md Runde 4, Folgeposten): after the repair
 /// rebuilds `ComfyUI/venv` from nothing, every EXISTING `custom_nodes/*`
 /// folder's own `requirements.txt` (RMBG, VHS, controlnet_aux, whatever the
@@ -636,4 +649,43 @@ mod tests {
         assert!(outcome.failures.is_empty());
     }
 
+    // ── Runde 6, F13: the second verification gate must run whenever
+    // anything was actually installed, even if a DIFFERENT node failed ──────
+
+    #[test]
+    fn needs_reverification_is_true_even_when_one_node_also_failed() {
+        // The exact F13 case: node A installed cleanly (and could have
+        // downgraded a core package), node B failed for its own unrelated
+        // reason. The old `failures.is_empty()` gate would have skipped
+        // re-verification here solely because of node B, over damage node A
+        // may have already done.
+        let outcome = NodeReinstallOutcome {
+            reinstalled: vec!["AlphaNode".to_string()],
+            failures: vec![("BetaNode".to_string(), "pip exited 1".to_string())],
+            cancelled: false,
+        };
+        assert!(outcome.needs_reverification());
+    }
+
+    #[test]
+    fn needs_reverification_is_false_when_nothing_installed_even_with_failures() {
+        // Negative control: every node failed outright, nothing was ever
+        // installed, so there is nothing new for a second gate to catch.
+        let outcome = NodeReinstallOutcome {
+            reinstalled: Vec::new(),
+            failures: vec![("BetaNode".to_string(), "pip exited 1".to_string())],
+            cancelled: false,
+        };
+        assert!(!outcome.needs_reverification());
+    }
+
+    #[test]
+    fn needs_reverification_is_true_on_a_clean_run() {
+        let outcome = NodeReinstallOutcome {
+            reinstalled: vec!["AlphaNode".to_string()],
+            failures: Vec::new(),
+            cancelled: false,
+        };
+        assert!(outcome.needs_reverification());
+    }
 }
