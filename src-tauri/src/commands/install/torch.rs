@@ -567,8 +567,23 @@ pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>,
         // Empty or unreachable: cannot tell, so do not block (see doc above).
         _ => return TorchPythonDecision::Proceed,
     };
-    let interpreters = interpreter_inventory();
     let probe: fn(&str) -> bool = if will_build_venv { python_can_build_a_venv } else { python_can_use_an_existing_venv };
+    // Runde 6, F9 (review Runde 5, Abschnitt 7): `interpreter_inventory()`
+    // spawns one subprocess per candidate path `python_interpreters()`
+    // finds, and it used to run on EVERY Install/Repair/Update click
+    // regardless of outcome, even the common, healthy-path case where
+    // `current_python` itself already serves torch and passes the probe
+    // (the early return `decide_torch_python` makes below). This mirrors
+    // that same check here, before the scan, so a healthy environment never
+    // pays for interpreters it was never going to need. `decide_torch_python`
+    // keeps its own copy for callers that hand it an already-known
+    // `interpreters` list directly (its unit tests, and any future caller
+    // that already has one) rather than depending on this early return
+    // upstream of it.
+    if supported.contains(&current) && probe(current_python) {
+        return TorchPythonDecision::Proceed;
+    }
+    let interpreters = interpreter_inventory();
     decide_torch_python(current_python, current, &supported, interpreters, retry_action, will_build_venv, probe)
 }
 
