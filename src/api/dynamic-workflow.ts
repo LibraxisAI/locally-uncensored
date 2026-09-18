@@ -772,8 +772,10 @@ export async function buildDynamicWorkflow(
     inputs: { text: params.prompt, clip: [clipSourceId, clipOutputSlot] },
   }
 
-  if (strategy === 'unet_ernie_image') {
-    // ERNIE-Image uses ConditioningZeroOut for negative (NOT CLIPTextEncode)
+  if (strategy === 'unet_ernie_image' || (strategy === 'unet_krea2' && params.cfgScale === 1)) {
+    // ERNIE-Image always, and Krea 2 at CFG 1 (K9, GH #136, LUSTIFY! v10
+    // Krea2): the negative branch is a no-op at CFG 1, so ConditioningZeroOut
+    // replaces the wasted CLIPTextEncode pass (NOT a plain negative prompt).
     workflow[negId] = {
       class_type: 'ConditioningZeroOut',
       inputs: { conditioning: [posId, 0] },
@@ -1012,6 +1014,16 @@ export async function buildDynamicWorkflow(
     if (condSlots.length >= 1) positiveRef = [i2vId, condSlots[0]]
     if (condSlots.length >= 2) negativeRef = [i2vId, condSlots[1]]
     delete workflow[latentId]
+  }
+
+  // K9 (GH #136): Krea 2's own AuraFlow-family sampling shift. Both author
+  // workflows in the issue (FinePorn, LUSTIFY! v10 Krea2) carry
+  // ModelSamplingAuraFlow at shift 4; without it the sigma schedule the model
+  // was trained on never applies.
+  if (strategy === 'unet_krea2') {
+    const shiftId = String(n++)
+    workflow[shiftId] = { class_type: 'ModelSamplingAuraFlow', inputs: { model: [samplerModelId, 0], shift: 4.0 } }
+    samplerModelId = shiftId
   }
 
   // ─── Phase 4: Sampling ───
