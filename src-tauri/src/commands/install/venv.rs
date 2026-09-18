@@ -748,6 +748,11 @@ mod tests {
 
     #[test]
     fn creating_a_venv_gives_up_on_a_raised_flag_and_leaves_no_ruin() {
+        // Runde 2 Nachlauf: this registers a real tracked child, however
+        // briefly, and `state::shutdown_tests` calls the real process-wide
+        // `kill_installer_children` under the parallel harness. See
+        // `installer_children_test_lock`'s doc comment.
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         // The flag is raised before the call, so the outcome is the same on
         // every machine. That the loop keeps reading it WHILE the child runs
         // is the other half, and that is pinned deterministically in

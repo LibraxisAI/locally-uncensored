@@ -702,6 +702,12 @@ mod shutdown_tests {
     /// which is the only runtime proof available for it on this machine.
     #[test]
     fn shutdown_kills_the_tracked_children_and_empties_the_slots() {
+        // Runde 2 Nachlauf: `shutdown_subprocesses` reaches the process-wide
+        // installer-children registry (`install::kill_installer_children`),
+        // which under the parallel test harness would otherwise SIGKILL
+        // another test's still-running pip/venv child. See
+        // `installer_children_test_lock`'s doc comment.
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
 
         let ollama = sleeper();
@@ -775,6 +781,7 @@ mod shutdown_tests {
     /// 127.0.0.1:11435, and the next launch binds that port (T-39).
     #[test]
     fn shutdown_takes_the_tunnel_with_it() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
         let pid = park_a_tunnel(&state);
 
@@ -793,6 +800,7 @@ mod shutdown_tests {
     /// kernel is free to have recycled by then.
     #[test]
     fn shutdown_empties_the_tunnel_slot_so_a_second_pass_finds_nothing() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
         let pid = park_a_tunnel(&state);
 
@@ -811,6 +819,7 @@ mod shutdown_tests {
     #[test]
     #[cfg(unix)]
     fn shutdown_takes_the_tunnels_children_with_it() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
 
         let mut cmd = std::process::Command::new(crate::test_support::posix_shell());
@@ -838,6 +847,7 @@ mod shutdown_tests {
     /// Quitting with nothing running must not panic or block.
     #[test]
     fn shutdown_on_an_idle_state_is_a_no_op() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
         state.shutdown_subprocesses();
         state.shutdown_subprocesses();

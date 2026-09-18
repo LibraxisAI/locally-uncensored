@@ -175,10 +175,15 @@ pub fn needs_cpu_fallback() -> bool {
 
 /// Is an NVIDIA driver present (nvidia-smi exits 0)?
 fn nvidia_present() -> bool {
-    // CREATE_NO_WINDOW: this probe runs on every ComfyUI start — without it an
+    // CREATE_NO_WINDOW: this probe runs on every ComfyUI start, without it an
     // NVIDIA Windows box flashes a console window each time. End users must
     // never see a terminal pop up.
-    let mut cmd = Command::new("nvidia-smi");
+    //
+    // K14 Runde 2, Punkt 5: this exact spot was the one the review found
+    // still using a bare Command::new for nvidia-smi (a foreign vendor CLI)
+    // after the K14 commit claimed the app's nvidia-smi call sites were
+    // covered.
+    let mut cmd = crate::process_util::foreign_system_command("nvidia-smi");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.output()
