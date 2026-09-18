@@ -2057,16 +2057,20 @@ fn start_after_stop(
     } else {
         SecondAttempt::SameOffload
     };
+    // R1-10: bound once so both the argv AND the sanity-probe restart ladder
+    // below build against the SAME tuning the retry actually ran with — a
+    // CPU-only retry must not have serve_or_heal_garbled think it still has
+    // a card to give up.
+    let retry_tuning = if offload_was_tried { on_the_processor(tuning) } else { tuning.clone() };
     let retry_args = if offload_was_tried {
         tracing::warn!(
             target: "engine",
             port = retry_port,
             "the retry drops GPU offload and runs the LU Engine on the processor"
         );
-        let on_the_cpu = EngineTuning { gpu_layers: 0, ..tuning.clone() };
-        build_server_args(model_path, &on_the_cpu, retry_port, slot_dir, mmproj, None)
+        build_server_args(model_path, &retry_tuning, retry_port, slot_dir, mmproj, None)
     } else if retry_port != port {
-        build_server_args(model_path, tuning, retry_port, slot_dir, mmproj, auto_ngl)
+        build_server_args(model_path, &retry_tuning, retry_port, slot_dir, mmproj, auto_ngl)
     } else {
         desired_args.clone()
     };
@@ -2084,7 +2088,7 @@ fn start_after_stop(
         ctx,
         AttemptFlags { auto_layers: retry_auto, cpu_fallback: offload_was_tried },
     ) {
-        Ok(_) => {
+        Ok(startup) => {
             if offload_was_tried {
                 tracing::warn!(
                     target: "engine",
@@ -2094,14 +2098,28 @@ fn start_after_stop(
             } else {
                 tracing::info!(target: "engine", port = retry_port, attempt = 2, "the LU Engine is serving");
             }
-            Ok(serde_json::json!({
-                "status": "started",
-                "port": retry_port,
-                "model_path": model_path,
-                "ctx": ctx,
-                "retried": true,
-                "cpuOnly": offload_was_tried,
-            }))
+            // R1-10: the first attempt's success path already runs the
+            // sanity probe (bug a) through serve_or_heal_garbled; the retry
+            // path used to skip it entirely and hand back a bare "started"
+            // object, so a garbled answer on the SECOND attempt was never
+            // caught or healed. `retried`/`cpuOnly` are added on top so
+            // every existing caller keeps reading exactly those two keys.
+            let mut answer = serve_or_heal_garbled(
+                state,
+                &binary,
+                model_path,
+                &retry_tuning,
+                retry_port,
+                slot_dir,
+                mmproj,
+                &retry_args,
+                ctx,
+                retry_auto,
+                &startup,
+            );
+            answer["retried"] = serde_json::json!(true);
+            answer["cpuOnly"] = serde_json::json!(offload_was_tried);
+            Ok(answer)
         }
         Err(second) => Err(start_failure_message(&second, retry_port, deadline, second_attempt)),
     }
@@ -5008,6 +5026,26 @@ mod tests {
             wechsel.contains("with_note_on_top(&msg, RESTORED_NOTE)"),
             "the good news is appended again instead of put on top"
         );
+    }
+
+    #[test]
+    fn the_retry_in_start_after_stop_runs_the_sanity_probe_too() {
+        // R1-10: `start_after_stop`'s FIRST attempt success path always ran
+        // the sanity probe (bug a) through `serve_or_heal_garbled`, but the
+        // SECOND attempt (the one clean retry) used to hand back a bare
+        // "started" object instead — a garbled answer on the retry was
+        // never caught or healed. `serve_or_heal_garbled(` must now appear
+        // twice in this function's body: once per attempt.
+        let src = include_str!("engine.rs");
+        let body = src
+            .split("fn start_after_stop(")
+            .nth(1)
+            .expect("start_after_stop is gone")
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        let count = body.matches("serve_or_heal_garbled(").count();
+        assert_eq!(count, 2, "expected the sanity probe on both attempts, found it {count} time(s)");
     }
 
     #[test]
