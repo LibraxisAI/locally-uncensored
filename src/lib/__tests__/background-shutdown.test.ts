@@ -76,6 +76,21 @@ function wartenderLoopPass(convId: string): void {
   })
 }
 
+/**
+ * A local run that has only just booked its place on the lane and is still
+ * queued behind another conversation, the way `lib/run-slot.ts` leaves it
+ * the moment `runInLane` is called: `registerAborter` and `bookRun` both
+ * fire immediately, `setGenerating` only once the run actually starts. No
+ * token has flowed yet, so `generating` does not know this conversation
+ * exists.
+ */
+function wartenderLokalerLauf(convId: string): { released: () => boolean } {
+  let released = false
+  useGenerationStore.getState().registerAborter(convId, () => { released = true })
+  useGenerationStore.getState().bookRun(convId, 'local')
+  return { released: () => released }
+}
+
 beforeEach(() => {
   useAgentTaskStore.setState({ byConv: {} })
   useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
@@ -140,6 +155,17 @@ describe('stopAllBackgroundWork: reach (Runde 2, Blocker 2)', () => {
 
     expect(useAgentLoopStore.getState().loops).toEqual({})
     expect(isRunStopped('conv-loop')).toBe(true)
+  })
+
+  it('reaches a local run that is still queued and has not generated a single token yet', () => {
+    // Runde 4 (review-lanes.md Blocker 1+6): `generating` alone cannot see
+    // this shape, only `generationStore.runs` can.
+    const wartend = wartenderLokalerLauf('conv-wartend')
+
+    stopAllBackgroundWork()
+
+    expect(wartend.released()).toBe(true)
+    expect(isRunStopped('conv-wartend')).toBe(true)
   })
 
   it('reaches all three shapes at once, none crowding out another', () => {

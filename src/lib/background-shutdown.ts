@@ -38,6 +38,22 @@
  * (`backgroundShutdownStore`), dass die Verbindung weg ist und laufende
  * Arbeit wartet bzw. beim naechsten Versuch wiederholt. Ein Wackler kostet
  * damit hoechstens eine verzoegerte Antwort, nie den ganzen Lauf.
+ *
+ * ── Runde 4 (review-lanes.md Blocker 1+6): eine vierte Quelle, `generating`
+ * konnte sie nicht sehen ──────────────────────────────────────────────────
+ *
+ * `lib/run-slot.ts` bucht einen Lauf (`generationStore.runs[id]`) und meldet
+ * seinen Abbruchgriff (`aborters[id]`) an, SOBALD er sich bei der lokalen
+ * Spur anstellt, nicht erst, wenn er drankommt. `setGenerating(id, true)`
+ * ruft dagegen erst der Sendeweg selbst, innerhalb seines eigenen Rumpfs, der
+ * beim blossen Warten noch gar nicht angelaufen ist. Ein Lauf, der NUR
+ * wartet, also noch kein Token gezogen hat, stand damit in `runs`, aber in
+ * keiner der drei Quellen unten. Diese Funktion sah ihn nicht, rief seinen
+ * Abbruchgriff nie, und die Zeile blieb in `run-lanes.ts`s Warteschlange
+ * stehen: Abmelden, Fenster schliessen oder App beenden liessen einen
+ * wartenden Lauf danach einfach lostraben, sobald sein Platz frei wurde,
+ * fuer einen Nutzer, der laengst weg war. `runs` ist jetzt die vierte
+ * Quelle.
  */
 import { useAgentTaskStore } from '../stores/agentTaskStore'
 import { useGenerationStore } from '../stores/generationStore'
@@ -62,6 +78,10 @@ export function stopAllBackgroundWork(): void {
   // Platz): jede Konversation mit einem wartenden /loop-Pass zaehlt, nicht
   // nur eine.
   for (const convId of Object.keys(useAgentLoopStore.getState().loops)) ids.add(convId)
+  // Runde 4: ein Lauf, der sich erst bei der lokalen Spur angestellt hat und
+  // noch kein Token gezogen hat, steht in `runs`, aber in keiner der drei
+  // Quellen oben (siehe Kopf der Datei).
+  for (const convId of Object.keys(useGenerationStore.getState().runs)) ids.add(convId)
 
   for (const convId of ids) {
     useAgentTaskStore.getState().cancelAll(convId)
