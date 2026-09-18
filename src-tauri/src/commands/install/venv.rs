@@ -359,9 +359,15 @@ pub(crate) fn finish_rebuild(comfy_dir: &Path, retired: Option<PathBuf>) {
 /// `retire_for_rebuild` and the new venv passing verification (a crash, a
 /// power loss, the process being killed), the customer's ComfyUI folder can
 /// be left with a `venv.lu-old-*` sibling and NO working `venv` at all
-/// (`restore_after_failed_rebuild` never got to run). Called at the START of
-/// every Repair and Install run, before anything else touches the folder:
-/// if there is already a usable venv, this does nothing at all. If there is
+/// (`restore_after_failed_rebuild` never got to run). Runde 6, F12 (review
+/// Runde 6): called at the START of every entry point that reads or writes
+/// this venv, not only Repair, where it was originally called alone. Install
+/// (both the existing-venv and the fresh-venv branch) and Update read
+/// `comfy_venv_state`/`venv_python_path` just as directly, and used to read
+/// an orphaned rebuild as "no venv" and fall back to the system Python,
+/// walking right past a several-gigabyte recoverable folder instead of
+/// adopting it back. Called before anything else touches the folder: if
+/// there is already a usable venv, this does nothing at all. If there is
 /// not, but a retired one exists, the NEWEST retired folder (the one this
 /// run's own interrupted attempt would have made) is restored to `venv`
 /// before the run continues; any OLDER retired or abandoned staging folder

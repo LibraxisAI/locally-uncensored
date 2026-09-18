@@ -689,6 +689,14 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         );
     }
 
+    // Runde 6, F12: same reasoning as install_comfyui's call. Without this,
+    // an Update pressed after a Repair that crashed mid rebuild reads
+    // `comfy_venv_state` below as `Absent` (the retired `venv.lu-old-*`
+    // sibling is not named `venv`), falls back to the system Python, and
+    // never notices the several-gigabyte orphan sitting right next to it.
+    // A no-op once a usable `venv` already exists.
+    restore_orphaned_venv_if_needed(&comfy_dir);
+
     // Prefer the install's venv Python (same preference the launcher uses);
     // refuse without a usable interpreter — a pulled core with stale
     // requirements is worse than no update (frontend package pins move often).
@@ -1129,4 +1137,28 @@ mod tests {
         }
     }
 
+    /// Runde 6, F12: Update reads `comfy_venv_state` synchronously, before
+    /// even spawning its worker thread, to decide which Python to install
+    /// requirements into. Without recovering an orphaned `venv.lu-old-*`
+    /// first, that read comes back `Absent` and Update silently falls back
+    /// to the system Python instead of adopting the recoverable venv, the
+    /// exact failure mode F12 is about, just from the Update button instead
+    /// of Install.
+    #[test]
+    fn update_also_recovers_an_orphaned_venv_before_reading_the_venv_state() {
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let recovery_call = needle("restore_orphaned_venv_if_needed(&comfy_d", "ir);");
+        let venv_state_read = needle("comfy_venv_state(&comfy_d", "ir)");
+
+        // Both needles occur twice in the file (Repair has its own copies);
+        // only the occurrence inside update_comfyui, i.e. after its `fn`
+        // keyword, is what this test is about.
+        let at_recovery = src[update_fn_start..].find(&recovery_call).map(|i| i + update_fn_start).expect("update_comfyui no longer recovers an orphaned venv");
+        let at_state_read = src[update_fn_start..].find(&venv_state_read).map(|i| i + update_fn_start).expect("update_comfyui no longer reads the venv state");
+
+        assert!(at_recovery < at_state_read, "orphan recovery must run before update_comfyui reads the venv state");
+    }
 }

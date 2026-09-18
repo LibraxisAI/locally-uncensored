@@ -36,7 +36,7 @@ use super::comfy_job::{ComfyJob, COMFY_JOB};
 use super::comfy_job::comfy_job_busy_message;
 use super::pip::pip_install_streaming_with_retry_cancellable;
 use super::torch::plan_pytorch_install;
-use super::venv::{create_comfyui_venv, is_pep668_protected};
+use super::venv::{create_comfyui_venv, is_pep668_protected, restore_orphaned_venv_if_needed};
 #[cfg(target_os = "windows")]
 use super::git::{windows_git_install_hint, windows_git_probe, WindowsGitState};
 #[cfg(target_os = "windows")]
@@ -294,6 +294,17 @@ pub fn install_comfyui(
             update("cancelled", "Install cancelled before it started.");
             return;
         }
+
+        // Runde 6, F12: a crash mid Repair can leave a `venv.lu-old-*` sibling
+        // and no usable `venv` behind (see venv.rs's own doc). This used to be
+        // adopted back only when the customer next pressed Repair; pressing
+        // Install instead (a target directory that already has a ComfyUI
+        // checkout, the "already exists" branch below) walked right past the
+        // several-gigabyte orphan and read the folder as having no venv at
+        // all. A no-op on a healthy install (`venv_python_path` already
+        // exists), so this is safe to call unconditionally, before anything
+        // else looks at the folder.
+        restore_orphaned_venv_if_needed(&target_dir);
 
         // Bug N (juliandiggins-stack issue #40, 2026-05-18) — probe Windows
         // git BEFORE clone so a WSL/non-native git on PATH surfaces a clear
@@ -914,6 +925,31 @@ mod tests {
                 "{what}: the search string finds itself in this test, so its .expect can never fire",
             );
         }
+    }
+
+    /// Runde 6, F12: a crashed Repair can leave an orphaned `venv.lu-old-*`
+    /// sibling behind (venv.rs's `restore_orphaned_venv_if_needed`). Install
+    /// must adopt it back too, before either the "already exists" branch or
+    /// the fresh-venv branch looks at the folder, or a customer who presses
+    /// Install instead of Repair after a crash loses a working venv to a
+    /// silent rebuild. Read out of the source like the two guards above.
+    #[test]
+    fn install_also_recovers_an_orphaned_venv_before_touching_the_folder() {
+        let src = include_str!("comfy_install.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let recovery_call = needle("restore_orphaned_venv_if_needed(&target_dir", ");");
+        let clone_start = needle("Cloning ComfyUI to ", "{:?}");
+        let existing_venv_check = needle("comfy_venv_state(&target_dir", ")");
+
+        let at_recovery = src.find(&recovery_call).expect("install no longer recovers an orphaned venv");
+        let at_clone = src.find(&clone_start).expect("the clone step marker is gone");
+        let at_existing_check = src.find(&existing_venv_check).expect("the existing-venv detection is gone");
+
+        assert!(at_recovery < at_clone, "orphan recovery must run before git clone/pull touches the folder");
+        assert!(at_recovery < at_existing_check, "orphan recovery must run before the existing-venv state is read");
+
+        assert_eq!(src.matches(&recovery_call).count(), 1, "the recovery call must appear exactly once");
     }
 }
 
