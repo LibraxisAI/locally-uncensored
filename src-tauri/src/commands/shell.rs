@@ -3,6 +3,7 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -299,19 +300,42 @@ mod windows_stop_tests {
 
 /// Ein Vordergrundbefehl, solange er laeuft. `pid` fehlt im Fenster zwischen
 /// Anmelden und Start.
-#[derive(Default)]
 struct RunningShell {
     pid: Option<u32>,
     cancelled: bool,
+    /// R1-9: wann diese Karte entstand. `shell_mark_cancelled` legt ueber
+    /// `or_default()` einen Eintrag an, auch wenn der zugehoerige Lauf nie
+    /// startet (ein doppelter oder verspaeteter Abbruch, eine falsche
+    /// Kennung vom Aufrufer) — ohne `pid` faellt `ShellSlot::drop` nie fuer
+    /// ihn, also blieb die Karte fuer den Rest der Sitzung liegen. `Instant`
+    /// statt `SystemTime`: eine Uhrumstellung darf das Fegen nicht verzerren.
+    created_at: Instant,
 }
+
+impl Default for RunningShell {
+    fn default() -> Self {
+        RunningShell { pid: None, cancelled: false, created_at: Instant::now() }
+    }
+}
+
+/// Wie alt eine Karte ohne `pid` werden darf, bevor `shell_register` sie
+/// fegt. Eine Minute ist grosszuegig gegen jede reale Wettlaufbreite
+/// zwischen Anmelden und Start (Millisekunden), aber kurz genug, dass eine
+/// lang laufende Sitzung mit vielen Abbruechen nicht unbegrenzt waechst.
+const STALE_SHELL_ENTRY_AGE: Duration = Duration::from_secs(60);
 
 static RUNNING_SHELLS: once_cell::sync::Lazy<Mutex<std::collections::HashMap<String, RunningShell>>> =
     once_cell::sync::Lazy::new(Default::default);
 
 /// Diesen Lauf anmelden, bevor gestartet wird. Ein Abbruch, der schon da war,
 /// bleibt stehen — sonst gewaenne der Start den Wettlauf gegen den Stop.
+///
+/// R1-9: vor dem Eintragen werden veraltete `pid`-lose Karten weggeraeumt.
+/// Ein Eintrag MIT `pid` ist ein echter laufender Prozess und wird nie
+/// gefegt, gleich wie alt.
 fn shell_register(call_id: &str) {
     let mut karte = RUNNING_SHELLS.lock().unwrap();
+    karte.retain(|_, eintrag| eintrag.pid.is_some() || eintrag.created_at.elapsed() < STALE_SHELL_ENTRY_AGE);
     karte.entry(call_id.to_string()).or_default();
 }
 
@@ -813,6 +837,58 @@ mod shell_cancel_tests {
         assert_eq!(v["exitCode"], serde_json::json!(-1));
         assert_eq!(v["stdout"], serde_json::json!("halb fertig"));
         assert!(v["stderr"].as_str().unwrap().contains("stopped the run"));
+    }
+
+    /// R1-9 Testhelfer: `created_at` einer Karte auf ein Alter zurueckdatieren,
+    /// ohne `sleep` im Test. `checked_sub` statt Subtraktion: `Instant` darf
+    /// auf mancher Plattform nicht unter den Prozessstart fallen.
+    fn shell_test_set_created_at(call_id: &str, age: Duration) {
+        let mut karte = RUNNING_SHELLS.lock().unwrap();
+        if let Some(eintrag) = karte.get_mut(call_id) {
+            eintrag.created_at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+        }
+    }
+
+    fn shell_test_contains(call_id: &str) -> bool {
+        RUNNING_SHELLS.lock().unwrap().contains_key(call_id)
+    }
+
+    #[test]
+    fn shell_register_fegt_alte_pid_lose_eintraege_weg() {
+        // Negativkontrolle steht im naechsten Test: eine junge Karte ohne pid
+        // bleibt stehen, nur das Alter entscheidet.
+        let alt = kennung("alt-ohne-pid");
+        shell_register(&alt);
+        shell_test_set_created_at(&alt, STALE_SHELL_ENTRY_AGE + Duration::from_secs(1));
+        assert!(shell_test_contains(&alt), "die Karte muss vor dem Fegen existieren");
+
+        let ausloeser = kennung("ausloeser");
+        shell_register(&ausloeser); // das naechste shell_register fegt
+
+        assert!(!shell_test_contains(&alt), "eine veraltete pid-lose Karte muss weg sein");
+        shell_unregister(&ausloeser);
+    }
+
+    #[test]
+    fn shell_register_laesst_junge_pid_lose_eintraege_und_jeden_mit_pid_stehen() {
+        let jung = kennung("jung-ohne-pid");
+        shell_register(&jung);
+        shell_test_set_created_at(&jung, Duration::from_secs(1));
+
+        let alt_mit_pid = kennung("alt-mit-pid");
+        shell_register(&alt_mit_pid);
+        shell_attach_pid(&alt_mit_pid, 555);
+        shell_test_set_created_at(&alt_mit_pid, STALE_SHELL_ENTRY_AGE + Duration::from_secs(60));
+
+        let ausloeser = kennung("ausloeser-2");
+        shell_register(&ausloeser);
+
+        assert!(shell_test_contains(&jung), "eine junge Karte darf nicht gefegt werden");
+        assert!(shell_test_contains(&alt_mit_pid), "eine Karte MIT pid wird nie gefegt, egal wie alt");
+
+        shell_unregister(&jung);
+        shell_unregister(&alt_mit_pid);
+        shell_unregister(&ausloeser);
     }
 }
 
