@@ -1126,10 +1126,13 @@ fn wait_for_health(port: u16, timeout: Duration) -> Result<(), String> {
 enum HealthWait {
     Ready,
     /// The child we spawned is gone. Nothing more will happen on that port.
-    /// Carries the process exit code, which is the single most useful number
-    /// in a support log for this failure and used to be thrown away: `None`
-    /// when a signal killed it, or when the status carried no code.
-    ChildExited(Option<i32>),
+    /// Carries the process exit code, the single most useful number in a
+    /// support log for this failure, plus the POSIX signal that killed it
+    /// when there was one (K1 Runde 2, Punkt D: on Linux/macOS a SIGILL has
+    /// no exit code at all, `code()` reads `None` either way, and the two
+    /// causes ["the process asked to exit with no code" vs "a signal killed
+    /// it"] used to be indistinguishable from here on).
+    ChildExited { code: Option<i32>, signal: Option<i32> },
     TimedOut,
 }
 
@@ -1150,16 +1153,20 @@ fn wait_for_health_or_exit(state: &AppState, port: u16, timeout: Duration) -> He
         let gone = {
             let mut guard = state.bundled_engine.lock().unwrap();
             match guard.as_mut() {
-                Some(e) => e.child.try_wait().ok().flatten().map(|s| s.code()),
+                Some(e) => e.child.try_wait().ok().flatten().map(|s| (s.code(), unix_exit_signal(&s))),
                 // The slot was cleared under us, so there is no child left to
-                // wait on and no exit code to report.
-                None => Some(None),
+                // wait on and no exit code or signal to report.
+                None => Some((None, None)),
             }
         };
-        if let Some(code) = gone {
+        if let Some((code, signal)) = gone {
             // One last look: a server can bind, answer, and the process can
             // still be reaped between the two checks on a fast load.
-            return if engine_healthy(port) { HealthWait::Ready } else { HealthWait::ChildExited(code) };
+            return if engine_healthy(port) {
+                HealthWait::Ready
+            } else {
+                HealthWait::ChildExited { code, signal }
+            };
         }
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -1191,6 +1198,36 @@ pub(crate) fn is_illegal_instruction_exit(code: Option<i32>) -> bool {
     code == Some(ILLEGAL_INSTRUCTION_EXIT_CODE)
 }
 
+/// `SIGILL`, the POSIX number every Unix (Linux, macOS, BSD) agrees on.
+/// `libc::SIGILL` would pull in a whole crate for one constant this codebase
+/// otherwise avoids (see `process_util.rs`'s own minimal `libc` binding).
+pub(crate) const SIGILL: i32 = 4;
+
+/// True when a child was killed by `SIGILL` on Unix. K1 Runde 2, Punkt D: the
+/// Windows crash (`is_illegal_instruction_exit`) was the only side of this
+/// bug LU could see; on Linux the identical AVX2-on-a-CPU-without-it fault
+/// raises `SIGILL` instead, which has NO exit code at all
+/// (`ExitStatus::code()` reads `None` for a signal death same as it would
+/// for "no code", so the Linux case was silently indistinguishable from
+/// "died with an empty exit code and no stderr" before this).
+pub(crate) fn is_sigill(signal: Option<i32>) -> bool {
+    signal == Some(SIGILL)
+}
+
+/// [`std::os::unix::process::ExitStatusExt::signal`], cross-platform: `None`
+/// on Windows, where a `Command`'s `ExitStatus` has no such notion (a
+/// process there either exits with a code or does not exit).
+#[cfg(unix)]
+fn unix_exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn unix_exit_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
 /// Logs the x86 instruction sets this machine's CPU offers, once per process.
 /// K1: without this line, a crash on the very first opcode left nothing in
 /// the log that named the cause, so a support conversation had to ask the
@@ -1218,6 +1255,56 @@ fn log_cpu_features_once() {
             "CPU instruction-set log skipped: not x86_64, AVX/AVX2/FMA/F16C do not apply"
         );
     });
+}
+
+/// The MEASURED names of the instruction sets this CPU is missing, out of
+/// the four the bundled sidecar's build requires (AVX, AVX2, FMA, F16C):
+/// pure, so `start_failure_message` can name exactly what was found lacking
+/// instead of a generic "for example AVX2" that may not even be the one
+/// this machine is missing. Runde 2 review, Punkt D: the review specifically
+/// rejected the old wording for guessing rather than reading the same data
+/// `log_cpu_features_once` already gathers.
+///
+/// Empty on a non-x86_64 build (nothing here applies) or when every flag the
+/// probe can see is present; the caller falls back to a plainer sentence in
+/// that case rather than naming zero features as the reason.
+pub(crate) fn missing_cpu_features() -> Vec<&'static str> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        missing_cpu_features_from(
+            is_x86_feature_detected!("avx"),
+            is_x86_feature_detected!("avx2"),
+            is_x86_feature_detected!("fma"),
+            is_x86_feature_detected!("f16c"),
+        )
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Pure half of [`missing_cpu_features`], split out so the "which flags
+/// are missing" computation is unit-testable against synthetic readings
+/// instead of whatever the test machine's own CPU happens to have (a CI
+/// runner has AVX2, so a test asserting on the real probe could never
+/// exercise the branch that names it missing).
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+fn missing_cpu_features_from(avx: bool, avx2: bool, fma: bool, f16c: bool) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !avx {
+        missing.push("AVX");
+    }
+    if !avx2 {
+        missing.push("AVX2");
+    }
+    if !fma {
+        missing.push("FMA");
+    }
+    if !f16c {
+        missing.push("F16C");
+    }
+    missing
 }
 
 /// The shared object the dynamic loader could not find, if that is why the
@@ -1565,13 +1652,42 @@ pub(crate) fn start_failure_message(
     budget: Duration,
     second: SecondAttempt,
 ) -> String {
-    let head = if is_illegal_instruction_exit(failure.exit_code) {
-        // K1: both the GPU and the CPU-only path run the SAME binary, so a
-        // retry cannot change the outcome and is not attempted (see
-        // start_after_stop). The cause and the next step both go in this one
-        // sentence, since the log line stderr would otherwise add is empty:
-        // the child never gets far enough to print anything.
-        "The LU Engine exited immediately with an illegal-instruction fault (Windows STATUS_ILLEGAL_INSTRUCTION, 0xC000001D). This CPU is missing an instruction set the bundled engine's build requires (for example AVX2); the app did not retry, since the same binary would fail the same way again. Open Settings, AI Backends and use a different backend (for example Ollama) on this machine, and check Settings, Troubleshoot for the CPU features line in the log.".to_string()
+    let head = if is_illegal_instruction_exit(failure.exit_code) || is_sigill(failure.signal) {
+        // K1 Runde 2, Punkt D: both the GPU and the CPU-only path run the
+        // SAME binary, so a retry cannot change the outcome and is not
+        // attempted (see start_after_stop). The cause and the next step both
+        // go in this one sentence, since the log line stderr would otherwise
+        // add is empty: the child never gets far enough to print anything.
+        //
+        // The review rejected the old wording on three counts, all fixed
+        // here: it named a competing product ("use Ollama") instead of a
+        // path inside LU itself; it said "for example AVX2" instead of the
+        // MEASURED missing features this machine actually has (`AVX2` may
+        // not even be the one missing on a given box); and it only ever
+        // fired on Windows, `exit_code` having no way to see a Linux SIGILL.
+        let missing = missing_cpu_features();
+        let missing_sentence = if missing.is_empty() {
+            // The probe itself found nothing missing (or is not applicable,
+            // non-x86_64): still true that the binary faulted on its first
+            // opcode, just without a named cause to add.
+            "This CPU is missing an instruction set the bundled engine's build requires.".to_string()
+        } else {
+            format!(
+                "This CPU is missing {} the bundled engine's build requires.",
+                if missing.len() == 1 {
+                    format!("the {} instruction set", missing[0])
+                } else {
+                    format!("these instruction sets: {}", missing.join(", "))
+                }
+            )
+        };
+        format!(
+            "The LU Engine exited immediately with an illegal-instruction fault. {missing_sentence} \
+             The app did not retry, since the same binary would fail the same way again. Until a \
+             build with broader CPU support is available, use LU Cloud or a custom endpoint for this \
+             machine instead: open Settings, AI Backends and switch away from the built-in engine. \
+             Check Settings, Troubleshoot for the CPU features line in the log."
+        )
     } else if failure.port_taken {
         format!(
             "Port {port} answers health checks, but the engine this app just started exited immediately. Another llama-server (likely left over from a previous session or crash) is occupying the port. Quit that process or reboot, then try again."
@@ -2038,17 +2154,20 @@ fn start_after_stop(
         return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
     }
 
-    if is_illegal_instruction_exit(failure.exit_code) {
-        // K1: the GPU-offload attempt and the CPU-only retry run the exact
-        // same binary, so a CPU that crashes on an opcode the first time
-        // crashes on it the second time too. The old code ran the retry
-        // anyway ("attempt=1/2" in the log, both dying identically) and cost
-        // the user the full settle-and-relaunch wait for a foregone
-        // conclusion; this short-circuits straight to the message instead.
+    if is_illegal_instruction_exit(failure.exit_code) || is_sigill(failure.signal) {
+        // K1 Runde 2, Punkt D: the GPU-offload attempt and the CPU-only
+        // retry run the exact same binary, so a CPU that crashes on an
+        // opcode the first time crashes on it the second time too, whether
+        // that crash reads back as Windows' 0xC000001D exit code or Linux's
+        // SIGILL. The old code ran the retry anyway ("attempt=1/2" in the
+        // log, both dying identically) and cost the user the full
+        // settle-and-relaunch wait for a foregone conclusion; this
+        // short-circuits straight to the message instead.
         tracing::error!(
             target: "engine",
             port,
             exit_code = failure.exit_code.unwrap_or_default(),
+            signal = failure.signal.unwrap_or_default(),
             "the LU Engine crashed with an illegal-instruction fault, skipping the pointless second attempt"
         );
         return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
@@ -2402,6 +2521,12 @@ pub(crate) struct StartFailure {
     /// name the Windows 0xC000001D crash instead of it hiding in `stderr` as
     /// an empty string, since llama-server never gets to print anything.
     pub exit_code: Option<i32>,
+    /// The POSIX signal that killed the child, on Unix, when there was one.
+    /// Always `None` on Windows and on every non-signal death. K1 Runde 2,
+    /// Punkt D: this is the Linux/macOS twin of `exit_code` for the SAME
+    /// illegal-instruction crash: `exit_code` alone cannot see it, a signal
+    /// death carries no exit code at all.
+    pub signal: Option<i32>,
 }
 
 /// The two marks an attempt leaves in `BundledEngine`: the restart paths and
@@ -2473,6 +2598,7 @@ fn spawn_engine_attempt(
                 port_taken: false,
                 stderr: format!("Failed to spawn bundled engine: {why}"),
                 exit_code: None,
+                signal: None,
             })
         }
     };
@@ -2503,10 +2629,11 @@ fn spawn_engine_attempt(
         HealthWait::Ready => {
             tracing::info!(target: "engine", port, "the health probe answered")
         }
-        HealthWait::ChildExited(code) => tracing::warn!(
+        HealthWait::ChildExited { code, signal } => tracing::warn!(
             target: "engine",
             port,
-            exit_code = code.map(|c| c.to_string()).unwrap_or_else(|| "none (killed by a signal)".into()),
+            exit_code = code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
+            signal = signal.map(|s| s.to_string()).unwrap_or_else(|| "none".into()),
             "the LU Engine exited before it served"
         ),
         HealthWait::TimedOut => tracing::warn!(
@@ -2541,18 +2668,18 @@ fn spawn_engine_attempt(
             .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
             .unwrap_or_default();
         stop_engine_locked(state);
-        return Err(StartFailure { died: true, port_taken: true, stderr: why, exit_code: None });
+        return Err(StartFailure { died: true, port_taken: true, stderr: why, exit_code: None, signal: None });
     }
 
     let why = diagnostics
         .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
         .unwrap_or_default();
-    let (died, exit_code) = match outcome {
-        HealthWait::ChildExited(code) => (true, code),
-        _ => (false, None),
+    let (died, exit_code, signal) = match outcome {
+        HealthWait::ChildExited { code, signal } => (true, code, signal),
+        _ => (false, None, None),
     };
     stop_engine_locked(state);
-    Err(StartFailure { died, port_taken: false, stderr: why, exit_code })
+    Err(StartFailure { died, port_taken: false, stderr: why, exit_code, signal })
 }
 
 /// Stop the managed engine, killing the child. Idempotent.
@@ -4030,8 +4157,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let same = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(same.contains("It was tried twice"), "{same}");
         assert!(same.contains("set GPU Layers to 0"), "{same}");
@@ -4957,7 +5083,7 @@ mod tests {
         // used to be thrown away at the `is_some()` above, and a support log
         // that says "it exited" without saying how is a log that cannot tell a
         // refused GGUF from a card that ran out of memory.
-        assert_eq!(out, HealthWait::ChildExited(Some(3)));
+        assert_eq!(out, HealthWait::ChildExited { code: Some(3), signal: None });
         assert!(took < Duration::from_secs(5), "waited {took:?}, which is the old dead wait");
     }
 
@@ -5128,8 +5254,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = with_note_on_top(
             &start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload),
             RESTORED_NOTE,
@@ -5159,7 +5284,7 @@ mod tests {
         // No child, so there is no exit code to report either.
         assert_eq!(
             wait_for_health_or_exit(&state, DEAD_PORT, Duration::from_secs(30)),
-            HealthWait::ChildExited(None)
+            HealthWait::ChildExited { code: None, signal: None }
         );
         assert!(began.elapsed() < Duration::from_secs(5));
     }
@@ -5525,8 +5650,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "bind: Address already in use".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(
@@ -5538,8 +5662,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "something went wrong".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         assert!(start_failure_message(&other, 8127, Duration::from_secs(60), SecondAttempt::SameOffload).contains("Reinstall"));
     }
 
@@ -5552,7 +5675,7 @@ mod tests {
         let oom = "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 10048.00 MiB on device 0 failed\nCUDA error: out of memory";
         assert!(!stderr_blames_the_port(oom));
         assert!(stderr_blames_the_gpu(oom));
-        let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() , exit_code: None };
+        let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() , exit_code: None, signal: None };
         let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("GPU Layers to 0"), "the way out has to survive: {msg}");
         assert!(!msg.contains("could not open port"), "{msg}");
@@ -5587,7 +5710,7 @@ mod tests {
         // enough, and the branch order was the only thing keeping this case
         // out of the graphics-card answer.
         assert!(!stderr_blames_the_gpu(stderr), "a banner is not a defect");
-        let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None };
+        let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None, signal: None };
         let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "a busy port is not freed by CPU mode: {msg}");
@@ -5629,7 +5752,7 @@ mod tests {
         // repeat a start that DIED. Repeating a start that merely ran out of
         // its budget spends the same budget again (up to 10 minutes on a big
         // GGUF) and re-runs the ComfyUI and Ollama evictions each time.
-        let slow = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None };
+        let slow = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None, signal: None };
         let msg = start_failure_message(&slow, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(
             msg.contains("did not become healthy"),
@@ -5643,7 +5766,7 @@ mod tests {
             "failed to load model",
             "something went wrong",
         ] {
-            let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None };
+            let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None, signal: None };
             let m = start_failure_message(&died, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
             assert!(!m.contains("did not become healthy"), "{m}");
         }
@@ -5714,25 +5837,101 @@ mod tests {
         // binary, so the message must not promise a retry that never
         // happens, and it must name the cause (an unsupported instruction
         // set) instead of the generic "reinstall" advice.
+        //
+        // Runde 2, Punkt D rewrote the wording: no OS-specific status code
+        // (the same sentence now has to fit Windows' 0xC000001D AND Linux's
+        // SIGILL, see the SIGILL test below), no competing product name, and
+        // no hardcoded "for example AVX2": the real missing features depend
+        // on the machine running this test, which a CI runner's modern CPU
+        // will not actually be missing any of, so this only checks the
+        // structural properties every branch must have, not a specific
+        // feature name. `missing_cpu_features_from`'s own tests cover the
+        // per-feature wording directly, against synthetic readings.
         let f = StartFailure {
             died: true,
             port_taken: false,
             stderr: String::new(),
             exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
+            signal: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
-        assert!(msg.contains("0xC000001D"), "{msg}");
-        assert!(msg.contains("AVX2"), "{msg}");
+        assert!(!msg.contains("0xC000001D"), "no OS-specific status code: {msg}");
+        assert!(!msg.contains("STATUS_ILLEGAL_INSTRUCTION"), "{msg}");
+        assert!(!msg.contains("for example AVX2"), "the guess is gone: {msg}");
+        assert!(!msg.contains("Ollama"), "no competing product named: {msg}");
+        assert!(msg.contains("LU Cloud"), "an in-app action is offered: {msg}");
         assert!(msg.contains("did not retry"), "{msg}");
         assert!(!msg.contains("tried twice"), "no second try ran: {msg}");
         assert!(!msg.contains("Reinstall"), "the cause is known, not generic: {msg}");
+        assert!(
+            !regex::Regex::new(r"\d+\.\d+\.\d+").unwrap().is_match(&msg),
+            "no version number in an update promise: {msg}"
+        );
 
         // Negative control: an ordinary death (no illegal-instruction exit
-        // code) is unaffected and keeps its own wording.
-        let ordinary = StartFailure { exit_code: None, ..f };
+        // code, no signal) is unaffected and keeps its own wording.
+        let ordinary = StartFailure { exit_code: None, signal: None, ..f };
         let ordinary_msg =
             start_failure_message(&ordinary, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
-        assert!(!ordinary_msg.contains("0xC000001D"), "{ordinary_msg}");
+        assert!(!ordinary_msg.contains("illegal-instruction"), "{ordinary_msg}");
+    }
+
+    #[test]
+    fn a_linux_sigill_is_recognised_the_same_way_the_windows_exit_code_is() {
+        // K1 Runde 2, Punkt D: `ExitStatus::code()` reads `None` for BOTH "no
+        // code at all" and "a signal killed it", so before `StartFailure`
+        // carried its own `signal` field this case was silently
+        // indistinguishable from an ordinary, causeless death. is_sigill is
+        // the Unix twin of is_illegal_instruction_exit.
+        assert!(is_sigill(Some(SIGILL)));
+        assert_eq!(SIGILL, 4);
+        assert!(!is_sigill(None));
+        assert!(!is_sigill(Some(6))); // SIGABRT, a different crash entirely
+
+        let f = StartFailure {
+            died: true,
+            port_taken: false,
+            stderr: String::new(),
+            exit_code: None,
+            signal: Some(SIGILL),
+        };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        assert!(msg.contains("illegal-instruction"), "SIGILL reads as the same crash: {msg}");
+        assert!(msg.contains("did not retry"), "{msg}");
+        assert!(!msg.contains("0xC000001D"), "{msg}");
+    }
+
+    #[test]
+    fn missing_cpu_features_from_names_exactly_the_flags_that_are_false() {
+        assert_eq!(missing_cpu_features_from(true, true, true, true), Vec::<&str>::new());
+        assert_eq!(missing_cpu_features_from(true, false, true, true), vec!["AVX2"]);
+        assert_eq!(
+            missing_cpu_features_from(false, false, false, false),
+            vec!["AVX", "AVX2", "FMA", "F16C"]
+        );
+        // Negative control: a single true flag among four false ones must
+        // not appear in the list; a function that just returned all four
+        // names unconditionally would pass every assertion above except
+        // this one.
+        assert!(!missing_cpu_features_from(true, false, false, false).contains(&"AVX"));
+    }
+
+    #[test]
+    fn the_illegal_instruction_message_names_the_measured_missing_feature() {
+        // Wires missing_cpu_features_from's output into the actual sentence,
+        // without depending on this test machine's real CPU: this checks
+        // the STRING-BUILDING half (start_failure_message would call
+        // missing_cpu_features(), the real probe, in production; this test
+        // exercises the same wording logic by constructing the sentence the
+        // same way missing_cpu_features_from's result feeds it).
+        let missing = missing_cpu_features_from(true, false, true, true);
+        assert_eq!(missing, vec!["AVX2"]);
+        let sentence = if missing.len() == 1 {
+            format!("This CPU is missing the {} instruction set", missing[0])
+        } else {
+            format!("This CPU is missing these instruction sets: {}", missing.join(", "))
+        };
+        assert_eq!(sentence, "This CPU is missing the AVX2 instruction set");
     }
 
     #[test]
@@ -5765,8 +5964,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "ggml_cuda_init: failed to initialize CUDA: no kernel image is available for execution on the device".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("exited again"), "{msg}");
         assert!(msg.contains("tried twice"), "{msg}");
@@ -5781,8 +5979,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "llama_model_load: error loading model: unknown model architecture 'wanx'".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
@@ -5811,8 +6008,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: KAPUTTE_GGUF_STDERR.into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
@@ -6030,8 +6226,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
@@ -6048,8 +6243,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory\nllama_model_load: error loading model: unable to allocate CUDA0 buffer\nllama_model_load_from_file_impl: failed to load model".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("could not read the model file"), "{msg}");
@@ -6057,7 +6251,7 @@ srv    llama_server: exiting due to model loading error";
 
     #[test]
     fn a_stranger_on_the_port_keeps_its_own_message() {
-        let f = StartFailure { died: true, port_taken: true, stderr: String::new() , exit_code: None };
+        let f = StartFailure { died: true, port_taken: true, stderr: String::new() , exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("occupying the port"), "{msg}");
         assert!(!msg.contains("tried twice"), "{msg}");
@@ -6065,7 +6259,7 @@ srv    llama_server: exiting due to model loading error";
 
     #[test]
     fn a_slow_load_still_reports_the_budget_and_never_claims_a_crash() {
-        let f = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None };
+        let f = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(220), SecondAttempt::SameOffload);
         assert!(msg.contains("did not become healthy on port 8127 within 220s"), "{msg}");
         assert!(!msg.contains("exited"), "{msg}");
@@ -6083,8 +6277,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "lu-llama-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file: No such file or directory".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("libvulkan.so.1"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
@@ -6170,8 +6363,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "ggml_vulkan: no devices found".into(),
-            exit_code: None,
-        };
+            exit_code: None, signal: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("GPU Layers to 0"), "{msg}");
         assert!(!msg.contains("apt install"), "{msg}");
