@@ -42,6 +42,7 @@ import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { composerBusy } from '../../lib/composer-busy'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition, useLocalLaneHolderWaitsForApproval, useLocalLaneHolderId } from '../../lib/run-idle'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { displayModelName } from '../../api/providers'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -118,11 +119,31 @@ export function ChatView() {
   //
   // Since T1 point 4 the COMPOSER reads it too. It used to read the hook's
   // app-wide `isGenerating`, so every other conversation lost its Send button
-  // and got a Stop button that aborted the foreign run. `composerBusy` splits
-  // the one flag into the two questions the composer actually has.
+  // and got a Stop button that aborted the foreign run. `composerBusy` still
+  // resolves what THIS conversation's own slot should show (own run, or an
+  // orphaned run the maps have not caught up with yet); as of Runde 4
+  // (review-lanes.md Blocker 1+6) it no longer feeds a lock on any OTHER
+  // conversation into the composer at all, because there is nothing left to
+  // lock: a second local send now queues visibly instead of racing the first
+  // one for the built-in engine's one slot, and a second cloud send just runs
+  // alongside it.
   const generatingMap = useGenerationStore((s) => s.generating)
   const activeGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const busy = composerBusy(isGenerating, generatingMap, activeConversationId)
+  // THIS conversation's own send queued behind another local run. Not part of
+  // `generatingMap` (no stream is flowing yet), so `composerBusy` cannot see
+  // it. Folded into `isGenerating` below so the composer shows Stop instead
+  // of Send while it waits.
+  const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
+  const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
+  // Runde 5 (review-lanes.md, Runde 2 Antwort zu Punkt 1): the waiting line
+  // must not claim a model is thinking when the holder is really stuck on a
+  // person's tool approval.
+  const waitingOnApproval = useLocalLaneHolderWaitsForApproval(activeConversationId)
+  const localLaneHolderId = useLocalLaneHolderId(activeConversationId)
+  const localLaneHolderTitle = useChatStore((s) =>
+    localLaneHolderId ? s.conversations.find((c) => c.id === localLaneHolderId)?.title : undefined
+  )
 
   const docCount = useRAGStore((s) =>
     activeConversationId ? (s.documents[activeConversationId] || []).length : 0
@@ -630,8 +651,11 @@ export function ChatView() {
             <ChatInput
               onSend={sendMessage}
               onStop={stopGeneration}
-              isGenerating={busy.thisChat}
-              busyElsewhere={busy.otherChat}
+              isGenerating={busy.thisChat || queuedForLocalLane}
+              waitingForLocalLane={queuedForLocalLane}
+              localLaneQueuePosition={localLaneQueuePosition}
+              waitingOnApproval={waitingOnApproval}
+              waitingOnApprovalIn={localLaneHolderTitle}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}

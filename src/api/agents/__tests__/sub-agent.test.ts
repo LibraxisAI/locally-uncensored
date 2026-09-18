@@ -419,6 +419,21 @@ describe('sub-agent — abort signal (AGT-1)', () => {
     expect(chatWithTools).not.toHaveBeenCalled()
     expect(out).toMatch(/stopped by the user/)
   })
+
+  // B1 (3.0.1): before this fix, the abort signal was checked ONLY at the top
+  // of the next loop iteration and never handed to the provider itself, so a
+  // Stop pressed mid-request left the fetch running to completion on its own
+  // (T4: a 25.2s cloud request still finished with status 200, 13.4s after
+  // Stop). The provider call must receive the SAME signal the tool gates use,
+  // so an in-flight request actually aborts instead of billing to the end.
+  it('threads the abort signal into the chatWithTools call itself', async () => {
+    const ctrl = new AbortController()
+    chatWithTools.mockResolvedValueOnce({ content: 'done', toolCalls: [] })
+    await runSub(makeRun({ abortSignal: ctrl.signal }))
+    expect(chatWithTools).toHaveBeenCalledOnce()
+    const options = chatWithTools.mock.calls[0][3]
+    expect(options?.signal).toBe(ctrl.signal)
+  })
 })
 
 // ── Eine Ankuendigung ist keine Antwort (Persona B2) ─────────────────────

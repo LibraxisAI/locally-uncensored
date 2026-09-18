@@ -26,7 +26,7 @@ import { LuEngineSwitchBar } from './LuEngineSwitchBar'
 import { LoopBar } from './LoopBar'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useModelStore } from '../../stores/modelStore'
-import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useAnyAgentLoopActive } from '../../stores/agentLoopStore'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import {
   CODEX_WORKDIR_LOCK_TITLE,
@@ -45,6 +45,7 @@ import { CodexConfirmDialog } from './CodexConfirmDialog'
 import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { stripModelNoise } from '../../lib/strip-model-noise'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../lib/run-idle'
 
 // Code always drives a tool loop, so the aggressive tier applies here.
 const stripChannelTags = (text: string) => stripModelNoise(text, { aggressive: true })
@@ -94,6 +95,16 @@ export function CodexView() {
   const generatingMap = useGenerationStore((s) => s.generating)
   const codexGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const pendingConfirm = useCodexConfirmStore((s) => s.pending)
+  // Runde 4 (review-lanes.md Blocker 1+6): THIS conversation's own send
+  // queued behind another local run. Not part of `generatingMap` (no stream
+  // is flowing yet), so it needs its own read. Nachbesserung 9 (Runde 3) had
+  // added a cross-conversation lock here via `composerBusy` (parity with
+  // ChatView.tsx, closing the one path Blocker 1's Reichweite point noted as
+  // reachable: Chat<->Code); that lock is gone as of this round, the same as
+  // in ChatView.tsx, now that a local second send queues visibly instead of
+  // racing the first one and a cloud second send just runs alongside it.
+  const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
+  const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
 
   // G8-3 (David): "sobald er fertig gedacht hat, hakt das so komisch ab und
   // zoomt irgendwo ganz anders hin." The hand-rolled pin here only fired on
@@ -127,7 +138,10 @@ export function CodexView() {
   // 'running' stehengeblieben ist, sperrt den Ordner nicht mehr allein.
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
-  const loop = useAgentLoopStore((s) => s.loop)
+  // The working directory is GLOBAL across every Codex conversation (A8): a
+  // loop in ANY of them must still keep the folder locked, not only the
+  // active one's.
+  const loop = useAnyAgentLoopActive()
   const lockReason = codexBusyReason({ sendsInFlight, threads, generating: generatingMap, loop })
 
   // Where the agent goes while no folder is picked: a per-chat workspace or
@@ -634,7 +648,9 @@ export function CodexView() {
           // the old instance's loop is still running, which offered a second
           // parallel send and no Stop button. The generating flag follows the
           // conversation, not the hook instance.
-          isGenerating={isRunning || codexGenerating}
+          isGenerating={isRunning || codexGenerating || queuedForLocalLane}
+          waitingForLocalLane={queuedForLocalLane}
+          localLaneQueuePosition={localLaneQueuePosition}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}
           // No plan lives here. The prompt window is the prompt window

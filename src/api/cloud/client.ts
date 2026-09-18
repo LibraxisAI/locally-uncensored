@@ -1,6 +1,6 @@
 // Fetch wrapper for the lu-labs.ai cloud APIs: prefixes CLOUD_BASE and
 // injects the Supabase bearer token. Direct HTTPS from the WebView (no Tauri
-// proxy — the CSP allowlists the cloud hosts, and the server side speaks
+// proxy, the CSP allowlists the cloud hosts, and the server side speaks
 // CORS for Tauri origins).
 
 import { CLOUD_BASE } from './config'
@@ -15,11 +15,20 @@ export class CloudJobError extends Error {
    *  provider throttle AND for an empty wallet, and only the last of those is
    *  something the user can act on by paying. */
   readonly code?: string
-  /** What `retry-after` asked for, in ms — the burst guard's window is fixed
+  /** What `retry-after` asked for, in ms, the burst guard's window is fixed
    *  and up to a minute long, so the number is worth showing. */
   readonly retryAfterMs?: number
-  constructor(message: string, status: number, meta?: { code?: string; retryAfterMs?: number }) {
-    super(message)
+  constructor(
+    message: string,
+    status: number,
+    meta?: { code?: string; retryAfterMs?: number; cause?: unknown },
+  ) {
+    // Opus-Review Nachbesserung 7 (3.0.1, D2): the reworded network-failure
+    // message below intentionally loses the engine's own text, `cause`
+    // keeps it reachable for a log line without putting it back in front of
+    // the customer. `super(message)` alone (no options) when nothing is
+    // passed, matching every existing call site's behavior exactly.
+    super(message, meta && 'cause' in meta ? { cause: meta.cause } : undefined)
     this.name = 'CloudJobError'
     this.status = status
     this.code = meta?.code
@@ -62,7 +71,7 @@ export async function jsonOrError<T>(res: Response): Promise<T> {
 
 /** Ceiling for one cloud round-trip. Nothing else bounds these: the Create
  *  surface awaits them one after another, and a fetch whose peer disappears
- *  mid-flight never settles on its own — one half-open socket during an
+ *  mid-flight never settles on its own, one half-open socket during an
  *  upload or a submit therefore wedged Create until the app was restarted. */
 const REQUEST_TIMEOUT_MS = 60_000
 
@@ -76,12 +85,12 @@ const UPLOAD_BYTES_PER_MS = 64
  *
  *  Measured: ArrayBuffer, any view over one, Blob/File, string, URLSearchParams
  *  (its serialised form is what goes on the wire) and FormData (the sum of its
- *  parts — the multipart boundaries add a few hundred bytes per field, which
+ *  parts, the multipart boundaries add a few hundred bytes per field, which
  *  is noise next to a file and does not change the deadline).
  *
  *  NOT measurable: a ReadableStream body has no length until it has been read,
  *  and reading it here would consume the only copy. `null` says so rather than
- *  reporting 0 bytes — FormData, URLSearchParams and a stream all counted as
+ *  reporting 0 bytes, FormData, URLSearchParams and a stream all counted as
  *  zero before, so all three quietly got the flat ceiling while this comment
  *  block claimed the deadline grew with the body. */
 function bodyBytes(body: RequestInit['body']): number | null {
@@ -107,7 +116,7 @@ function bodyBytes(body: RequestInit['body']): number | null {
 /** The deadline for one request.
  *
  *  A body whose size cannot be known falls back to the flat ceiling, because
- *  there is nothing to derive anything else from — and that is a real limit,
+ *  there is nothing to derive anything else from, and that is a real limit,
  *  not a rounding: a streamed 40 MB upload would be cut off at 60 s. Nothing
  *  in this app sends a stream body today (uploadInput reads the Blob into an
  *  ArrayBuffer first, everything else is JSON or a Blob), and the day one does
@@ -123,10 +132,26 @@ export interface CloudFetchInit extends RequestInit {
   timeoutMs?: number
 }
 
+/**
+ * Opus-Review Nachbesserung 7 (3.0.1, D2): the closed set of raw rejection
+ * MESSAGES the fetch spec's own engines use for "this request never reached
+ * anything", connection refused, DNS failure, CORS block, TLS failure. Not
+ * a generic `err instanceof TypeError` check: a broken response parser or a
+ * bad property access inside this app's own code also throws a TypeError,
+ * and relabelling THAT as "LU Cloud server unreachable" would hide a real
+ * bug behind a server-side explanation forever.
+ */
+const NETWORK_SHAPED_MESSAGE =
+  /Failed to fetch|NetworkError|Load failed|fetch failed|error sending request/i
+
+function looksLikeRawNetworkFailure(err: unknown): boolean {
+  return err instanceof Error && NETWORK_SHAPED_MESSAGE.test(err.message)
+}
+
 /** Settle `work` as soon as it settles, or reject the moment `signal` aborts.
  *
  *  For the steps of a request that take no AbortSignal of their own. The
- *  abandoned promise keeps running — it just no longer decides anything, and
+ *  abandoned promise keeps running, it just no longer decides anything, and
  *  its rejection is still handled here, so it cannot surface as an unhandled
  *  one later. */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -147,17 +172,24 @@ export async function cloudFetch(path: string, init: CloudFetchInit = {}): Promi
   const { timeoutMs, signal, ...rest } = init
   // The clock starts BEFORE the token, not after it. getAccessToken() goes to
   // the network whenever the access token has expired (supabase-js refreshes
-  // it there), and that refresh has no deadline of its own — so awaiting it
+  // it there), and that refresh has no deadline of its own, so awaiting it
   // outside this guard left exactly the wedge the guard exists to remove, one
   // step earlier: Create awaits these calls one after another, and a refresh
   // whose peer disappeared mid-flight never settles on its own.
   //
-  // Two things must be able to end all of it — the caller's signal (a
-  // cancelled run) and the deadline — and fetch takes one. AbortSignal.any
+  // Two things must be able to end all of it, the caller's signal (a
+  // cancelled run) and the deadline, and fetch takes one. AbortSignal.any
   // would merge them, but it is newer than the WKWebView LU runs inside on
   // older macOS, so the relay is wired by hand.
   const ac = new AbortController()
-  const relay = () => ac.abort(signal?.reason)
+  // D2 (3.0.1): set the moment the CALLER's own signal is why `ac` aborted,
+  // same idea as `timedOut` below but for cancellation instead of a deadline.
+  // Needed to tell "the user/run cancelled this" apart from "the network
+  // genuinely failed" in the catch, both end up as a plain, non-CloudJobError
+  // rejection from `fetch`/`untilAborted`, and only the second one should be
+  // reworded.
+  let callerAborted = false
+  const relay = () => { callerAborted = true; ac.abort(signal?.reason) }
   if (signal) {
     if (signal.aborted) relay()
     else signal.addEventListener('abort', relay, { once: true })
@@ -176,15 +208,53 @@ export async function cloudFetch(path: string, init: CloudFetchInit = {}): Promi
   } catch (err) {
     // Engines disagree on whether a fetch rejects with the abort *reason*, so
     // the deadline is remembered here instead of read back off the signal.
-    // 408 keeps pollJob's policy intact — a timeout is worth another try.
+    // 408 keeps pollJob's policy intact, a timeout is worth another try.
     // A 401 raised above is not a timeout and must keep its own status.
     if (timedOut && !(err instanceof CloudJobError)) {
       throw new CloudJobError('the cloud did not answer in time', 408)
     }
+    // D2 (3.0.1): the window between a Desktop release and the matching Web
+    // deploy. The new Desktop build calls a route the still-old server does
+    // not have yet; an unmatched Next.js API route commonly answers without
+    // the app's CORS headers, so the browser never lets the fetch resolve to
+    // a status code at all, it rejects the plain `fetch()` call itself with
+    // `TypeError: Failed to fetch`. Every caller in this app reads `err instanceof
+    // Error ? err.message : ...` straight into its own error banner
+    // (ContentPolicySettings.tsx and others), so that raw engine string was
+    // the ENTIRE explanation a customer ever saw, no status, no next step.
+    // Excluded on purpose: `err instanceof CloudJobError` is already a real
+    // server answer (401 above, or one jsonOrError raised before it threw)
+    // and keeps its own accurate message; `callerAborted` is a deliberate
+    // cancel (Stop, a run tearing down), not a failure, and every existing
+    // caller already relies on a cancel staying a plain, non-CloudJobError
+    // rejection to tell the two apart.
+    //
+    // Opus-Review Nachbesserung 7: the ORIGINAL condition reworded EVERY bare
+    // rejection, including a genuine programming error that happens to throw
+    // inside this try block (a TypeError from a broken response parser, a bad
+    // property access), a bug in this app's own code would come back
+    // relabelled as "LU Cloud server unreachable" forever, and the next
+    // report would chase the wrong half. `looksLikeRawNetworkFailure` only
+    // matches the small, closed set of messages the fetch spec and its
+    // engines actually use for "the request never reached anything": Chromium
+    // WebView2/Chrome ("Failed to fetch"), Firefox ("NetworkError when
+    // attempting to fetch"), Safari/WebKit ("Load failed"), and the Rust-side
+    // client this same request path uses under `npm run dev`/Node
+    // ("fetch failed" / "error sending request"). Anything else, including
+    // an error this app's own code raised, passes through unchanged. The
+    // original message still reaches the log, as `cause`, even though the
+    // customer only ever sees the actionable rewording.
+    if (!callerAborted && !(err instanceof CloudJobError) && looksLikeRawNetworkFailure(err)) {
+      throw new CloudJobError(
+        'Could not reach the LU Cloud server. This can happen right after an app update while the server catches up, try again in a moment, or check for a newer version.',
+        0,
+        { cause: err },
+      )
+    }
     throw err
   } finally {
     // The deadline covers what this function owns: the token (refresh
-    // included), connect, request body, response headers — which is where the
+    // included), connect, request body, response headers, which is where the
     // observed wedge lived (an upload or a submit that never came back).
     // Reading the response body is the caller's half; jsonOrError reports a
     // torn read rather than hanging.

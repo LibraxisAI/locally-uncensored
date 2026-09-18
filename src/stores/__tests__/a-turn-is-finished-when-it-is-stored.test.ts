@@ -340,15 +340,23 @@ describe('the turn end starts the write before it starts anything else', () => {
   // and useAgentChat after it, and neither costs the write anything — pinning
   // that difference would be pinning noise.
 
-  it('all four turn ends were found and parsed', () => {
+  it('all five turn ends were found and parsed', () => {
     // `useCodex/runInstruction` und nicht mehr `sendInstruction`: 2.6.8 hat den
     // grossen useCallback in `runInstruction` umbenannt und `sendInstruction`
     // zur duennen Huelle mit beginSend/endSend gemacht. Das Rundenende sitzt
     // seither in `runInstruction`. Die Liste steht hier woertlich, damit ein
     // solcher Umbau auffaellt, statt den Vertrag still auf drei Bloecke zu
     // verkuerzen.
+    //
+    // Zwei Eintraege lauten `useChat/sendMessage`, absichtlich: `/compact`
+    // (Runde 5 Nachtrag, review-lanes.md Runde 2) bekam SEIN EIGENES
+    // `runInLane`/`endTurnDurably`-Paar, textlich getrennt vom normalen Zug
+    // weiter unten in derselben `useCallback`, aber demselben Vertrag
+    // unterworfen: die Zusammenfassung steht schon im Speicher, bevor die
+    // App "nicht mehr am Generieren" meldet.
     expect(TURN_ENDS.map((b) => b.name)).toEqual([
       'useChat/runGroupRound',
+      'useChat/sendMessage',
       'useChat/sendMessage',
       'useCodex/runInstruction',
       'useAgentChat/sendAgentMessage',

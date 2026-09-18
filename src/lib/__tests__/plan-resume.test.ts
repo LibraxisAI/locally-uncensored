@@ -163,7 +163,7 @@ describe('both surfaces are wired, in the request copy only', () => {
     const pushAt = agent.indexOf("agentMessages.push({ role: 'user', content: resume.text })")
     const builtAt = agent.indexOf('let agentMessages: ChatMessage[] = [')
     const promptTextAt = agent.indexOf('const userPromptText =')
-    const loopAt = agent.indexOf('while (runningRef.current && !abort.signal.aborted)')
+    const loopAt = agent.indexOf('while (!abort.signal.aborted)')
     expect(pushAt).toBeGreaterThan(builtAt)
     expect(pushAt).toBeGreaterThan(promptTextAt)
     expect(pushAt).toBeLessThan(loopAt)

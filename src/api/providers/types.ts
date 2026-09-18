@@ -18,7 +18,7 @@ export interface ProviderConfig {
   enabled: boolean
   baseUrl: string       // e.g. "http://localhost:11434", "https://openrouter.ai/api/v1"
   apiKey: string        // Encrypted in store. Empty string for local providers.
-  isLocal: boolean      // true for Ollama, LM Studio, vLLM — no API key needed
+  isLocal: boolean      // true for Ollama, LM Studio, vLLM, no API key needed
   // Built-in engine (2.5.7): the app manages this OpenAI-compatible backend's
   // lifecycle itself (bundled llama-server on 127.0.0.1:8127). When true the UI
   // hides the URL/key inputs and the model list comes from `list_bundled_models`
@@ -49,6 +49,18 @@ export interface ProviderConfig {
     // then reads DISABLED instead of STANDBY, which is the button that was
     // pressed (Nebenbefund 3, R12/R13 re-measure 2026-08-30).
     disabledByUser?: boolean
+    // Opus-Review Nachbesserung 6 (3.0.1, F3): the pushed-out backend's own
+    // API key, so a takeover does not just stop LEAKING it into the new
+    // occupant's field (the original F3 fix) but also stops DESTROYING it,     // handing the slot back used to come back with no key and a silent 401.
+    // Same "obfuscated" representation `apiKey` itself carries, an opaque
+    // blob this app never needs to read as text outside providerStore.ts.
+    // Session-only on purpose: providerStore.ts's `partialize` strips this
+    // field unconditionally before every persist, because there is no vault
+    // entry reserved for a PARKED backend (the OS keychain has exactly one
+    // slot per ProviderId, already spoken for by whichever backend is
+    // active). A key parked here survives Enable/Disable within the running
+    // session; it does not survive a restart, same as before this fix.
+    apiKey?: string
   }
 }
 
@@ -65,7 +77,7 @@ export interface ProviderPreset {
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
-  // Built-in engine (2.5.7) — bundled llama.cpp llama-server, OpenAI-compatible,
+  // Built-in engine (2.5.7), bundled llama.cpp llama-server, OpenAI-compatible,
   // lifecycle owned by the app. Zero external install. Default backend.
   { id: 'builtin', name: LU_ENGINE_NAME, providerId: 'openai', baseUrl: 'http://127.0.0.1:8127/v1', isLocal: true, managed: true },
 
@@ -76,7 +88,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'lmstudio', name: 'LM Studio', providerId: 'openai', baseUrl: 'http://localhost:1234/v1', isLocal: true },
   { id: 'vllm', name: 'vLLM', providerId: 'openai', baseUrl: 'http://localhost:8000/v1', isLocal: true },
   { id: 'llamacpp', name: 'llama.cpp', providerId: 'openai', baseUrl: 'http://localhost:8080/v1', isLocal: true },
-  // LiteLLM proxy (GH PR #64, thanks @RheagalFire) — speaks the OpenAI protocol,
+  // LiteLLM proxy (GH PR #64, thanks @RheagalFire), speaks the OpenAI protocol,
   // so it reuses the openai client and fronts 100+ upstreams from one local port.
   { id: 'litellm', name: 'LiteLLM', providerId: 'openai', baseUrl: 'http://localhost:4000/v1', isLocal: true },
   { id: 'koboldcpp', name: 'KoboldCpp', providerId: 'openai', baseUrl: 'http://localhost:5001/v1', isLocal: true },
@@ -156,7 +168,10 @@ export interface ToolCall {
 export interface ChatOptions {
   temperature?: number
   topP?: number
-  topK?: number         // Ollama/Anthropic support this, OpenAI doesn't
+  // Ollama/Anthropic support this. The real OpenAI API does not, but F3
+  // (3.0.1): the OpenAI-COMPATIBLE provider (self-hosted endpoints,   // llama.cpp, vLLM, KoboldCpp, LM Studio, the built-in engine) sends it as
+  // an extension field, the same way it already sends top_p.
+  topK?: number
   maxTokens?: number
   thinking?: boolean    // Enable model thinking/reasoning mode
   /**
@@ -178,7 +193,7 @@ export interface ChatOptions {
    * a model default above it would quietly upgrade the bill.
    */
   effortDefault?: string
-  // Bug AA v2.5.0 — Kj103x Discord 2026-05-27. Ollama defaults `num_ctx` to
+  // Bug AA v2.5.0, Kj103x Discord 2026-05-27. Ollama defaults `num_ctx` to
   // 2048 if you don't pass it in /api/chat options, which silently caps RAG
   // and long-turn chats even though the loaded model supports way more. When
   // set, we forward this as `options.num_ctx` to Ollama. Other providers
@@ -203,12 +218,12 @@ export interface ChatStreamChunk {
   toolCalls?: ToolCall[]
   done: boolean
   // Why generation ended, on the final done:true chunk. 'stop' | 'length'
-  // (token budget exhausted — e.g. the whole budget went into reasoning) |
+  // (token budget exhausted, e.g. the whole budget went into reasoning) |
   // 'disconnect' (the stream closed without any completion signal: proxy
   // timeout, upstream cut). Lets the chat layer explain an empty reply
   // instead of rendering silent dead air.
   finishReason?: string
-  // Server-reported generation metrics (Bug M v2.4.7 — Ollama only). Released
+  // Server-reported generation metrics (Bug M v2.4.7, Ollama only). Released
   // in the final done:true chunk. Authoritative tok/s = evalCount /
   // (evalDurationMs / 1000). Prefer these over client-side JS timing whenever
   // available, because WebView2 release-mode often buffers the response and
@@ -301,7 +316,7 @@ export class ProviderError extends Error {
   /**
    * Provider-specific extra context. Used by UI catch sites to update the
    * model-health store (Ollama missing-blob / stale-manifest) without importing
-   * zustand from inside the provider — keeps the API layer decoupled from app
+   * zustand from inside the provider, keeps the API layer decoupled from app
    * state. See lib/sync-ollama-health.ts.
    */
   readonly model?: string

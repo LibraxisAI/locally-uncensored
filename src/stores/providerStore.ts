@@ -1,5 +1,5 @@
 /**
- * Provider Store — manages provider configurations.
+ * Provider Store, manages provider configurations.
  *
  * Stores endpoint URLs, API keys (encrypted), and enabled state.
  * Ollama is always enabled by default.
@@ -38,7 +38,12 @@ function obfuscate(key: string): string {
   }
 }
 
-function deobfuscate(encoded: string): string {
+// Exported for ProviderConfig.tsx's handback/removal paths (Opus-Review
+// Nachbesserung 6): `displaced.apiKey` carries the same obfuscated form this
+// function decodes for every other read of a provider's key, and restoring
+// it into the active slot has to go through `setProviderApiKey` (store AND
+// keychain), which takes the PLAIN key.
+export function deobfuscate(encoded: string): string {
   if (!encoded) return ''
   try {
     return atob(encoded).split('').reverse().join('')
@@ -59,10 +64,10 @@ const _keychainFailed = new Set<ProviderId>()
 
 // ── Default provider configs ───────────────────────────────────
 
-// 2.5.7 — the default backend is now the app's built-in engine (bundled
+// 2.5.7, the default backend is now the app's built-in engine (bundled
 // llama-server, managed lifecycle) so a fresh install can chat without
 // installing Ollama/LM Studio. It occupies the `openai` slot (OpenAI-compatible)
-// with `managed: true`. Ollama/LM Studio stay available as "Advanced" — the user
+// with `managed: true`. Ollama/LM Studio stay available as "Advanced", the user
 // can re-enable them from Settings → Providers. This default only applies to a
 // FRESH store; existing `lu-providers` persistence is untouched.
 const DEFAULT_PROVIDERS: Record<ProviderId, ProviderConfig> = {
@@ -91,8 +96,7 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderConfig> = {
     apiKey: '',
     isLocal: false,
   },
-  // LU Cloud chat (lu-labs.ai inference proxy). apiKey stays empty forever —
-  // auth is the user's Supabase session token, injected per request by
+  // LU Cloud chat (lu-labs.ai inference proxy). apiKey stays empty forever,   // auth is the user's Supabase session token, injected per request by
   // LuCloudProvider. useCloudAuth flips `enabled` with the account state.
   'lu-cloud': {
     id: 'lu-cloud',
@@ -217,7 +221,7 @@ export const useProviderStore = create<ProviderState>()(
         // When the OS vault is active, store the real key there; partialize then
         // keeps it out of localStorage. If the vault WRITE fails (locked / policy
         // / full), mark this id so partialize RETAINS the obfuscated key in
-        // localStorage — otherwise it would vanish on the next restart with no
+        // localStorage, otherwise it would vanish on the next restart with no
         // trace (the in-memory value only serves this session).
         if (keychainReady) {
           _keychainFailed.delete(id)
@@ -299,7 +303,7 @@ export const useProviderStore = create<ProviderState>()(
             } else {
               // Nothing in the vault yet. Migrate an existing localStorage key
               // (an upgrading user) into the vault, once. Read the CURRENT
-              // store value — a key set while an earlier secret_get awaited
+              // store value, a key set while an earlier secret_get awaited
               // must not be missed.
               const existing = deobfuscate(get().providers[id]?.apiKey || '')
               if (existing) {
@@ -310,7 +314,7 @@ export const useProviderStore = create<ProviderState>()(
             }
           } catch {
             if (usable === null) { usable = false; break } // no keychain here
-            // otherwise a transient per-key error — keep the others
+            // otherwise a transient per-key error, keep the others
           }
         }
         if (!usable) return
@@ -342,8 +346,7 @@ export const useProviderStore = create<ProviderState>()(
       // throws every configured backend away. Harmless today (no blob carries a
       // numeric version yet), fatal the day this store goes to 2.
       migrate: keepPersistedState,
-      // Blobs persisted before the lu-cloud provider existed lack its entry —
-      // backfill every missing provider from defaults so getProvider() can't
+      // Blobs persisted before the lu-cloud provider existed lack its entry,       // backfill every missing provider from defaults so getProvider() can't
       // hit an undefined config after an update.
       merge: (persisted: unknown, current: ProviderState): ProviderState => {
         const p = (persisted ?? {}) as Partial<ProviderState>
@@ -393,15 +396,24 @@ export const useProviderStore = create<ProviderState>()(
       // When the OS keychain is active (H5), strip apiKey so the secret never
       // touches localStorage; otherwise keep the obfuscated key as before.
       partialize: (state) => ({
-        providers: keychainReady
-          ? (Object.fromEntries(
-              Object.entries(state.providers).map(([id, p]) =>
-                // Strip the key (it lives in the vault) UNLESS the vault write
-                // failed for this id — then keep the obfuscated fallback.
-                _keychainFailed.has(id as ProviderId) ? [id, p] : [id, { ...p, apiKey: '' }]
-              )
-            ) as Record<ProviderId, ProviderConfig>)
-          : state.providers,
+        providers: Object.fromEntries(
+          Object.entries(state.providers).map(([id, p]) => {
+            // Strip the ACTIVE key (it lives in the vault) UNLESS the vault
+            // write failed for this id, then keep the obfuscated fallback.
+            const stripActive = keychainReady && !_keychainFailed.has(id as ProviderId)
+            const withActive = stripActive ? { ...p, apiKey: '' } : p
+            // Opus-Review Nachbesserung 6: a PARKED key on the `displaced`
+            // memory has no vault entry of its own, the OS keychain holds
+            // exactly one credential per ProviderId, already spoken for by
+            // whichever backend is active. Persisting it in the clear would
+            // put a secret into localStorage with none of the protection
+            // `apiKey` itself gets, so it never survives a persist, on any
+            // platform. It still restores correctly within the same running
+            // session (ProviderConfig.tsx reads it before this ever runs).
+            if (!withActive.displaced?.apiKey) return [id, withActive]
+            return [id, { ...withActive, displaced: { ...withActive.displaced, apiKey: undefined } }]
+          })
+        ) as Record<ProviderId, ProviderConfig>,
         hideBackendSelector: state.hideBackendSelector,
       }),
     }

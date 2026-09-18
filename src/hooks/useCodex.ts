@@ -43,6 +43,8 @@ import {
   loopPassSaysDone,
 } from '../lib/agent-commands'
 import { useGenerationStore } from '../stores/generationStore'
+import { runInLane } from '../lib/run-slot'
+import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
 import { isOllamaLocal } from '../api/backend'
 import { requestGenerationCancel } from '../api/vram-handoff'
 import { planWithArchitect, renderArchitectPlanSection } from '../api/agents/architect'
@@ -247,28 +249,65 @@ function codexEffort(model: string): { levels?: string[]; fallback?: string } {
 }
 
 /**
- * The pending next /loop pass. MODULE scope, not a hook ref (audit A3): the
- * Code view unmounts on every tab switch, and a timer parked in an unmounted
- * instance's ref was unreachable for the remounted hook — stopCodex cleared
- * its own (empty) ref while the old timer kept firing new passes. One shared
- * handle means whichever instance is alive can cancel the pending pass.
+ * The pending next /loop pass, PER CONVERSATION. MODULE scope, not a hook
+ * ref (audit A3): the Code view unmounts on every tab switch, and a timer
+ * parked in an unmounted instance's ref was unreachable for the remounted
+ * hook, stopCodex cleared its own (empty) ref while the old timer kept
+ * firing new passes.
+ *
+ * B2: was a single module variable until this commit, so two Code
+ * conversations each waiting out a /loop interval shared one handle, the
+ * second overwrote the first, and stopping either one cleared the wrong
+ * conversation's timer while the intended one kept running. Keyed by
+ * conversation now, same shape as `agentLoopStore` and the Chat-side
+ * `agentLoopTimers` (useAgentChat.ts).
  */
-let codexLoopTimer: ReturnType<typeof setTimeout> | null = null
+const codexLoopTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Test-only: which conversations currently have a pending /loop timer. */
+export function __pendingCodexLoopTimersForTests(): string[] {
+  return [...codexLoopTimers.keys()]
+}
+
+/**
+ * Nachbesserung 5 (review-lanes.md, 3.0.1 lanes Runde 3): the same
+ * re-entry guard `useAgentChat.ts`'s `activeAgentRuns` gives the Agent
+ * surface, now on the Code surface too. Before this, useCodex was the ONE
+ * of the three send paths with no guard of its own: two fast sends on the
+ * SAME conversation both ran, the second `registerAborter` overwrote the
+ * first, and the first turn was then stoppable only through a signal
+ * nobody held any more. Keyed to `conversationId`, not the hook instance,
+ * so a run in an UNRELATED conversation never blocks this one (the same
+ * B2 fix `activeAgentRuns` needed).
+ *
+ * The value is a per-run token, not the AbortController itself, because
+ * `stopCodex`/the finally below only need to answer "is this still MY
+ * run", the same identity question `activeAgentRuns.get(convId) ===
+ * runState` answers on the Agent surface; a plain token is enough and
+ * keeps this file from growing a second run-state shape next to the
+ * plain local variables `949cd0d6` already made instance-safe.
+ */
+const activeCodexRuns = new Map<string, symbol>()
+
+/** Test-only: which conversations currently have a run claimed. */
+export function __activeCodexRunsForTests(): string[] {
+  return [...activeCodexRuns.keys()]
+}
 
 export function useCodex() {
   const [isRunning, setIsRunning] = useState(false)
-  const abortRef = useRef<AbortController | null>(null)
-  /**
-   * Zu WELCHER Unterhaltung der Controller oben gehoert.
-   *
-   * R2-19: `stopCodex` brach ihn bedingungslos ab. Der Griff gehoert der
-   * Hook-INSTANZ und haelt den zuletzt gestarteten Lauf, egal wo, und
-   * `CodexView` wird beim Unterhaltungswechsel nicht neu montiert
-   * (`ChatView.tsx` gibt ihm kein `key`). Stop in B toetete damit den Lauf in
-   * A. Dieselbe Klammer wie in useChat und useAgentChat.
-   */
-  const abortConvRef = useRef<string | null>(null)
-  const runningRef = useRef(false)
+  // Nachbesserung 5 (review-lanes.md): abortRef/abortConvRef used to live
+  // here, a hook-instance ref pair duplicating exactly what
+  // generationStore.aborters + activeCodexRuns now cover. stopCodex read
+  // them only as a SECOND, redundant abort() call on the same
+  // AbortController generationStore's abortConversation already aborts
+  // (AbortController.abort() is idempotent), and their unconditional
+  // `= null` reset in the finally below cleared conversation A's ref out
+  // from under conversation B (the Code view is not remounted on a tab
+  // switch), the same class of bug Blocker 2 fixed for the Agent surface.
+  // Deleted rather than kept "harmless": Hausregel, dead duplication is
+  // not a safe place to leave a second copy of a Stop mechanism.
+  //
   // "The user pressed stop" lives in lib/run-stop, keyed by conversation, NOT
   // in a ref of this hook instance. The Code view unmounts on every tab switch,
   // and the /loop driver's finally runs in the closure of the instance that
@@ -342,6 +381,49 @@ export function useCodex() {
     if (!convId) {
       convId = store.createConversation(activeModel, persona?.systemPrompt || '', 'codex')
     }
+
+    // ── Re-entry guard (double-submit), PER CONVERSATION ─────────────────
+    // Nachbesserung 5 (review-lanes.md): same shape as useAgentChat.ts's
+    // `activeAgentRuns` guard, claimed synchronously HERE, with no `await`
+    // between the `has()` check and the `set()` below, so a racing second
+    // call for the SAME conversation bails before duplicating anything. A
+    // run in a DIFFERENT conversation is untouched: this was the one send
+    // path of the three without any re-entry protection at all, so two
+    // fast sends on the same Code conversation started two loops that
+    // shared nothing and left the first one stoppable only through a
+    // signal `registerAborter` had already overwritten.
+    if (activeCodexRuns.has(convId)) {
+      log.info('codex.duplicate_send_blocked', { activeModel, convId })
+      return
+    }
+    const runToken = Symbol('codex-run')
+    activeCodexRuns.set(convId, runToken)
+    // A wrapping try/catch, not just the identity-checked cleanup deep in the
+    // body's own finally (below): the body has many awaited calls BEFORE that
+    // inner try (resolveChatWorkspaceSlug, runCompactForConversation,
+    // getModelMaxTokens, memory retrieval, .lurules, ...), and an unhandled
+    // throw from any of them used to leave `convId` claimed FOREVER: every
+    // later send on that conversation would silently hit the guard above and
+    // do nothing, with no error and no way out short of reloading the app.
+    // This is the safety net for that whole stretch, not just the happy path.
+    try {
+
+    // Lane admission (Runde 4, review-lanes.md Blocker 1+6): everything from
+    // here on (workspace resolution, RAG, memory, the tool loop, the /loop
+    // driver) runs inside runInLane's body, so a local run that has to wait
+    // for the built-in engine's one llama-server slot has not touched the
+    // chat store yet when it is queued. `queueAbort` starts null because the
+    // real AbortController is not created until deep inside the body (after
+    // messages are assembled); it is filled in the moment that happens, so
+    // the rare window between "granted the lane" and "the body registered
+    // its own aborter" still has something to reach if Stop lands there.
+    // 'cancelled-while-queued' (Stop while still waiting) skips the body and
+    // its own finally entirely, so the guard claimed above is freed here.
+    const lane = laneOf(activeModel, currentLaneFacts())
+    let queueAbort: AbortController | null = null
+    const laneOutcome = await runInLane(
+      { conversationId: convId, lane, abort: () => queueAbort?.abort() },
+      async () => {
 
     const memoryScope = store.conversations.find(c => c.id === convId)?.memoryScope
     // A brand-new instruction clears a previous stop; a /loop pass inherits it,
@@ -441,6 +523,7 @@ export function useCodex() {
         focus: slash.args || undefined,
       })
       useChatStore.getState().updateMessageContent(convId, noticeId, compactOutcomeMessage(outcome))
+      activeCodexRuns.delete(convId)
       return
     }
 
@@ -452,6 +535,7 @@ export function useCodex() {
       useChatStore.getState().addMessage(convId, {
         id: uuid(), role: 'assistant', content: res.message, timestamp: Date.now(),
       })
+      activeCodexRuns.delete(convId)
       return
     }
 
@@ -470,6 +554,7 @@ export function useCodex() {
         id: uuid(), role: 'assistant', timestamp: Date.now(),
         content: modeRefusal,
       })
+      activeCodexRuns.delete(convId)
       return
     }
 
@@ -729,7 +814,7 @@ export function useCodex() {
     // The only bail-out between opening the run and the try/finally that closes
     // it. Close it here too, or the run context outlives a turn that never
     // started and the next standalone tool call inherits its jail root.
-    if (!conv) { endAgentRun(run); return }
+    if (!conv) { endAgentRun(run); activeCodexRuns.delete(convId); return }
 
     void diagLog('pre-loop', {
       activeModel, providerId, strategy, workDir,
@@ -843,13 +928,11 @@ export function useCodex() {
 
     // Setup
     const abort = new AbortController()
-    abortRef.current = abort
-    abortConvRef.current = convId
+    queueAbort = abort
     // Hand Stop to everything this run starts, including the nested ReAct loop
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
     run.abortSignal = abort.signal
-    runningRef.current = true
     setIsRunning(true)
     codexStore.setThreadStatus(convId, 'running')
     // Bind the generating flag to THIS conversation so the typing indicator +
@@ -863,9 +946,13 @@ export function useCodex() {
     // same conversation. With the store aborter, stopCodex (any instance) and
     // chat deletion both reach the real controller. Cleared in finally.
     useGenerationStore.getState().registerAborter(convId, () => {
-      runningRef.current = false
       abort.abort()
-      requestGenerationCancel()
+      // Blocker 4 (review-lanes.md): scoped to THIS conversation's own media
+      // generation. Passed bare (no arg) this used to cancel whichever
+      // generation happened to be running app-wide, so Stop in one Code
+      // conversation could kill an image/video another conversation's agent
+      // was still producing.
+      requestGenerationCancel(convId)
     })
 
     // Architect / RepoMap pre-pass (B8 + B9). Both inject into the
@@ -1054,7 +1141,7 @@ export function useCodex() {
       // is checked at the top of the loop body; this bound is the runaway
       // backstop. Floor of 1 so a stray 0 setting can't zero the loop.
       const MAX_CODEX_ITERATIONS = Math.max(settings.agentMaxIterations ?? 200, 1)
-      for (let i = 0; i < MAX_CODEX_ITERATIONS && runningRef.current && !abort.signal.aborted; i++) {
+      for (let i = 0; i < MAX_CODEX_ITERATIONS && !abort.signal.aborted && !isRunStopped(convId); i++) {
         // Fertige Hintergrundagenten melden sich hier, oben in der Iteration:
         // vor dem Modellaufruf und nach den Werkzeugantworten der vorigen
         // Runde. Als NUTZER-Material — die Begruendung steht in
@@ -1798,7 +1885,7 @@ export function useCodex() {
         }
 
         // Phase 5b (v2.4.0), parallel tool execution via tool-executor.
-        if (!runningRef.current || abort.signal.aborted) break
+        if (abort.signal.aborted || isRunStopped(convId)) break
 
         // Every call carries an id from here on. Only the NATIVE channel gives
         // us one; a call recovered from prose or rebuilt from Hermes XML had
@@ -2401,10 +2488,19 @@ export function useCodex() {
         })
       }
 
-      useGenerationStore.getState().clearAborter(convId)
-      runningRef.current = false
-      abortRef.current = null
-      abortConvRef.current = null
+      // Identity check (Blocker 2, review-lanes.md, this file's own copy of
+      // the useAgentChat.ts/useChat.ts finally fix): a Stop followed by an
+      // immediate resend on the SAME conversation can claim `activeCodexRuns`
+      // and `generationStore.aborters` for a NEW run before THIS run's
+      // finally executes. Unconditionally clearing either here would then
+      // wipe the new run's aborter and reject its generating flag out from
+      // under it, leaving it unstoppable through generationStore exactly
+      // like the Agent-surface bug.
+      const stillOwnsSlot = activeCodexRuns.get(convId) === runToken
+      if (stillOwnsSlot) {
+        useGenerationStore.getState().clearAborter(convId)
+        activeCodexRuns.delete(convId)
+      }
       // Close THIS run. The process-wide mirror is only cleared when this run
       // still owns it, so a run that outlives us keeps its workspace and its
       // read-only flag (plan C1 ERZWINGUNG, blocker S3).
@@ -2425,9 +2521,11 @@ export function useCodex() {
       // moving to the bottom of the block.
       await endTurnDurably(
         () => {
-          setIsRunning(false)
-          useGenerationStore.getState().setGenerating(convId, false)
-          codexStore.setThreadStatus(convId, 'idle')
+          if (stillOwnsSlot) {
+            setIsRunning(false)
+            useGenerationStore.getState().setGenerating(convId, false)
+            codexStore.setThreadStatus(convId, 'idle')
+          }
         },
         [flushChatPersist, flushStagedPersist],
       )
@@ -2467,7 +2565,7 @@ export function useCodex() {
         // Stop the loop where the refusal happened, and say so once. Silently
         // dropping it would leave the LoopBar promising a pass nobody is going
         // to run (audit A3).
-        useAgentLoopStore.getState().clear()
+        useAgentLoopStore.getState().clear(convId)
         useChatStore.getState().addMessage(convId, {
           id: uuid(), role: 'assistant', timestamp: Date.now(),
           content: `The loop stopped because the run was ${loopHalt}. Start it again once that is sorted.`,
@@ -2480,9 +2578,9 @@ export function useCodex() {
         if (saidDone) {
           // Nothing to do — the marker is stripped from the display by
           // cleanCodexText, so the user just sees the answer.
-          useAgentLoopStore.getState().clear()
+          useAgentLoopStore.getState().clear(convId)
         } else if (cap > 0 && nextPass > cap) {
-          useAgentLoopStore.getState().clear()
+          useAgentLoopStore.getState().clear(convId)
           useChatStore.getState().addMessage(convId, {
             id: uuid(), role: 'assistant', timestamp: Date.now(),
             content: `Stopped after ${cap} passes, which is the limit set in Settings. What is above is where it got to. Raise the limit or set it to unlimited to keep going.`,
@@ -2495,16 +2593,37 @@ export function useCodex() {
             nextAt: Date.now() + loopState.intervalMs,
           })
           const fireLoopPass = () => {
-            codexLoopTimer = null
-            // Bail if the user moved on or started something else meanwhile.
-            // Clear the loop store too — leaving it standing painted a LoopBar
-            // that promised a pass which was never coming (audit A3).
-            if (runningRef.current) {
-              useAgentLoopStore.getState().clear()
+            codexLoopTimers.delete(convForLoop)
+            // Blocker 3 (review-lanes.md): stopAllBackgroundWork() (sign-out,
+            // window close, app quit) clears the loop STORE via
+            // useAgentLoopStore.clear, but this timer lives in a module Map
+            // it never touches, and the 5s self-extension below (Code tab
+            // not visible) can keep re-arming it past that point too.
+            // isRunStopped is the same sticky per-conversation flag
+            // stopAllBackgroundWork sets via stopRun(), checked first so a
+            // due pass never fires a real request into a session the app
+            // already told the user it ended.
+            if (isRunStopped(convForLoop)) {
+              useAgentLoopStore.getState().clear(convForLoop)
+              return
+            }
+            // Bail if THIS conversation is already generating something else
+            // meanwhile (a manual send raced the timer). Clear the loop store
+            // too, leaving it standing painted a LoopBar that promised a pass
+            // which was never coming (audit A3).
+            //
+            // B2 Commit 6: was a single running flag shared by the whole HOOK
+            // INSTANCE rather than scoped per run, CodexView is not
+            // remounted on a conversation switch, so ANY conversation running
+            // on this instance used to cancel every OTHER conversation's
+            // pending pass, not just its own. Reading the store here asks
+            // about the one conversation this pass actually belongs to.
+            if (useGenerationStore.getState().generating[convForLoop]) {
+              useAgentLoopStore.getState().clear(convForLoop)
               return
             }
             if (useChatStore.getState().activeConversationId !== convForLoop) {
-              useAgentLoopStore.getState().clear()
+              useAgentLoopStore.getState().clear(convForLoop)
               return
             }
             // The Code view is not on screen (other chat mode, other view):
@@ -2513,7 +2632,7 @@ export function useCodex() {
             // cancel, so peeking at Create doesn't kill a standing loop; the
             // pass fires within 5 s of the view coming back.
             if (useCodexStore.getState().chatMode !== 'codex') {
-              codexLoopTimer = setTimeout(fireLoopPass, 5000)
+              codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, 5000))
               return
             }
             void sendRef.current?.(buildLoopRecheck(loopState.task, nextPass), {
@@ -2521,9 +2640,27 @@ export function useCodex() {
               loop: { ...loopState, pass: nextPass },
             })
           }
-          codexLoopTimer = setTimeout(fireLoopPass, loopState.intervalMs)
+          codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, loopState.intervalMs))
         }
       }
+    }
+      },
+    )
+    if (laneOutcome === 'cancelled-while-queued' && activeCodexRuns.get(convId) === runToken) {
+      // Stop pulled this run out of the local lane's waiting room before the
+      // body (and its own finally, and even its own AbortController) ever
+      // existed, so the guard claimed above has to be freed here instead.
+      activeCodexRuns.delete(convId)
+    }
+    } catch (e) {
+      // Safety net for the guard claimed above: whatever threw, and from
+      // wherever in the body, this conversation must not stay locked out of
+      // sending forever. Identity-checked the same way the body's own
+      // finally is (Blocker 2 shape): a replaced slot (Stop, then an
+      // immediate resend) means a NEWER run owns `convId` now, and this
+      // must not delete that one out from under it.
+      if (activeCodexRuns.get(convId) === runToken) activeCodexRuns.delete(convId)
+      throw e
     }
   }, [])
 
@@ -2558,30 +2695,43 @@ export function useCodex() {
   const sendRef = useRef<typeof sendInstruction | null>(null)
   sendRef.current = sendInstruction
 
-  const stopCodex = useCallback(() => {
+  const stopCodex = useCallback((conversationId?: string | null) => {
     // Stop means stop: also cancel a /loop pass that is waiting out its
     // interval, otherwise the run the user just killed comes back by itself.
-    const stoppedConvId = useChatStore.getState().activeConversationId
+    // B2 Commit 5: the caller names the run, see useAgentChat.ts's stopAgent
+    // for why (today's one caller already resolves it this way, but the
+    // function itself should not have to assume that).
+    const stoppedConvId = conversationId !== undefined
+      ? conversationId
+      : useChatStore.getState().activeConversationId
     // Both of these reach a run a PREVIOUS hook instance started (the Code view
     // remounts on every tab switch): the store holds that run's real aborter,
     // and the module-scoped stop is readable from its loop driver's finally,
     // which lives in that instance's closure and can read no ref of this one.
     stopRun(stoppedConvId)
+    // B1: cancels a delegate_task background agent too, see useAgentChat.ts.
+    useAgentTaskStore.getState().cancelAll(stoppedConvId ?? '')
     useGenerationStore.getState().abortConversation(stoppedConvId)
-    if (codexLoopTimer) {
-      clearTimeout(codexLoopTimer)
-      codexLoopTimer = null
+    // Nur DIESER Unterhaltung Zeitgeber (B2 Commit 4): sonst trifft ein Stop
+    // in B den wartenden Pass von A, waehrend A's eigener Zeitgeber ungeruehrt
+    // weiterlaeuft.
+    const pendingLoopTimer = codexLoopTimers.get(stoppedConvId ?? '')
+    if (pendingLoopTimer) {
+      clearTimeout(pendingLoopTimer)
+      codexLoopTimers.delete(stoppedConvId ?? '')
     }
-    useAgentLoopStore.getState().clear()
-    // NUR wenn der Controller dieser Instanz auch zu DIESER Unterhaltung
-    // gehoert. Gehoert er woanders hin, hat `abortConversation` oben schon den
-    // richtigen Griff gezogen, und der Lauf in der anderen Unterhaltung laeuft
-    // weiter.
-    if (abortConvRef.current === stoppedConvId) {
-      runningRef.current = false
-      abortRef.current?.abort()
-      abortRef.current = null
-      setIsRunning(false)
+    useAgentLoopStore.getState().clear(stoppedConvId ?? '')
+    // Nachbesserung 5 (review-lanes.md): NUR den eigenen Lauf aus
+    // activeCodexRuns nehmen, dieselbe Klammer wie useAgentChat.ts's
+    // stopAgent um activeAgentRuns. `abortConversation` oben hat den echten
+    // Abbrecher schon gerufen (Aborter-Identitaet lebt in generationStore,
+    // nicht mehr in einem Hook-Ref); dies raeumt nur den Wiedereintritts-
+    // Riegel, damit ein sofortiges erneutes Senden auf DERSELBEN
+    // Unterhaltung nicht am eigenen, gerade gestoppten Lauf abprallt.
+    const stoppedRunToken = stoppedConvId ? activeCodexRuns.get(stoppedConvId) : undefined
+    if (stoppedRunToken) {
+      activeCodexRuns.delete(stoppedConvId!)
+      setIsRunning(activeCodexRuns.size > 0)
     }
   }, [])
 

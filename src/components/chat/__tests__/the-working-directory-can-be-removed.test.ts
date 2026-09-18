@@ -66,7 +66,7 @@ const A_STANDING_LOOP = {
 beforeEach(() => {
   useCodexStore.setState({ workingDirectory: '', threads: {}, sendsInFlight: 0 })
   useGenerationStore.setState({ generating: {} })
-  useAgentLoopStore.setState({ loop: null })
+  useAgentLoopStore.setState({ loops: {} })
   useAgentModeStore.setState({ workspaces: {} })
   useSettingsStore.setState({ settings: { ...DEFAULT_SETTINGS } })
   useUIStore.setState({ explorerCollapsed: false })
@@ -272,7 +272,7 @@ describe('a run in flight holds it', () => {
       useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
       useCodexStore.getState().initThread('conv-1', WINDOWS_PATH)
     })
-    useAgentLoopStore.setState({ loop: A_STANDING_LOOP })
+    useAgentLoopStore.setState({ loops: { 'conv-1': A_STANDING_LOOP } })
     show()
     const button = removeButton() as HTMLButtonElement
     expect(button.disabled).toBe(true)

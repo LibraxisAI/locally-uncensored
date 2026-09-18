@@ -21,12 +21,12 @@ const MEMORY_EMBED_MODEL = 'nomic-embed-text'
 // a fake (or a thrower, to exercise the offline fallback).
 type MemoryEmbedFn = (texts: string[]) => Promise<number[][]>
 let _embedFn: MemoryEmbedFn = (texts) => generateEmbeddings(texts, MEMORY_EMBED_MODEL)
-/** Test hook — override the embedding function. Pass nothing to reset. */
+/** Test hook, override the embedding function. Pass nothing to reset. */
 export function __setMemoryEmbedFn(fn?: MemoryEmbedFn): void {
   _embedFn = fn ?? ((texts) => generateEmbeddings(texts, MEMORY_EMBED_MODEL))
 }
 
-// ── Content hashing (djb2 — same trick as embedding-router) ───────
+// ── Content hashing (djb2, same trick as embedding-router) ───────
 // The text we embed is title + content; re-embed only when this hash changes.
 function embedText(m: Pick<MemoryFile, 'title' | 'content'>): string {
   return `${m.title}\n${m.content}`
@@ -42,7 +42,7 @@ export interface MemoryInjectOpts {
    * Drop memories that are raw TOOL RESULTS (extracted from agent sessions as
    * "web_search result: web_search({...}) → …"). Injected into a PLAIN chat
    * they read as worked tool-call examples and prime the model to attempt a
-   * tool call it was never offered — gemma4 then spends the whole turn in its
+   * tool call it was never offered, gemma4 then spends the whole turn in its
    * thinking channel deciding to "use the web_search tool", emits zero
    * content, and the user stares at a silent empty bubble (live find
    * 2026-06-11, David's no-answer report). Agent chats keep them: there the
@@ -128,7 +128,7 @@ function hashContent(s: string): string {
 
 /**
  * Best-effort: embed a single memory and persist its vector to IndexedDB.
- * Fire-and-forget — never throws (Ollama down, IDB missing in tests, etc.).
+ * Fire-and-forget, never throws (Ollama down, IDB missing in tests, etc.).
  * Skips when the existing stored vector already matches the content hash.
  */
 async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'content'>): Promise<void> {
@@ -155,7 +155,7 @@ async function enqueueEmbedding(entry: Pick<MemoryFile, 'id' | 'title' | 'conten
     }
     await saveVector(entry.id, record, isCurrent)
   } catch {
-    // Embedding is best-effort — retrieval falls back to keyword scoring.
+    // Embedding is best-effort, retrieval falls back to keyword scoring.
   }
 }
 
@@ -172,7 +172,7 @@ export function getMemoryBudget(contextTokens: number) {
  * Memory budget after applying the user's manual override. null / <=0 → the
  * context-tier budget unchanged. A positive override sets the injected count,
  * grows the token budget (~150 tok/memory, never below the tier's) so the extra
- * entries actually fit, and allows all types — so the user isn't locked to
+ * entries actually fit, and allows all types, so the user isn't locked to
  * "32k ctx = 15 memories" (David 2026-06-07). Exported for unit testing.
  */
 export function effectiveMemoryBudget(contextTokens: number, override?: number | null): MemoryBudgetTier {
@@ -258,7 +258,7 @@ const TYPE_ORDER: MemoryType[] = ['user', 'feedback', 'project', 'reference']
  * Hard ceiling for the injected memory block, in tokens (plan 2.6.6 A7).
  *
  * The budget tiers hand out up to 4000 tokens of memory on a large-context
- * model, and that block rides along in EVERY request of EVERY turn — it is
+ * model, and that block rides along in EVERY request of EVERY turn, it is
  * paid for again on each step of an agent run, forever, whether or not a
  * single memory was relevant. 1k is the ceiling; a block that already fits
  * under it is injected in full and unchanged, so the cap only ever bites the
@@ -270,7 +270,7 @@ export const MEMORY_CONTEXT_TOKEN_CAP = 1000
  * Render an ALREADY-ORDERED, ALREADY-FILTERED list of memories into the
  * grouped <remembered_context> block, respecting the tier's char budget and
  * sanitizing every injected line. Shared by the sync (keyword) and async
- * (embedding-blended) retrieval paths — ONLY the candidate ordering differs
+ * (embedding-blended) retrieval paths, ONLY the candidate ordering differs
  * between them, so the output formatting lives here once.
  *
  * The A7 cap is applied HERE, at the one place the string is built, so every
@@ -378,7 +378,7 @@ interface MemoryState {
 // WHY EVERY FIELD IS CHECKED HERE. A migration reads data an OLDER build of
 // this app wrote, and zustand gives it no second chance: a migrate that throws
 // lands in persist's `.catch`, hydration is abandoned, the store keeps its
-// empty default — and the next write persists that empty list back over the
+// empty default, and the next write persists that empty list back over the
 // stored blob. One entry the migration cannot read would take every memory
 // with it, permanently. So each entry is checked on its own and a broken one
 // is dropped alone.
@@ -440,7 +440,7 @@ function migrateV1toV2(oldState: unknown): unknown {
 // ── Migration from v2 to v3 (Feature FF) ──────────────────────
 //
 // v3 adds OPTIONAL MemoryFile fields (supersededBy / supersedesId / stale /
-// validFrom). Existing entries are already valid without them — this
+// validFrom). Existing entries are already valid without them, this
 // migration is intentionally a near-identity that just guarantees the
 // `stale` flag is a concrete boolean (false) on every entry, so retrieval's
 // `isStale` and the "Show outdated" filter behave deterministically on
@@ -515,7 +515,7 @@ function readAccountMemory(raw: unknown): MemoryFile {
 }
 
 /**
- * The persist `migrate` hook. Exported so a test can drive it directly — the
+ * The persist `migrate` hook. Exported so a test can drive it directly, the
  * persist internals are not reachable from vitest (same reason
  * migratePermissionState is exported).
  */
@@ -567,6 +567,69 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  */
 const MD_ITEM =
   /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
+
+/**
+ * R2-25 (Logikkontrolle, 3.0.1): a multi-line memory (several paragraphs, a
+ * pasted snippet with its own line breaks) went into `exportAsMarkdown` as
+ * literal newline CHARACTERS inside `entry.content`. Written straight into
+ * the file, that turned ONE list item into several physical lines: the first
+ * kept the `- **Title**,` prefix, the middle ones had no `- ` prefix at all,
+ * and the LAST one carried `*(source)*, date` but no leading dash. `importFromMarkdown`
+ * scans line by line with `MD_ITEM`'s `^...$` anchors, so only the first line
+ * matched anything, the rest of the content, the source and the date were
+ * silently dropped, not just truncated.
+ *
+ * The fix keeps every memory to exactly one physical line in the export,
+ * which is what the whole per-line importer assumes. A real line break in the
+ * content becomes the two-character escape `\n`; a literal backslash the
+ * content already contained is doubled first so it can never be misread as
+ * the start of that escape. `unescapeMdContent` reverses both in one pass.
+ *
+ * Opus-Review Nachbesserung 5 (3.0.1): `\n` alone was not the whole data-loss
+ * class. `.` in a JS regex without the `s` flag never matches a LINE
+ * TERMINATOR, and the spec's line terminator set is four characters, not one:
+ * `\n`, `\r`, U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR). A
+ * Windows/browser/PDF paste routinely carries CRLF, and MD_ITEM's `(.+?)`
+ * groups silently refuse to match any of the other three exactly the way
+ * they refused `\n` before this file's first fix \u2014 the whole entry, title,
+ * source and date included, vanished on import with no error. All four are
+ * escaped now, the same one-pass, backslash-doubled-first scheme as before.
+ */
+function escapeMdContent(s: string): string {
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
+const MD_ESCAPE = /\\\\|\\r|\\n|\\u2028|\\u2029/g
+const MD_ESCAPE_BACK: Record<string, string> = {
+  '\\\\': '\\', '\\r': '\r', '\\n': '\n', '\\u2028': '\u2028', '\\u2029': '\u2029',
+}
+
+function unescapeMdContent(s: string): string {
+  return s.replace(MD_ESCAPE, (m) => MD_ESCAPE_BACK[m])
+}
+
+/**
+ * Opus-Review Nachbesserung 5, second half: backward compatibility.
+ *
+ * Before this file's first R2-25 fix, an export with a LITERAL two-character
+ * `\n` already in the content (a Windows path like `C:\nope`, a code snippet
+ * with `print("a\nb")`) went out unescaped \u2014 because nothing escaped
+ * anything yet. Running today's `unescapeMdContent` over such an OLD file
+ * would silently rewrite that literal `\n` into a real line break: not data
+ * loss, but a silent mutation of a file nobody asked to have rewritten.
+ *
+ * The marker below is written by every export from this fix onward and read
+ * by every import: present means "this file's `\n`/`\r`/backslash sequences
+ * are `escapeMdContent`'s doing, undo them", absent means "leave every
+ * character exactly as written, this predates escaping".
+ */
+const MD_FORMAT_MARKER = '<!-- lu-memory-format: 2 -->'
+const MD_FORMAT_MARKER_RE = /<!--\s*lu-memory-format:\s*2\s*-->/
 
 /**
  * The date the export writes: `YYYY-MM-DD`, not a locale string.
@@ -672,7 +735,7 @@ export const useMemoryStore = create<MemoryState>()(
           ],
           lastSynced: Date.now(),
         }))
-        // Embed in the background — never blocks the synchronous add.
+        // Embed in the background, never blocks the synchronous add.
         void enqueueEmbedding({ id, title: memory.title, content: trimmedContent })
         return id
       },
@@ -784,7 +847,7 @@ export const useMemoryStore = create<MemoryState>()(
       // Embed the query, hydrate candidate vectors from IndexedDB, blend-score
       // (semantic + keyword + recency + type boost), then reuse the EXACT same
       // budget tiers / type filter / sanitization / grouped output as the sync
-      // path — only the candidate ORDERING changes. Wrapped so ANY failure
+      // path, only the candidate ORDERING changes. Wrapped so ANY failure
       // (Ollama unreachable, nomic missing, IDB absent, dim mismatch) falls
       // back to the keyword result. Offline correctness invariant: this never
       // returns empty/incorrect when the sync path would have returned text.
@@ -808,7 +871,7 @@ export const useMemoryStore = create<MemoryState>()(
         try {
           const budget = effectiveMemoryBudget(contextTokens, get().settings.maxMemoriesOverride)
           // No-op cases (no budget, no candidates, empty query) must return
-          // EXACTLY what the sync keyword path would — defer to fallback()
+          // EXACTLY what the sync keyword path would, defer to fallback()
           // rather than re-deriving '' so behaviour stays identical (and so a
           // stubbed sync method in tests is honoured).
           if (budget.budgetTokens === 0 || budget.maxMemories === 0) return fallback()
@@ -845,7 +908,7 @@ export const useMemoryStore = create<MemoryState>()(
           })
 
           // If NOT A SINGLE candidate has a usable vector, the blend reduces to
-          // keyword+recency with no semantic lift — the sync keyword path is
+          // keyword+recency with no semantic lift, the sync keyword path is
           // the better-tested equivalent, so fall back to it.
           if (!blendCandidates.some(c => c.vector)) return fallback()
 
@@ -853,7 +916,7 @@ export const useMemoryStore = create<MemoryState>()(
           const ordered = scored.slice(0, budget.maxMemories).map(s => s.memory)
 
           // An empty blend is a legitimate answer ("nothing here belongs to
-          // this question"), not a degenerate one — see MIN_RAW_SEMANTIC. We
+          // this question"), not a degenerate one, see MIN_RAW_SEMANTIC. We
           // still ask the keyword path, because it is the second, independent
           // gate: it only returns entries that share a word with the query, so
           // it cannot re-admit what the blend just rejected as unrelated. What
@@ -956,7 +1019,7 @@ export const useMemoryStore = create<MemoryState>()(
             }
           }
         } catch {
-          // Best-effort backfill — ignore failures.
+          // Best-effort backfill, ignore failures.
         }
         return embedded
       },
@@ -979,7 +1042,10 @@ export const useMemoryStore = create<MemoryState>()(
           user: 'User', feedback: 'Feedback', project: 'Project', reference: 'References',
         }
 
-        let md = '# Memory\n\n'
+        // An HTML comment: invisible in a rendered preview, does not match
+        // `##` headers or MD_ITEM, and survives a round trip through any
+        // markdown-preserving editor. See MD_FORMAT_MARKER above.
+        let md = `# Memory\n\n${MD_FORMAT_MARKER}\n\n`
 
         for (const type of typeOrder) {
           const typeEntries = entries.filter(e => e.type === type)
@@ -988,7 +1054,11 @@ export const useMemoryStore = create<MemoryState>()(
           md += `## ${typeTitles[type]}\n\n`
           for (const entry of typeEntries) {
             const date = isoTag(entry.updatedAt)
-            md += `- **${entry.title}**, ${entry.content}`
+            // R2-25: escaped so a multi-line entry stays ONE physical line,             // see escapeMdContent. The bracket-ending check below still reads
+            // the RAW content: `\n`-escaping never adds or removes a
+            // trailing `]`, and checking the escaped form would be the same
+            // answer read through an extra step.
+            md += `- **${entry.title}**, ${escapeMdContent(entry.content)}`
             if (entry.tags.length > 0) md += ` [${entry.tags.join(', ')}]`
             // A content that ends in a bracket group would otherwise read back
             // as a tag list on import. The empty group occupies the tag slot,
@@ -1003,6 +1073,12 @@ export const useMemoryStore = create<MemoryState>()(
       },
 
       importFromMarkdown: (markdown) => {
+        // Opus-Review Nachbesserung 5: only a file THIS fix wrote carries
+        // escaped `\n`/`\r`/backslash sequences that need undoing. An older
+        // export (or a hand-written one) never escaped anything, so its
+        // literal backslash-n is content, not a line break waiting to be
+        // restored, see MD_FORMAT_MARKER's comment.
+        const escaped = MD_FORMAT_MARKER_RE.test(markdown)
         const lines = markdown.split('\n')
         const pool: MemoryFile[] = [...get().entries]
         const newEntries: MemoryFile[] = []
@@ -1015,7 +1091,16 @@ export const useMemoryStore = create<MemoryState>()(
           'facts': 'user', 'tool results': 'reference', 'decisions': 'project', 'context': 'project',
         }
 
-        for (const line of lines) {
+        for (const rawLine of lines) {
+          // Opus-Review Runde 2, Punkt 6: `markdown.split('\n')` leaves a
+          // trailing `\r` on every physical line when the file carries CRLF
+          // endings (a Windows text editor, `git core.autocrlf` on checkout).
+          // MD_ITEM is `$`-anchored and `.` never matches `\r` (same class as
+          // Nachbesserung 5 above), so every line would refuse to match and
+          // the WHOLE import would silently yield zero entries, not just miss
+          // the odd one. Stripping it here, before either regex sees the
+          // line, is the one point both `headerMatch` and `MD_ITEM` share.
+          const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
           const headerMatch = line.match(/^##\s+(.+)/)
           if (headerMatch) {
             const header = headerMatch[1].toLowerCase().trim()
@@ -1026,7 +1111,12 @@ export const useMemoryStore = create<MemoryState>()(
           const itemMatch = line.match(MD_ITEM)
           if (itemMatch) {
             const title = itemMatch[1] || itemMatch[2].substring(0, 60)
-            const content = itemMatch[2].trim()
+            // R2-25: undo escapeMdContent's `\n`/backslash escaping so a
+            // multi-line memory comes back with its real line breaks instead
+            // of the literal two-character escape. Only when the format
+            // marker says this file was escaped in the first place, see
+            // MD_FORMAT_MARKER.
+            const content = escaped ? unescapeMdContent(itemMatch[2].trim()) : itemMatch[2].trim()
             const tags = itemMatch[3] ? itemMatch[3].split(',').map(t => t.trim()).filter(Boolean) : []
             const source = itemMatch[4] || 'import'
             const stand = isoBack(itemMatch[5]) ?? Date.now()
@@ -1075,8 +1165,7 @@ export const useMemoryStore = create<MemoryState>()(
           return { added: 0, updated: 0, alreadyPresent: 0 }
         }
         // Tolerant shape handling: accept LU's own {entries:[...]} export, a
-        // bare [...] array, or {memories:[...]} (konata-session 2026-06-07 —
-        // imports silently produced 0 entries on any other shape).
+        // bare [...] array, or {memories:[...]} (konata-session 2026-06-07,         // imports silently produced 0 entries on any other shape).
         const entriesField = prop(raw, 'entries')
         const memoriesField = prop(raw, 'memories')
         const arr: unknown[] = Array.isArray(raw) ? raw
@@ -1096,7 +1185,7 @@ export const useMemoryStore = create<MemoryState>()(
         for (const e of arr) {
           const scope = prop(e, 'scope')
           if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) continue
-          // `content` may also arrive as `text` / `value` — a foreign export's
+          // `content` may also arrive as `text` / `value`, a foreign export's
           // spelling. Only a real string counts: the old String(...) turned an
           // object into the literal "[object Object]" and imported that.
           const content = (asString(prop(e, 'content')) ?? asString(prop(e, 'text')) ?? asString(prop(e, 'value')) ?? '').trim()
@@ -1209,11 +1298,11 @@ export const useMemoryStore = create<MemoryState>()(
     {
       name: 'locally-uncensored-memory',
       // v3 (Feature FF): adds optional staleness/supersession fields to
-      // MemoryFile. They default to unset, so old entries remain valid — the
+      // MemoryFile. They default to unset, so old entries remain valid, the
       // bump exists only to run migrateV2toV3 so the shape is explicit and
       // future migrations have a clean baseline.
       version: 3,
-      // IndexedDB (idbStorage) instead of localStorage — memories + their growth
+      // IndexedDB (idbStorage) instead of localStorage, memories + their growth
       // shouldn't be capped at ~5 MB; idb is disk-backed and migrates existing
       // localStorage data on first read. createJSONStorage wrap still required
       // (zustand v5 PersistStorage; raw StateStorage → "[object Object]", FIX-3).

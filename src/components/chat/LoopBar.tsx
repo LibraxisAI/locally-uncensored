@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'react'
 import { RefreshCw, Square } from 'lucide-react'
-import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useConversationLoop } from '../../stores/agentLoopStore'
 import { useChatStore } from '../../stores/chatStore'
 import { COMPOSER_MAX_W } from './composer-width'
 
@@ -16,8 +16,11 @@ interface Props {
 }
 
 export function LoopBar({ onStop }: Props) {
-  const loop = useAgentLoopStore((s) => s.loop)
   const activeConversationId = useChatStore((s) => s.activeConversationId)
+  // Only the ACTIVE conversation's own loop, never a foreign one (B2): the
+  // store now holds one per conversation, and a loop running elsewhere must
+  // not paint this bar or steal its Stop button.
+  const loop = useConversationLoop(activeConversationId)
   // The clock the countdown divides by, read once a second in the interval
   // instead of on every render. Reading `Date.now()` down in the render body
   // was impure (React 19 `purity`) AND it made the countdown depend on
@@ -29,7 +32,7 @@ export function LoopBar({ onStop }: Props) {
     return () => clearInterval(t)
   }, [loop])
 
-  if (!loop || loop.conversationId !== activeConversationId) return null
+  if (!loop) return null
 
   const secs = Math.max(0, Math.ceil((loop.nextAt - now) / 1000))
   const passLabel = loop.cap > 0 ? `pass ${loop.pass} of ${loop.cap}` : `pass ${loop.pass}`

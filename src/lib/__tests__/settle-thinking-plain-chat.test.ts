@@ -88,7 +88,11 @@ describe('plain chat and group chat are wired to it', () => {
     expect(src).toContain('settleThinking(contentAcc, thinkingAcc, keepThinking)')
   })
 
-  it('the plain turn settles the refs the bubble is painted from', () => {
-    expect(src).toContain('settleThinking(contentRef.current, thinkingRef.current, keepThinking)')
+  it('the plain turn settles the run state the bubble is painted from', () => {
+    // B2: the plain send path replaced its hook-instance refs with a
+    // per-call `run` object (see the ChatRun doc comment in useChat.ts) so
+    // two overlapping sends cannot share this state; the settlement call
+    // moved with it.
+    expect(src).toContain('settleThinking(run.content, run.thinking, keepThinking)')
   })
 })

@@ -31,13 +31,41 @@
  * der Rumpf, der den Griff sonst registriert, hat ja noch nicht angefangen.
  * Der Nutzer sieht ein Warteplaettchen, drueckt Stop, und nichts passiert.
  *
- * Ein verschachtelter Lauf bekommt gar keinen zweiten Platz. `admit` laesst
- * dieselbe Konversation absichtlich noch einmal durch, weil ein
- * Vordergrund-Sub-Agent sonst auf eine Spur wartete, die sein eigener
- * Elternlauf haelt. Ohne Zaehler hier naehme der innere Lauf dieses
- * `'started'` fuer bare Muenze und raeumte in seinem `finally` den Platz des
- * Aeusseren, waehrend der noch rechnet. Genau ein `finally` zu viel, und die
- * ganze Sperre ist weg.
+ * ── ES GIBT KEINEN WIEDEREINTRITTS-FASTPATH MEHR, UND DAS IST ABSICHT ───────
+ *
+ * (Blocker A, Opus-Review Runde 2) Bis hierher gab es einen zweiten Weg neben
+ * `admit`/`release`: rief `runInLane` fuer eine `conversationId` an, fuer die
+ * schon ein Lauf "in diesem Modul steckte" (ein Zaehler `tiefe`), lief der
+ * Rumpf sofort durch, ohne Platz, ohne Buchung, ohne Anstellen. Gedacht war
+ * das fuer einen Vordergrund-Sub-Agenten, der sonst auf die Spur seines
+ * eigenen Elternlaufs gewartet haette (`sub-agent.ts: return await
+ * runner(...)`).
+ *
+ * Zwei Dinge waren daran falsch. Erstens gibt es diesen Aufrufer heute gar
+ * nicht mehr: `sub-agent.ts` ruft `provider.chatWithTools` beziehungsweise
+ * `registry.execute` direkt, nie `runInLane` (nachgesehen per grep ueber
+ * `src/api` und `src/lib`, kein Treffer). Zweitens traf der Fastpath nicht
+ * nur einen echten verschachtelten Aufruf, sondern JEDEN zweiten Aufruf mit
+ * derselben `conversationId`, auch einen, der mit dem ersten nichts zu tun
+ * hat: Stop in einer Unterhaltung, sofort danach neu gesendet. Der ALTE Lauf
+ * wickelt sich noch ab (`endTurnDurably` braucht gemessen 300 bis 500 ms),
+ * sein eigenes `finally` hat die Spur noch nicht zurueckgegeben, und der NEUE
+ * Lauf traegt dieselbe `conversationId`. Der Fastpath liess ihn durch, ohne
+ * Platz zu nehmen, und wenn der ALTE Lauf danach seinen Platz zurueckgab,
+ * rueckte ein dritter, wirklich wartender Lauf nach, WAEHREND der neue Lauf
+ * noch ungebucht gegen den Motor lief: zwei echte Anfragen gleichzeitig,
+ * gemessen mit einem Wegwerf-Test gegen dieses Modul, Zahlen im Baubericht.
+ *
+ * Die richtige Antwort ist nicht ein besserer Zaehler, sondern die Frage
+ * anders zu stellen: nicht "traegt dieser Aufruf dieselbe `conversationId`",
+ * sondern "ist das WIRKLICH derselbe Lauf". Das beantwortet jetzt eine
+ * eigene Identitaet je `runInLane`-Aufruf (`identity` unten), die an
+ * `admit`/`release` weitergereicht wird (siehe deren Kopf in `run-lanes.ts`).
+ * Ein neuer Lauf derselben Unterhaltung bekommt eine NEUE Identitaet und
+ * stellt sich damit hinter dem noch abwickelnden alten an, statt ihn zu
+ * ersetzen. Taucht eines Tages ein echter verschachtelter Aufrufer wieder
+ * auf, muss er sein Elternlauf-Token EXPLIZIT weiterreichen, nie stillschweigend
+ * ueber die blosse `conversationId` erschliessen lassen.
  */
 import { admit, release, type RunLane } from './run-lanes'
 import { useGenerationStore } from '../stores/generationStore'
@@ -72,15 +100,6 @@ export type RunSlotOutcome = 'ran' | 'cancelled-while-queued'
 type Weckgrund = 'drangekommen' | 'ausgereiht'
 
 /**
- * Wie viele Laeufe je Konversation gerade IN diesem Modul stecken.
- *
- * Nur der aeusserste nimmt und gibt den Platz. Modulzustand aus demselben
- * Grund wie in `run-lanes.ts` und `run-stop.ts`: die Frage ueberlebt jedes
- * Aus- und Einhaengen der Ansicht.
- */
-const tiefe = new Map<string, number>()
-
-/**
  * Den Lauf fahren, sobald seine Spur frei ist.
  *
  * Cloud faengt sofort an. Lokal faengt sofort an, wenn die Karte frei ist,
@@ -105,18 +124,14 @@ export async function runInLane(
     return 'ran'
   }
 
-  const verschachtelt = (tiefe.get(conversationId) ?? 0) > 0
-  if (verschachtelt) {
-    tiefe.set(conversationId, (tiefe.get(conversationId) ?? 0) + 1)
-    try {
-      await body()
-      return 'ran'
-    } finally {
-      const rest = (tiefe.get(conversationId) ?? 1) - 1
-      if (rest > 0) tiefe.set(conversationId, rest)
-      else tiefe.delete(conversationId)
-    }
-  }
+  // Die eigene Identitaet DIESES Aufrufs, siehe Kopf ("ES GIBT KEINEN
+  // WIEDEREINTRITTS-FASTPATH MEHR"). Ein frisches Objekt, mit nichts als sich
+  // selbst vergleichbar: zwei Aufrufe mit derselben `conversationId` sind
+  // damit fuer `admit`/`release` zwei verschiedene Laeufe, es sei denn,
+  // jemand reicht ausdruecklich dieselbe `identity` weiter. Niemand tut das
+  // heute; kommt so ein Aufrufer zurueck, ist das die einzige Stelle, die er
+  // aendern muss.
+  const identity = Symbol(conversationId)
 
   let zustand: 'wartend' | 'laeuft' | 'ausgereiht' = 'wartend'
   let wecken: ((grund: Weckgrund) => void) | null = null
@@ -135,7 +150,7 @@ export async function runInLane(
       zustand = 'ausgereiht'
       // `release` auf einen Wartenden nimmt ihn aus der Schlange und rueckt
       // NIEMANDEN nach, denn der Halter rechnet ja weiter.
-      release(conversationId)
+      release(conversationId, identity)
       wecken?.('ausgereiht')
       return
     }
@@ -144,7 +159,7 @@ export async function runInLane(
 
   const store = useGenerationStore.getState()
   store.registerAborter(conversationId, abbruchgriff)
-  store.bookRun(conversationId, lane)
+  store.bookRun(conversationId, lane, identity)
 
   const urteil = admit(lane, conversationId, () => {
     // Der Vordermann ist fertig. Dieser Aufruf WECKT nur; der Rumpf laeuft
@@ -155,7 +170,7 @@ export async function runInLane(
     if (zustand !== 'wartend') return
     zustand = 'laeuft'
     wecken?.('drangekommen')
-  })
+  }, identity)
 
   // Warum das Wecken seinen Grund mittraegt, statt dass hier `zustand`
   // gelesen wird: `zustand` wird ausschliesslich in Rueckrufen gesetzt, und
@@ -179,41 +194,37 @@ export async function runInLane(
   }
 
   if (grund === 'ausgereiht') {
-    aufraeumen(conversationId, abbruchgriff)
+    aufraeumen(conversationId, abbruchgriff, identity)
     return 'cancelled-while-queued'
   }
 
-  tiefe.set(conversationId, 1)
   try {
     await body()
     return 'ran'
   } finally {
-    tiefe.delete(conversationId)
-    aufraeumen(conversationId, abbruchgriff)
+    aufraeumen(conversationId, abbruchgriff, identity)
     // DIE PFLICHT AUS DEM KOPF VON run-lanes.ts, an ihrer einzigen Stelle.
     // Der Platz ist beim Zurueckkehren aus `release` schon an den Naechsten
     // vergeben; wer den Rueckgabewert verwirft, laesst die Spur haengen.
-    release(conversationId)?.()
+    release(conversationId, identity)?.()
   }
 }
 
 /**
  * Buchung weg, eigener Abbruchgriff weg.
  *
- * Der Griff wird nur geloescht, wenn er noch UNSERER ist. Der Sendeweg
- * registriert im Rumpf seinen eigenen und ueberschreibt diesen dabei; ihn
- * danach blind wegzuraeumen, naehme dem Nutzer den Stop-Knopf fuer einen
- * Lauf, der noch ausrollt.
+ * Beides nur, wenn es noch UNSERES ist (`identity`). Der Sendeweg
+ * registriert im Rumpf seinen eigenen Abbruchgriff und ueberschreibt diesen
+ * dabei; ihn danach blind wegzuraeumen, naehme dem Nutzer den Stop-Knopf fuer
+ * einen Lauf, der noch ausrollt. Dieselbe Frage gilt seit Blocker A fuer die
+ * Buchung selbst: ein spaet kommendes `finally` eines abgeloesten Laufs
+ * (Stop, sofort neu gesendet) darf `generationStore.runs` nicht loeschen,
+ * wenn der NEUE Lauf die Unterhaltung inzwischen uebernommen hat.
  */
-function aufraeumen(conversationId: string, eigenerGriff: () => void): void {
+function aufraeumen(conversationId: string, eigenerGriff: () => void, identity: unknown): void {
   const store = useGenerationStore.getState()
-  store.endRun(conversationId)
+  store.endRun(conversationId, identity)
   if (useGenerationStore.getState().aborters[conversationId] === eigenerGriff) {
     store.clearAborter(conversationId)
   }
-}
-
-/** Nur fuer Tests: der Zaehler lebt sonst eine ganze Sitzung lang. */
-export function __resetRunSlotsForTests(): void {
-  tiefe.clear()
 }

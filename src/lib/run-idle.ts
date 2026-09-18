@@ -57,10 +57,12 @@
  *     so a deleted coding chat leaves its thread behind — and its status keeps
  *     voting in `anyRunActive` below.
  */
+import { useSyncExternalStore } from 'react'
 import { useGenerationStore } from '../stores/generationStore'
 import { useCodexStore } from '../stores/codexStore'
 import { isRunStopped } from './run-stop'
-import { anyRunQueued, isRunQueued, subscribeRunLanes } from './run-lanes'
+import { anyRunQueued, isRunQueued, localLaneHolder, runQueuePosition, subscribeRunLanes } from './run-lanes'
+import { headApproval, subscribeApprovals } from './approval-queue'
 import { isActiveCodexStatus, type CodexThreadStatus } from '../types/codex'
 
 /**
@@ -186,6 +188,85 @@ export function runStatusFrom(
  */
 export function isRunActive(conversationId: string | null | undefined): boolean {
   return isActiveCodexStatus(runStatusOf(conversationId))
+}
+
+/**
+ * React hook: is THIS conversation waiting in the local lane's queue right
+ * now (Runde 4, review-lanes.md Blocker 1+6)?
+ *
+ * ChatView and CodexView both need this for the same two things: showing the
+ * Stop button (not Send) while a send is queued, and the "waiting for the
+ * local model" line. `useSyncExternalStore` with `subscribeRunLanes` is the
+ * plain React wrapper around the module state `lib/run-lanes.ts` already
+ * keeps and already wakes on, no second copy of "is it queued": the two
+ * view components just read the same one fact reactively instead of via
+ * `getState()`-equivalent calls that would not trigger a re-render when a
+ * run gets promoted out of the queue.
+ */
+export function useIsQueuedForLocalLane(conversationId: string | null | undefined): boolean {
+  return useSyncExternalStore(subscribeRunLanes, () => isRunQueued(conversationId))
+}
+
+/**
+ * React hook: which position does this conversation hold in the local
+ * lane's queue, if any? `null` when it is not waiting (running, or nothing
+ * booked at all). Same `subscribeRunLanes` wiring as
+ * `useIsQueuedForLocalLane`, kept as a separate hook rather than folded into
+ * it because most callers only need the boolean and would otherwise re-render
+ * on every position change of a queue they do not display a number for.
+ *
+ * Feeds the composer's waiting line with a real number instead of a bare "it
+ * is waiting": `lib/run-lanes.ts`'s `runQueuePosition` existed for exactly
+ * this since before Runde 4, wired up only now that a queue can actually
+ * form.
+ */
+export function useLocalLaneQueuePosition(conversationId: string | null | undefined): number | null {
+  return useSyncExternalStore(subscribeRunLanes, () => runQueuePosition(conversationId))
+}
+
+/** Both sources the wait-reason question below reads: the lane's own holder
+ *  and queue, PLUS the approval queue, whose head decides whether the
+ *  holder is answering or waiting on a human. */
+function subscribeRunLanesAndApprovals(listener: () => void): () => void {
+  const abLane = subscribeRunLanes(listener)
+  const abApproval = subscribeApprovals(listener)
+  return () => { abLane(); abApproval() }
+}
+
+/**
+ * React hook: while THIS conversation waits in the local lane's queue, is the
+ * holder ahead of it stuck on a HUMAN, not a model (Runde 5, review-lanes.md
+ * Runde 2 Antwort zu Punkt 1, "Der wartende Agent")?
+ *
+ * `runInLane` holds the lane for the holder's WHOLE run, tool-approval wait
+ * included, which is correct (the run is not over, and inference resumes the
+ * moment the human answers). But "Waiting for the local model to finish
+ * another answer" is a lie in that window: no model is thinking, a person is,
+ * and there is no bound on how long a person takes. The line has to say that,
+ * so a customer does not read a silent multi-minute wait as a hang and file
+ * the exact support ticket B1 already fixed once (David 2026-06-16 lineage).
+ *
+ * `false` while not queued, or while the holder IS generating: the ordinary
+ * "another answer" wording stays correct there and this hook must not flap
+ * it every time a chunk arrives.
+ */
+export function useLocalLaneHolderWaitsForApproval(conversationId: string | null | undefined): boolean {
+  return useSyncExternalStore(subscribeRunLanesAndApprovals, () => {
+    if (!isRunQueued(conversationId)) return false
+    const holder = localLaneHolder()
+    return !!holder && headApproval(holder) !== null
+  })
+}
+
+/** The title of the conversation currently holding the local lane, only
+ *  while THIS conversation is queued behind it, for the "waiting on
+ *  <name>'s approval" line. `null` covers both "not queued" and "no title
+ *  available" so the caller can fall back to the generic wording either way. */
+export function useLocalLaneHolderId(conversationId: string | null | undefined): string | null {
+  return useSyncExternalStore(subscribeRunLanes, () => {
+    if (!isRunQueued(conversationId)) return null
+    return localLaneHolder()
+  })
 }
 
 /**

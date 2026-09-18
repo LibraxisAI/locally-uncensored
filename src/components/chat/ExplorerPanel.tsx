@@ -39,7 +39,7 @@ import {
   FolderX,
 } from 'lucide-react'
 import { useCodexStore } from '../../stores/codexStore'
-import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useAnyAgentLoopActive } from '../../stores/agentLoopStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -98,14 +98,16 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
   const generating = useGenerationStore((s) => s.generating)
-  const loop = useAgentLoopStore((s) => s.loop)
-  const lockReason = codexBusyReason({ sendsInFlight, threads, generating, loop })
-  const lockTitle = lockReason ? CODEX_WORKDIR_LOCK_TITLE[lockReason] : null
-
   // Read up here because the workspace fallback below needs it too. The plan
   // moved into this column, so a collapsed column would hide it, and with it
   // the only Approve-and-run button there is. The rail says so instead.
   const activeConversationId = useChatStore((s) => s.activeConversationId)
+  // The working directory is GLOBAL across every Codex conversation (A8), so
+  // a loop running in ANY of them still must not have the folder yanked out
+  // from under it, deliberately not scoped to the active conversation.
+  const loop = useAnyAgentLoopActive()
+  const lockReason = codexBusyReason({ sendsInFlight, threads, generating, loop })
+  const lockTitle = lockReason ? CODEX_WORKDIR_LOCK_TITLE[lockReason] : null
 
   const width = useUIStore((s) => s.explorerWidth)
   const collapsed = useUIStore((s) => s.explorerCollapsed)

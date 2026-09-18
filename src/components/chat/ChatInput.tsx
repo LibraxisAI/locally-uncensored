@@ -25,12 +25,36 @@ interface Props {
   /** THIS conversation is answering: the slot shows Stop. */
   isGenerating: boolean
   /**
-   * Another conversation is answering. The slot used to read one app-wide
-   * flag, so every other chat silently lost its Send button and grew a Stop
-   * that killed the foreign run (T1 nebenfund 4). Send stays where it is now
-   * and the composer says in one line why it is waiting.
+   * THIS conversation's send is queued behind another local run (Runde 4,
+   * review-lanes.md Blocker 1+6): the built-in engine runs one slot, so a
+   * second local send waits its turn instead of racing the first one for it.
+   * Distinct from plain `isGenerating`, where a stream is already flowing;
+   * here nothing has started yet, but the composer still shows Stop (the
+   * store aborter is registered the moment the run is admitted to the queue,
+   * not only once it starts) and a line explains why nothing is happening.
+   * Locking based on a DIFFERENT conversation is gone entirely as of this
+   * round: each conversation now only answers for its own send, running or
+   * queued, never for another one's.
    */
-  busyElsewhere?: boolean
+  waitingForLocalLane?: boolean
+  /**
+   * This conversation's position in the local lane's queue (1 = next up),
+   * when known. Purely cosmetic: enriches the waiting line with a real
+   * number instead of a bare "it is waiting". `undefined`/`null` falls back
+   * to the plain sentence.
+   */
+  localLaneQueuePosition?: number | null
+  /**
+   * The conversation holding the local lane ahead of THIS one is not
+   * generating, it is stuck on a tool approval from a person (Runde 5,
+   * review-lanes.md Runde 2 Antwort zu Punkt 1). "Waiting for the local
+   * model to finish another answer" is false in that window: no model is
+   * thinking, and there is no bound on how long a person takes to click.
+   */
+  waitingOnApproval?: boolean
+  /** The holder's own title, for "waiting on <title>'s approval", falling
+   *  back to the generic wording when unavailable. */
+  waitingOnApprovalIn?: string
   pendingApproval?: AgentToolCall | null
   onApprove?: () => void
   onReject?: () => void
@@ -98,7 +122,7 @@ function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   })
 }
 
-export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
+export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, localLaneQueuePosition, waitingOnApproval, waitingOnApprovalIn, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -277,7 +301,7 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
   const sendLockRef = useRef(0)
   const handleSend = () => {
     const trimmed = input.trim()
-    if ((!trimmed && images.length === 0) || isGenerating || busyElsewhere || disabled) return
+    if ((!trimmed && images.length === 0) || isGenerating || waitingForLocalLane || disabled) return
     if (!passSendLock(sendLockRef)) return
     onSend(trimmed || '(image)', images.length > 0 ? images : undefined)
     setInput('')
@@ -441,16 +465,32 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
         {/* Prompt area: hints, image previews, then the textarea (buttons live
             in the action bar below, web-parity two-row composer). */}
         <div className="px-3 pt-2.5">
-          {/* Another chat is answering. Saying so beats what this composer did
-              before, which was to drop the Send button without a word and put a
-              Stop button there that aborted the OTHER chat's run. One answer at
-              a time is what the app really does today: the local engine runs a
-              single slot, and the streaming buffers behind the composer are
-              shared. Whoever lifts that lifts this line with it. */}
-          {busyElsewhere && (
-            <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-busy-elsewhere">
+          {/* Runde 4 (review-lanes.md Blocker 1+6): the built-in engine runs a
+              single slot, so a second local send queues instead of failing or
+              hanging silently. This is THIS chat's own send, already accepted,
+              just not admitted yet. Stop above already works on it: the store
+              aborter is registered the moment the run is admitted to the
+              queue, before the queue promotes it. This line only says why
+              nothing is streaming yet, and disappears the moment the run
+              starts. A DIFFERENT conversation being busy no longer shows
+              anything here at all: the composer used to drop the Send button
+              in every other chat too and put a Stop there that aborted the
+              foreign run (T1 nebenfund 4); that lock is gone now that a local
+              second send queues visibly instead of racing the first one, and
+              a cloud second send just runs alongside it. */}
+          {waitingForLocalLane && (
+            <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-waiting-local-lane">
               <span className="flex-1 min-w-0">
-                Another chat is still answering. This app runs one answer at a time, so wait for it to finish or stop it in that chat.
+                {waitingOnApproval ? (
+                  waitingOnApprovalIn
+                    ? `Waiting: "${waitingOnApprovalIn}" is holding the local model while it waits for your approval.`
+                    : 'Waiting: another conversation is holding the local model while it waits for your approval.'
+                ) : (
+                  'Waiting for the local model to finish another answer.'
+                )}
+                {!!localLaneQueuePosition && localLaneQueuePosition > 1 && (
+                  ` ${localLaneQueuePosition - 1} more chat${localLaneQueuePosition - 1 === 1 ? '' : 's'} ahead of this one.`
+                )}
               </span>
             </div>
           )}
@@ -697,7 +737,7 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
             ) : (
               <button
                 onClick={handleSend}
-                disabled={(!input.trim() && images.length === 0) || isTranscribing || !!busyElsewhere}
+                disabled={(!input.trim() && images.length === 0) || isTranscribing || !!waitingForLocalLane}
                 className="lu-control lu-control--icon lu-primary w-full h-full"
                 aria-label="Send message"
               >

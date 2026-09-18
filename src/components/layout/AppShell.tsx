@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Header } from './Header'
 import { StaleModelsBanner } from './StaleModelsBanner'
+import { BackgroundShutdownBanner } from './BackgroundShutdownBanner'
 import { StorageQuotaToast } from './StorageQuotaToast'
 import { Sidebar } from './Sidebar'
 import { ChatView } from '../chat/ChatView'
@@ -1077,6 +1078,7 @@ export function AppShell() {
         <Titlebar />
         <Header />
         <StaleModelsBanner />
+        <BackgroundShutdownBanner />
         {restoreError && (
           <div className="mx-2 mt-2 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2">
             <p role="alert" className="flex-1 text-[0.65rem] leading-snug text-red-500 dark:text-red-400 whitespace-pre-line">

@@ -61,11 +61,43 @@
  *   Schlange, aendert das keinen von beiden: der Dialog wartete auf die
  *   naechste fremde Aenderung.
  *
- * Deshalb gibt es `subscribeRunLanes` und eine Momentaufnahme mit STABILER
- * Identitaet. Das ist kein Spiegel des Zustands, sondern ein Fenster darauf:
- * gespeichert wird weiter nur hier, gelesen wird weiter nur hier. Ein
- * Spiegel waere genau der Grundfehler, gegen den `run-idle.ts` gebaut ist,
- * eine Tatsache an zwei Orten, die im Fenster dazwischen auseinanderlaufen.
+ * Deshalb gibt es `subscribeRunLanes`: der Weckruf fuer `useSyncExternalStore`,
+ * dessen zweites Argument dann eine der schmalen Fragen hier ist
+ * (`isRunQueued`, `runQueuePosition`). Eine gespeicherte Momentaufnahme mit
+ * eigener Identitaet braucht es dafuer nicht: jede dieser Fragen antwortet
+ * mit einem Boolean oder einer Zahl, und `===` vergleicht die schon richtig,
+ * ohne dass irgendwo ein Objekt zwischengehalten werden muesste. Gespeichert
+ * wird weiter nur hier, gelesen wird weiter nur hier. Ein Spiegel waere genau
+ * der Grundfehler, gegen den `run-idle.ts` gebaut ist, eine Tatsache an zwei
+ * Orten, die im Fenster dazwischen auseinanderlaufen.
+ *
+ * ── DIE KENNUNG UND DIE IDENTITAET SIND ZWEI VERSCHIEDENE DINGE ─────────────
+ *
+ * (Nachbesserung, Opus-Review Runde 2, BLOCKER A) `admit`/`release` nahmen bis
+ * hierher an, dass zwei Aufrufe mit derselben `convId` immer DERSELBE Lauf
+ * sind ("Derselbe Lauf fragt zweimal: er hat den Platz schon"). Das stimmt
+ * fuer den einen Fall, fuer den es gedacht war (ein Elternlauf fragt sich
+ * selbst noch einmal), und stimmt NICHT fuer den Fall, den `run-slot.ts` frueher
+ * mit einem eigenen, fehlerhaften Zaehler abgefangen hat: Stop in einer
+ * Unterhaltung, sofort danach neu gesendet. Der ALTE Lauf wickelt sich noch
+ * ab (`endTurnDurably` braucht 300 bis 500 ms), sein `finally` hat die Spur
+ * noch nicht zurueckgegeben, und der NEUE Lauf traegt dieselbe `convId`. Ohne
+ * Unterscheidung waere der neue Lauf "derselbe Lauf, der noch einmal fragt"
+ * und bekaeme den Platz sofort, obwohl der alte ihn noch haelt: zwei echte
+ * Anfragen gegen den Motor gleichzeitig.
+ *
+ * Deshalb nimmt `admit`/`release` ein optionales viertes/zweites Argument,
+ * `identity`. Ohne Angabe ist es die `convId` selbst, und jedes bestehende
+ * Verhalten (alle Tests unten) bleibt exakt, wie es war: eine Anfrage ohne
+ * eigene Identitaet gilt als Fortsetzung der letzten mit derselben `convId`.
+ * `run-slot.ts` ist der einzige Aufrufer, der eine ECHTE Identitaet mitgibt,
+ * ein frisches, undurchsichtiges Objekt je `runInLane`-Aufruf: fuer dieses
+ * Modul sind zwei Aufrufe mit derselben `convId`, aber verschiedener
+ * `identity`, zwei VERSCHIEDENE Laeufe. Der neue stellt sich hinten an, der
+ * alte behaelt seinen Platz, bis sein eigenes `finally` ihn zurueckgibt. Die
+ * `convId` bleibt dabei die sichtbare Kennung fuer die Warteschlangen-Anzeige
+ * (`localLaneHolder`, `runQueuePosition`, `isRunQueued`, `queuedRunIds`): die
+ * Oberflaeche fragt "wartet DIESE Unterhaltung", nicht "wartet DIESER Lauf".
  */
 
 /** Woran ein Lauf rechnet: an der Karte des Nutzers oder woanders. */
@@ -85,6 +117,8 @@ export type StartThunk = () => void
 
 interface Wartend {
   convId: string
+  /** Siehe Kopf: default `convId`, echt nur wenn der Aufrufer eine mitgibt. */
+  identity: unknown
   start: StartThunk
 }
 
@@ -95,34 +129,15 @@ interface Wartend {
  * nicht zwei gleichzeitig gibt. Ein Zaehler mit Obergrenze 1 waere dieselbe
  * Aussage, nur mit einem Zustand mehr, in dem er falsch stehen kann.
  */
-let halter: string | null = null
+let halter: { convId: string; identity: unknown } | null = null
 
 /** Wer wartet, in der Reihenfolge des Anstellens. */
 const warteschlange: Wartend[] = []
 
-/** Die lokale Spur, so wie eine Anzeige sie braucht. */
-export interface RunLaneSnapshot {
-  /** Wer rechnet gerade auf der Karte, oder `null`, wenn sie frei ist. */
-  readonly holder: string | null
-  /** Wer wartet, der Naechste zuerst. */
-  readonly queued: readonly string[]
-}
-
 const beobachter = new Set<() => void>()
 
 /**
- * Die zuletzt ausgegebene Momentaufnahme, oder `null`, wenn sie ungueltig ist.
- *
- * Sie wird gehalten und nicht bei jedem Abruf neu gebaut, weil
- * `useSyncExternalStore` die Momentaufnahmen mit `===` vergleicht. Ein
- * frisches Objekt bei jedem Abruf ist dort kein Schoenheitsfehler, sondern
- * eine Endlosschleife im Render.
- */
-let momentaufnahme: RunLaneSnapshot | null = null
-
-/**
- * An der Spur hat sich etwas geaendert: Momentaufnahme verwerfen, Leser
- * wecken.
+ * An der Spur hat sich etwas geaendert: alle Leser wecken.
  *
  * Der Fehler eines Lesers wird verschluckt, und das ist hier keine
  * Bequemlichkeit. Die lokale Spur ist die gefaehrlichste Stelle der App: wer
@@ -131,7 +146,6 @@ let momentaufnahme: RunLaneSnapshot | null = null
  * halb durchlaufenes `release` waere genau das.
  */
 function veraendert(): void {
-  momentaufnahme = null
   for (const l of beobachter) {
     try { l() } catch { /* die Anzeige ist kaputt, die Spur bleibt heil */ }
   }
@@ -140,20 +154,12 @@ function veraendert(): void {
 /**
  * Bescheid sagen, wenn Halter oder Schlange sich aendern. Rueckgabe meldet ab.
  *
- * Gedacht als erstes Argument von `useSyncExternalStore`, zusammen mit
- * `localLaneSnapshot` als zweitem.
+ * Gedacht als erstes Argument von `useSyncExternalStore`, zusammen mit einer
+ * der schmalen Fragen unten (`isRunQueued`, `runQueuePosition`) als zweitem.
  */
 export function subscribeRunLanes(listener: () => void): () => void {
   beobachter.add(listener)
   return () => { beobachter.delete(listener) }
-}
-
-/** Halter und Wartende, mit stabiler Identitaet bis zur naechsten Aenderung. */
-export function localLaneSnapshot(): RunLaneSnapshot {
-  if (momentaufnahme === null) {
-    momentaufnahme = { holder: halter, queued: warteschlange.map((w) => w.convId) }
-  }
-  return momentaufnahme
 }
 
 /**
@@ -187,8 +193,18 @@ export function runQueuePosition(conversationId: string | null | undefined): num
  * Aufrufrahmen dieser Funktion an, waehrend der Aufrufer noch glaubt, er sei
  * beim Anmelden. Ein Fehler daraus kaeme dann aus `admit` heraus, nicht aus
  * dem Lauf. Der Startpunkt bleibt beim Aufrufer, wo er hingehoert.
+ *
+ * `identity` (siehe Kopf, Abschnitt "DIE KENNUNG UND DIE IDENTITAET"): ohne
+ * Angabe die `convId` selbst, also das alte Verhalten. `run-slot.ts` gibt ein
+ * frisches, je Aufruf eigenes Objekt mit, damit ein neuer Lauf derselben
+ * Unterhaltung NICHT als Fortsetzung eines noch abwickelnden alten durchgeht.
  */
-export function admit(lane: RunLane, convId: string, start: StartThunk): Admission {
+export function admit(
+  lane: RunLane,
+  convId: string,
+  start: StartThunk,
+  identity: unknown = convId,
+): Admission {
   if (lane === 'cloud') return 'started'
 
   // Ein Lauf ohne Kennung nimmt den Platz NICHT.
@@ -202,40 +218,19 @@ export function admit(lane: RunLane, convId: string, start: StartThunk): Admissi
 
   // Derselbe Lauf fragt zweimal: er hat den Platz schon. Kein zweiter Halter,
   // keine zweite Zeile in der Schlange, und vor allem kein zweites `release`,
-  // das den Platz eines Fremden freigaebe.
-  if (halter === convId) return 'started'
-  if (warteschlange.some((w) => w.convId === convId)) return 'queued'
+  // das den Platz eines Fremden freigaebe. "Derselbe Lauf" heisst seit
+  // Blocker A: dieselbe `identity`, nicht nur dieselbe `convId`.
+  if (halter?.identity === identity) return 'started'
+  if (warteschlange.some((w) => w.identity === identity)) return 'queued'
 
   if (halter === null) {
-    halter = convId
+    halter = { convId, identity }
     veraendert()
     return 'started'
   }
-  warteschlange.push({ convId, start })
+  warteschlange.push({ convId, identity, start })
   veraendert()
   return 'queued'
-}
-
-/**
- * Wuerde dieser Lauf sich JETZT anstellen muessen? Ohne ihn anzustellen.
- *
- * Fuer den Senden-Knopf, der "Einreihen" statt "Senden" anbieten soll, und
- * fuer das Warteplaettchen, das erklaeren soll, warum. Die naheliegende
- * Fassung in der Oberflaeche waere `lane === 'local' && localLaneHolder()`,
- * und die ist zweimal dieselbe Regel: einmal hier, einmal dort, eine davon
- * gepflegt. Beim ersten Sonderfall, den `admit` dazubekommt (der Halter, der
- * noch einmal fragt, ist schon einer), stuende an der Eingabe "Einreihen",
- * waehrend der Lauf sofort losliefe.
- *
- * Deshalb steht die Vorschau hier, unmittelbar neben der Entscheidung, und
- * ein Waechter vergleicht die beiden Fall fuer Fall.
- */
-export function wouldQueue(lane: RunLane, conversationId: string | null | undefined): boolean {
-  if (lane === 'cloud') return false
-  if (!conversationId) return false
-  if (halter === conversationId) return false
-  if (warteschlange.some((w) => w.convId === conversationId)) return true
-  return halter !== null
 }
 
 /**
@@ -256,14 +251,19 @@ export function wouldQueue(lane: RunLane, conversationId: string | null | undefi
  * Fuer einen Wartenden, der abbricht, bevor er dran war, gibt es hier den
  * zweiten Weg: er faellt aus der Schlange und niemand rueckt nach, denn der
  * Halter rechnet ja noch.
+ *
+ * `identity` wie bei `admit`: ohne Angabe die `convId`, also das alte
+ * Verhalten. Wer eine echte Identitaet mitgibt, gibt exakt den Platz zurueck,
+ * den er selbst mit derselben Identitaet genommen hat, nie den eines anderen
+ * Laufs derselben Unterhaltung.
  */
-export function release(convId: string): StartThunk | undefined {
+export function release(convId: string, identity: unknown = convId): StartThunk | undefined {
   if (!convId) return undefined
 
   // Erst der Wartende, dann der Halter. Beides gleichzeitig kann eine
   // Konversation nicht sein (`admit` schliesst es aus), und die Reihenfolge
   // macht den haeufigeren Fall nicht teurer.
-  const wartet = warteschlange.findIndex((w) => w.convId === convId)
+  const wartet = warteschlange.findIndex((w) => w.identity === identity)
   if (wartet >= 0) {
     warteschlange.splice(wartet, 1)
     veraendert()
@@ -273,10 +273,10 @@ export function release(convId: string): StartThunk | undefined {
   // Nicht der Halter: ein Cloud-Lauf, oder schon einmal freigegeben. Beides
   // ist harmlos und darf NICHT den Platz eines anderen raeumen. Ein
   // `release` ohne vorheriges `admit` waere sonst ein Generalschluessel.
-  if (halter !== convId) return undefined
+  if (halter?.identity !== identity) return undefined
 
   const naechster = warteschlange.shift()
-  halter = naechster ? naechster.convId : null
+  halter = naechster ? { convId: naechster.convId, identity: naechster.identity } : null
   veraendert()
   return naechster?.start
 }
@@ -294,7 +294,7 @@ export function anyRunQueued(): boolean {
 
 /** Wer hat die lokale Spur gerade, falls jemand. Fuer Tests und Diagnose. */
 export function localLaneHolder(): string | null {
-  return halter
+  return halter?.convId ?? null
 }
 
 /** Die Wartenden in ihrer Reihenfolge. Fuer Tests und Diagnose. */
@@ -306,7 +306,6 @@ export function queuedRunIds(): string[] {
 export function __resetRunLanesForTests(): void {
   halter = null
   warteschlange.length = 0
-  momentaufnahme = null
   // Die Beobachter bleiben stehen: sie gehoeren dem Test, der sie angemeldet
   // hat, und der meldet sie selbst wieder ab. Wer sie hier mit abraeumte,
   // naehme einem `beforeEach` still die Anmeldung aus dem Test davor weg.

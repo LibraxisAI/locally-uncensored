@@ -8,6 +8,19 @@
  * truth already existed in `generationStore.generating`; only the composer
  * never asked it.
  *
+ * Runde 4 (review-lanes.md Blocker 1+6): `otherChat` used to reach the
+ * composer too, as `busyElsewhere`, a lock that dropped this chat's Send
+ * button and put up a line whenever ANY other conversation was generating.
+ * That lock is gone: a local second send now queues visibly instead of
+ * racing the first one for the built-in engine's one slot (`lib/run-slot.ts`,
+ * `lib/run-lanes.ts`), and a cloud second send just runs alongside the first,
+ * so there is nothing left for a cross-conversation lock to protect against.
+ * `otherChat` stays computed here, unexported to a caller by choice, purely
+ * because `thisChat` below still needs it: `hookGenerating` is wider than the
+ * map (see below), and without excluding a run that another conversation
+ * clearly owns, a stale or orphaned hook flag could hand THIS chat's Stop
+ * button to a run that belongs elsewhere.
+ *
  * `hookGenerating` stays in the answer on purpose. It is wider than the map:
  * it also covers a run this app instance did not register, an orphaned run
  * picked up after a reload, and the window between starting a stream and
@@ -18,8 +31,6 @@
 export interface ComposerBusy {
   /** The conversation on screen is answering: it shows Stop. */
   thisChat: boolean
-  /** Some OTHER conversation is answering: this one says so instead of going quiet. */
-  otherChat: boolean
 }
 
 export function composerBusy(
@@ -32,6 +43,5 @@ export function composerBusy(
   const own = !!activeConversationId && !!generatingMap[activeConversationId]
   return {
     thisChat: own || (hookGenerating && !otherChat),
-    otherChat: otherChat && !own,
   }
 }

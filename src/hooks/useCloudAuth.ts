@@ -12,6 +12,7 @@ import { useCloudAuthStore, deriveCloudAvailable } from '../stores/cloudAuthStor
 import { refreshCatalog } from '../stores/cloudCatalogStore'
 import { useProviderStore } from '../stores/providerStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { stopAllBackgroundWork } from '../lib/background-shutdown'
 import type { CloudQuota } from '../lib/render/cloud-jobs'
 
 const REFRESH_MS = 5 * 60_000
@@ -156,6 +157,12 @@ export async function signOutAccount(): Promise<void> {
       )
     }
   }
+  // B1 Nachbesserung 1: ohne dies liefe ein delegate_task-Hintergrundagent
+  // nach dem Abmelden weiter und feuerte Cloud-Anfragen mit einem Konto, das
+  // der Nutzer gerade verlassen hat. Vor setSignedOut(), nicht danach: der
+  // Nutzer soll den Zustand "abgemeldet, nichts laeuft mehr" nie fuer einen
+  // Moment vorgespielt bekommen, waehrend im Hintergrund noch gerechnet wird.
+  stopAllBackgroundWork()
   useCloudAuthStore.getState().setSignedOut()
   syncChatProvider()
   syncAppMode()

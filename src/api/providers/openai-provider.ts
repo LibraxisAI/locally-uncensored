@@ -43,8 +43,8 @@ import { useSettingsStore } from '../../stores/settingsStore'
 
 // Transport routing lives in the `useLocalProxy` getter (below) plus the shared
 // host helpers in backend.ts. A direct webview fetch only works for hosts the
-// pinned CSP lists; everything else — LAN backends (also CORS-blocked, GH #49)
-// and any cloud endpoint LU ships no preset for — goes through the Rust proxy.
+// pinned CSP lists; everything else, LAN backends (also CORS-blocked, GH #49)
+// and any cloud endpoint LU ships no preset for, goes through the Rust proxy.
 // `isLanBackend` stays separate: it decides local-only BEHAVIOUR (context
 // probing), which must not follow the transport decision.
 
@@ -90,6 +90,12 @@ export interface OpenAIChatRequest {
   stream: boolean
   temperature?: number
   top_p?: number
+  /** F3 (3.0.1): not part of the official OpenAI spec, but every self-hosted
+   *  OpenAI-compatible server this app talks to (llama.cpp, vLLM, KoboldCpp,
+   *  LM Studio, the built-in engine) accepts it as an extension the same way
+   *  it accepts top_p. Omitted when unset, same as top_p, so a real OpenAI
+   *  endpoint that 400s on unknown fields never sees it. */
+  top_k?: number
   max_tokens?: number
   tools?: ToolDefinition[]
   tool_choice?: 'auto' | 'none' | 'required'
@@ -104,7 +110,7 @@ export interface OpenAIChatRequest {
  * The two transports this provider posts through: the browser `fetch` and
  * `localFetch`/`localFetchStream` (Rust proxy). Both satisfy this narrower
  * signature, which is what removes the `fetcher as any` casts that used to
- * bridge them — a cast that would equally have accepted a function taking no
+ * bridge them, a cast that would equally have accepted a function taking no
  * arguments at all.
  */
 type ChatFetcher = (
@@ -128,7 +134,7 @@ interface OpenAIModelEntry {
   owned_by?: string
   // Catalogue metadata some OpenAI-compat servers attach (LU Cloud does):
   // display name, real context window, vision modality, think capability.
-  // Absent everywhere else — the mapping below falls back to heuristics.
+  // Absent everywhere else, the mapping below falls back to heuristics.
   name?: string
   /** Das Fenster, mit dem diese Bereitstellung laeuft. */
   context_length?: number
@@ -158,7 +164,7 @@ interface OpenAIModelEntry {
 /**
  * Build a catalogue entry out of one `/v1/models` element, checking every
  * field on the way. `think` is validated against the three values the rest of
- * the app switches on — a server sending anything else must not smuggle a
+ * the app switches on, a server sending anything else must not smuggle a
  * fourth mode into the model picker.
  */
 function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
@@ -235,7 +241,7 @@ const KNOWN_CONTEXT: Record<string, number> = {
   'qwen/qwen-2.5-72b-instruct': 32768,
 }
 
-// Heuristik aus dem Modell-Namen — letzter Fallback bevor wir auf den
+// Heuristik aus dem Modell-Namen, letzter Fallback bevor wir auf den
 // konservativen 8192er-Default zurueckfallen. Wird nur erreicht wenn weder
 // KNOWN_CONTEXT noch `probeContextFromServer()` ein Ergebnis liefert.
 function guessContextFromName(model: string): number {
@@ -272,7 +278,7 @@ function guessContextFromName(model: string): number {
 // context_length per model). The name heuristic underestimates new cloud
 // models badly (Qwen3.6-35B-A3B → 32k guess vs 262k real), which shrinks the
 // applyMaxTokens headroom toward the 256 floor on long chats and truncates
-// answers. Module-level and keyed by endpoint — NOT an instance field: the
+// answers. Module-level and keyed by endpoint, NOT an instance field: the
 // lu-cloud provider builds a FRESH OpenAIProvider delegate on every call (its
 // bearer token rotates), so an instance map is always empty exactly where it
 // matters. listModels fills it through one delegate; chatStream's
@@ -288,18 +294,18 @@ const catalogContext = new Map<string, number>()
  */
 const catalogTrained = new Map<string, number>()
 
-/** Ceiling for the optional metadata probes — see `probeInit`. */
+/** Ceiling for the optional metadata probes, see `probeInit`. */
 const CONTEXT_PROBE_TIMEOUT_MS = 2500
 
 /**
  * Flat token cost charged for one inline image during prompt estimation.
  *
  * Audit CS-1: a base64 data URL is ~1.37 characters per byte of source image,
- * so a single 100 KB screenshot adds ~137 000 characters to `body.messages` —
+ * so a single 100 KB screenshot adds ~137 000 characters to `body.messages`,
  * ~34 000 phantom "tokens" under the chars/4 rule, which is more than the ENTIRE
  * window of every model at or below 32k (the built-in engine, LM Studio,
  * llama.cpp, vLLM, KoboldCpp). The headroom subtraction then went negative and
- * the 256 floor won, capping every answer with an attachment at 256 tokens —
+ * the 256 floor won, capping every answer with an attachment at 256 tokens,
  * and getting worse each turn, because images ride along in the history.
  *
  * Images do not cost characters, they cost tiles. OpenAI bills a 1024x1024
@@ -384,7 +390,7 @@ export class OpenAIProvider implements ProviderClient {
   }
 
   /**
-   * A backend on this machine or the LAN — declared by the preset
+   * A backend on this machine or the LAN, declared by the preset
    * (`config.isLocal`) OR detected from the host (localhost, RFC1918, CGNAT,
    * IPv6 ULA/link-local, .local, bare machine name). Drives behaviour that only
    * makes sense locally: per-model context probing and the LM Studio enhanced
@@ -398,7 +404,7 @@ export class OpenAIProvider implements ProviderClient {
    * Whether requests must go through the Rust proxy instead of a direct webview
    * fetch. Two reasons: a LAN endpoint has no CORS headers for the
    * tauri.localhost origin (GH #49), and a public host outside the pinned CSP
-   * allow-list gets killed inside the webview before it hits the network — that
+   * allow-list gets killed inside the webview before it hits the network, that
    * is every custom OpenAI-compatible provider a user configures themselves
    * (their own domain, or a vendor LU ships no preset for).
    */
@@ -591,7 +597,7 @@ export class OpenAIProvider implements ProviderClient {
     // Sanierungspfad: a throttle or a gateway hiccup is not the request's
     // fault, and the user used to read the raw status line for it. The retry
     // sits HERE, around the request, so it can never replay a stream that has
-    // already started — see providers/retry.ts for the rules.
+    // already started, see providers/retry.ts for the rules.
     const post = () => sendWithTransientRetry(
       () => fetcher(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -671,8 +677,8 @@ export class OpenAIProvider implements ProviderClient {
 
   /**
    * Request init for the optional side probes (context window, tool
-   * capabilities). Every one of them is an OPTIMISATION — a failure just means
-   * the cascade falls back to a heuristic — but they ran with neither a signal
+   * capabilities). Every one of them is an OPTIMISATION, a failure just means
+   * the cascade falls back to a heuristic, but they ran with neither a signal
    * nor a timeout, so a LAN backend that accepts the TCP connection and then
    * says nothing blocked the user's message for the proxy's full default
    * (300 s, and applyMaxTokens can hit two of them) with Stop unable to cut in.
@@ -688,8 +694,7 @@ export class OpenAIProvider implements ProviderClient {
    * Bound `max_tokens` so prompt + completion can never exceed the model's real
    * context window. Some cloud backends (DeepInfra) otherwise default the
    * completion budget to nearly the whole window and then 400 the moment the
-   * real prompt (agent system prompt + tool definitions) tips it over —
-   * surfaced as "[network] inference upstream error" on tool turns (Bug 5,
+   * real prompt (agent system prompt + tool definitions) tips it over,    * surfaced as "[network] inference upstream error" on tool turns (Bug 5,
    * 2026-07-11). Under-estimating the context is safe (a shorter cap); we never
    * over-request. Runs for every request, so an UNSET budget (settings.maxTokens
    * = 0) sends the full safe remainder instead of letting the server over-default.
@@ -740,7 +745,7 @@ export class OpenAIProvider implements ProviderClient {
     }
     const RESERVE = 512
     // Audit CS-1: count characters WITHOUT the base64 image payloads and charge
-    // a flat per-image rate instead — see IMAGE_TOKEN_ESTIMATE. Counting the
+    // a flat per-image rate instead, see IMAGE_TOKEN_ESTIMATE. Counting the
     // data URLs as text made one screenshot look like ~34k tokens and starved
     // max_tokens down to the 256 floor on every model with a small window.
     const msgPayload = measurePayload(body.messages || '')
@@ -750,7 +755,7 @@ export class OpenAIProvider implements ProviderClient {
       Math.ceil(promptChars / 4) + (msgPayload.images + toolPayload.images) * IMAGE_TOKEN_ESTIMATE
     const headroom = Math.max(256, ctxLen - promptTokens - RESERVE)
     // Audit E6: an UNSET budget used to send the whole remaining window as
-    // max_tokens — six figures on a 128k model. Servers that validate
+    // max_tokens, six figures on a 128k model. Servers that validate
     // max_tokens against the model's real OUTPUT limit reject that outright.
     // 32k is beyond any single reply this app produces; an explicit user
     // request still passes through un-capped (their server, their call).
@@ -774,6 +779,11 @@ export class OpenAIProvider implements ProviderClient {
 
     if (options?.temperature !== undefined) body.temperature = options.temperature
     if (options?.topP !== undefined) body.top_p = options.topP
+    // F3: temperature and top_p reached the request, top_k never did,     // the sampling popup's slider promised an effect that never happened.
+    // LU Cloud is excluded on purpose: its proxy protocol genuinely has no
+    // such field (sampling-reaches-the-cloud-body.test.ts), unlike a real
+    // self-hosted llama.cpp/vLLM/KoboldCpp/LM-Studio/built-in-engine server.
+    if (options?.topK !== undefined && this.config.id !== 'lu-cloud') body.top_k = options.topK
     // Streaming tool turn: same wire shape as chatWithTools, but the calls
     // come back as deltas which the accumulator below already merges.
     if (options?.tools?.length) {
@@ -795,18 +805,18 @@ export class OpenAIProvider implements ProviderClient {
     // (choices:[] + usage:{...}). OpenAI, DeepInfra (LU Cloud), Groq, vLLM and
     // LM Studio all honor stream_options; an endpoint that rejects unknown
     // params 400/422s and the retry below drops it. Real usage is what keeps
-    // the TokenCounter honest — a char/4 estimate can't see the system prompt.
+    // the TokenCounter honest, a char/4 estimate can't see the system prompt.
     body.stream_options = { include_usage: true }
 
     // Managed built-in engine: Create/Music renders stop the llama-server
-    // child to free VRAM ("reloads lazily on the next message") — this is that
+    // child to free VRAM ("reloads lazily on the next message"), this is that
     // lazy reload. Restart-before-send instead of letting the fetch hit a dead
     // 127.0.0.1:8127 and look like a crashed backend.
     if (this.config.managed === true) await ensureBuiltinEngineAlive(model)
 
     if (this.useLocalProxy) await ensureProxyAllowsHost(this.baseUrl)
     const fetcher = this.useLocalProxy ? localFetchStream : fetch
-    // Zeitbombe 4 — the idle watchdog needs a controller to abort, and a
+    // Zeitbombe 4, the idle watchdog needs a controller to abort, and a
     // provider only ever receives a signal. This chains one onto the caller's:
     // Stop still propagates inward, and a stream that goes silent can cancel
     // its own request instead of leaving reader.read() pending forever.
@@ -818,7 +828,7 @@ export class OpenAIProvider implements ProviderClient {
       res = await this.sendChat(model, body, guard.signal, fetcher)
       if (!res.ok) throw await this.parseError(res)
     } catch (err) {
-      // Nothing to watch — drop the listener on the caller's signal here, the
+      // Nothing to watch, drop the listener on the caller's signal here, the
       // stream loop's `finally` below is never reached on this path.
       guard.release()
       throw err
@@ -874,7 +884,7 @@ export class OpenAIProvider implements ProviderClient {
           )
         }
 
-        // Real token usage — the include_usage final chunk carries `usage` with
+        // Real token usage, the include_usage final chunk carries `usage` with
         // an empty choices[], so capture it BEFORE the choice guard below.
         const u = chunk.usage
         if (u) {
@@ -888,14 +898,13 @@ export class OpenAIProvider implements ProviderClient {
         // Capture WHY the model stopped ('stop', 'length', 'content_filter').
         // 'length' with zero content is the reasoning-loop failure mode: the
         // whole token budget went into thinking and no answer was ever written
-        // (David, cloud Qwen3.6, 2026-07-12) — the chat layer needs the reason
+        // (David, cloud Qwen3.6, 2026-07-12), the chat layer needs the reason
         // to explain the empty bubble.
         if (choice.finish_reason) finishReason = choice.finish_reason
 
         const content = choice.delta?.content || ''
 
-        // Yield native reasoning as `thinking` so the panel fills live —
-        // without this the entire reasoning phase of a cloud reasoner is
+        // Yield native reasoning as `thinking` so the panel fills live,         // without this the entire reasoning phase of a cloud reasoner is
         // silently dropped and the chat sits in dead air (uselu fc55c91).
         const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning ?? ''
         if (repetitionStop?.push(content) || reasoningRepetitionStop?.push(reasoning)) {
@@ -912,11 +921,11 @@ export class OpenAIProvider implements ProviderClient {
             const key = tc.index ?? keyForUnindexedBlock(toolCallAccum, tc.id)
             const existing = toolCallAccum.get(key)
             if (existing) {
-              // id and name do NOT always arrive in the first delta — several
+              // id and name do NOT always arrive in the first delta, several
               // OpenAI-compat servers send the id one chunk later, or open with a
               // bare index. Ignoring them left a call with an empty name (dispatch
               // fails on "") or an empty tool_call_id, which 422s the follow-up
-              // turn — the exact break the server-side normalizer had to heal.
+              // turn, the exact break the server-side normalizer had to heal.
               // Set-if-empty, not append: servers that repeat the full name in
               // every delta are far more common than ones that stream it in parts.
               if (tc.id && !existing.id) existing.id = tc.id
@@ -938,7 +947,7 @@ export class OpenAIProvider implements ProviderClient {
 
         // NB: we intentionally do NOT early-return on finish_reason. With
         // stream_options.include_usage the server sends the usage chunk AFTER
-        // the finish_reason chunk — returning early would discard it. The [DONE]
+        // the finish_reason chunk, returning early would discard it. The [DONE]
         // sentinel (or the end-of-stream fallback below) emits the single done
         // chunk, which now carries the captured usage.
       }
@@ -957,7 +966,7 @@ export class OpenAIProvider implements ProviderClient {
 
     // Stream ended without an explicit [DONE] sentinel. If the server also
     // never sent a finish_reason, the connection was cut mid-generation
-    // (proxy idle-timeout, upstream drop) — a clean FIN ends parseSSEStream
+    // (proxy idle-timeout, upstream drop), a clean FIN ends parseSSEStream
     // without any error, which used to masquerade as a normal completion and
     // leave the user a silent empty bubble. Tag it 'disconnect' so the chat
     // layer can say so.
@@ -984,6 +993,11 @@ export class OpenAIProvider implements ProviderClient {
 
     if (options?.temperature !== undefined) body.temperature = options.temperature
     if (options?.topP !== undefined) body.top_p = options.topP
+    // F3: temperature and top_p reached the request, top_k never did,     // the sampling popup's slider promised an effect that never happened.
+    // LU Cloud is excluded on purpose: its proxy protocol genuinely has no
+    // such field (sampling-reaches-the-cloud-body.test.ts), unlike a real
+    // self-hosted llama.cpp/vLLM/KoboldCpp/LM-Studio/built-in-engine server.
+    if (options?.topK !== undefined && this.config.id !== 'lu-cloud') body.top_k = options.topK
     await this.applyMaxTokens(model, body, options)
     // Same reasoning_effort gate as chatStream.
     const effort = this.thinkingEffort(model, options?.thinking, options)
@@ -1055,7 +1069,7 @@ export class OpenAIProvider implements ProviderClient {
       // G32 (R20-Mac, 2026-08-07): the standard /v1/models listing says
       // nothing about tools, so `?? true` declared every LM Studio model
       // tool-capable and the layered resolution downstream had nothing to
-      // downgrade on — a tool-less model got a native `tools` payload. LM
+      // downgrade on, a tool-less model got a native `tools` payload. LM
       // Studio's enhanced listing answers it per model in `capabilities`
       // (['tool_use', ...]); one fetch covers all models. Backends without
       // the enhanced API leave the map empty → optimistic as before.
@@ -1145,7 +1159,7 @@ export class OpenAIProvider implements ProviderClient {
   }
 
   /**
-   * Bug K — dynamische Context-Window-Detection fuer lokale OpenAI-compat
+   * Bug K, dynamische Context-Window-Detection fuer lokale OpenAI-compat
    * Backends. LM Studio 0.3+ liefert die wahren Werte via Enhanced-API:
    *   GET /api/v0/models/<id>  ->  { max_context_length, loaded_context_length, ... }
    * Generische OpenAI-compat Server (vLLM, llama.cpp server, Aphrodite, SGLang,
@@ -1302,7 +1316,7 @@ export class OpenAIProvider implements ProviderClient {
   /**
    * G32: per-model tool capability from LM Studio's enhanced listing
    * (/api/v0/models). Only entries that carry a `capabilities` array land in
-   * the map — a generic OpenAI-compat backend (vLLM, llama.cpp server) 404s
+   * the map, a generic OpenAI-compat backend (vLLM, llama.cpp server) 404s
    * or answers without the field, and an absent entry means "nobody said",
    * which keeps the optimistic default. LAN only, same rule as the context
    * probe: a cloud endpoint must not get an extra request per listing.
@@ -1326,7 +1340,7 @@ export class OpenAIProvider implements ProviderClient {
    * G37 (R21c wire proof, 2026-08-07): llama.cpp's own answer, one flag for
    * the whole server. The bundled engine's /props reports
    * chat_template_caps.supports_tools: false because the GGUF ships a minimal
-   * template, and a native `tools` payload is then accepted but IGNORED — no
+   * template, and a native `tools` payload is then accepted but IGNORED, no
    * refusal to learn from, the model just never sees a tool contract. false
    * means every model here needs the prompt transport; true means native is
    * fine; a 404 or a props answer without the field means nobody said, and
@@ -1382,7 +1396,7 @@ export class OpenAIProvider implements ProviderClient {
   /**
    * G37 (R21c, 2026-08-07): llama.cpp answers the tool question on /props,
    * server-wide. The bundled engine loads the GGUF's template WITHOUT tool
-   * support and then silently ignores a native `tools` payload — the model
+   * support and then silently ignores a native `tools` payload, the model
    * never sees a tool contract and invents results for every step. /props is
    * only asked when the enhanced listing said nothing.
    */
@@ -1401,7 +1415,7 @@ export class OpenAIProvider implements ProviderClient {
    * server drive native tools". The listing-time probe (G37) never runs for
    * the bundled engine, because useModels skips listModels for the managed
    * built-in backend and builds the picker rows from the downloaded GGUFs
-   * instead — so the run still put a native `tools` payload on 8127 and the
+   * instead, so the run still put a native `tools` payload on 8127 and the
    * model narrated fiction. The strategy resolution calls this directly
    * before each run: `false` means the prompt transport must carry the
    * contract, `true` means native is fine, `undefined` means nobody said
@@ -1417,7 +1431,7 @@ export class OpenAIProvider implements ProviderClient {
   /**
    * R19 (LM Studio, 2026-08-07): what the server actually ALLOCATED for this
    * model. LM Studio JIT-loads at its configured default, often far below the
-   * model's maximum, and hard-truncates any prompt beyond it — a run budgeted
+   * model's maximum, and hard-truncates any prompt beyond it, a run budgeted
    * against max_context_length loses the middle of its own prompt, tool
    * contract included, and dies without a usable error. The run budget clamps
    * to this; the DISPLAY value deliberately keeps preferring the maximum
@@ -1608,13 +1622,13 @@ export class OpenAIProvider implements ProviderClient {
    * A tool call's `arguments` is a JSON *string* on the wire and the caller is
    * a language model, so nothing guarantees it decodes to an object. The happy
    * path used to return whatever JSON.parse produced under a
-   * `Record<string, any>` annotation — `"null"` therefore handed `null` to
+   * `Record<string, any>` annotation, `"null"` therefore handed `null` to
    * every downstream `args.foo` read, and `"[1,2]"` / `"42"` handed on a value
    * with none of the promised keys.
    *
    * Both branches now go through `isRecord`, and that is deliberately NOT the
    * check the repair branch used to have: `typeof [] === 'object'`, so
-   * `parsed && typeof parsed === 'object'` let an ARRAY through — the very
+   * `parsed && typeof parsed === 'object'` let an ARRAY through, the very
    * `"[1,2]"` this comment named as covered while it was not. Arrays and null
    * are rejected here; only something indexable by name leaves.
    */
@@ -1675,7 +1689,7 @@ export class OpenAIProvider implements ProviderClient {
     } catch { /* non-JSON body → keep default */ }
 
     // Map HTTP status to error code. The canned texts are FALLBACKS for
-    // opaque bodies only — a server that sends an honest message (LU Cloud:
+    // opaque bodies only, a server that sends an honest message (LU Cloud:
     // "monthly credit budget exhausted", "LU Cloud is in closed beta (Max
     // plan only)", …) must surface it verbatim, not a wrong API-key /
     // wait-a-moment hint the user can't act on.
@@ -1715,8 +1729,7 @@ export class OpenAIProvider implements ProviderClient {
 
     // LM Studio: model load fails when there's no inference runtime for the
     // model's format installed. The raw API error reads "No LM Runtime found
-    // for model format 'gguf'" which doesn't tell a noob what to do —
-    // rewrite it into actionable steps. This commonly happens on Windows
+    // for model format 'gguf'" which doesn't tell a noob what to do,     // rewrite it into actionable steps. This commonly happens on Windows
     // ARM64 where LM Studio doesn't auto-fetch a runtime, and on any fresh
     // install where the user installed via LU's in-app install_lmstudio.
     // The runtime catalogue isn't reachable from `lms` CLI (no `runtime`
