@@ -7,9 +7,9 @@
  * Before this, useChat() kept `contentRef` / `thinkingRef` / `isThinkingRef`
  * / `discardedThinkBufRef` as ONE set of refs per hook instance, and the app
  * mounts exactly one `useChat()` instance for the whole window. Two
- * overlapping `sendMessage()` calls — send in conversation A, switch tabs,
+ * overlapping `sendMessage()` calls, send in conversation A, switch tabs,
  * send in conversation B while A is still streaming, the ordinary way a
- * human uses two chats — wrote into the SAME buffers: whichever call's
+ * human uses two chats, wrote into the SAME buffers: whichever call's
  * `requestAnimationFrame` flush ran last decided what BOTH bubbles ended up
  * showing, and a character from B's stream could land mid-word in A's
  * answer.
@@ -112,7 +112,7 @@ describe('two runs on two conversations do not mix', () => {
     const { result } = renderHook(() => useChat())
 
     await act(async () => {
-      // Send in A, switch to B, send in B — the ordinary way a human uses
+      // Send in A, switch to B, send in B, the ordinary way a human uses
       // two chats, and exactly the sequence that shared refs could not
       // survive: both sends are now in flight from the same hook instance.
       useChatStore.getState().setActiveConversation(convA)
@@ -122,8 +122,8 @@ describe('two runs on two conversations do not mix', () => {
 
       await tick()
       // Switch the VISIBLE conversation mid-stream, back and forth. Neither
-      // run may read "the active conversation" for its own writes — only the
-      // convId it captured when it started — so this must change nothing.
+      // run may read "the active conversation" for its own writes, only the
+      // convId it captured when it started, so this must change nothing.
       useChatStore.getState().setActiveConversation(convA)
       streamA.push('Alpha-1 ')
       await tick()

@@ -12,10 +12,10 @@
  *
  *  - The two timers cannot coexist as far as the app can see: asking "is a
  *    pass still pending for A" after B scheduled one always answered with
- *    B's handle, never A's — there was only ever one answer for the whole
+ *    B's handle, never A's: there was only ever one answer for the whole
  *    app, not one per conversation.
  *  - Stop pressed for A, while B's handle is the one currently held, clears
- *    B's real browser timer by mistake and leaves A's own timer orphaned —
+ *    B's real browser timer by mistake and leaves A's own timer orphaned,
  *    unreachable, but still counting down on its own, because a JS timer
  *    fires independently of whether anything still references its id.
  *
@@ -24,7 +24,7 @@
  * useAgentChat.ts and useCodex.ts), so counting `/chat/completions` calls
  * here would prove that rule instead of this one. This file asks the
  * question directly instead, through a test-only peek at the timer map's
- * own keys — the same shape of proof `run-lanes.ts`'s and `run-stop.ts`'s
+ * own keys, the same shape of proof `run-lanes.ts`'s and `run-stop.ts`'s
  * own tests use for module-private state.
  *
  * Run: npx vitest run src/hooks/__tests__/loop-timer-je-unterhaltung.test.ts
@@ -111,7 +111,7 @@ describe('a pending loop timer belongs to its own conversation', () => {
     const convB = seed()
     await act(async () => { await result.current.sendMessage('/loop 1s zaehle weiter') })
 
-    // Both pending at once — a single shared variable could only ever have
+    // Both pending at once, a single shared variable could only ever have
     // shown the LATER of the two.
     const pending = __pendingAgentLoopTimersForTests()
     expect(pending).toContain(convA)
@@ -134,7 +134,7 @@ describe('a pending loop timer belongs to its own conversation', () => {
     expect(__pendingAgentLoopTimersForTests()).toContain(convB)
 
     // View is on B right now (seed() switched it there); go back to A and
-    // press Stop there. B was the LAST conversation to schedule a timer —
+    // press Stop there. B was the LAST conversation to schedule a timer,
     // exactly the shape that clobbered a shared module variable before.
     useChatStore.getState().setActiveConversation(convA)
     act(() => { result.current.stopGeneration() })

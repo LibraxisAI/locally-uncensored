@@ -4,7 +4,7 @@ import { HINWEIS_TEXT, HINWEIS_ZEILE } from '../../lib/hinweis'
 
 /**
  * B1 Runde 2, Punkt 1 und 4. The one visible line for what
- * `lib/background-shutdown.ts` did without the user watching — see that
+ * `lib/background-shutdown.ts` did without the user watching, see that
  * module's doc comment for the two triggers.
  *
  * Same quiet-row form as StaleModelsBanner: nothing crashed, so no filled

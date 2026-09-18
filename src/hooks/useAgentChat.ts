@@ -114,11 +114,11 @@ import { buildChatSystemPrompt } from '../lib/system-prompt'
  * The pending next /loop pass, PER CONVERSATION. MODULE scope, not a hook
  * ref (audit A3): the chat view unmounts on a view switch, and a timer
  * parked in an unmounted instance's ref was unreachable for the remounted
- * hook — stopAgent cleared its own (empty) ref while the old timer kept
+ * hook, stopAgent cleared its own (empty) ref while the old timer kept
  * firing new passes.
  *
  * B2: was a single module VARIABLE, not a map, until this commit. Two
- * conversations each waiting out a /loop interval shared the one handle —
+ * conversations each waiting out a /loop interval shared the one handle,
  * the second conversation's `setTimeout` result overwrote the first's, and
  * `clearTimeout` on that overwritten handle canceled the WRONG conversation's
  * pending pass, while the one it meant to cancel kept its real timer running
@@ -2624,7 +2624,7 @@ export function useAgentChat() {
     //
     // B2 Commit 5: the caller NAMES the run it means to stop instead of this
     // function re-reading "whichever conversation happens to be visible
-    // right now" — the visible one is only ever correct because today's one
+    // right now", the visible one is only ever correct because today's one
     // caller (useChat.ts's stopGeneration) already resolved it that way. A
     // future caller that stops a run the user is NOT looking at (a per-item
     // Stop in a task list, say) would otherwise silently stop the wrong one.

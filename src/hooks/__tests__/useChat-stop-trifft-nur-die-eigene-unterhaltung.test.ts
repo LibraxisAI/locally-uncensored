@@ -7,17 +7,17 @@
  * Honest note on this commit's own proof: `abortRef` / `abortConvRef` turned
  * out to be already-dead weight by the time this commit ran, not a live bug.
  * `stopGeneration` already called `useGenerationStore.getState()
- * .abortConversation(convId)` — the per-conversation register that
- * `registerAborter` feeds on every send — BEFORE the `abortRef` check, and
+ * .abortConversation(convId)`, the per-conversation register that
+ * `registerAborter` feeds on every send, BEFORE the `abortRef` check, and
  * that call alone already aborts the right run regardless of which run last
  * held the hook-instance ref. Running this exact scenario against the
  * pre-commit source (both directions: a foreign Stop leaves the other run
  * running, the named Stop actually flips its AbortSignal) came back green
- * already, so there is no "red before" to show for this specific commit —
+ * already, so there is no "red before" to show for this specific commit,
  * see bau/lanes.md for the measurement. What this commit removes is the
  * redundant, provably-dead ref pair (Hausregel: alten Code sofort loeschen),
  * and this file is the permanent behavioural proof that the ONE remaining
- * mechanism — `generationStore.aborters`, keyed by conversation — carries
+ * mechanism, `generationStore.aborters`, keyed by conversation, carries
  * the whole guarantee on its own.
  *
  * Run: npx vitest run src/hooks/__tests__/useChat-stop-trifft-nur-die-eigene-unterhaltung.test.ts

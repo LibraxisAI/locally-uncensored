@@ -156,7 +156,7 @@ describe('/loop actually loops', () => {
     const src = read('../../hooks/useCodex.ts')
     // The handle is module-scoped since audit A3 — a hook ref died with the
     // unmounted Code view, so stopCodex could not reach a pending pass. Per
-    // conversation since B2 Commit 4 — a single shared handle let one
+    // conversation since B2 Commit 4, a single shared handle let one
     // conversation's Stop cancel a DIFFERENT conversation's pending pass.
     expect(src).toContain('const codexLoopTimers = new Map<string, ReturnType<typeof setTimeout>>()')
     expect(src).toContain('codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, loopState.intervalMs))')
@@ -187,7 +187,7 @@ describe('/loop actually loops', () => {
     // Unlimited is only defensible if the user can see it and stop it.
     for (const f of ['../../hooks/useCodex.ts', '../../hooks/useAgentChat.ts']) {
       expect(read(f)).toContain('useAgentLoopStore.getState().start(')
-      // B2: clear() takes the conversation id now — a bare `clear()` with no
+      // B2: clear() takes the conversation id now, a bare `clear()` with no
       // argument doesn't compile any more (the store is per conversation),
       // so this also pins that Stop names WHICH conversation's loop it ends.
       expect(read(f)).toMatch(/useAgentLoopStore\.getState\(\)\.clear\([^)]+\)/)
@@ -205,7 +205,7 @@ describe('/loop actually loops', () => {
     const src = read('../../hooks/useCodex.ts')
     const stopBody = extractUseCallbackBody(src, 'const stopCodex = useCallback(')
     // B2 Commit 4: the timer is per conversation, looked up by the id being
-    // stopped, not a bare module variable — this proves Stop cancels the
+    // stopped, not a bare module variable, this proves Stop cancels the
     // handle that belongs to THIS conversation.
     expect(stopBody).toContain('codexLoopTimers.get(stoppedConvId')
     expect(stopBody).toMatch(/clearTimeout\(pendingLoopTimer\)/)

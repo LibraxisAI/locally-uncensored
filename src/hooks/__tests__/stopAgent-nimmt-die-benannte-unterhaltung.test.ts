@@ -7,7 +7,7 @@
  * Before this commit `stopAgent()` took no argument at all and always
  * re-read `useChatStore.getState().activeConversationId` itself. The one
  * caller in the app (`useChat.ts`'s `stopGeneration`) always meant the
- * active conversation anyway, so this was never observably wrong today —
+ * active conversation anyway, so this was never observably wrong today,
  * but it made "which conversation gets stopped" an assumption baked into
  * `stopAgent`, not a fact its caller stated. This test proves the new,
  * explicit contract: passing a DIFFERENT conversation id than the active one
@@ -92,7 +92,7 @@ describe('stopAgent(conversationId) stops the named run', () => {
 
     const { result } = renderHook(() => useAgentChat())
     const convA = seed()
-    // useAgentChat has no slash parser of its own — that lives in
+    // useAgentChat has no slash parser of its own, that lives in
     // useChat.ts's sendMessage, which seeds `opts.loop` for pass 1. Passed
     // directly here, the same way that call site does.
     await act(async () => {

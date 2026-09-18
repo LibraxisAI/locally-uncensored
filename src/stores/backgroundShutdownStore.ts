@@ -9,7 +9,7 @@ import { create } from 'zustand'
  *
  * Two DIFFERENT things this module needs to say, never conflated into one:
  *
- *  `'offline'`  the network dropped. Nothing was stopped — retry.ts already
+ *  `'offline'`  the network dropped. Nothing was stopped, retry.ts already
  *               retries a dropped connection on purpose, so a two-second
  *               WLAN wobble must not read as "your work is gone". This
  *               notice says the connection is down and running work is
@@ -18,7 +18,7 @@ import { create } from 'zustand'
  *
  *  `'hidden-stopped'` the window was closed (to the tray) and, after the
  *               grace period a reopen would have cancelled, background
- *               agent work was actually stopped — the same trade the local
+ *               agent work was actually stopped, the same trade the local
  *               model offload in main.rs already makes for the same click.
  *               This one does NOT self-clear: the user has to see it once,
  *               because credits stopped accruing and a new message is what

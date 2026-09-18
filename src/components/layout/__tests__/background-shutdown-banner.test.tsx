@@ -3,7 +3,7 @@
  *
  * B1 Runde 2, Punkt 1 und 4: the visible half of `lib/background-shutdown.ts`.
  * Stopping work without saying so is the same complaint that opened this
- * whole Nachbesserung — a stop the user cannot see is not a stop they can
+ * whole Nachbesserung: a stop the user cannot see is not a stop they can
  * act on.
  *
  * Run: npx vitest run src/components/layout/__tests__/background-shutdown-banner.test.tsx

@@ -282,9 +282,9 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
  *
  * B2: `contentRef` / `thinkingRef` / `isThinkingRef` / `discardedThinkBufRef`
  * used to be ONE set of `useRef`s per `useChat()` instance, and the app
- * mounts exactly one instance. Two overlapping `sendMessage()` calls — send
+ * mounts exactly one instance. Two overlapping `sendMessage()` calls, send
  * in conversation A, switch tabs, send in conversation B before A's stream
- * ends — wrote into the SAME refs, and a chunk from either run could land in
+ * ends, wrote into the SAME refs, and a chunk from either run could land in
  * either bubble depending on which call's flush ran last (see
  * useChat-zwei-laeufe-vermischen-nicht.test.ts). A plain local variable
  * captured by closure is exactly as fast and cannot be shared between two
@@ -350,7 +350,7 @@ export function useChat() {
     })
 
     const abort = new AbortController()
-    // The generationStore aborter map IS the run register, keyed by convId —
+    // The generationStore aborter map IS the run register, keyed by convId,
     // see the ChatRun doc comment above sendMessage. Nothing else needs to
     // remember this controller: Stop looks it up there, by conversation, not
     // through a hook-instance ref that a second overlapping run would
@@ -801,7 +801,7 @@ export function useChat() {
     useGenerationStore.getState().setGenerating(convId, true)
     setIsLoadingModel(true)
     useModelStore.getState().setIsModelLoading(true)
-    // Owns this turn's streamed text end to end — see the ChatRun doc comment
+    // Owns this turn's streamed text end to end, see the ChatRun doc comment
     // above. `convId` is fixed at this point: the `if (!convId)` branch above
     // already resolved it to a real string.
     const run: ChatRun = { convId, content: "", thinking: "", isThinking: false, discardedThinkBuf: "" }

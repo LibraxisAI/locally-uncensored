@@ -250,11 +250,11 @@ function codexEffort(model: string): { levels?: string[]; fallback?: string } {
  * The pending next /loop pass, PER CONVERSATION. MODULE scope, not a hook
  * ref (audit A3): the Code view unmounts on every tab switch, and a timer
  * parked in an unmounted instance's ref was unreachable for the remounted
- * hook — stopCodex cleared its own (empty) ref while the old timer kept
+ * hook, stopCodex cleared its own (empty) ref while the old timer kept
  * firing new passes.
  *
  * B2: was a single module variable until this commit, so two Code
- * conversations each waiting out a /loop interval shared one handle — the
+ * conversations each waiting out a /loop interval shared one handle, the
  * second overwrote the first, and stopping either one cleared the wrong
  * conversation's timer while the intended one kept running. Keyed by
  * conversation now, same shape as `agentLoopStore` and the Chat-side
@@ -2506,11 +2506,11 @@ export function useCodex() {
             codexLoopTimers.delete(convForLoop)
             // Bail if THIS conversation is already generating something else
             // meanwhile (a manual send raced the timer). Clear the loop store
-            // too — leaving it standing painted a LoopBar that promised a pass
+            // too, leaving it standing painted a LoopBar that promised a pass
             // which was never coming (audit A3).
             //
             // B2 Commit 6: was a single running flag shared by the whole HOOK
-            // INSTANCE rather than scoped per run — CodexView is not
+            // INSTANCE rather than scoped per run, CodexView is not
             // remounted on a conversation switch, so ANY conversation running
             // on this instance used to cancel every OTHER conversation's
             // pending pass, not just its own. Reading the store here asks

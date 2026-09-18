@@ -3,7 +3,7 @@
  * of the same logic.
  *
  * `runningRef` in useCodex.ts is a single boolean per HOOK INSTANCE, not per
- * run — and CodexView is not remounted on a conversation switch, so one
+ * run, and CodexView is not remounted on a conversation switch, so one
  * `useCodex()` instance really does serve every Code conversation for the
  * whole window (same premise as the useChat.ts bug, see
  * useChat-zwei-laeufe-vermischen-nicht.test.ts).
@@ -15,17 +15,17 @@
  *    and `if (!runningRef.current || abort.signal.aborted) break`): if
  *    conversation A finishes (its `finally` sets `runningRef.current = false`)
  *    while conversation B is still mid-loop on the SAME hook instance, B's
- *    very next iteration check reads `false` and B's loop exits early — not
+ *    very next iteration check reads `false` and B's loop exits early, not
  *    because B was stopped, but because A happened to finish first.
  *  - The `/loop` pass driver's re-entry gate (`if (runningRef.current) {
  *    clear the loop; return }`): meant to defer a pass while ITS OWN
  *    conversation is still busy, it actually fires whenever ANY conversation
- *    on this hook instance is running — so a manual send in conversation A
+ *    on this hook instance is running, so a manual send in conversation A
  *    silently cancels conversation B's scheduled loop pass.
  *
  * Fix: the ReAct loop already carries a per-call `abort` (its own
  * AbortController) and every conversation already has a canonical,
- * per-conversation stop flag (`lib/run-stop.ts`'s `isRunStopped`) — both are
+ * per-conversation stop flag (`lib/run-stop.ts`'s `isRunStopped`), both are
  * genuinely scoped to the right run. The `/loop` gate is rewritten to ask
  * the STORE whether THIS conversation is generating, not the shared ref.
  * `runningRef` itself is retired; nothing correctness-critical should still
@@ -35,7 +35,7 @@
  * loop-detection.test.ts / useCodex-streaming.test.ts in this same
  * directory): a genuine behavioral repro needs two full ReAct runs
  * interleaved through real tool-call rounds, which the existing behavioral
- * useCodex tests do not attempt either — the wiring pin is what this file's
+ * useCodex tests do not attempt either, the wiring pin is what this file's
  * neighbours already rely on for logic this deep in the hook.
  *
  * Run: npx vitest run src/hooks/__tests__/useCodex-lauf-gehoert-seiner-unterhaltung.test.ts

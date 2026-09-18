@@ -6,7 +6,7 @@
  *
  * Before this, `useAgentLoopStore` held a single `loop: ActiveLoop | null`
  * slot for the WHOLE app, and `stopAgent()` called `.clear()` unconditionally
- * on every press — there was only one slot to clear, so any Stop, anywhere,
+ * on every press, there was only one slot to clear, so any Stop, anywhere,
  * wiped whatever loop happened to be standing, including one running in a
  * completely different, still-live conversation. This did not need two loops
  * running at once to break: pressing Stop in an idle conversation B while A's
@@ -54,7 +54,7 @@ const sse = (payload: object) =>
   })
 
 /** A turn that ends the pass (text, no tool call) so the /loop driver gets
- *  to schedule the next one — same shape as stopp-beendet-den-agentenlauf. */
+ *  to schedule the next one, same shape as stopp-beendet-den-agentenlauf. */
 const textZug = () => sse({ choices: [{ delta: { content: 'weiter beim naechsten Mal' } }] })
 
 function seed(): string {
@@ -106,7 +106,7 @@ describe('a loop belongs to its own conversation, not to whichever Stop was last
     expect(useAgentLoopStore.getState().loops[convA]?.conversationId).toBe(convA)
 
     // The user switches to a second, completely unrelated conversation and
-    // presses Stop there — a conversation with nothing running at all.
+    // presses Stop there, a conversation with nothing running at all.
     useChatStore.getState().setActiveConversation(convB)
     act(() => { result.current.stopGeneration() })
     await act(async () => { await warte(20) })

@@ -10,7 +10,7 @@
  *
  * This used to hold a single `loop: ActiveLoop | null`. `stopAgent` /
  * `stopCodex` called `clear()` unconditionally, on EVERY Stop press,
- * regardless of which conversation the press was for — because there was
+ * regardless of which conversation the press was for, because there was
  * only ever one slot to clear. A `/loop` in conversation A died the moment
  * the user pressed Stop in conversation B: not a rare race, a guaranteed
  * outcome of two conversations ever running a loop "at the same time" (one
@@ -40,7 +40,7 @@ interface AgentLoopState {
   loops: Record<string, ActiveLoop>
   start: (loop: ActiveLoop) => void
   /** Clears ONLY this conversation's loop. A bare `clear()` with no id would
-   *  reintroduce the single-slot bug this store exists to end — there is no
+   *  reintroduce the single-slot bug this store exists to end, there is no
    *  overload for it. */
   clear: (conversationId: string) => void
 }
@@ -59,7 +59,7 @@ export const useAgentLoopStore = create<AgentLoopState>((set) => ({
 }))
 
 /** The loop of ONE conversation, or `undefined`. For LoopBar, which shows
- *  only the ACTIVE conversation's own loop — a loop running elsewhere must
+ *  only the ACTIVE conversation's own loop, a loop running elsewhere must
  *  not paint this bar or steal its Stop button. */
 export function useConversationLoop(conversationId: string | null | undefined): ActiveLoop | undefined {
   return useAgentLoopStore((s) => (conversationId ? s.loops[conversationId] : undefined))
@@ -70,7 +70,7 @@ export function useConversationLoop(conversationId: string | null | undefined): 
  *
  * For the Coding Agent's working-directory lock (codexBusyReason): the
  * folder is a single GLOBAL value shared by every Codex conversation (A8,
- * 2.6.8 — "moving it mid-run would send the next turn somewhere the user is
+ * 2.6.8: "moving it mid-run would send the next turn somewhere the user is
  * not looking"), so a loop in a DIFFERENT conversation still writes through
  * that same folder and still must not have it yanked out from under it. This
  * is deliberately NOT scoped to the active conversation, unlike LoopBar.

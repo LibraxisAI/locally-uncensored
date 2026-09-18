@@ -104,7 +104,7 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   // The working directory is GLOBAL across every Codex conversation (A8), so
   // a loop running in ANY of them still must not have the folder yanked out
-  // from under it — deliberately not scoped to the active conversation.
+  // from under it, deliberately not scoped to the active conversation.
   const loop = useAnyAgentLoopActive()
   const lockReason = codexBusyReason({ sendsInFlight, threads, generating, loop })
   const lockTitle = lockReason ? CODEX_WORKDIR_LOCK_TITLE[lockReason] : null

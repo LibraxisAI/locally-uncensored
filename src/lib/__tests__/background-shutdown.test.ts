@@ -59,7 +59,7 @@ function laufendeAufgabe(id: string, convId: string): AbortController {
   return controller
 }
 
-/** A normal agent/chat stream mid-flight, with NO delegate_task sub-agent —
+/** A normal agent/chat stream mid-flight, with NO delegate_task sub-agent,
  *  the shape Runde 2 found byConv could not see at all. */
 function laufenderStrom(convId: string): { aborted: () => boolean } {
   let aborted = false
@@ -68,7 +68,7 @@ function laufenderStrom(convId: string): { aborted: () => boolean } {
   return { aborted: () => aborted }
 }
 
-/** A /loop pass parked between two runs — nothing is "generating", so only
+/** A /loop pass parked between two runs, nothing is "generating", so only
  *  the loop store knows this conversation still has work pending. */
 function wartenderLoopPass(convId: string): void {
   useAgentLoopStore.getState().start({
@@ -179,7 +179,7 @@ describe('installBackgroundShutdown: App beenden (pagehide + beforeunload)', () 
   })
 })
 
-describe('installBackgroundShutdown: Netzabbruch (Runde 2, Blocker 1 — offline stoppt nichts mehr)', () => {
+describe('installBackgroundShutdown: Netzabbruch (Runde 2, Blocker 1: offline stoppt nichts mehr)', () => {
   it('a dropped connection leaves running work running: retry.ts is built for exactly this', () => {
     installBackgroundShutdown()
     const c = laufendeAufgabe('task-z', 'conv-1')
@@ -223,7 +223,7 @@ describe('installBackgroundShutdown: Fenster schliessen (app:hidden IST onCloseR
    * main.rs sendet `app:hidden` an GENAU EINER Stelle: im `CloseRequested`-
    * Arm, direkt bevor es das Fenster in den Tray versteckt. Ein Horcher auf
    * dieses Ereignis ist also derselbe X-Klick, nicht ein zweiter, getrennter
-   * Moment — mit derselben Karenzzeit, die main.rs fuer den lokalen-Modelle-
+   * Moment, mit derselben Karenzzeit, die main.rs fuer den lokalen-Modelle-
    * Offload nach demselben Klick schon anwendet.
    */
   it('reacts to app:hidden and, after the grace period, stops every running background task', async () => {
@@ -237,7 +237,7 @@ describe('installBackgroundShutdown: Fenster schliessen (app:hidden IST onCloseR
     windowVisible = false
     for (const cb of listeners['app:hidden']) cb(undefined)
 
-    // Not yet — the mis-click grace period has not elapsed.
+    // Not yet, the mis-click grace period has not elapsed.
     await vi.advanceTimersByTimeAsync(1000)
     expect(c.signal.aborted).toBe(false)
 
