@@ -924,6 +924,32 @@ fn resolve_engine_binary(app: &AppHandle) -> Option<PathBuf> {
 /// failure still surfaces through the ordinary StartFailure path instead of
 /// a made-up error here).
 ///
+/// The one file every candidate backend_dir MUST contain to be real: ggml-base
+/// is the shared runtime every CPU variant (and the exe itself) links
+/// against (see verify-sidecar-isa.sh), so checking for it, not merely for
+/// the directory's existence, is what tells a real build apart from an
+/// unrelated directory that happens to be there. "lib" prefix only on
+/// non-Windows: ggml/CMakeLists.txt strips it `if (WIN32)` only.
+fn backend_marker_filename() -> &'static str {
+    if cfg!(target_os = "windows") { "ggml-base.dll" } else { "libggml-base.so" }
+}
+
+/// Pure core of `resolve_engine_backend_dir`: given an ordered list of
+/// candidate directories and a predicate for "does this directory really
+/// hold the marker file", return the first candidate that passes. Split out
+/// and made generic over the predicate (BLOCKER B2) specifically so both the
+/// Windows and the Linux/mac logic branches can be unit tested on any host
+/// OS with an injected filesystem, not only for real on the platform being
+/// tested: `resource_dir()` is unconditionally the running exe's own
+/// directory on Windows (tauri-utils 2.8.3, platform.rs:297-302), which is
+/// ALWAYS an existing directory whether or not it holds any ggml DLLs, so a
+/// `.is_dir()` check (what this used to be) always accepted it and made the
+/// dev-mode fallback candidate unreachable there. Checking for a specific
+/// file closes that gap on every platform, not just Windows.
+fn pick_backend_dir(candidates: &[PathBuf], has_marker: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    candidates.iter().find(|c| has_marker(c)).cloned()
+}
+
 /// Mirrors `resolve_engine_binary`'s tiers: the bundled resource location
 /// first, then the dev-time path the build script writes straight to.
 fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
@@ -931,6 +957,7 @@ fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
         return None;
     }
     let triple = host_target_triple();
+    let mut candidates: Vec<PathBuf> = Vec::new();
 
     // 1. Bundled. Windows: tauri.windows.conf.json flattens the companion
     //    DLLs into the ROOT of the resource dir, which on Windows IS the same
@@ -943,24 +970,22 @@ fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
     //    placement, and tauri::path::resource_dir's own platform doc for the
     //    resource placement).
     if let Ok(res) = app.path().resource_dir() {
-        let candidate = if cfg!(target_os = "windows") { res } else { res.join("llama") };
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
+        candidates.push(if cfg!(target_os = "windows") { res } else { res.join("llama") });
     }
 
     // 2. Dev: scripts/build-llama.sh writes straight to
     //    src-tauri/resources/llama/<triple>/, the same source path
     //    tauri.windows.conf.json / tauri.linux.conf.json bundle from.
-    let mut dev_candidates: Vec<PathBuf> = Vec::new();
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        dev_candidates.push(PathBuf::from(&manifest).join("resources").join("llama").join(&triple));
+        candidates.push(PathBuf::from(&manifest).join("resources").join("llama").join(&triple));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        dev_candidates.push(cwd.join("src-tauri").join("resources").join("llama").join(&triple));
-        dev_candidates.push(cwd.join("resources").join("llama").join(&triple));
+        candidates.push(cwd.join("src-tauri").join("resources").join("llama").join(&triple));
+        candidates.push(cwd.join("resources").join("llama").join(&triple));
     }
-    dev_candidates.into_iter().find(|p| p.is_dir())
+
+    let marker = backend_marker_filename();
+    pick_backend_dir(&candidates, |dir| dir.join(marker).is_file())
 }
 
 /// K1 (3.0.1): point a bundled llama-server child at its companion
@@ -4552,6 +4577,68 @@ mod tests {
             assert!(t.ends_with("-pc-windows-msvc"), "got {t}");
         } else {
             assert!(t.ends_with("-unknown-linux-gnu"), "got {t}");
+        }
+    }
+
+    // ── K1 (3.0.1): pick_backend_dir (BLOCKER B2) ─────────────────────────
+
+    #[test]
+    fn pick_backend_dir_returns_the_first_candidate_that_has_the_marker() {
+        let candidates = vec![PathBuf::from("/bundled"), PathBuf::from("/dev-fallback")];
+        let picked = pick_backend_dir(&candidates, |dir| dir == Path::new("/bundled"));
+        assert_eq!(picked, Some(PathBuf::from("/bundled")));
+    }
+
+    #[test]
+    fn pick_backend_dir_falls_through_to_a_later_candidate() {
+        let candidates = vec![PathBuf::from("/bundled"), PathBuf::from("/dev-fallback")];
+        let picked = pick_backend_dir(&candidates, |dir| dir == Path::new("/dev-fallback"));
+        assert_eq!(picked, Some(PathBuf::from("/dev-fallback")));
+    }
+
+    #[test]
+    fn pick_backend_dir_returns_none_when_no_candidate_has_the_marker() {
+        // Negative control: every candidate directory "exists" in the sense
+        // that it is a path, but none of them has the marker file, so this
+        // must come back empty rather than picking a directory that holds
+        // no ggml libraries at all.
+        let candidates = vec![PathBuf::from("/bundled"), PathBuf::from("/dev-fallback")];
+        let picked = pick_backend_dir(&candidates, |_| false);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn pick_backend_dir_does_not_accept_a_directory_that_merely_exists() {
+        // This is BLOCKER B2 itself, reproduced platform-independently: on
+        // Windows, resource_dir() is unconditionally the running exe's own
+        // directory, so it ALWAYS exists, whether or not any ggml DLLs are
+        // inside it. The bug was checking `.is_dir()` (which such a
+        // candidate always passes) instead of checking for the marker file.
+        // Here the "exists" predicate for the first (bundled) candidate is
+        // always true, exactly mirroring that always-existing Windows exe
+        // directory, while `has_marker` (what pick_backend_dir actually
+        // uses) is false for it, true only for the dev fallback. A
+        // directory-existence check would incorrectly stop at the first
+        // candidate and never reach the dev fallback; pick_backend_dir must
+        // fall through to it instead.
+        let candidates = vec![PathBuf::from("/always-exists-but-empty"), PathBuf::from("/dev-fallback-with-dlls")];
+        let dir_exists = |_: &Path| true; // simulates Windows resource_dir() always existing
+        let has_marker = |dir: &Path| dir == Path::new("/dev-fallback-with-dlls");
+        // The old, buggy check (directory existence only) would have picked
+        // the first candidate:
+        assert_eq!(candidates.iter().find(|c| dir_exists(c)).cloned(), Some(PathBuf::from("/always-exists-but-empty")));
+        // pick_backend_dir, using the marker predicate, correctly falls
+        // through to the one that actually has the companion libraries:
+        assert_eq!(pick_backend_dir(&candidates, has_marker), Some(PathBuf::from("/dev-fallback-with-dlls")));
+    }
+
+    #[test]
+    fn backend_marker_filename_has_lib_prefix_only_off_windows() {
+        let marker = backend_marker_filename();
+        if cfg!(target_os = "windows") {
+            assert_eq!(marker, "ggml-base.dll");
+        } else {
+            assert_eq!(marker, "libggml-base.so");
         }
     }
 
