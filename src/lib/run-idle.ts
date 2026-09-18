@@ -197,7 +197,7 @@ export function isRunActive(conversationId: string | null | undefined): boolean 
  * Stop button (not Send) while a send is queued, and the "waiting for the
  * local model" line. `useSyncExternalStore` with `subscribeRunLanes` is the
  * plain React wrapper around the module state `lib/run-lanes.ts` already
- * keeps and already wakes on — no second copy of "is it queued", the two
+ * keeps and already wakes on, no second copy of "is it queued": the two
  * view components just read the same one fact reactively instead of via
  * `getState()`-equivalent calls that would not trigger a re-render when a
  * run gets promoted out of the queue.

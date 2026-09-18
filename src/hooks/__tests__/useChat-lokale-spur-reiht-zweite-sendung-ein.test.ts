@@ -3,7 +3,7 @@
  *
  * Runde 4 (review-lanes.md Blocker 1+6): useChat.ts's plain sendMessage
  * must run through `runInLane` on the local lane. Two conversations on the
- * built-in engine (n_parallel=1) may not both fire a request at once — the
+ * built-in engine (n_parallel=1) may not both fire a request at once: the
  * second must queue and only start once the first is done.
  *
  * `laneOf`/`currentLaneFacts` are mocked to force BOTH conversations onto

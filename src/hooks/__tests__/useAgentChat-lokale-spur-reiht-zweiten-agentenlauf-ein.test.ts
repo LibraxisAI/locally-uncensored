@@ -4,7 +4,7 @@
  * Runde 4 (review-lanes.md Blocker 1+6): useAgentChat.ts's sendAgentMessage
  * must run through `runInLane` on the local lane, same as plain chat. Two
  * conversations on the built-in engine (n_parallel=1) may not both fire a
- * request at once — the second must queue, show up in `queuedRunIds()`, and
+ * request at once. The second must queue, show up in `queuedRunIds()`, and
  * only start once the first agent run is done.
  *
  * `laneOf`/`currentLaneFacts` are mocked to force the 'local' lane

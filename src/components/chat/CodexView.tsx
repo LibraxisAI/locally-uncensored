@@ -45,7 +45,6 @@ import { CodexConfirmDialog } from './CodexConfirmDialog'
 import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { stripModelNoise } from '../../lib/strip-model-noise'
-import { composerBusy } from '../../lib/composer-busy'
 import { useIsQueuedForLocalLane } from '../../lib/run-idle'
 
 // Code always drives a tool loop, so the aggressive tier applies here.
@@ -96,17 +95,14 @@ export function CodexView() {
   const generatingMap = useGenerationStore((s) => s.generating)
   const codexGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const pendingConfirm = useCodexConfirmStore((s) => s.pending)
-  // Nachbesserung 9 (review-lanes.md): parity with ChatView.tsx. Before this,
-  // CodexView never asked composerBusy at all, so the Code tab could send
-  // while the Chat tab was still generating: the one path Blocker 1's
-  // Reichweite point actually noted as reachable today (Chat<->Code, not
-  // Chat<->Chat, which the composer lock already covers). Same asymmetry the
-  // review flagged: a Chat send is blocked mid-Code-run, a Code send was not
-  // blocked mid-Chat-run.
-  const busy = composerBusy(isRunning || codexGenerating, generatingMap, activeConversationId)
-  // Runde 4 (review-lanes.md Blocker 1+6): same fold-in as ChatView.tsx. A
-  // queued send has no `generating` entry yet, so composerBusy alone cannot
-  // show it.
+  // Runde 4 (review-lanes.md Blocker 1+6): THIS conversation's own send
+  // queued behind another local run. Not part of `generatingMap` (no stream
+  // is flowing yet), so it needs its own read. Nachbesserung 9 (Runde 3) had
+  // added a cross-conversation lock here via `composerBusy` (parity with
+  // ChatView.tsx, closing the one path Blocker 1's Reichweite point noted as
+  // reachable: Chat<->Code); that lock is gone as of this round, the same as
+  // in ChatView.tsx, now that a local second send queues visibly instead of
+  // racing the first one and a cloud second send just runs alongside it.
   const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
 
   // G8-3 (David): "sobald er fertig gedacht hat, hakt das so komisch ab und
@@ -652,7 +648,6 @@ export function CodexView() {
           // parallel send and no Stop button. The generating flag follows the
           // conversation, not the hook instance.
           isGenerating={isRunning || codexGenerating || queuedForLocalLane}
-          busyElsewhere={busy.otherChat}
           waitingForLocalLane={queuedForLocalLane}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}

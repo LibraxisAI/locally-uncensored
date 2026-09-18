@@ -418,7 +418,7 @@ export function useAgentChat() {
     // here to the end of this call (RAG, memory, the tool loop, the /loop
     // driver) runs inside runInLane's body, so a local turn that has to wait
     // for the built-in engine's one llama-server slot has not yet touched the
-    // chat store when it is queued — nothing has been added that a cancelled
+    // chat store when it is queued, so nothing has been added that a cancelled
     // wait would need to unwind. The re-entry guard above already claimed
     // activeAgentRuns/isAgentRunning synchronously, before any await, so a
     // second send on the SAME conversation is refused before it ever reaches

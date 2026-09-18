@@ -55,45 +55,46 @@ const stopButton = () => screen.queryByRole('button', { name: 'Stop generation' 
 
 beforeEach(() => cleanup())
 
+/**
+ * Runde 4 (review-lanes.md Blocker 1+6): the cross-conversation lock this
+ * file used to test (`busyElsewhere`, "Another chat is still answering...")
+ * is gone from `ChatInput` entirely. It is no longer needed: a second local
+ * send now queues visibly instead of racing the first one for the built-in
+ * engine's one slot (see composer-zeigt-warten-auf-lokale-spur.test.tsx for
+ * that line), and a second cloud send just runs alongside the first. What is
+ * left to prove here is the negative: a conversation that is NOT the one
+ * answering keeps an ordinary, USABLE Send button, full stop, regardless of
+ * what `composerBusy` reports about some other conversation.
+ */
 describe('the composer of a chat that is NOT the one answering', () => {
-  /** What ChatView hands down while conversation `b` is the one generating. */
+  /** What ChatView hands down while conversation `b` is the one generating:
+   *  `thisChat` is what still reaches ChatInput's `isGenerating`. */
   const asSeenFromA = composerBusy(true, { b: true }, 'a')
 
-  it('keeps its Send button instead of losing it to a foreign run', () => {
+  it('keeps its Send button instead of losing it to a foreign run, and shows no waiting line', () => {
     render(
       <ChatInput
         onSend={() => {}}
         onStop={() => { throw new Error('a foreign run must not be stoppable from here') }}
         isGenerating={asSeenFromA.thisChat}
-        busyElsewhere={asSeenFromA.otherChat}
       />,
     )
     expect(sendButton()).toBeTruthy()
     expect(stopButton()).toBeNull()
+    expect(screen.queryByTestId('composer-busy-elsewhere')).toBeNull()
+    expect(screen.queryByTestId('composer-waiting-local-lane')).toBeNull()
   })
 
-  it('says in English why it is waiting, instead of going quiet', () => {
-    render(
-      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={asSeenFromA.thisChat} busyElsewhere={asSeenFromA.otherChat} />,
-    )
-    const line = screen.getByTestId('composer-busy-elsewhere')
-    expect(line.textContent).toContain('Another chat is still answering')
-    expect(line.textContent).toContain('one answer at a time')
-    // It has to tell the user what to do next, not just that something is off.
-    expect(line.textContent).toMatch(/wait for it to finish or stop it in that chat/)
-    expect(line.getAttribute('role')).toBe('status')
-  })
-
-  it('does not fire a send while another chat holds the engine', () => {
+  it('does fire a send while another chat is answering, no lock left to stop it', () => {
     let sent = 0
     render(
-      <ChatInput onSend={() => { sent += 1 }} onStop={() => {}} isGenerating={asSeenFromA.thisChat} busyElsewhere={asSeenFromA.otherChat} />,
+      <ChatInput onSend={() => { sent += 1 }} onStop={() => {}} isGenerating={asSeenFromA.thisChat} />,
     )
     const box = screen.getByRole('textbox')
     fireEvent.change(box, { target: { value: 'hello' } })
-    expect(sendButton()!.disabled).toBe(true)
+    expect(sendButton()!.disabled).toBe(false)
     fireEvent.keyDown(box, { key: 'Enter' })
-    expect(sent).toBe(0)
+    expect(sent).toBe(1)
   })
 })
 
@@ -103,7 +104,7 @@ describe('the composer of the chat that IS answering', () => {
   it('shows Stop, and no waiting line', () => {
     let stopped = 0
     render(
-      <ChatInput onSend={() => {}} onStop={() => { stopped += 1 }} isGenerating={asSeenFromB.thisChat} busyElsewhere={asSeenFromB.otherChat} />,
+      <ChatInput onSend={() => {}} onStop={() => { stopped += 1 }} isGenerating={asSeenFromB.thisChat} />,
     )
     expect(sendButton()).toBeNull()
     expect(screen.queryByTestId('composer-busy-elsewhere')).toBeNull()
@@ -113,7 +114,7 @@ describe('the composer of the chat that IS answering', () => {
 
   it('COUNTER-CHECK: an idle chat shows Send and says nothing', () => {
     const idle = composerBusy(false, {}, 'b')
-    render(<ChatInput onSend={() => {}} onStop={() => {}} isGenerating={idle.thisChat} busyElsewhere={idle.otherChat} />)
+    render(<ChatInput onSend={() => {}} onStop={() => {}} isGenerating={idle.thisChat} />)
     expect(sendButton()).toBeTruthy()
     expect(sendButton()!.disabled).toBe(true) // empty box, not a busy engine
     expect(screen.queryByTestId('composer-busy-elsewhere')).toBeNull()
@@ -208,13 +209,15 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
   it('der Komposer liest nicht mehr die app-weite Fahne', () => {
     const view = src('../ChatView.tsx')
     const composer = view.slice(view.indexOf('<ChatInput'), view.indexOf('composerActions='))
-    // Runde 4 (review-lanes.md Blocker 1+6): `isGenerating` traegt jetzt auch
-    // den Warteschlangen-Fall (`queuedForLocalLane`), damit der Stop-Knopf
-    // schon waehrend des Wartens auf die lokale Spur steht, nicht erst wenn
-    // der Strom beginnt. Die Aussage dieses Tests bleibt dieselbe: kein
-    // app-weites `isGenerating`, alles hier ist je-Unterhaltung.
+    // Runde 4 Schritt 2 (review-lanes.md Blocker 1+6): `isGenerating` traegt
+    // jetzt auch den Warteschlangen-Fall (`queuedForLocalLane`), damit der
+    // Stop-Knopf schon waehrend des Wartens auf die lokale Spur steht, nicht
+    // erst wenn der Strom beginnt. Schritt 4: `busyElsewhere` ist ganz weg,
+    // kein Aufrufer sperrt mehr wegen einer ANDEREN Unterhaltung. Die Aussage
+    // dieses Tests bleibt dieselbe: kein app-weites `isGenerating`, alles
+    // hier ist je-Unterhaltung.
     expect(composer).toContain('isGenerating={busy.thisChat || queuedForLocalLane}')
-    expect(composer).toContain('busyElsewhere={busy.otherChat}')
+    expect(composer).not.toContain('busyElsewhere')
     expect(composer).toContain('waitingForLocalLane={queuedForLocalLane}')
     expect(composer).not.toContain('isGenerating={isGenerating}')
     // Die MessageList behaelt die app-weite Fahne mit Absicht: Regenerate und

@@ -14,6 +14,12 @@
  *    react to the real `lib/run-lanes.ts` queue (admit/release), the same
  *    module state the three send paths now book into via `runInLane`?
  *
+ * Nachtrag Schritt 4: dieser Datei fehlt inzwischen ein COUNTER-CHECK gegen
+ * `busyElsewhere`, das gab es hier einmal. `busyElsewhere` selbst ist mit
+ * Schritt 4 aus `ChatInput` verschwunden (composer-busy.ts und ChatInput.tsx
+ * sperren nur noch die eigene Unterhaltung), also gibt es nichts mehr, das
+ * diese Wartezeile verdraengen koennte.
+ *
  * Run: npx vitest run src/components/chat/__tests__/composer-zeigt-warten-auf-lokale-spur.test.tsx
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -54,17 +60,6 @@ describe('ChatInput waehrend des Wartens auf die lokale Spur', () => {
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
   })
 
-  it('COUNTER-CHECK: busyElsewhere (fremde Unterhaltung) verdraengt die eigene Wartezeile', () => {
-    // Beide koennten technisch gleichzeitig wahr sein (eine andere Unterhaltung
-    // laeuft UND diese wartet auf die lokale Spur); die fremde Meldung hat
-    // Vorrang, weil sie den dringlicheren Fall beschreibt (jemand anders haelt
-    // gerade ueberhaupt die Maschine).
-    render(
-      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={true} busyElsewhere={true} waitingForLocalLane={true} />,
-    )
-    expect(screen.getByTestId('composer-busy-elsewhere')).toBeTruthy()
-    expect(screen.queryByTestId('composer-waiting-local-lane')).toBeNull()
-  })
 })
 
 describe('useIsQueuedForLocalLane reagiert auf die echte Warteschlange', () => {

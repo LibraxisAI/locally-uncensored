@@ -119,15 +119,21 @@ export function ChatView() {
   //
   // Since T1 point 4 the COMPOSER reads it too. It used to read the hook's
   // app-wide `isGenerating`, so every other conversation lost its Send button
-  // and got a Stop button that aborted the foreign run. `composerBusy` splits
-  // the one flag into the two questions the composer actually has.
+  // and got a Stop button that aborted the foreign run. `composerBusy` still
+  // resolves what THIS conversation's own slot should show (own run, or an
+  // orphaned run the maps have not caught up with yet); as of Runde 4
+  // (review-lanes.md Blocker 1+6) it no longer feeds a lock on any OTHER
+  // conversation into the composer at all, because there is nothing left to
+  // lock: a second local send now queues visibly instead of racing the first
+  // one for the built-in engine's one slot, and a second cloud send just runs
+  // alongside it.
   const generatingMap = useGenerationStore((s) => s.generating)
   const activeGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const busy = composerBusy(isGenerating, generatingMap, activeConversationId)
-  // Runde 4 (review-lanes.md Blocker 1+6): THIS conversation's own send is
-  // queued behind another local run. Not part of `generatingMap` (no stream
-  // is flowing yet), so `composerBusy` cannot see it — folded in here so the
-  // composer shows Stop instead of Send while it waits.
+  // THIS conversation's own send queued behind another local run. Not part of
+  // `generatingMap` (no stream is flowing yet), so `composerBusy` cannot see
+  // it. Folded into `isGenerating` below so the composer shows Stop instead
+  // of Send while it waits.
   const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
 
   const docCount = useRAGStore((s) =>
@@ -637,7 +643,6 @@ export function ChatView() {
               onSend={sendMessage}
               onStop={stopGeneration}
               isGenerating={busy.thisChat || queuedForLocalLane}
-              busyElsewhere={busy.otherChat}
               waitingForLocalLane={queuedForLocalLane}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}

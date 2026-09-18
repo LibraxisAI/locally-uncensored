@@ -5,7 +5,7 @@
  * its sendInstruction wrapper) must run through `runInLane` on the local
  * lane, same as useChat.ts and useAgentChat.ts. Two Coding-Agent
  * conversations on the built-in engine (n_parallel=1) may not both reach
- * their provider call at once — the second must queue.
+ * their provider call at once: the second must queue.
  *
  * `resolveChatWorkspaceSlug` is used as the gate, the same technique as
  * `useCodex-lauf-gehoert-seiner-unterhaltung.test.ts`: it is the first real
@@ -26,7 +26,7 @@ vi.mock('../../api/workspace-slug', () => ({
   resolveChatWorkspaceSlug: vi.fn(async (convId: string) => {
     slugCalls.push(convId)
     await new Promise<void>((resolve, reject) => { gates.push({ resolve, reject }) })
-    // Never actually resolves successfully in this test — rejecting is the
+    // Never actually resolves successfully in this test, rejecting is the
     // fastest, most deterministic way to end a run via the outer safety-net
     // catch (Nachbesserung 5, review-lanes.md) once the lane-admission
     // question has already been observed. What matters here is WHEN the
@@ -96,7 +96,7 @@ describe('runInstruction reiht einen zweiten lokalen Coding-Lauf ein', () => {
     expect(slugCalls).toEqual([convA])
     expect(queuedRunIds()).toEqual([convB])
 
-    // Let A's gate fail — A's run ends (through the safety-net catch),
+    // Let A's gate fail, so A's run ends (through the safety-net catch),
     // releasing the local lane.
     await act(async () => {
       gates[0].reject(new Error('workspace slug unavailable (test)'))
