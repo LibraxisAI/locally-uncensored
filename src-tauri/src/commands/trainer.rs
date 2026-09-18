@@ -144,6 +144,81 @@ fn trainer_root(app: &tauri::AppHandle) -> PathBuf {
         .join("musubi")
 }
 
+/// Review Runde 2, K5 Punkt 13: `pip`, Hugging Face and torch each keep a
+/// cache of their own, and left at their OS defaults every one of them lands
+/// under the user's profile (`%LOCALAPPDATA%` on Windows) regardless of
+/// where [`trainer_root`] itself points. A user who moved `trainer_root` to
+/// a roomier drive specifically to keep this multi-GB traffic off a small
+/// system disk got it back anyway, silently, through three caches that were
+/// never told about the move. All three now follow the SAME configured data
+/// path as the trainer root itself, so setting one setting actually moves
+/// everything.
+///
+/// NOT wired into a pip/python spawn yet: per the Runde 2 task split this
+/// engine Bauer touches `trainer.rs` only at its path root, and every place
+/// that would set these three (the shared python-command builder around
+/// `PYTHONIOENCODING`/`PYTHONUTF8`/`USE_LIBUV` a little further down this
+/// file, and wherever `pip install`/`snapshot_download` calls are built) is
+/// active territory for the trainer Bauer on `fix/301-trainer`. That Bauer
+/// wires `trainer_cache_env(&trainer_root(&app))` into those command
+/// builders' `.env(...)` calls; this function is the named, ready-to-use
+/// path-root half.
+///
+/// Existing installs are read, not silently relocated: `trainer_root`
+/// itself already keeps a persisted override rather than moving anyone's
+/// files without being asked, and these three follow the same rule by
+/// construction, being a pure function of whatever `trainer_root` currently
+/// resolves to.
+// Not called from production code yet, only from its own tests below: see
+// the doc comment above for why (the wiring is the trainer Bauer's, on
+// fix/301-trainer). `#[allow(dead_code)]` is deliberate here, not a plain
+// unused leftover: remove it in the SAME change that adds the `.env(...)`
+// call sites, not before.
+#[allow(dead_code)]
+pub(crate) fn trainer_cache_env(root: &Path) -> [(&'static str, PathBuf); 3] {
+    [
+        ("PIP_CACHE_DIR", root.join("cache").join("pip")),
+        ("HF_HOME", root.join("cache").join("huggingface")),
+        ("TORCH_HOME", root.join("cache").join("torch")),
+    ]
+}
+
+#[cfg(test)]
+mod trainer_cache_env_tests {
+    use super::trainer_cache_env;
+    use std::path::Path;
+
+    #[test]
+    fn every_cache_follows_the_configured_root() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let env = trainer_cache_env(root);
+        assert_eq!(env.len(), 3);
+        for (name, path) in &env {
+            assert!(
+                path.starts_with(root),
+                "{name} ({}) is not under the configured trainer_root {}",
+                path.display(),
+                root.display()
+            );
+        }
+        let names: Vec<&str> = env.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["PIP_CACHE_DIR", "HF_HOME", "TORCH_HOME"]);
+    }
+
+    /// Negative control: three DIFFERENT roots must not collapse onto the
+    /// same cache directory. A function that ignored its argument and
+    /// always returned a fixed path would still pass the "under root" check
+    /// above for a single root; this catches that.
+    #[test]
+    fn two_different_roots_get_two_different_cache_trees() {
+        let a = trainer_cache_env(Path::new("/data/a"));
+        let b = trainer_cache_env(Path::new("/data/b"));
+        for ((_, pa), (_, pb)) in a.iter().zip(b.iter()) {
+            assert_ne!(pa, pb, "{pa:?} should differ from {pb:?}");
+        }
+    }
+}
+
 fn venv_python(root: &Path) -> PathBuf {
     #[cfg(target_os = "windows")]
     { root.join("venv").join("Scripts").join("python.exe") }
