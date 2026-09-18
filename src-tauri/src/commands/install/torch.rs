@@ -486,6 +486,20 @@ pub(crate) fn venv_probe_failed_message(current: (u32, u32), interpreters: &[(St
 /// customer's working venv to rebuild one that failed at `python -m venv`
 /// itself. `current_python` now goes through the exact same probe as every
 /// other candidate before this returns `Proceed`.
+///
+/// Runde 6, BLOCKER B8 (review Runde 5): Runde 5's fix for B7(a) went too
+/// far. It folded `current_python` into the SAME pool every replacement
+/// candidate is drawn from and let `pick_newest_working_interpreter` pick
+/// the newest version match out of that pool, so a healthy venv on 3.12
+/// was told to rebuild the moment a 3.13 also happened to sit on the same
+/// machine, even though 3.12 itself served torch fine and passed the probe.
+/// That is not what B7(a) asked for: B7(a) only asked that the interpreter
+/// LU was about to proceed with be PROBED, not that it be auctioned off
+/// against a newer one. The rule is restored here: the interpreter that
+/// would be used anyway wins outright the moment it clears both bars
+/// (served by the live index, passes ssl/venv/ensurepip), regardless of
+/// what else is on the machine. A replacement is only ever looked for once
+/// `current_python` itself has failed one of the two.
 pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>, packages: &[&str], retry_action: &str) -> TorchPythonDecision {
     let Some(current) = python_version_tuple(current_python) else {
         return TorchPythonDecision::Proceed;
@@ -501,20 +515,52 @@ pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>,
         // Empty or unreachable: cannot tell, so do not block (see doc above).
         _ => return TorchPythonDecision::Proceed,
     };
+    let interpreters = interpreter_inventory();
+    decide_torch_python(current_python, current, &supported, interpreters, retry_action, python_can_build_a_venv)
+}
 
-    // The full candidate pool: whatever `current_python` is, plus every
-    // interpreter `python_interpreters()` found, deduplicated by path. This
-    // is what lets `current_python` be probed by the SAME picker as every
-    // replacement candidate (B7(a)) instead of a separate early return.
-    let mut interpreters = interpreter_inventory();
+/// The pure decision core of [`choose_torch_python`], split out so B8's
+/// "the interpreter LU would use anyway wins outright" rule is directly
+/// testable with a fake probe and a canned interpreter list, without the
+/// network fetch [`choose_torch_python`] itself does first. Everything
+/// [`choose_torch_python`] does beyond this is resolving `current`'s version
+/// and fetching what the live index serves; this is what decides.
+fn decide_torch_python(
+    current_python: &str,
+    current: (u32, u32),
+    supported: &std::collections::BTreeSet<(u32, u32)>,
+    mut interpreters: Vec<(String, Option<(u32, u32)>)>,
+    retry_action: &str,
+    mut probe: impl FnMut(&str) -> bool,
+) -> TorchPythonDecision {
     if !interpreters.iter().any(|(p, _)| p == current_python) {
         interpreters.insert(0, (current_python.to_string(), Some(current)));
     }
 
+    // B8: the interpreter that would be used anyway (the existing venv's
+    // own Python, or today's default before a fresh venv exists) wins the
+    // moment its OWN version is served and it passes the probe, no matter
+    // whether a newer interpreter also happens to sit on this machine. Only
+    // once this fails (wrong version, or the probe itself fails) does LU
+    // start looking for a replacement.
+    if supported.contains(&current) && probe(current_python) {
+        return TorchPythonDecision::Proceed;
+    }
+
+    // current_python is out of the running now. Every OTHER interpreter this
+    // machine has is the replacement pool; current_python itself is excluded
+    // so it is never probed a second time and can never come back out of
+    // this search (it already failed the check above).
+    let replacement_pool: Vec<(String, Option<(u32, u32)>)> =
+        interpreters.iter().filter(|(p, _)| p != current_python).cloned().collect();
+
+    // Computed over the FULL list (current_python included): a version match
+    // on current_python that only failed the probe is still "a version
+    // matched, but the venv could not be built", the B7(b) story, not "no
+    // version here serves torch at all".
     let any_version_match = interpreters.iter().any(|(_, v)| v.is_some_and(|v| supported.contains(&v)));
 
-    match pick_newest_working_interpreter(&interpreters, &supported, python_can_build_a_venv) {
-        Some(path) if path == current_python => TorchPythonDecision::Proceed,
+    match pick_newest_working_interpreter(&replacement_pool, supported, &mut probe) {
         Some(path) => {
             // Always present: `path` came out of `interpreters` itself, and
             // only entries with a known, version-matching `Some(v)` are
@@ -530,8 +576,8 @@ pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>,
         // probe. Two different customer stories need two different
         // messages: "torch does not serve any version I have" versus "I
         // have the right version, but it cannot build a venv" (B7(b)).
-        None if any_version_match => TorchPythonDecision::Blocked(venv_probe_failed_message(current, &interpreters, &supported)),
-        None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, &supported, retry_action)),
+        None if any_version_match => TorchPythonDecision::Blocked(venv_probe_failed_message(current, &interpreters, supported)),
+        None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, supported, retry_action)),
     }
 }
 
@@ -945,5 +991,109 @@ mod tests {
     fn blocked_on_an_existing_venv_also_refuses() {
         let out = python_for_existing_venv(TorchPythonDecision::Blocked("no compatible interpreter".to_string()), "/venv/bin/python3");
         assert_eq!(out, Err("no compatible interpreter".to_string()));
+    }
+
+    // ── Runde 6, BLOCKER B8 (review Runde 5): the interpreter LU would use
+    // anyway must win outright once it clears both bars, even if a NEWER
+    // interpreter also sits on the machine. Runde 5's fix let the newest
+    // version match win the pool instead, which broke Install and Update on
+    // every perfectly healthy environment that happened to share a machine
+    // with a newer Python.
+
+    #[test]
+    fn a_healthy_venv_python_proceeds_even_with_a_newer_python_on_the_box() {
+        // The exact Beweis the task names: a healthy 3.12 venv, plus a 3.13
+        // also found on the machine. Both pass the probe. Must Proceed with
+        // 3.12, never UseInstead the newer one.
+        let interpreters = vec![
+            ("/comfy/venv/bin/python3".to_string(), Some((3, 12))),
+            ("/usr/bin/python3.13".to_string(), Some((3, 13))),
+        ];
+        let supported = supported_3_10_through_13();
+        let decision = decide_torch_python(
+            "/comfy/venv/bin/python3",
+            (3, 12),
+            &supported,
+            interpreters,
+            "press Repair environment again",
+            always_works,
+        );
+        assert!(
+            matches!(decision, TorchPythonDecision::Proceed),
+            "a healthy venv python must proceed even next to a newer interpreter"
+        );
+    }
+
+    /// Negative control: swap which one is "current" and the answer flips
+    /// with it. If `decide_torch_python` always returned `Proceed` for
+    /// whichever path merely appears first, or always preferred the newest
+    /// version regardless of which one is current, this would not catch it;
+    /// together the two tests pin that the OUTCOME follows `current_python`,
+    /// not the pool's shape.
+    #[test]
+    fn a_venv_on_an_unserved_version_still_gets_use_instead() {
+        let interpreters = vec![
+            ("/comfy/venv/bin/python3".to_string(), Some((3, 14))),
+            ("/usr/bin/python3.12".to_string(), Some((3, 12))),
+        ];
+        let supported = supported_3_10_through_13();
+        let decision = decide_torch_python(
+            "/comfy/venv/bin/python3",
+            (3, 14),
+            &supported,
+            interpreters,
+            "press Repair environment again",
+            always_works,
+        );
+        match decision {
+            TorchPythonDecision::UseInstead { path, .. } => {
+                assert_eq!(path, "/usr/bin/python3.12");
+            }
+            _ => panic!("a venv on an unserved version must not Proceed"),
+        }
+    }
+
+    #[test]
+    fn current_python_that_fails_the_probe_is_not_probed_a_second_time_as_a_replacement() {
+        // current_python fails the probe exactly once (the mandatory B7(a)
+        // check); it must never be handed to the probe a second time while
+        // searching for a replacement. A count of how many times it was
+        // probed pins this without assuming call order.
+        let current = "/comfy/venv/bin/python3";
+        let interpreters = vec![
+            (current.to_string(), Some((3, 12))),
+            ("/usr/bin/python3.11".to_string(), Some((3, 11))),
+        ];
+        let supported = supported_3_10_through_13();
+        let mut current_probe_count = 0u32;
+        let probe = |path: &str| {
+            if path == current {
+                current_probe_count += 1;
+            }
+            path != current
+        };
+        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", probe);
+        match decision {
+            TorchPythonDecision::UseInstead { path, .. } => assert_eq!(path, "/usr/bin/python3.11"),
+            _ => panic!("expected UseInstead"),
+        }
+        assert_eq!(current_probe_count, 1, "current_python must be probed exactly once, not re-tried as a replacement");
+    }
+
+    #[test]
+    fn a_probe_failure_on_current_with_no_replacement_yields_the_venv_probe_failed_message() {
+        // B7(b)'s message, still reachable after B8: current's version is
+        // served, but it alone fails ssl/venv/ensurepip, and nothing else on
+        // the machine has a matching version either.
+        let current = "/comfy/venv/bin/python3";
+        let interpreters = vec![(current.to_string(), Some((3, 12)))];
+        let supported = supported_3_10_through_13();
+        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", |_| false);
+        match decision {
+            TorchPythonDecision::Blocked(msg) => {
+                assert!(msg.contains("ssl, venv and ensurepip"), "{msg}");
+            }
+            _ => panic!("expected Blocked with the venv-probe-failed wording"),
+        }
     }
 }
