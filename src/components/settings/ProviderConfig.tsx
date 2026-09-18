@@ -869,16 +869,16 @@ export function ProviderSettings() {
       <Modal open={showKeyLossWarning} onClose={() => { setShowKeyLossWarning(false); setPendingPreset(null) }} title="">
         <div className="space-y-4 text-center" data-testid="key-loss-warning-modal">
           <h3 className="text-base font-semibold text-white">API Key Will Be Lost</h3>
-          <p className="text-[12px] text-gray-400 leading-relaxed">
+          <p className="t-control text-gray-400 leading-relaxed">
             The current OpenAI-compatible backend has an API key set. Switching backends clears it from this slot, and it will NOT survive an app restart while parked.
           </p>
-          <p className="text-[12px] text-gray-400 leading-relaxed">
+          <p className="t-control text-gray-400 leading-relaxed">
             If you switch back to this backend later, you will need to enter the key again.
           </p>
           <div className="flex items-center justify-center gap-3 pt-2">
             <button
               onClick={() => { setShowKeyLossWarning(false); setPendingPreset(null) }}
-              className="px-4 py-1.5 rounded-lg text-[0.7rem] text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+              className="px-4 py-1.5 rounded-lg t-mono text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
             >
               Cancel
             </button>
@@ -888,7 +888,7 @@ export function ProviderSettings() {
                 setShowKeyLossWarning(false)
                 setPendingPreset(null)
               }}
-              className="px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
+              className="px-4 py-1.5 rounded-lg t-mono font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
             >
               Switch Anyway
             </button>
