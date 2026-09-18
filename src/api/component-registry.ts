@@ -60,14 +60,16 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRequirements> = {
   },
   // Krea 2 (K9, GH #136): companion VAE/CLIP filenames are not standardized
   // across CivitAI finetune authors (qwen_image_vae vs wan_2.1_vae;
-  // qwen3vl_4b_int8_convrot vs qwen3vl_4b_fp8_scaled, see the issue). No
-  // verified direct-download address exists yet, so downloadUrl stays unset
-  // rather than guessing one: findMatchingVAE/findMatchingCLIP still name
-  // the exact file to fetch manually via the Model Manager.
+  // qwen3vl_4b_int8_convrot vs qwen3vl_4b_fp8_scaled, see the issue).
+  // Nachbessert Runde 3: downloadUrl now points at the official
+  // Comfy-Org/Krea-2 repackage (verified reachable via HEAD, 2026-09-18),
+  // the exact filenames findMatchingVAE/findMatchingCLIP already name in
+  // their error text; see the matching Model Manager bundle in
+  // model-bundles.ts ("Krea 2 Companion Files").
   krea2: {
     loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'krea2',
-    vae: { matchPatterns: ['krea', 'qwen_image', 'wan'], downloadFilename: 'qwen_image_vae.safetensors', subfolder: 'vae' },
-    clip: { matchPatterns: ['qwen3vl', 'qwen3_vl'], downloadFilename: 'qwen3vl_4b_fp8_scaled.safetensors', subfolder: 'text_encoders' },
+    vae: { matchPatterns: ['krea', 'qwen_image', 'wan'], downloadFilename: 'qwen_image_vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors', subfolder: 'vae' },
+    clip: { matchPatterns: ['qwen3vl', 'qwen3_vl'], downloadFilename: 'qwen3vl_4b_fp8_scaled.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors', subfolder: 'text_encoders' },
   },
   zimage: {
     loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'qwen_image',
