@@ -916,6 +916,104 @@ fn resolve_engine_binary(app: &AppHandle) -> Option<PathBuf> {
     dev_candidates.into_iter().find(|p| p.exists())
 }
 
+/// K1 (3.0.1): directory holding the dynamic-ISA sidecar's companion
+/// ggml-cpu-*/ggml-vulkan libraries (Windows, Linux; see
+/// scripts/build-llama.sh). `None` on mac, which keeps the old static Metal
+/// binary and has nothing to find, and `None` when nothing was built yet (a
+/// start then runs exactly as it did before this change, and a genuine
+/// failure still surfaces through the ordinary StartFailure path instead of
+/// a made-up error here).
+///
+/// Mirrors `resolve_engine_binary`'s tiers: the bundled resource location
+/// first, then the dev-time path the build script writes straight to.
+fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    let triple = host_target_triple();
+
+    // 1. Bundled. Windows: tauri.windows.conf.json flattens the companion
+    //    DLLs into the ROOT of the resource dir, which on Windows IS the same
+    //    directory as the running executable (tauri's own resource_dir()
+    //    docs), so this is also where lu-llama-server.exe itself sits. Linux:
+    //    tauri.linux.conf.json nests them under a "llama/" subdirectory
+    //    instead, because deb/AppImage keep externalBin (the exe, in
+    //    usr/bin) and `resources` (usr/lib/<exe_name>) apart (see GitHub
+    //    #120 in sidecar_binary_name's comment above for the externalBin
+    //    placement, and tauri::path::resource_dir's own platform doc for the
+    //    resource placement).
+    if let Ok(res) = app.path().resource_dir() {
+        let candidate = if cfg!(target_os = "windows") { res } else { res.join("llama") };
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+
+    // 2. Dev: scripts/build-llama.sh writes straight to
+    //    src-tauri/resources/llama/<triple>/, the same source path
+    //    tauri.windows.conf.json / tauri.linux.conf.json bundle from.
+    let mut dev_candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        dev_candidates.push(PathBuf::from(&manifest).join("resources").join("llama").join(&triple));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        dev_candidates.push(cwd.join("src-tauri").join("resources").join("llama").join(&triple));
+        dev_candidates.push(cwd.join("resources").join("llama").join(&triple));
+    }
+    dev_candidates.into_iter().find(|p| p.is_dir())
+}
+
+/// K1 (3.0.1): point a bundled llama-server child at its companion
+/// ggml-cpu-*/ggml-vulkan libraries. No-op when `backend_dir` is `None`
+/// (mac, or nothing built yet).
+///
+/// This IS our own bundled sidecar, not a foreign program: `Command::new` is
+/// the right call here and `foreign_system_command`/`strip_appimage_env`
+/// (process_util.rs) would be wrong. On an AppImage this process WANTS the
+/// AppImage-mounted `LD_LIBRARY_PATH` it inherits (its own libvulkan.so.1
+/// etc, see the comment at ILLEGAL_INSTRUCTION_EXIT_CODE below); stripping
+/// it would undo the very thing K11 fixed for foreign programs one file
+/// over. This function only ever ADDS our own resources directory in front
+/// of whatever LD_LIBRARY_PATH the process already inherited.
+///
+/// Measured against the pinned llama.cpp source, not assumed:
+/// `ggml_backend_load_best` (ggml/src/ggml-backend-reg.cpp:479-486) scans
+/// only two places when no explicit path is given, the executable's OWN
+/// directory and the process's CURRENT directory. There is no search-LIST
+/// environment variable: `GGML_BACKEND_PATH` (same file, line 582) loads
+/// exactly one named file, so it cannot stand in for a directory holding
+/// nine-plus CPU variants. The current directory is the one lever that
+/// works the same way on every platform, so this sets it instead of
+/// reaching for an env var that does not do what the name suggests.
+///
+/// On Windows the companions are bundled flattened into the exe's own
+/// directory (see `resolve_engine_backend_dir`), which Windows' own DLL
+/// search order already covers with no help from this function; `current_dir`
+/// is set anyway; one fewer thing that has to stay true forever for this to
+/// keep working, the same belt-and-suspenders reasoning
+/// `resolve_engine_binary` already uses for its own second lookup tier. On
+/// Linux the companions sit in a separate resources directory (deb/AppImage
+/// keep externalBin and `resources` apart), and nothing in the pinned
+/// llama.cpp build sets an `$ORIGIN` rpath, so `current_dir` alone would get
+/// ggml's own variant SCAN right but the winning file's OWN dependency on
+/// libggml-base.so would still fail to resolve. `LD_LIBRARY_PATH` closes
+/// that second half.
+fn apply_engine_backend_dir(cmd: &mut Command, backend_dir: Option<&Path>) {
+    let Some(dir) = backend_dir else { return };
+    cmd.current_dir(dir);
+    #[cfg(target_os = "linux")]
+    {
+        let mut value = std::ffi::OsString::from(dir);
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            if !existing.is_empty() {
+                value.push(":");
+                value.push(existing);
+            }
+        }
+        cmd.env("LD_LIBRARY_PATH", value);
+    }
+}
+
 // ── Health probe ─────────────────────────────────────────────────────────────
 
 /// The slot that actually holds the conversation. llama-server distributes
@@ -1796,7 +1894,7 @@ fn start_bundled_engine_blocking(
     {
         Ok(v) => Ok(v),
         Err(msg) => Err(match (vorher, resolve_engine_binary(app)) {
-            (Some(p), Some(bin)) if restore_engine(&bin, state, &p) => {
+            (Some(p), Some(bin)) if restore_engine(&bin, state, &p, resolve_engine_backend_dir(app).as_deref()) => {
                 with_note_on_top(&msg, RESTORED_NOTE)
             }
             _ => msg,
@@ -1832,7 +1930,7 @@ const RESTORED_NOTE: &str = "The model that was serving before is running again.
 /// Wiederholung: er bediente vor Sekunden noch, und ein zweiter Fehlschlag
 /// hier waere nichts, woran ein Nutzer etwas aendern koennte. Er wuerde nur
 /// die Fehlermeldung des eigentlichen Problems um Minuten verzoegern.
-fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> bool {
+fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine, backend_dir: Option<&Path>) -> bool {
     tracing::warn!(target: "engine", model = %vorher.model_path, port = vorher.port, "the model switch failed, bringing the previous model back");
     let ok = spawn_engine_attempt(
         state,
@@ -1842,6 +1940,7 @@ fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> b
         vorher.port,
         vorher.ctx,
         AttemptFlags { auto_layers: vorher.auto_layers, cpu_fallback: vorher.cpu_fallback },
+        backend_dir,
     )
     .is_ok();
     if !ok {
@@ -1929,6 +2028,10 @@ fn start_after_stop(
             sidecar_binary_name()
         )
     })?;
+    // K1 (3.0.1): where the dynamic-ISA sidecar's companion libraries are,
+    // None on mac / a static build. Resolved once here and carried through
+    // both attempts and the sanity-probe restarts below, same as `binary`.
+    let backend_dir = resolve_engine_backend_dir(app);
 
     // Attempt 1, then exactly one clean retry.
     //
@@ -2011,6 +2114,7 @@ fn start_after_stop(
         port,
         ctx,
         AttemptFlags { auto_layers, cpu_fallback: false },
+        backend_dir.as_deref(),
     );
     let failure = match first {
         Ok(startup) => {
@@ -2027,6 +2131,7 @@ fn start_after_stop(
                 ctx,
                 auto_layers,
                 &startup,
+                backend_dir.as_deref(),
             ));
         }
         Err(f) => f,
@@ -2117,6 +2222,7 @@ fn start_after_stop(
         retry_port,
         ctx,
         AttemptFlags { auto_layers: retry_auto, cpu_fallback: offload_was_tried },
+        backend_dir.as_deref(),
     ) {
         Ok(startup) => {
             if offload_was_tried {
@@ -2146,6 +2252,7 @@ fn start_after_stop(
                 ctx,
                 retry_auto,
                 &startup,
+                backend_dir.as_deref(),
             );
             answer["retried"] = serde_json::json!(true);
             answer["cpuOnly"] = serde_json::json!(offload_was_tried);
@@ -2209,6 +2316,7 @@ fn serve_or_heal_garbled(
     ctx: Option<u32>,
     auto_layers: bool,
     startup: &str,
+    backend_dir: Option<&Path>,
 ) -> serde_json::Value {
     let mut answer = started_answer(port, model_path, ctx);
     // Measured once, from what llama-server itself printed on its way up. A
@@ -2326,6 +2434,7 @@ fn serve_or_heal_garbled(
             port,
             ctx,
             AttemptFlags { auto_layers: false, cpu_fallback: cpu_rung },
+            backend_dir,
         ).is_err() {
             // The restart did not come up, and an engine that at least served
             // has just been torn down for it. Put the first one back rather
@@ -2344,6 +2453,7 @@ fn serve_or_heal_garbled(
                 port,
                 ctx,
                 AttemptFlags { auto_layers, cpu_fallback: false },
+                backend_dir,
             );
             answer["garbled"] = serde_json::json!(true);
             // Not the CPU sentence. Nothing ran on the processor here and
@@ -2424,6 +2534,7 @@ struct AttemptFlags {
 /// naming fp16, the warp size and whether the card has matrix cores, and the
 /// flash-attention rung of the sanity probe is decided on it. It used to be
 /// read on the failure paths only and thrown away whenever the engine came up.
+#[allow(clippy::too_many_arguments)]
 fn spawn_engine_attempt(
     state: &AppState,
     binary: &Path,
@@ -2432,6 +2543,7 @@ fn spawn_engine_attempt(
     port: u16,
     ctx: Option<u32>,
     flags: AttemptFlags,
+    backend_dir: Option<&Path>,
 ) -> Result<String, StartFailure> {
     log_cpu_features_once();
     // The one line a support log has to carry. Everything the start depends on
@@ -2460,6 +2572,10 @@ fn spawn_engine_attempt(
     if let Ok(sel) = state.gpu_selection.lock() {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
+    // K1 (3.0.1): point a dynamic-ISA sidecar (Windows/Linux) at its
+    // ggml-cpu-*/ggml-vulkan companion libraries. No-op on mac / a static
+    // build, see apply_engine_backend_dir.
+    apply_engine_backend_dir(&mut cmd, backend_dir);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -3358,6 +3474,10 @@ fn start_bundled_embed_blocking(
     if let Ok(sel) = state.gpu_selection.lock() {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
+    // K1 (3.0.1): this is the same dynamic-ISA binary the chat engine spawns
+    // (`spawn_engine_attempt`), so it needs the same companion-library
+    // directory; see apply_engine_backend_dir.
+    apply_engine_backend_dir(&mut cmd, resolve_engine_backend_dir(app).as_deref());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -4445,6 +4565,115 @@ mod tests {
         }
     }
 
+    // ── K1 (3.0.1): apply_engine_backend_dir ──────────────────────────────
+
+    #[test]
+    fn apply_engine_backend_dir_is_a_noop_without_a_directory() {
+        // mac (static build) and "nothing built yet" both pass None here, and
+        // the spawned Command must come out exactly as `Command::new` left
+        // it: no current_dir, no LD_LIBRARY_PATH this function did not put
+        // there itself.
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, None);
+        assert!(cmd.get_current_dir().is_none());
+        assert!(!cmd.get_envs().any(|(k, _)| k == "LD_LIBRARY_PATH"));
+    }
+
+    #[test]
+    fn apply_engine_backend_dir_sets_current_dir_when_given_one() {
+        // The one lever ggml_backend_load_best actually reads when no
+        // explicit search path is passed (ggml-backend-reg.cpp:479-486): the
+        // executable's own directory, and the process's CURRENT directory.
+        // Without this, a dynamic-ISA sidecar spawned from an arbitrary cwd
+        // would silently fail to find ggml-cpu-*/ggml-vulkan.
+        let dir = std::env::temp_dir();
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(&dir));
+        assert_eq!(cmd.get_current_dir(), Some(dir.as_path()));
+    }
+
+    // Serializes the two tests below: both read and mutate the process-wide
+    // LD_LIBRARY_PATH, and cargo test runs in threads by default. Same
+    // pattern as process_util.rs's own env_guard, kept local here since that
+    // one is private to its own test module.
+    #[cfg(target_os = "linux")]
+    fn ld_library_path_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn apply_engine_backend_dir_prepends_ld_library_path_on_linux() {
+        // Linux-only: nothing in the pinned llama.cpp build sets an $ORIGIN
+        // rpath (measured against the checkout, not assumed), so a
+        // ggml-cpu-*.so's own dependency on libggml-base.so needs
+        // LD_LIBRARY_PATH, current_dir alone is not enough there. This test
+        // is red without the fix: before apply_engine_backend_dir touched
+        // LD_LIBRARY_PATH at all, get_envs() never carried the key.
+        let _guard = ld_library_path_env_guard();
+        std::env::set_var("LD_LIBRARY_PATH", "/tmp/.mount_LocallieGkad/usr/lib");
+        let dir = std::path::Path::new("/opt/lu/resources/llama/x86_64-unknown-linux-gnu");
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(dir));
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LD_LIBRARY_PATH")
+            .and_then(|(_, v)| v)
+            .expect("LD_LIBRARY_PATH must be set")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(value, "/opt/lu/resources/llama/x86_64-unknown-linux-gnu:/tmp/.mount_LocallieGkad/usr/lib");
+        // The process's OWN inherited value (the AppImage's own
+        // LD_LIBRARY_PATH, per K11/K14) survives behind it, not overwritten:
+        // this process's own sidecar WANTS the AppImage-mounted libraries too
+        // (Vulkan), unlike a foreign program.
+        assert!(value.ends_with("/tmp/.mount_LocallieGkad/usr/lib"), "{value}");
+        std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn apply_engine_backend_dir_does_not_drop_an_empty_inherited_value() {
+        // Negative control: an empty (but SET) inherited LD_LIBRARY_PATH must
+        // not turn into a trailing ":" with nothing after it.
+        let _guard = ld_library_path_env_guard();
+        std::env::set_var("LD_LIBRARY_PATH", "");
+        let dir = std::path::Path::new("/opt/lu/resources/llama/x86_64-unknown-linux-gnu");
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(dir));
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LD_LIBRARY_PATH")
+            .and_then(|(_, v)| v)
+            .expect("LD_LIBRARY_PATH must be set")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(value, dir.to_str().unwrap());
+        std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn apply_engine_backend_dir_sets_ld_library_path_with_none_inherited() {
+        // The base case: no LD_LIBRARY_PATH in the environment at all (a
+        // plain deb/rpm install, not an AppImage). Must still be set to
+        // exactly the backend dir, nothing appended.
+        let _guard = ld_library_path_env_guard();
+        std::env::remove_var("LD_LIBRARY_PATH");
+        let dir = std::path::Path::new("/opt/lu/resources/llama/x86_64-unknown-linux-gnu");
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(dir));
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LD_LIBRARY_PATH")
+            .and_then(|(_, v)| v)
+            .expect("LD_LIBRARY_PATH must be set")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(value, dir.to_str().unwrap());
+    }
+
     #[test]
     fn the_bundled_sidecar_name_is_ours_and_not_one_debian_already_owns() {
         // GitHub #120 (AnnSdf1969, Ubuntu 26.04): Tauri's deb bundler copies
@@ -5015,6 +5244,7 @@ mod tests {
             Path::new(&crate::test_support::posix_shell()),
             &state,
             &vorher,
+            None,
         );
 
         assert!(zurueck, "the previous engine did not come back");
@@ -5057,7 +5287,8 @@ mod tests {
         assert!(!restore_engine(
             Path::new(&crate::test_support::posix_shell()),
             &state,
-            &vorher
+            &vorher,
+            None,
         ));
         assert!(
             state.bundled_engine.lock().unwrap().is_none(),

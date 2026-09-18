@@ -219,6 +219,14 @@ jobs:
           esac
           ls -la src-tauri/bin/
 
+      # K1 (3.0.1): the guard against shipping a fixed x86-64-v3 binary again.
+      # Runs on the real build this lane just produced, on the real runner
+      # architecture (not emulated), so a regression here is the same failure
+      # a customer's older CPU would hit.
+      - name: Verify sidecar ISA layout (K1)
+        shell: bash
+        run: bash scripts/verify-sidecar-isa.sh ${{ matrix.sidecar_triple }}
+
       # ── App build ────────────────────────────────────────────────────────
       - name: Install npm dependencies
         run: npm ci

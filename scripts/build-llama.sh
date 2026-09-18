@@ -3,13 +3,24 @@
 # build-llama.sh — build the bundled llama.cpp `llama-server` sidecar for
 # Locally Uncensored's built-in inference engine (P0 of the built-in-engine plan).
 #
-# The produced binary is statically linked with the GPU backend embedded, so a
+# mac: the produced binary is statically linked with Metal embedded, so a
 # single self-contained file drops into `src-tauri/bin/llama-server-<triple>`
 # and Tauri picks it up as an `externalBin` sidecar (target triple appended,
 # code-signed with the app on macOS).
 #
+# Windows and Linux (K1, 3.0.1): the binary is dynamic and loads its CPU
+# kernels and the Vulkan backend at runtime (GGML_BACKEND_DL +
+# GGML_CPU_ALL_VARIANTS, see cmake_flags_for below): a fixed x86-64-v3
+# binary made every pre-Haswell/pre-Excavator CPU crash with 0xC000001D
+# (Windows) or SIGILL (Linux) before llama-server could log anything. The
+# companion ggml-cpu-*/ggml-vulkan libraries this produces land in
+# `src-tauri/resources/llama/<triple>/`, bundled as Tauri `resources`
+# (tauri.windows.conf.json / tauri.linux.conf.json) alongside the exe
+# sidecar, not as more externalBin entries.
+#
 # Idempotent: clones/pins llama.cpp once into a build cache, reuses it on reruns.
-# Binaries are NOT committed — see src-tauri/bin/.gitignore.
+# Binaries and companion libraries are NOT committed, see
+# src-tauri/bin/.gitignore and src-tauri/resources/llama/.gitignore.
 #
 # Usage:
 #   scripts/build-llama.sh                 # build for the host target triple
@@ -47,7 +58,10 @@ LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
 
 # --- Paths -----------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Overridable only for tests (build-llama-script.test.ts), the same pattern as
+# LLAMA_BUILD_CACHE below: a real build always derives it from the script's
+# own location, so BIN_DIR/resources always land in the real checkout.
+REPO_ROOT="${BUILD_LLAMA_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 CACHE_DIR="${LLAMA_BUILD_CACHE:-$REPO_ROOT/.llama-build}"
 SRC_DIR="$CACHE_DIR/llama.cpp"
 BIN_DIR="$REPO_ROOT/src-tauri/bin"
@@ -69,25 +83,77 @@ host_triple() {
   fi
 }
 
-# Map a Rust target triple → cmake flags for a static, GPU-embedded llama-server.
+# Map a Rust target triple → cmake flags for the llama-server build.
 # LLAMA_OPENSSL=OFF: no HTTPS/downloader deps — the app manages model files.
 # LLAMA_BUILD_UI/USE_PREBUILT_UI=OFF: headless sidecar — no npm build and no
 # HF asset fetch at compile time.
+#
+# K1 (3.0.1): mac stays a single STATIC binary with Metal embedded. Apple
+# Silicon has one relevant CPU family, so there is nothing to select at
+# runtime and GGML_CPU_ALL_VARIANTS does not even claim ARM/Apple support for
+# it (ggml/src/CMakeLists.txt only wires ALL_VARIANTS for x86, ARM/Android/
+# PowerPC/s390x/riscv64, never "Apple x86_64" as a variant target; darwin
+# stays out of that switch entirely).
+#
+# Windows and Linux (x86_64) switch to a DYNAMIC, multi-ISA build instead of
+# one fixed x86-64-v3 binary. With GGML_NATIVE=OFF (unchanged, always was)
+# and INS_ENB therefore ON, ggml/CMakeLists.txt:141-166 forces SSE4.2 + AVX +
+# AVX2 + BMI2 + FMA + F16C into the ONE binary this script used to produce,
+# any CPU older than Haswell/Excavator (2013+) gets 0xC000001D on Windows or
+# SIGILL on Linux before llama-server can even log a line. Verified against
+# the pinned llama.cpp checkout, not guessed:
+#   GGML_BACKEND_DL=ON + GGML_CPU_ALL_VARIANTS=ON is the exact pair
+#   ggml/src/CMakeLists.txt:371-376 requires (GGML_CPU_ALL_VARIANTS without
+#   GGML_BACKEND_DL is a FATAL_ERROR there), and GGML_CPU_ALL_VARIANTS in turn
+#   requires BUILD_SHARED_LIBS=ON (ggml/src/CMakeLists.txt:188-190, also a
+#   FATAL_ERROR otherwise). Under MSVC this produces nine ggml-cpu-*.dll
+#   variants (x64, sse42, sandybridge, haswell, skylakex, cannonlake,
+#   cascadelake, icelake, alderlake (ggml/src/CMakeLists.txt:378-402); GCC on
+#   Linux additionally gets ivybridge, piledriver, cooperlake, zen4 and
+#   sapphirerapids (same block, the four "if (NOT MSVC)" branches). At
+#   startup llama-server calls ggml_backend_load_all() (src/llama.cpp,
+#   common/arg.cpp), which (per ggml/src/ggml-backend-reg.cpp:479-486)
+#   scores every ggml-cpu-*.{dll,so} beside the executable and in the current
+#   working directory and dlopen()s the best-scoring one for the CPU it is
+#   actually running on. GGML_VULKAN stays on for both; it becomes a sibling
+#   loadable backend (ggml-vulkan.dll/.so) the same way, discovered through
+#   the identical search, so the GPU path is unaffected by this switch.
 cmake_flags_for() {
   local triple="$1"
-  local common="-DBUILD_SHARED_LIBS=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NATIVE=OFF -DCMAKE_BUILD_TYPE=Release"
+  local common="-DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NATIVE=OFF -DCMAKE_BUILD_TYPE=Release"
   case "$triple" in
     aarch64-apple-darwin)
-      echo "$common -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_ARCHITECTURES=arm64" ;;
+      echo "$common -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_ARCHITECTURES=arm64" ;;
     x86_64-apple-darwin)
-      echo "$common -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_ARCHITECTURES=x86_64" ;;
+      echo "$common -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_ARCHITECTURES=x86_64" ;;
     x86_64-pc-windows-msvc)
-      echo "$common -DGGML_VULKAN=ON" ;;
+      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON" ;;
     x86_64-unknown-linux-gnu)
-      echo "$common -DGGML_VULKAN=ON" ;;
+      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON" ;;
     *)
       die "unsupported target triple: $triple" ;;
   esac
+}
+
+# True for a triple this script builds as a dynamic, multi-ISA sidecar (a
+# main executable plus loadable ggml-cpu-*/ggml-vulkan companion libraries).
+# False for mac, which stays the old single static binary. Both the copy step
+# and the resource layout branch on this, so it is one function instead of
+# two case statements that could drift apart.
+is_dynamic_isa_triple() {
+  case "$1" in
+    x86_64-pc-windows-msvc | x86_64-unknown-linux-gnu) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Directory the companion ggml/llama shared libraries for a dynamic-ISA
+# triple are staged into, so Tauri can bundle them as `resources` (see
+# tauri.windows.conf.json / tauri.linux.conf.json) and so the same path is a
+# stable, known location in dev (no bundling involved, engine.rs reads it
+# straight off disk, see resolve_engine_backend_dir).
+resource_llama_dir_for() {
+  echo "$REPO_ROOT/src-tauri/resources/llama/$1"
 }
 
 # The bundled file carries the app prefix (GitHub #120): Tauri's deb bundler
@@ -208,6 +274,62 @@ require_cmake() {
     || die "cmake not found — install it (macOS: brew install cmake, Windows: winget install Kitware.CMake)"
 }
 
+# K1 (3.0.1): for a dynamic-ISA triple, `llama-server` no longer stands
+# alone: GGML_BACKEND_DL/GGML_CPU_ALL_VARIANTS build it next to a
+# ggml-cpu-<variant>.{dll,so} per CPU tier plus ggml-vulkan and the base
+# ggml/llama runtime libraries, ALL written into the executable's own build
+# output directory (ggml/src/CMakeLists.txt:269 pins every backend MODULE's
+# LIBRARY_OUTPUT_DIRECTORY to the same CMAKE_RUNTIME_OUTPUT_DIRECTORY the
+# exe uses). None of that is guessed or hardcoded here: whatever cmake
+# actually built next to the exe is what gets staged, so a variant list
+# upstream adds or drops later is picked up automatically.
+#
+# A copy, not a symlink: Linux SONAME resolution needs the exact versioned
+# filename the loader was linked against (e.g. libggml-base.so.1), which is
+# commonly a symlink to the real file. Plain `cp` (no -P/-d) dereferences, so
+# every matched name becomes its own real file, a little larger on disk, but
+# nothing a resource bundler or an installer can leave dangling.
+#
+# A standalone function (not inlined in build_triple) so it can be unit
+# tested against a directory of fake .dll/.so files, without paying for a
+# real cmake build to check the staging logic itself. Prints one
+# "path: digest" line per file it staged, plus the exe's own; empty stdin/no
+# output means "not a dynamic-ISA triple, nothing to stage" and is not an
+# error.
+stage_dynamic_isa_companions() {
+  local triple="$1" bin_out_dir="$2" exe_out="$3"
+  is_dynamic_isa_triple "$triple" || return 0
+  local companions_dir; companions_dir="$(resource_llama_dir_for "$triple")"
+  rm -rf "$companions_dir"
+  mkdir -p "$companions_dir"
+  local lib_glob
+  case "$triple" in
+    *-windows-*) lib_glob='*.dll' ;;
+    *)           lib_glob='*.so*' ;;
+  esac
+  local found_any=""
+  local lib
+  while IFS= read -r lib; do
+    [ -n "$lib" ] || continue
+    found_any=1
+    local lib_out="$companions_dir/$(basename "$lib")"
+    cp "$lib" "$lib_out"
+    local lib_digest; lib_digest="$(sha256_of "$lib_out")"
+    printf '%s: %s\n' "$lib_out" "${lib_digest:-unavailable}"
+  # -L: follow symlinks so `-type f` also matches them. Without it, both BSD
+  # find (macOS, where this runs in dev/tests) and GNU find (the Linux
+  # runner) skip a symlink even when it points at a regular file, and Linux's
+  # own SONAME symlinks (libggml-base.so -> libggml-base.so.1 ->
+  # libggml-base.so.1.2.3) are exactly that: only the fully-versioned real
+  # file would be found, and the literal SONAME the dynamic linker actually
+  # looks for would be silently missing from what gets staged. Measured, not
+  # assumed: caught by the Linux companion-staging test below, red without
+  # this flag.
+  done < <(find -L "$bin_out_dir" -maxdepth 1 -type f -iname "$lib_glob")
+  [ -n "$found_any" ] \
+    || die "GGML_BACKEND_DL build for $triple produced no $lib_glob next to $exe_out: the dynamic CPU-variant libraries are missing, the sidecar would only run on the build host's own CPU"
+}
+
 build_triple() {
   require_cmake
   local triple="$1"
@@ -229,26 +351,53 @@ build_triple() {
   local out="$BIN_DIR/$(out_name_for "$triple")"
   cp "$built" "$out"
   chmod +x "$out"
+
+  local out_digest; out_digest="$(sha256_of "$out")"
+  local digest_lines="$out: ${out_digest:-unavailable}"
+  local companion_lines
+  companion_lines="$(stage_dynamic_isa_companions "$triple" "$(dirname "$built")" "$out")"
+  [ -z "$companion_lines" ] || digest_lines="$digest_lines
+$companion_lines"
+
   # Record what actually got produced. A from-source build is not bit-for-bit
-  # reproducible across machines, so this cannot be pinned to a constant — but
-  # it puts the digest of the binary that ships, next to the source revision it
-  # came from, in the release log, which is what an "which binary was that?"
-  # question after the fact needs.
-  local digest; digest="$(sha256_of "$out")"
-  log "installed → $out  (llama.cpp $LLAMA_TAG @ ${LLAMA_COMMIT:0:12}, sha256 ${digest:-unavailable})"
+  # reproducible across machines, so none of these can be pinned to a
+  # constant, but the digest of every file that ships, next to the source
+  # revision they came from, is what an "which binaries were those?" question
+  # after the fact needs. A list now, not a single line: the pin check in
+  # ensure_src/assert_clean_tree verifies the SOURCE TREE once per run and
+  # already covers every file this step produces (nothing here compiles from
+  # anything outside $SRC_DIR), but the digest log is per-OUTPUT-FILE by
+  # nature, so a multi-file build means a multi-line log, not a new pin
+  # mechanism.
+  log "installed (llama.cpp $LLAMA_TAG @ ${LLAMA_COMMIT:0:12}):"
+  while IFS= read -r line; do log "  $line"; done <<<"$digest_lines"
 }
 
 # Boot the host binary and probe /health on an ephemeral port. Without a
 # model llama-server starts in router mode (no weights loaded), so /health
 # answers 200 on any machine.
+#
+# K1 (3.0.1): for a dynamic-ISA triple this MUST run the same way engine.rs
+# spawns it in the app: cwd set to the resource directory holding the
+# ggml-cpu-*/ggml-vulkan companion libraries, nothing copied next to the exe
+# because ggml_backend_load_best only scans the executable's own directory
+# and the process's current directory (ggml-backend-reg.cpp:479-486). A check
+# that ran the bare exe from $BIN_DIR would pass on a build host that also
+# happens to have those libraries lying around and prove nothing about the
+# layout a real install actually has.
 check_binary() {
   local triple; triple="$(host_triple)"
   local bin="$BIN_DIR/$(out_name_for "$triple")"
   [ -x "$bin" ] || die "no built binary at $bin — build first"
-  "$bin" --version >/dev/null 2>&1 || die "$bin --version failed"
+  local run_dir="$BIN_DIR"
+  if is_dynamic_isa_triple "$triple"; then
+    run_dir="$(resource_llama_dir_for "$triple")"
+    [ -d "$run_dir" ] || die "no companion libraries at $run_dir, build first"
+  fi
+  ( cd "$run_dir" && "$bin" --version >/dev/null 2>&1 ) || die "$bin --version failed (run from $run_dir)"
   local port=8129
-  log "boot check: $bin on 127.0.0.1:$port (no model — router mode, /health only)"
-  "$bin" --host 127.0.0.1 --port "$port" >/dev/null 2>&1 &
+  log "boot check: $bin on 127.0.0.1:$port, cwd=$run_dir (no model, router mode, /health only)"
+  ( cd "$run_dir" && "$bin" --host 127.0.0.1 --port "$port" >/dev/null 2>&1 ) &
   local pid=$!
   trap 'kill "$pid" 2>/dev/null || true' EXIT
   local ok=""
