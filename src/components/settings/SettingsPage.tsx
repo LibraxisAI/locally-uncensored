@@ -2455,7 +2455,12 @@ export function UpdateSection() {
 // ── B7 Troubleshoot section — one-shot diagnostic probe ───────
 
 interface BackendProbe {
-  status: 'ok' | 'unreachable' | 'not_installed' | 'error'
+  // 'timeout': the connection went through but nothing answered within the
+  // probe window -- a cold-starting or busy server, not a dead one (R8/T5,
+  // 2026-09-18). Rust's probe_http now tells these apart instead of folding
+  // a slow-but-alive backend into the same "not running" verdict as one that
+  // was never started.
+  status: 'ok' | 'unreachable' | 'timeout' | 'not_installed' | 'error'
   detail: string
   endpoint: string
 }
@@ -2488,12 +2493,21 @@ function ProbeBadge({ probe }: { probe: BackendProbe }) {
   const colors: Record<BackendProbe['status'], string> = {
     ok: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30',
     unreachable: RUHIG,
+    // Same calm gray as unreachable/not_installed, not a third "in-between"
+    // tone (lib/hinweis.ts HARTE REGEL, 04.09.2026: exactly two tones exist,
+    // ruhig and fehler -- a timeout is neither an error nor urgent, so it
+    // gets ruhig too; the label below is what carries the distinction).
+    timeout: RUHIG,
     not_installed: RUHIG,
     error: 'bg-red-500/15 text-red-500 border-red-500/30',
   }
   const labels: Record<BackendProbe['status'], string> = {
     ok: 'Reachable',
     unreachable: 'Not running',
+    // Was folded into "Not running" before, which told the owner of a live
+    // but cold-starting/busy backend to go restart something that was fine
+    // (review T5, 2026-09-18: the umgekehrte T5-Fehler).
+    timeout: 'Reachable, slow to answer',
     not_installed: 'Not installed',
     error: 'Error',
   }

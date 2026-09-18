@@ -2,11 +2,11 @@
 // local backend LU cares about plus a couple of host facts, so the
 // Settings → Troubleshoot panel can render an "everything in one
 // glance" diagnostic. Each probe is bounded by a short HTTP timeout and
-// classified into one of `ok` / `unreachable` / `not_installed` /
-// `error` so the UI can colour-code without re-parsing strings.
+// classified into one of `ok` / `unreachable` / `timeout` / `not_installed`
+// / `error` so the UI can colour-code without re-parsing strings.
 //
-// This is intentionally a one-shot synchronous probe (300 ms per
-// backend, ~1 s total worst case) — Settings opens infrequently and a
+// This is intentionally a one-shot synchronous probe (PROBE_TIMEOUT per
+// backend, run concurrently), since Settings opens infrequently and a
 // long-lived background poll would be more code for less value. The
 // v2.4.5 "60s actionable ComfyUI panel" stays where it is; this is the
 // broader picture.
@@ -32,6 +32,13 @@ pub enum ProbeStatus {
     Unreachable,
     NotInstalled,
     Error,
+    /// The connection went through but nothing answered within the probe
+    /// window, meaning a cold-starting or heavily-loaded local server, not a
+    /// dead one. Kept separate from `Unreachable` (review T5, 2026-09-18): a
+    /// server that would have answered "Not running" is the opposite of
+    /// the truth and sent people restarting a backend that was fine. The
+    /// UI reads this as "Reachable, slow to answer".
+    Timeout,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,6 +80,19 @@ pub struct SystemHealthReport {
     pub lm_studio: BackendProbe,
 }
 
+/// How long a probe waits for a response before giving up.
+///
+/// Was 300 ms flat, which folded two very different situations into the same
+/// "Not running" verdict (review T5, 2026-09-18): a refused connection
+/// (nothing listening, genuinely not running, and 300 ms is already
+/// generous for that) and a TCP connect that succeeds against a cold-starting
+/// or heavily-loaded local server that just hasn't sent headers yet. Ollama
+/// waking a model from disk or a ComfyUI mid-startup routinely takes longer
+/// than 300 ms to answer its very first request. 1.5 s is short enough that
+/// the one-shot Troubleshoot panel still feels instant, and long enough that
+/// a live-but-slow server gets classified as `Timeout`, not `Unreachable`.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
 // NOTE: this is `async` and uses the ASYNC reqwest client on purpose.
 // system_health is a `#[tauri::command] async fn`, so its body runs on a
 // tokio worker thread. `reqwest::blocking` builds (and on drop, tears down)
@@ -81,12 +101,9 @@ pub struct SystemHealthReport {
 // the command future is aborted, and the IPC response is never sent — the
 // Troubleshoot panel then hangs on "Probing…" forever. The async client
 // shares the existing runtime and has no such problem.
-async fn probe_http(url: &str) -> BackendProbe {
+async fn probe_http(url: &str, timeout: Duration) -> BackendProbe {
     let endpoint = url.to_string();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(300))
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             return BackendProbe {
@@ -110,22 +127,26 @@ async fn probe_http(url: &str) -> BackendProbe {
             }
         }
         Err(e) => {
-            // Connection-refused is the dominant "backend not running"
-            // case — we classify it as `unreachable` instead of `error`
-            // so the UI can render a friendlier hint.
             let msg = e.to_string();
             let head = msg.chars().take(160).collect::<String>();
-            // `is_connect()` covers connection-refused / timeout-on-connect
-            // cross-platform (Windows reports "os error 10061 / actively
-            // refused", not the Unix "Connection refused" string). A request
-            // timeout (backend up but wedged) also reads as "not usable now",
-            // so we treat both as Unreachable for a friendlier UI hint.
-            if e.is_connect() || e.is_timeout()
+            // `is_connect()` covers connection-refused cross-platform
+            // (Windows reports "os error 10061 / actively refused", not the
+            // Unix "Connection refused" string). Nothing is listening, so
+            // this is the genuine "not running" case.
+            let refused = e.is_connect()
                 || msg.contains("Connection refused")
                 || msg.contains("ConnectFailed")
-                || msg.contains("actively refused")
-            {
+                || msg.contains("actively refused");
+            if refused {
                 BackendProbe { status: ProbeStatus::Unreachable, detail: head, endpoint }
+            } else if e.is_timeout() {
+                // The connection was accepted (or at least not refused) and
+                // the server simply hasn't answered yet within `timeout`,
+                // the inverse of `refused`, not the same bucket (T5: folding
+                // this into Unreachable told a slow-but-alive server's owner
+                // it was "Not running", which sent them restarting something
+                // that was fine).
+                BackendProbe { status: ProbeStatus::Timeout, detail: head, endpoint }
             } else {
                 BackendProbe { status: ProbeStatus::Error, detail: head, endpoint }
             }
@@ -236,16 +257,61 @@ fn collect_host_facts() -> HostFacts {
     }
 }
 
+/// The Ollama endpoint to probe: the user's configured base (Settings, or
+/// `OLLAMA_HOST`) if it differs from the compiled-in default, else the
+/// default itself. Was hardcoded `127.0.0.1:11434` regardless of `_state`
+/// (review D1/T5, 2026-09-18), Issue #31 territory: anyone running Ollama
+/// on another host or port (`OLLAMA_HOST=192.168.x.x`, a Docker container, a
+/// LAN box) got told Ollama was "Not running" while it was answering fine on
+/// the address they actually set, because the probe never looked at it.
+fn ollama_probe_url(state: &AppState) -> String {
+    let base = state
+        .ollama_base
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    format!("{}/api/tags", base.trim_end_matches('/'))
+}
+
+/// The ComfyUI endpoint to probe, built from the same `comfy_host` /
+/// `comfy_port` every other ComfyUI-facing command reads (`v2.3.6` feature,
+/// see `state.rs`), instead of the hardcoded `127.0.0.1:8188` this probe used
+/// regardless of what the user configured.
+fn comfy_probe_url(state: &AppState) -> String {
+    let host = state
+        .comfy_host
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let port = state.comfy_port.lock().map(|g| *g).unwrap_or(8188);
+    format!("http://{}:{}/system_stats", host, port)
+}
+
+// LM Studio has no equivalent configured-base field in `AppState`: unlike
+// Ollama/ComfyUI it is only ever set up as a generic OpenAI-compatible
+// provider slot in the frontend's persisted (webview-local) provider store,
+// which Rust has no read access to. A remote/LAN LM Studio a user pointed the
+// app at via Settings -> Providers is therefore invisible to this probe and
+// it still targets the documented local default. This is a known, narrower
+// gap than the Ollama/ComfyUI one T5 reported, worth a real fix (a command
+// that pushes the configured LM Studio base into `AppState`, mirroring
+// `set_ollama_host`) but out of scope here; flagged rather than silently
+// left as if it were already solved.
+const LM_STUDIO_PROBE_URL: &str = "http://127.0.0.1:1234/v1/models";
+
 #[tauri::command]
-pub async fn system_health(_state: State<'_, AppState>) -> Result<SystemHealthReport, String> {
-    // Probe all three backends concurrently — each is bounded by a 300 ms
-    // client timeout, so worst case is ~300 ms total instead of 900 ms
-    // serial. Async client (see probe_http note) — never reqwest::blocking
+pub async fn system_health(state: State<'_, AppState>) -> Result<SystemHealthReport, String> {
+    let ollama_url = ollama_probe_url(&state);
+    let comfy_url = comfy_probe_url(&state);
+
+    // Probe all three backends concurrently, each bounded by
+    // PROBE_TIMEOUT, so worst case is ~PROBE_TIMEOUT total instead of 3x
+    // serial. Async client (see probe_http note); never reqwest::blocking
     // here.
     let (ollama, comfyui, lm_studio) = tokio::join!(
-        probe_http("http://127.0.0.1:11434/api/tags"),
-        probe_http("http://127.0.0.1:8188/system_stats"),
-        probe_http("http://127.0.0.1:1234/v1/models"),
+        probe_http(&ollama_url, PROBE_TIMEOUT),
+        probe_http(&comfy_url, PROBE_TIMEOUT),
+        probe_http(LM_STUDIO_PROBE_URL, PROBE_TIMEOUT),
     );
 
     // collect_host_facts is blocking (sysinfo refresh + nvidia-smi
@@ -267,6 +333,150 @@ pub async fn system_health(_state: State<'_, AppState>) -> Result<SystemHealthRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── D1/T5: the probe reads AppState instead of three hardcoded addresses ──
+
+    #[test]
+    fn ollama_probe_url_follows_a_configured_non_default_base() {
+        // The default the state constructor seeds is the compiled-in
+        // address; the point of the fix is that a DIFFERENT configured
+        // address is what actually gets probed.
+        let state = AppState::new();
+        *state.ollama_base.lock().unwrap() = "http://192.168.1.50:9999".to_string();
+        assert_eq!(ollama_probe_url(&state), "http://192.168.1.50:9999/api/tags");
+    }
+
+    #[test]
+    fn ollama_probe_url_falls_back_to_the_default_when_unconfigured() {
+        let state = AppState::new();
+        // AppState::new() already seeds the documented default; the probe
+        // must still reach it via the same field, not a second hardcoded copy.
+        assert_eq!(ollama_probe_url(&state), "http://localhost:11434/api/tags");
+    }
+
+    #[test]
+    fn ollama_probe_url_does_not_double_the_slash() {
+        let state = AppState::new();
+        *state.ollama_base.lock().unwrap() = "http://localhost:11434/".to_string();
+        assert_eq!(ollama_probe_url(&state), "http://localhost:11434/api/tags");
+    }
+
+    #[test]
+    fn comfy_probe_url_follows_a_configured_host_and_port() {
+        let state = AppState::new();
+        *state.comfy_host.lock().unwrap() = "comfy.lan".to_string();
+        *state.comfy_port.lock().unwrap() = 8199;
+        assert_eq!(comfy_probe_url(&state), "http://comfy.lan:8199/system_stats");
+    }
+
+    #[test]
+    fn comfy_probe_url_falls_back_to_the_default_when_unconfigured() {
+        let state = AppState::new();
+        assert_eq!(comfy_probe_url(&state), "http://localhost:8188/system_stats");
+    }
+
+    // ── T5: a slow-but-alive server must read Timeout, not Unreachable ──────
+
+    /// A loopback stub that accepts the connection, reads the request, and
+    /// then answers nothing for `hold` before it (eventually) would, the
+    /// TCP-connect-succeeds-but-HTTP-never-answers shape a cold-starting
+    /// Ollama/ComfyUI has, and also what an outright dead port looks like if
+    /// nothing is listening at all (no accept ever happens there).
+    async fn hang_stub(hold: Duration) -> u16 {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(hold).await;
+                });
+            }
+        });
+        port
+    }
+
+    /// Before this fix, `e.is_timeout()` was folded into `Unreachable`
+    /// alongside a refused connection, the exact T5 finding: a server that
+    /// is up but slow to answer got the same "Not running" verdict as one
+    /// that was never started, which sent people restarting something that
+    /// was fine. This proves the split: a connection that goes through and
+    /// then sits silent past the probe's own (short, test-local) timeout
+    /// must classify as `Timeout`, never `Unreachable`.
+    #[test]
+    fn a_live_but_slow_server_reads_as_timeout_not_unreachable() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let port = hang_stub(Duration::from_secs(5)).await;
+            let short = Duration::from_millis(200);
+            let start = std::time::Instant::now();
+            let probe = probe_http(&format!("http://127.0.0.1:{}/api/tags", port), short).await;
+            let elapsed = start.elapsed();
+
+            assert!(
+                matches!(probe.status, ProbeStatus::Timeout),
+                "a connected-but-silent server must read as Timeout, got {:?}",
+                probe.status
+            );
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "the probe must respect its own timeout instead of waiting for the server: {elapsed:?}"
+            );
+        });
+    }
+
+    /// The other half of the same split: nothing listening at all is still
+    /// the genuine "Not running" case and must stay `Unreachable`, not
+    /// regress to `Timeout` now that the two are distinguished.
+    #[test]
+    fn nothing_listening_still_reads_as_unreachable() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dead_port = {
+                let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let p = l.local_addr().unwrap().port();
+                drop(l); // freed immediately: nobody is listening on it now
+                p
+            };
+            let probe = probe_http(
+                &format!("http://127.0.0.1:{}/api/tags", dead_port),
+                Duration::from_millis(500),
+            )
+            .await;
+            assert!(
+                matches!(probe.status, ProbeStatus::Unreachable),
+                "a refused connection must stay Unreachable, got {:?}",
+                probe.status
+            );
+        });
+    }
+
+    /// And the ordinary positive case still reports `Ok` with the longer
+    /// timeout in place. The timeout increase must not turn a normal, fast
+    /// answer into anything else.
+    #[test]
+    fn a_server_that_answers_promptly_still_reads_as_ok() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .await;
+                    let _ = sock.flush().await;
+                }
+            });
+            let probe = probe_http(&format!("http://127.0.0.1:{}/api/tags", port), PROBE_TIMEOUT).await;
+            assert!(matches!(probe.status, ProbeStatus::Ok), "got {:?}", probe.status);
+        });
+    }
 
     // ── parse_nvidia_vram_csv (§17 — VRAM host fact) ────────────────────────
 
