@@ -1208,11 +1208,22 @@ pub(crate) fn venv_create_args(action: VenvAction) -> &'static [&'static str] {
 /// Python is deliberately not the pointer: it short-circuits as soon as any
 /// Python exists, which on a 3.14 machine is exactly the one that cannot help.
 /// The last sentence is the marker `already_explained` looks for.
-pub(crate) fn no_trainer_python_message(found: &[String], os: &str, winget_tried: bool) -> String {
+///
+/// K4, 2026-09-18: `found` used to be versions alone, so the message named
+/// what version was on the machine but not where LU looked or which install
+/// it was reading. gekiritz's rebuild loop (see `python_version_and_arch`)
+/// is exactly the case where two Pythons report the same version and only
+/// one of them is real — the path is what lets the customer, or us reading a
+/// Discord paste, tell which is which.
+pub(crate) fn no_trainer_python_message(found: &[(String, String)], os: &str, winget_tried: bool) -> String {
     let have = if found.is_empty() {
         "no Python that starts".to_string()
     } else {
-        format!("Python {}", found.join(" and "))
+        found
+            .iter()
+            .map(|(path, version)| format!("Python {version} at {path}"))
+            .collect::<Vec<_>>()
+            .join(" and ")
     };
     let get = match os {
         "windows" if winget_tried => {
@@ -1245,6 +1256,23 @@ fn trainer_base_python(
             if !crate::python::is_real_python(&p) || seen.iter().any(|(s, _)| s.eq_ignore_ascii_case(&p)) {
                 continue;
             }
+            // K4: a 32-bit or ARM64 Python answers `sys.version_info` exactly
+            // like a normal one, builds a venv that looks complete, and only
+            // dies once pip resolves torch — which reports as the wrong
+            // Python-version message and sends the customer back to the same
+            // interpreter. Excluding it here, before the venv is ever built,
+            // is what makes the retry pick a different one instead of
+            // looping (gekiritz, Discord 2026-09-16).
+            #[cfg(target_os = "windows")]
+            match crate::python::python_version_and_arch(&p) {
+                Some((v, true)) => seen.push((p, v)),
+                Some((v, false)) => push_log(
+                    state,
+                    &format!("Skipping {p} (Python {v}): not a 64-bit x86 build, the trainer's PyTorch wheels do not exist for it."),
+                ),
+                None => {}
+            }
+            #[cfg(not(target_os = "windows"))]
             if let Some(v) = crate::python::python_version(&p) {
                 seen.push((p, v));
             }
@@ -1273,9 +1301,8 @@ fn trainer_base_python(
         // that matters, the interpreter on disk is.
         found = survey();
     }
-    let versions: Vec<String> = found.iter().map(|(_, v)| v.clone()).collect();
     let (path, version) = choose_trainer_python(&found)
-        .ok_or_else(|| no_trainer_python_message(&versions, std::env::consts::OS, winget_tried))?;
+        .ok_or_else(|| no_trainer_python_message(&found, std::env::consts::OS, winget_tried))?;
     if path != python_bin {
         let default = found
             .first()
@@ -2980,10 +3007,12 @@ mod shutdown_tests {
     #[test]
     fn when_no_python_fits_the_message_names_what_is_there_and_where_to_get_one() {
         use super::{install_failed_message, no_trainer_python_message, repair_aborted_message, Preflight};
-        let found = vec!["3.14.6".to_string()];
+        let found = vec![("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())];
         let win = no_trainer_python_message(&found, "windows", true);
         assert!(win.contains("3.10, 3.11 or 3.12"), "{win}");
         assert!(win.contains("has Python 3.14.6"), "{win}");
+        // K4: the path is what tells two same-version Pythons apart.
+        assert!(win.contains("at C:\\Python314\\python.exe"), "{win}");
         assert!(win.contains("winget") && win.contains("python.org/downloads/windows"), "{win}");
         assert!(win.contains("Set up trainer"), "{win}");
         // Settings > Install Python short-circuits as soon as ANY Python exists,
@@ -3131,7 +3160,7 @@ mod shutdown_tests {
     #[test]
     fn an_error_that_already_names_its_button_is_left_alone() {
         use super::{install_failed_message, no_trainer_python_message, repair_aborted_message, Preflight};
-        let eigen = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        let eigen = no_trainer_python_message(&[("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())], "windows", false);
         assert_eq!(install_failed_message(&eigen), eigen);
         assert_eq!(
             repair_aborted_message(&Preflight::TorchBroken("x".into()), &eigen),
@@ -3562,7 +3591,7 @@ mod journey_tests {
         // The sentence names the versions, and the range is the one musubi and
         // the wheels agree on.
         assert_eq!(TRAINER_PYTHON_RANGE, "3.10, 3.11 or 3.12");
-        let msg = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        let msg = no_trainer_python_message(&[("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())], "windows", false);
         assert!(msg.contains("3.10, 3.11 or 3.12"), "{msg}");
         assert!(msg.contains("3.14.6"), "the message names what is on the machine: {msg}");
         assert!(!trainer_supports_python("3.13.0") && !trainer_supports_python("3.14.6"));
