@@ -2467,32 +2467,29 @@ pub fn shutdown_tunnel(remote: &std::sync::Mutex<RemoteServer>) {
 /// so LAN access silently failed while the IP/QR were correct).
 #[cfg(target_os = "windows")]
 fn ensure_lan_firewall_rule(port: u16) {
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
     let name = format!("LU Remote {}", port);
     // One-release legacy sweep: <=2.5.6 created the rule under the old brand
     // name and no uninstall path removes it, so clear it here best-effort.
     let legacy = format!("Locally Uncensored Remote {}", port);
-    let _ = Command::new("netsh")
-        .args(["advfirewall", "firewall", "delete", "rule", &format!("name={}", legacy)])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    let mut delete_legacy = crate::process_util::foreign_system_command("netsh");
+    delete_legacy.args(["advfirewall", "firewall", "delete", "rule", &format!("name={}", legacy)]);
+    crate::process_util::suppress_window(&mut delete_legacy);
+    let _ = delete_legacy.output();
     // Idempotent: drop any prior rule for this name, then add a fresh inbound allow.
-    let _ = Command::new("netsh")
-        .args(["advfirewall", "firewall", "delete", "rule", &format!("name={}", name)])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    let _ = Command::new("netsh")
-        .args([
+    let mut delete_current = crate::process_util::foreign_system_command("netsh");
+    delete_current.args(["advfirewall", "firewall", "delete", "rule", &format!("name={}", name)]);
+    crate::process_util::suppress_window(&mut delete_current);
+    let _ = delete_current.output();
+    let mut add = crate::process_util::foreign_system_command("netsh");
+    add.args([
             "advfirewall", "firewall", "add", "rule",
             &format!("name={}", name),
             "dir=in", "action=allow", "protocol=TCP",
             &format!("localport={}", port),
             "profile=private,domain",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+        ]);
+    crate::process_util::suppress_window(&mut add);
+    let _ = add.output();
 }
 
 #[cfg(not(target_os = "windows"))]

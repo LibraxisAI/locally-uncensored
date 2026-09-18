@@ -1127,3 +1127,142 @@ mod process_table_tests {
         }
     }
 }
+
+/// Review Runde 2, Nachbesserung 7: a guard that counts every
+/// `Command::new` in shipping code and requires it to be either the
+/// [`foreign_system_command`] / [`foreign_system_command_tokio`] /
+/// `python_command` adapter's own body, or an explicit, reasoned exception.
+///
+/// Scope: the files Runde 2's coverage sweep (Nachbesserung 5) actually
+/// swept. `engine.rs` and `trainer.rs` are deliberately NOT in this list:
+/// both are owned by a concurrently-working Bauer on this same review pass
+/// (the "sidecar" Bauer rebuilding engine.rs's own spawn point for K1's
+/// ggml-cpu variants, and the trainer Bauer on `fix/301-trainer`), and
+/// hardcoding an expectation about either file's Command::new count here
+/// would just be a merge-time landmine for their in-flight work. The
+/// orchestrator integrating both branches is the right place to widen this
+/// list to the whole crate once those two land. Until then this guard
+/// covers everything Runde 2 claims to have covered, and nothing it does
+/// not: an honest subset, not a false "every Command::new in the codebase"
+/// claim.
+///
+/// Technique: the same one `whisper.rs`'s `healing_is_wired_in` and
+/// `process.rs`'s own `every_python_start_in_this_file_goes_through_
+/// python_command` guard already use: split the file at its FIRST
+/// `#[cfg(test)]` and only count what comes before. This only works for a
+/// file whose test modules are grouped at the end; `remote.rs` interleaves
+/// `#[cfg(test)]` modules among production code (its first one starts at
+/// line 108, with plenty of shipping code still to come), so a single split
+/// point there would hide real production sites past it. A brace-depth
+/// tracker was tried and dropped: test bodies in this codebase routinely
+/// embed `json!({...})` literals and shell one-liners whose string content
+/// has its own unbalanced-looking braces, and a naive counter closes the
+/// span early on those. `remote.rs` gets its own pair of targeted,
+/// needle-based checks below instead, against the two spots the coverage
+/// sweep actually touched there.
+#[cfg(test)]
+mod command_new_coverage_guard {
+    /// `(file relative to CARGO_MANIFEST_DIR, expected Command::new count in
+    /// the shipping half)`. Every non-zero entry is the adapter function's
+    /// own body, the one place `Command::new` is correct because it IS the
+    /// sanitizing; every count skips lines whose trimmed text starts with
+    /// `//`, so a doc comment mentioning `Command::new(...)` as an example
+    /// (os_paths.rs, install/ollama.rs) needs no exception of its own.
+    const SCOPED_FILES: &[(&str, usize)] = &[
+        ("src/process_util.rs", 2), // foreign_system_command + its tokio twin
+        ("src/python.rs", 1),       // python_command's own body
+        ("src/commands/bg_tasks.rs", 0),
+        ("src/commands/self_migrate.rs", 0),
+        ("src/commands/process.rs", 0),
+        ("src/commands/tts.rs", 0),
+        ("src/commands/agent.rs", 0),
+        ("src/commands/whisper.rs", 0),
+        ("src/commands/video.rs", 0),
+        ("src/commands/mlx.rs", 0),
+        ("src/commands/search.rs", 0),
+        ("src/commands/install_method.rs", 0),
+        ("src/os_paths.rs", 0),
+        ("src/commands/install/lmstudio.rs", 0),
+        ("src/commands/install/lmstudio_install.rs", 0),
+        ("src/commands/install/ollama.rs", 0),
+        ("src/commands/install/children.rs", 0),
+    ];
+
+    fn shipping_half(src: &str) -> &str {
+        match src.find("#[cfg(test)]") {
+            Some(at) => &src[..at],
+            None => src,
+        }
+    }
+
+    fn count_command_new(shipping: &str) -> usize {
+        shipping
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("Command::new(").count())
+            .sum()
+    }
+
+    #[test]
+    fn every_command_new_outside_tests_is_the_adapter_or_a_named_exception() {
+        let mut failures: Vec<String> = Vec::new();
+        for (rel_path, expected) in SCOPED_FILES {
+            let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+            let src = std::fs::read_to_string(&full)
+                .unwrap_or_else(|e| panic!("{rel_path} is unreadable: {e}"));
+            let found = count_command_new(shipping_half(&src));
+            if found != *expected {
+                failures.push(format!(
+                    "{rel_path}: found {found} shipping-code Command::new (expected {expected}), \
+                     either a new site needs foreign_system_command/python_command, or this \
+                     guard's expected count is stale"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Negative control: the split-and-count above must be ABLE to see a
+    /// violation, not just always agree with the table. A synthetic file
+    /// shaped like the real ones, with one raw Command::new ahead of its
+    /// first #[cfg(test)].
+    #[test]
+    fn the_guard_would_catch_a_real_regression() {
+        let synthetic = "fn spawn_it() {\n    let _ = Command::new(\"lms\");\n}\n\n#[cfg(test)]\nmod tests {}\n";
+        assert_eq!(count_command_new(shipping_half(synthetic)), 1);
+    }
+
+    /// `remote.rs`'s own two spots, checked by name instead of a whole-file
+    /// split (see the module doc comment for why). Both were the review's
+    /// coverage-table entries for this file. A full parse of each
+    /// function's real end (matching brace) is overkill here, so this
+    /// bounds the search to a fixed character window instead, wide enough
+    /// for either body with room to grow.
+    #[test]
+    fn remote_rs_firewall_and_tunnel_spawns_go_through_the_adapter() {
+        const REMOTE_RS: &str = include_str!("commands/remote.rs");
+        for (needle, window, min_adapter_calls) in [
+            ("fn ensure_lan_firewall_rule(port: u16) {", 1600, 3),
+            // start_tunnel(): downloads cloudflared (tar -xzf on macOS) and
+            // then spawns it as the tunnel process, both foreign programs.
+            ("pub async fn start_tunnel(", 6500, 2),
+        ] {
+            let start = REMOTE_RS
+                .find(needle)
+                .unwrap_or_else(|| panic!("remote.rs: {needle:?} is gone"));
+            let body = &REMOTE_RS[start..(start + window).min(REMOTE_RS.len())];
+            let raw: usize = body
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .map(|line| line.matches("Command::new(").count())
+                .sum();
+            assert_eq!(raw, 0, "remote.rs: a raw Command::new is back near {needle:?}: {body}");
+            let adapter_calls = body.matches("foreign_system_command(").count();
+            assert!(
+                adapter_calls >= min_adapter_calls,
+                "remote.rs: expected at least {min_adapter_calls} foreign_system_command \
+                 call(s) near {needle:?}, found {adapter_calls}"
+            );
+        }
+    }
+}
