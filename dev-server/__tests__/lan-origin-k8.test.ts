@@ -1,6 +1,6 @@
 /**
  * K8 (GH #134, eloieloie, `npm run dev --host`): a deliberately LAN-exposed
- * dev server rejected its own onboarding write requests — the page loaded
+ * dev server rejected its own onboarding write requests: the page loaded
  * from the machine's LAN IP (e.g. `http://192.168.1.23:5273`), which is
  * neither `tauri://localhost` nor the loopback regex, so the guard's Origin
  * check 403'd it with "Invalid Origin (CSRF Protection)" exactly as it
@@ -10,7 +10,7 @@
  * createLocalApiGuard: a per-request getter for the server's own resolved
  * LAN origin(s), supplied by dev-server/index.ts only when `--host` is
  * active. Nothing here weakens the DNS-rebinding protection the guard
- * already had (waechter-und-port.test.ts) — a value the CALLER supplies
+ * already had (waechter-und-port.test.ts): a value the CALLER supplies
  * (Origin, Host) still never authorises anything; only a value the SERVER
  * computed about its own bind address can.
  *
@@ -18,13 +18,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import { createLocalApiGuard } from '../guard'
+import { lanOrigins } from '../index'
 import { anfrage } from './echte-anfrage'
 
 const csrf = { 'x-locally-uncensored': 'true' }
 const json = { 'Content-Type': 'application/json', ...csrf }
 const DURCHGEREICHT = 599
 
-describe('K8 — --host: the server accepts its own LAN origin', () => {
+describe('K8 (--host): the server accepts its own LAN origin', () => {
   it('without a getLanOrigins getter (plain `npm run dev`), a LAN origin is still rejected', async () => {
     const waechter = createLocalApiGuard(5273)
     const res = await anfrage(waechter, {
@@ -43,7 +44,7 @@ describe('K8 — --host: the server accepts its own LAN origin', () => {
     expect(res.status).toBe(DURCHGEREICHT)
   })
 
-  it('does NOT widen to a different address on the same LAN — only the exact bound one', async () => {
+  it('does NOT widen to a different address on the same LAN, only the exact bound one', async () => {
     const waechter = createLocalApiGuard(5273, () => ['http://192.168.1.23:5273'])
     const res = await anfrage(waechter, {
       method: 'POST', url: '/onboarding-write',
@@ -111,38 +112,20 @@ describe('K8 — --host: the server accepts its own LAN origin', () => {
   })
 })
 
-describe('K8 — dev-server/index.ts derives LAN origins only from --host, never from a request', () => {
-  it('lanOrigins() logic: --host inactive → empty regardless of resolvedUrls', async () => {
-    // Mirrors the closure built in dev-server/index.ts's configureServer —
-    // kept here as an executable spec of that logic's contract, since the
-    // real closure needs a live ViteDevServer to construct.
-    const lanOrigins = (server: { config: { server: { host?: string | boolean } }; resolvedUrls: { network: string[] } | null }): string[] => {
-      if (!server.config.server.host) return []
-      return (server.resolvedUrls?.network ?? [])
-        .map((u) => { try { return new URL(u).origin } catch { return null } })
-        .filter((o): o is string => !!o)
-    }
+describe('K8: the real lanOrigins() (dev-server/index.ts) derives LAN origins only from --host, never from a request', () => {
+  // K8 nachbessert (Review-Punkt 7): these three cases used to run against a
+  // copy of the closure retyped into this test file, which only proved the
+  // copy did what the copy did. They now call the real exported function.
+  it('--host inactive: empty, regardless of resolvedUrls', async () => {
     expect(lanOrigins({ config: { server: {} }, resolvedUrls: { network: ['http://192.168.1.23:5273/'] } })).toEqual([])
   })
 
-  it('lanOrigins() logic: --host active + resolved → the exact origin(s), trailing slash stripped', async () => {
-    const lanOrigins = (server: { config: { server: { host?: string | boolean } }; resolvedUrls: { network: string[] } | null }): string[] => {
-      if (!server.config.server.host) return []
-      return (server.resolvedUrls?.network ?? [])
-        .map((u) => { try { return new URL(u).origin } catch { return null } })
-        .filter((o): o is string => !!o)
-    }
+  it('--host active and resolved: the exact origin(s), trailing slash stripped', async () => {
     expect(lanOrigins({ config: { server: { host: true } }, resolvedUrls: { network: ['http://192.168.1.23:5273/'] } }))
       .toEqual(['http://192.168.1.23:5273'])
   })
 
-  it('lanOrigins() logic: --host active but not yet resolved (pre-listen) → empty, not a crash', async () => {
-    const lanOrigins = (server: { config: { server: { host?: string | boolean } }; resolvedUrls: { network: string[] } | null }): string[] => {
-      if (!server.config.server.host) return []
-      return (server.resolvedUrls?.network ?? [])
-        .map((u) => { try { return new URL(u).origin } catch { return null } })
-        .filter((o): o is string => !!o)
-    }
+  it('--host active but not yet resolved (pre-listen): empty, not a crash', async () => {
     expect(lanOrigins({ config: { server: { host: true } }, resolvedUrls: null })).toEqual([])
   })
 })
