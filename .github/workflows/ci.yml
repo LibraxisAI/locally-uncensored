@@ -179,6 +179,19 @@ jobs:
             *)           touch "src-tauri/bin/lu-llama-server-$triple" ;;
           esac
           ls -la src-tauri/bin/
+          # K1 (3.0.1): tauri.windows.conf.json / tauri.linux.conf.json now
+          # declare a bundle.resources glob for the dynamic-ISA companion
+          # libraries (src-tauri/resources/llama/<triple>/*), and the comment
+          # below already established that build.rs resolves bundle.resources
+          # during a plain `cargo check`, not only a full `tauri build`. A
+          # glob with zero matches would make that resolution fail here too,
+          # so this stub needs a companion file to match, the same reasoning
+          # as the exe stub above, just for the resources side of the bundle
+          # instead of externalBin.
+          case "$triple" in
+            *-windows-*) mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.dll" ;;
+            *-linux-*)   mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.so" ;;
+          esac
 
       # tauri-build also resolves bundle.resources, and ../dist only exists
       # after a frontend build. This job runs no npm at all, so build.rs bailed
@@ -403,6 +416,18 @@ jobs:
             *)           touch "src-tauri/bin/lu-llama-server-$triple" ;;
           esac
           ls -la src-tauri/bin/
+          # K1 (3.0.1): this job runs a REAL `tauri build`, which resolves
+          # bundle.resources for real: tauri.windows.conf.json /
+          # tauri.linux.conf.json now glob src-tauri/resources/llama/<triple>/*
+          # for the dynamic-ISA companion libraries, and this gate never runs
+          # scripts/build-llama.sh to produce them. Same stub reasoning as the
+          # exe above, on the resources side of the bundle instead of
+          # externalBin, so a glob with zero matches cannot fail this gate for
+          # a reason that has nothing to do with what it is checking.
+          case "$triple" in
+            *-windows-*) mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.dll" ;;
+            *-linux-*)   mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.so" ;;
+          esac
 
       - name: Install npm dependencies
         run: npm ci
