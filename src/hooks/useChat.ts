@@ -29,6 +29,8 @@ import { applyGoalCommand } from '../lib/goal-command'
 import { useMemory } from "./useMemory"
 import { useAgentModeStore } from "../stores/agentModeStore"
 import { useGenerationStore } from "../stores/generationStore"
+import { runInLane } from "../lib/run-slot"
+import { laneOf, currentLaneFacts } from "../lib/run-lane-of-model"
 import { resolveChatToolRoute, CHAT_TOOLS, type ChatToolRouteMsg } from "../lib/chat-tool-intent"
 import { getProviderForModel, getProviderIdFromModel } from "../api/providers"
 import { modelOutOfMode } from "../lib/modeGate"
@@ -797,7 +799,15 @@ export function useChat() {
       },
     ).messages
 
+    // Lane admission (Runde 4, review-lanes.md Blocker 1+6): the built-in
+    // engine runs llama-server with n_parallel=1, so two local sends racing
+    // it at once queue instead of both landing on the one slot. Cloud lanes
+    // start right away, same as before this round. Nothing has touched the
+    // store yet (no message added below this point), so a send that Stop
+    // pulls out of the queue before its turn leaves nothing to unwind.
+    const lane = laneOf(activeModel, currentLaneFacts())
     const abort = new AbortController()
+    await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
     // Register so deleting/closing this chat aborts the in-flight stream (Bug C).
     // Also requestGenerationCancel so a running ComfyUI job is interrupted when
     // the chat goes away mid-generation (the _activeHandoffs gate makes it a
@@ -1252,6 +1262,7 @@ export function useChat() {
         extractAndSave(content, run.content, run.convId, { scope: memoryScope }).catch(() => {})
       }
     }
+    })
     // Alle drei Referenzen sind konstant: `extractAndSave` kommt aus dem
     // Modul-Singleton MEMORY_API, `runGroupRound` ist ein useCallback mit
     // leerer Dep-Liste, `sendAgentMessage` ebenfalls. `sendMessage` behaelt
