@@ -571,7 +571,7 @@ pub(crate) fn not_ours_to_delete(filename: &str, base: &str, extra_dirs: &[Strin
 /// the file has to go from there.
 #[allow(non_snake_case)]
 #[tauri::command]
-pub fn delete_comfy_model(
+pub async fn delete_comfy_model(
     filename: String,
     extraDirs: Option<Vec<String>>,
     state: State<'_, AppState>,
@@ -592,8 +592,13 @@ pub fn delete_comfy_model(
     // engine's own folders when it was running and could be asked, the classic
     // guess when it could not (see models_dir_in). A file the app put there is
     // a file the app has to be able to take away again.
+    //
+    // R1-4: asked fresh via engine_folders (a running ComfyUI's own answer),
+    // not the stale process-wide cache from before this ComfyUI ever
+    // started — a model the running engine had just remapped to a custom
+    // folder looked like a foreign file and refused to delete.
     let mut roots: Vec<PathBuf> = MODEL_SUBDIRS.iter().map(|d| models_root.join(d)).collect();
-    if let Some(folders) = comfy_folders::cached() {
+    if let Some(folders) = engine_folders(&state).await {
         for dir in folders.all_dirs() {
             if !roots.contains(&dir) {
                 roots.push(dir);
@@ -1681,7 +1686,7 @@ pub fn reserved_bytes(downloads: &HashMap<String, DownloadProgress>) -> u64 {
 /// gigabytes in front of the user instead of "not enough space".
 #[allow(non_snake_case)]
 #[tauri::command]
-pub fn check_download_space(
+pub async fn check_download_space(
     subfolder: Option<String>,
     destDir: Option<String>,
     requiredBytes: u64,
@@ -1691,7 +1696,11 @@ pub fn check_download_space(
         (_, Some(d)) if !d.is_empty() => PathBuf::from(d),
         (Some(sub), _) => {
             let comfy_path = state.comfy_path.lock().unwrap().clone();
-            models_dir_in(comfy_folders::cached().as_ref(), &comfy_path, &sub)?
+            // R1-4: engine_folders asks the running ComfyUI fresh instead of
+            // reading a cache that can predate it — a cold cache pointed the
+            // very first space check of a session at the wrong drive (K5's
+            // customer-visible half of the same bug).
+            models_dir_in(engine_folders(&state).await.as_ref(), &comfy_path, &sub)?
         }
         _ => return Err("check_download_space needs a subfolder or a destDir".to_string()),
     };
@@ -2429,6 +2438,51 @@ mod tests {
     ///
     /// Die Nadeln sind aus zwei Haelften gebaut, damit dieser Test sie nicht
     /// in sich selbst findet.
+    /// R1-4 Quelltextwaechter: schneidet den Rumpf EINER Funktion aus der
+    /// ganzen Datei heraus, ueber Klammerzaehlung statt einer festen
+    /// Zeilenzahl, damit eine spaetere Aenderung an der Funktion den Test
+    /// nicht am falschen Ende abschneidet.
+    fn fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).unwrap_or_else(|| panic!("{signature} not found"));
+        let open = src[start..].find('{').map(|i| start + i).expect("no opening brace");
+        let mut depth = 0i32;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..open + i + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces after {signature}");
+    }
+
+    #[test]
+    fn r1_4_delete_and_space_check_ask_the_engine_fresh_not_the_cache() {
+        // R1-4: both commands used to read comfy_folders::cached(), a value
+        // set once when ComfyUI last answered and never refreshed for the
+        // FIRST click of a session. A model the running engine had just
+        // remapped to a custom folder then looked foreign to delete, and the
+        // very first space check of a session measured the wrong drive.
+        let src = include_str!("download.rs");
+        let delete_body = fn_body(src, "pub async fn delete_comfy_model(");
+        let space_body = fn_body(src, "pub async fn check_download_space(");
+        assert!(
+            !delete_body.contains("comfy_folders::cached()"),
+            "delete_comfy_model still reads the stale cache instead of asking the engine"
+        );
+        assert!(
+            !space_body.contains("comfy_folders::cached()"),
+            "check_download_space still reads the stale cache instead of asking the engine"
+        );
+        assert!(delete_body.contains("engine_folders(&state).await"), "{delete_body}");
+        assert!(space_body.contains("engine_folders(&state).await"), "{space_body}");
+    }
+
     #[test]
     fn the_lm_studio_row_asks_the_whole_question_not_just_the_cli() {
         // Die ganze Datei, nicht nur die ausgelieferte Haelfte: sie hat mehrere
