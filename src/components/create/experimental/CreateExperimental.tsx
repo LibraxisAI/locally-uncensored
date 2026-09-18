@@ -21,6 +21,7 @@ import { BannerText } from './BannerText'
 import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
 import { INTENT_MAP, isIntentAvailable } from './intents'
+import { modelForOp } from '../../../stores/cloudCatalogStore'
 import { stageShowsSetupCard, laneModelCount } from './stageGate'
 import { isMlxImageHost } from '../../../api/mlx-image'
 import { fetchGalleryItemBlob } from './galleryUrl'
@@ -216,10 +217,19 @@ function CreateExperimentalInner() {
   // deliberately skips ...dropAll), but a fresh t2i result was never adopted
   // as `source` in the first place, so setSource still has to run after it,
   // exactly like editResultWithMask does for 'edit'. No mask step needed here.
+  //
+  // C1 nachbessert, Punkt 8: also coerce cloudVideoModel onto a real i2v
+  // model via modelForOp, the same coercion submit/the credits gate already
+  // apply. Without this the ModelChip kept showing whatever was picked for
+  // the PREVIOUS intent (e.g. a t2v-only model), which the run itself never
+  // used, since modelForOp silently swaps to i2vModels()[0] at submit time.
+  // Web's animateFrom does the equivalent set for parity.
   const animateResult = useCallback(async (item: GalleryItem) => {
-    useCreateStore.getState().setIntent('animate')
+    const state = useCreateStore.getState()
+    state.setIntent('animate')
+    state.setCloudVideoModel(modelForOp('video', 'animate', state.cloudVideoModel))
     try {
-      useCreateStore.getState().setSource(await adoptResult(item))
+      state.setSource(await adoptResult(item))
     } catch (err) {
       setError(`Could not load the result for animating: ${err instanceof Error ? err.message : String(err)}`)
     }
