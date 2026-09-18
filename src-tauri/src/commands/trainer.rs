@@ -64,7 +64,26 @@ const TRAINER_REINSTALL_NEEDS_GIB: u64 = 7;
 /// checkpointing, 8 bit optimizer) was proven on has 12 GB. Below that the run
 /// gets through both cache steps and dies with CUDA out of memory in the first
 /// training step, after ten minutes of work. Asked before the first step.
-const TRAINER_VRAM_FLOOR_MIB: u64 = 11 * 1024;
+const TRAINER_VRAM_FLOOR_MIB_FP8: u64 = 11 * 1024;
+
+/// Nachbesserung Runde 2: `TRAINER_VRAM_FLOOR_MIB_FP8` assumes fp8 weight
+/// storage is on, which `train_precision_for_capability` now guarantees for
+/// every measured card (see its doc comment). This floor is only reached
+/// for the one case where it is off: an unmeasured card (`cap: None`), the
+/// fully conservative fallback. musubi has no zimage-specific number for
+/// running WITHOUT `--fp8_base`; the only concrete figure in its docs is
+/// `docs/hunyuan_video.md:236`, "without --fp8_base, 24 GB VRAM or more is
+/// recommended" -- a different model, not measured for zimage on our own
+/// box. Read honestly as an upper estimate rather than invented precision.
+const TRAINER_VRAM_FLOOR_MIB_NO_FP8: u64 = 24 * 1024;
+
+/// The floor `vram_verdict` checks against, coupled to the precision that
+/// will actually run: a card refused for lacking fp8-recipe memory when fp8
+/// storage is in fact on (or the reverse) was praezisionsblind, exactly the
+/// Runde-2 review's finding.
+fn vram_floor_mib(precision: &TrainPrecision) -> u64 {
+    if precision.fp8 { TRAINER_VRAM_FLOOR_MIB_FP8 } else { TRAINER_VRAM_FLOOR_MIB_NO_FP8 }
+}
 
 /// Known Z-Image training-base files, resolved by exact filename from the
 /// trainer root's models dir or the active ComfyUI models tree.
@@ -217,6 +236,40 @@ fn active_comfy_dir(state: &AppState) -> Option<PathBuf> {
 ///
 /// It is NOT the whole fix. The launcher path (step 3 below) never asked
 /// torch's env store anything; see `training_command`.
+///
+/// The third fix carried here is K3, 2026-09-18, corrected 2026-09-18 after
+/// an Opus review that read the real mechanism further than this comment
+/// first did. `892a7e21` dropped `accelerate launch` (see `training_command`)
+/// so nothing sets `LOCAL_RANK` / `RANK` / `WORLD_SIZE` any more, and
+/// `accelerate/state.py`'s `PartialState.__init__` (v1.6.0, read from the
+/// real cloned source, not guessed) never calls `init_process_group` without
+/// `LOCAL_RANK`, card count or not. The actual trigger is one step earlier,
+/// in musubi's own `prepare_accelerator()` (`training/accelerator_setup.py`):
+/// it builds `InitProcessGroupKwargs(backend="gloo" if os.name == "nt" ...)`
+/// whenever `torch.cuda.device_count() > 1`, and hands it to `Accelerator()`.
+/// `Accelerator.__init__` (`accelerate/accelerator.py` Z. 460-461) turns that
+/// into `kwargs["backend"] = "gloo"` and passes it on to `PartialState`.
+/// `_prepare_backend` (`state.py` Z. 735-804) finds no `LOCAL_RANK` and
+/// returns `("gloo", DistributedType.NO)` UNCHANGED: the backend name
+/// itself leaks through even though nothing distributed was ever set up.
+/// Back in `PartialState.__init__` (Z. 268-292), the branch that should read
+/// `if self.backend is None:` is then false, because `self.backend == "gloo"`,
+/// not `None`; the `else` arm calls `torch.distributed.get_world_size()` on a
+/// process group that was never initialized. That call is, word for word,
+/// the melders' traceback.
+///
+/// `CUDA_VISIBLE_DEVICES` pinned to one card (`pin_trainer_gpu`, resolved by
+/// `resolve_trainer_gpu`) keeps `device_count() > 1` from ever being true, so
+/// the handler is never built and `self.backend` stays `None`. This closes
+/// the door for Z0mbieK (two visible cards, confirmed). It does NOT explain
+/// sdrairsoft: a single visible card never builds the handler in the first
+/// place, `device_count() == 1` cannot reach this branch, and nobody has
+/// measured `torch.cuda.device_count()` or `nvidia-smi -L` from his machine.
+/// A second, unused NVIDIA card the driver still enumerates would fit
+/// (Tesla P100 has no display output, so a Windows box built around one
+/// commonly has a second card for the screen), but that is a plausible read
+/// of the report, not a measurement; see the question drafted in
+/// `lu-301/bau/trainer.md`.
 fn trainer_child_env(cmd: &mut Command) {
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PYTHONUTF8", "1");
@@ -438,6 +491,112 @@ fn training_gpu_label() -> Option<&'static str> {
     }
 }
 
+/// The single card the trainer pins itself to, and where that pick came from
+/// (for the log line, see `start_character_training`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrainerGpuChoice {
+    pub(crate) index: u32,
+    pub(crate) name: String,
+    pub(crate) memory_mib: Option<u64>,
+    pub(crate) source: &'static str,
+}
+
+/// Narrow `nvidia` down to the one card every trainer child runs on. Pure on
+/// purpose (no `nvidia-smi`, no env read) so the priority order is a unit
+/// test, not a Windows box: [`resolve_trainer_gpu`] is the thin wrapper that
+/// gathers the real inputs.
+///
+/// Nachbesserung after the Opus review of `0e826c22`: that commit pinned
+/// every trainer child to `CUDA_VISIBLE_DEVICES=0` unconditionally, which
+/// (a) is not necessarily the strong card -- CUDA without
+/// `CUDA_DEVICE_ORDER=PCI_BUS_ID` sorts fastest-first, and Z0mbieK's RTX
+/// 3090 Ti and RTX 3050 share compute capability 8.6, so the heuristic
+/// tie-breaks on something neither promised nor measured -- and (b) silently
+/// overrides both LU's own Hardware-tab GPU picker (`gpu.rs::GpuSelection`,
+/// already wired into Ollama and ComfyUI via `apply_gpu_env`) and a
+/// `CUDA_VISIBLE_DEVICES` the user set outside LU on purpose.
+///
+/// Order: the Hardware tab's own pick first (narrowed to its highest-memory
+/// entry if the user selected more than one card there); failing that, a
+/// `CUDA_VISIBLE_DEVICES` already set on this process (same narrowing);
+/// failing that, the NVIDIA card with the most memory, never a bare index.
+pub(crate) fn choose_trainer_gpu(
+    nvidia: &[crate::commands::gpu::DetectedGpu],
+    selection: &crate::commands::gpu::GpuSelection,
+    existing_cuda_visible_devices: Option<&str>,
+) -> Option<TrainerGpuChoice> {
+    let best_of = |indices: &[u32]| -> Option<&crate::commands::gpu::DetectedGpu> {
+        nvidia.iter().filter(|g| indices.contains(&g.index)).max_by_key(|g| g.memory_mib.unwrap_or(0))
+    };
+    if selection.vendor == "nvidia" && !selection.indices.is_empty() {
+        if let Some(g) = best_of(&selection.indices) {
+            return Some(TrainerGpuChoice {
+                index: g.index,
+                name: g.name.clone(),
+                memory_mib: g.memory_mib,
+                source: "the Hardware tab's GPU selection",
+            });
+        }
+    }
+    if let Some(existing) = existing_cuda_visible_devices {
+        let indices: Vec<u32> = existing.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if !indices.is_empty() {
+            if let Some(g) = best_of(&indices) {
+                return Some(TrainerGpuChoice {
+                    index: g.index,
+                    name: g.name.clone(),
+                    memory_mib: g.memory_mib,
+                    source: "the CUDA_VISIBLE_DEVICES already set for this process",
+                });
+            }
+            // detect_gpus could not name it (a stale index, a probe that did
+            // not run) -- the user's own choice still wins over a guess.
+            return Some(TrainerGpuChoice {
+                index: indices[0],
+                name: format!("device {}", indices[0]),
+                memory_mib: None,
+                source: "the CUDA_VISIBLE_DEVICES already set for this process",
+            });
+        }
+    }
+    nvidia.iter().max_by_key(|g| g.memory_mib.unwrap_or(0)).map(|g| TrainerGpuChoice {
+        index: g.index,
+        name: g.name.clone(),
+        memory_mib: g.memory_mib,
+        source: "the card with the most memory",
+    })
+}
+
+/// [`choose_trainer_gpu`] with its inputs gathered for real: `detect_gpus()`
+/// (the same probe the Hardware tab itself lists cards from) and this
+/// process's own `CUDA_VISIBLE_DEVICES`.
+pub(crate) fn resolve_trainer_gpu(selection: &crate::commands::gpu::GpuSelection) -> Option<TrainerGpuChoice> {
+    let all = crate::commands::gpu::detect_gpus().unwrap_or_default();
+    let nvidia: Vec<crate::commands::gpu::DetectedGpu> =
+        all.into_iter().filter(|g| g.vendor == "nvidia").collect();
+    let existing = std::env::var("CUDA_VISIBLE_DEVICES").ok();
+    choose_trainer_gpu(&nvidia, selection, existing.as_deref())
+}
+
+/// Set on a Command right before it runs: every trainer child sees exactly
+/// this one card, regardless of how many are actually plugged in.
+///
+/// BLOCKER fix, Runde 2: `choice.index` comes from `nvidia-smi`, which
+/// numbers cards in PCI bus order. CUDA itself, without `CUDA_DEVICE_ORDER`,
+/// defaults to FASTEST_FIRST, a different ordering whenever visible cards
+/// differ in speed. `CUDA_VISIBLE_DEVICES` alone can therefore pin the wrong
+/// physical card on a multi-GPU box, the VRAM preflight measures a
+/// different card than the one that trains, and the log line names the
+/// intended card while a different one runs. This also covers the branch in
+/// `choose_trainer_gpu` that reads a user-set `CUDA_VISIBLE_DEVICES`: its
+/// index is matched against `detect_gpus()`'s PCI-order list, so the index
+/// this function writes back out needs the same ordering to mean what it
+/// says.
+fn pin_trainer_gpu(cmd: &mut Command, choice: &TrainerGpuChoice) {
+    cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+    cmd.env("CUDA_VISIBLE_DEVICES", choice.index.to_string());
+}
+
 /// Every site-packages of the trainer venv. Windows puts one at
 /// `venv/Lib/site-packages`, POSIX one per python version under `venv/lib`.
 fn site_packages_dirs(root: &Path) -> Vec<PathBuf> {
@@ -480,21 +639,30 @@ fn musubi_installed(root: &Path) -> bool {
 /// preflight_verdict below. The trainer package is probed with find_spec
 /// rather than a real import: importing it pulls the whole training stack and
 /// would turn a cheap check into seconds of work and a second CUDA context.
-const TORCH_PREFLIGHT_PY: &str = "import importlib.util\nimport torch\nprint('TORCH_OK', torch.__version__)\ncuda = torch.cuda.is_available()\nprint('CUDA', '1' if cuda else '0')\nif cuda:\n    cap = torch.cuda.get_device_capability(0)\n    print('CAP', cap[0], cap[1])\n    print('ARCHS', ' '.join(torch.cuda.get_arch_list()))\n    print('VRAM_MIB', torch.cuda.get_device_properties(0).total_memory // (1024 * 1024))\nif importlib.util.find_spec('musubi_tuner') is not None:\n    print('MUSUBI_OK')\n";
+const TORCH_PREFLIGHT_PY: &str = "import importlib.util\nimport torch\nprint('TORCH_OK', torch.__version__)\ncuda = torch.cuda.is_available()\nprint('CUDA', '1' if cuda else '0')\nif cuda:\n    cap = torch.cuda.get_device_capability(0)\n    print('CAP', cap[0], cap[1])\n    print('NAME', torch.cuda.get_device_name(0))\n    print('ARCHS', ' '.join(torch.cuda.get_arch_list()))\n    print('VRAM_MIB', torch.cuda.get_device_properties(0).total_memory // (1024 * 1024))\nif importlib.util.find_spec('musubi_tuner') is not None:\n    print('MUSUBI_OK')\n";
 
-/// What the preflight found. Four failure classes that all used to surface as
+/// What the preflight found. Five failure classes that all used to surface as
 /// a raw error deep inside the run: torch not importable (half install), a
 /// torch build whose kernel list stops below the GPU's compute capability
 /// (cu121 on Blackwell, which imports fine and even reports CUDA as
-/// available), a torch that reaches no card at all on a machine that has one
+/// available), the mirror of that for a card OLDER than the build's kernel
+/// floor (Opus review of K3, 2026-09-18: nothing checked this direction
+/// before), a torch that reaches no card at all on a machine that has one
 /// (the CUDA wheels an AMD box used to be handed), and the trainer package
-/// missing (an install that died after torch). Each one is repairable, which
-/// is why they are distinguished rather than collapsed into one error string.
+/// missing (an install that died after torch). Each one is repairable or at
+/// least namable, which is why they are distinguished rather than collapsed
+/// into one error string.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Preflight {
     Ok,
     TorchBroken(String),
     KernelsTooOld { cap: u32, max: u32 },
+    /// `cap < min`: this build's kernel list does not reach down to the
+    /// card's compute capability either -- the two named archs are the
+    /// build's floor and the card's own number, not a version range.
+    /// Unlike `KernelsTooOld`, no other channel `trainer_torch_plan` already
+    /// picks from would fix this, so it does not ask for a torch reinstall.
+    CardBelowKernelFloor { cap_major: u32, cap_minor: u32, min: u32, name: Option<String> },
     /// torch imports, runs, and reports no device at all on a machine that
     /// has a card. A CUDA build on an AMD box does exactly this. It used to
     /// pass the check as an ordinary processor only environment and then die
@@ -510,7 +678,10 @@ impl Preflight {
 
     /// A torch that is there but wrong has to be pushed out of the way, which
     /// is the kernel gap and the card it cannot reach; the other two classes
-    /// install into what is missing.
+    /// install into what is missing. `CardBelowKernelFloor` is deliberately
+    /// absent: `trainer_torch_plan` already picks the best channel for this
+    /// card's capability, so reinstalling the same wheels a second time would
+    /// not change the outcome, only spend another 2.5 GB finding that out.
     pub(crate) fn needs_torch_reinstall(&self) -> bool {
         matches!(
             self,
@@ -547,6 +718,12 @@ impl Preflight {
             Preflight::KernelsTooOld { cap, max } => format!(
                 "This PyTorch build has no kernels for your GPU (compute capability {cap}.x, the build stops at {max}.x). An RTX 50 card on the old cu121 build does exactly this."
             ),
+            Preflight::CardBelowKernelFloor { cap_major, cap_minor, min, name } => {
+                let card = name.as_deref().unwrap_or("This GPU");
+                format!(
+                    "{card} has compute capability {cap_major}.{cap_minor}, and this PyTorch build's kernels start at {min}.0: there is no kernel for a card this old in it. This is a hardware floor, not a broken install; character training needs a newer card or Character Studio in Cloud mode."
+                )
+            }
             Preflight::GpuUnreachable { vendor } => format!(
                 "The PyTorch in the trainer environment cannot see your {vendor} card, it reports no usable GPU. That is a wrong build for this machine, not a driver fault."
             ),
@@ -610,34 +787,75 @@ const UNIX_NATIVE_NEXT_STEP: &str = "PyTorch is on disk but its native libraries
 /// A wrong wheel, not a broken machine. The setup probes the card again, so it
 /// is the same button and a completely different reason.
 const WHEEL_NEXT_STEP: &str = "The PyTorch that was installed carries no support for the card in this machine, so it can only run on the processor. Press Set up trainer in Character Studio: the setup probes the card again and picks the matching wheel.";
-const PYTHON_VERSION_NEXT_STEP: &str = "The Python in the trainer environment is one the trainer cannot use (it needs 3.10, 3.11 or 3.12). Press Set up trainer in Character Studio: the setup looks for a matching Python on this machine on its own, installs 3.12 on Windows when there is none, and rebuilds the environment with it.";
 const PERMISSION_NEXT_STEP: &str = "The installer was not allowed to write into the Python folder. Close every open Python, Jupyter or IDE debugger, and if that changes nothing, install Python for your own user instead of for all users, then press Set up trainer in Character Studio.";
 const PEP668_NEXT_STEP: &str = "This Python refuses installs outside a virtual environment and the venv module is missing. Install it from your package manager (python3-venv on Debian and Ubuntu, python-virtualenv on Arch, python3-virtualenv on Fedora), then press Set up trainer in Character Studio.";
+
+/// The message gekiritz actually saw (Discord, 2026-09-16), built fresh at
+/// the point of failure instead of a static sentence. The review found the
+/// gap: `no_trainer_python_message` learned to name path and version, but
+/// this is the DIFFERENT message pip's own `NoMatchingWheel` /
+/// `UnsupportedPython` failure reaches, through `next_step_for_log`, and it
+/// still only said "needs 3.10, 3.11 or 3.12" with nothing about what was
+/// actually found. On Windows each interpreter's architecture is added too
+/// (`python_version_and_arch`): a 32-bit or ARM64 Python 3.11 answers the
+/// plain version check exactly like a real one and is why "rebuild the venv"
+/// alone never broke gekiritz's loop -- see `venv_action`.
+fn python_version_next_step() -> String {
+    let mut seen: Vec<String> = Vec::new();
+    let mut found: Vec<String> = Vec::new();
+    for p in crate::python::python_interpreters() {
+        if !crate::python::is_real_python(&p) || seen.iter().any(|s| s.eq_ignore_ascii_case(&p)) {
+            continue;
+        }
+        seen.push(p.clone());
+        #[cfg(target_os = "windows")]
+        {
+            if let Some((v, arch_ok)) = crate::python::python_version_and_arch(&p) {
+                let arch = if arch_ok { "64-bit x86" } else { "not 64-bit x86, no PyTorch wheel exists for it" };
+                found.push(format!("Python {v} at {p} ({arch})"));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Some(v) = crate::python::python_version(&p) {
+                found.push(format!("Python {v} at {p}"));
+            }
+        }
+    }
+    let have = if found.is_empty() {
+        "no Python that starts".to_string()
+    } else {
+        found.join(", ")
+    };
+    format!(
+        "The Python in the trainer environment is one the trainer cannot use (it needs {TRAINER_PYTHON_RANGE}). This machine has: {have}. Press Set up trainer in Character Studio: the setup looks for a matching Python on this machine on its own, installs 3.12 on Windows when there is none, and rebuilds the environment with it."
+    )
+}
 
 /// The way out that fits what actually failed, on the platform it failed on.
 /// The old code offered exactly one, "check that you are online and that the
 /// drive has room", for every failure class there is.
-pub(crate) fn next_step_for_log(log: &str, fallback: &'static str, os: &str) -> &'static str {
+pub(crate) fn next_step_for_log(log: &str, fallback: &str, os: &str) -> String {
     use crate::commands::install::pip::PipFailureKind as K;
     let windows = os == "windows";
     if out_of_disk(log) {
-        return DISK_NEXT_STEP;
+        return DISK_NEXT_STEP.to_string();
     }
     match crate::commands::install::pip::pip_failure_kind(log) {
         K::MissingRuntimeLibrary => {
-            if windows { WINDOWS_REDIST_NEXT_STEP } else { UNIX_LIBRARY_NEXT_STEP }
+            if windows { WINDOWS_REDIST_NEXT_STEP } else { UNIX_LIBRARY_NEXT_STEP }.to_string()
         }
         K::NativeLoadFailure => {
-            if windows { WINDOWS_NATIVE_NEXT_STEP } else { UNIX_NATIVE_NEXT_STEP }
+            if windows { WINDOWS_NATIVE_NEXT_STEP } else { UNIX_NATIVE_NEXT_STEP }.to_string()
         }
-        K::TorchWithoutGpuSupport => WHEEL_NEXT_STEP,
-        K::NoMatchingWheel | K::UnsupportedPython => PYTHON_VERSION_NEXT_STEP,
-        K::Permission => PERMISSION_NEXT_STEP,
-        K::ExternallyManaged => PEP668_NEXT_STEP,
-        K::DiskFull => DISK_NEXT_STEP,
+        K::TorchWithoutGpuSupport => WHEEL_NEXT_STEP.to_string(),
+        K::NoMatchingWheel | K::UnsupportedPython => python_version_next_step(),
+        K::Permission => PERMISSION_NEXT_STEP.to_string(),
+        K::ExternallyManaged => PEP668_NEXT_STEP.to_string(),
+        K::DiskFull => DISK_NEXT_STEP.to_string(),
         // Network failures and everything we cannot name keep the old text.
         // Naming the network for a failure that is not one is the whole bug.
-        _ => fallback,
+        _ => fallback.to_string(),
     }
 }
 
@@ -648,7 +866,7 @@ pub(crate) fn next_step_for_log(log: &str, fallback: &'static str, os: &str) -> 
 /// Before this, a repair that never finished put the raw process error into the
 /// status line instead, which on a full disk meant fifteen `Moving to ...`
 /// lines and no next step at all.
-pub(crate) fn env_failure_message(diagnosis: &str, fallback_step: &'static str, log: &str) -> String {
+pub(crate) fn env_failure_message(diagnosis: &str, fallback_step: &str, log: &str) -> String {
     let step = next_step_for_log(log, fallback_step, std::env::consts::OS);
     let head = diagnosis.trim();
     let head = if head.is_empty() { String::new() } else { format!("{head} ") };
@@ -723,11 +941,21 @@ fn preflight_verdict(exit_ok: bool, stdout: &str, stderr: &str, gpu: Option<&str
         return Preflight::TorchBroken(tail);
     }
     let mut cap_major: Option<u32> = None;
+    let mut cap_minor: Option<u32> = None;
     let mut arch_max: Option<u32> = None;
+    let mut arch_min: Option<u32> = None;
+    let mut card_name: Option<String> = None;
     for line in stdout.lines() {
         let l = line.trim();
         if let Some(rest) = l.strip_prefix("CAP ") {
-            cap_major = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+            let mut parts = rest.split_whitespace();
+            cap_major = parts.next().and_then(|v| v.parse().ok());
+            cap_minor = parts.next().and_then(|v| v.parse().ok());
+        } else if let Some(rest) = l.strip_prefix("NAME ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                card_name = Some(name.to_string());
+            }
         } else if let Some(rest) = l.strip_prefix("ARCHS ") {
             for arch in rest.split_whitespace() {
                 // CUDA names only. A ROCm build lists gfx1030 and gfx90a, and
@@ -745,6 +973,7 @@ fn preflight_verdict(exit_ok: bool, stdout: &str, stderr: &str, gpu: Option<&str
                 if digits.len() >= 2 {
                     if let Ok(n) = digits[..digits.len() - 1].parse::<u32>() {
                         arch_max = Some(arch_max.map_or(n, |p| p.max(n)));
+                        arch_min = Some(arch_min.map_or(n, |p| p.min(n)));
                     }
                 }
             }
@@ -759,6 +988,22 @@ fn preflight_verdict(exit_ok: bool, stdout: &str, stderr: &str, gpu: Option<&str
     if let (Some(cap), Some(max)) = (cap_major, arch_max) {
         if cap > max {
             return Preflight::KernelsTooOld { cap, max };
+        }
+    }
+    // The mirror check, added after the Opus review of K3 (2026-09-18): a
+    // card OLDER than the build's kernel floor. Measured as unlikely to fire
+    // for the concrete melder (a Tesla P100 is compute capability 6.0, and
+    // both channels `trainer_torch_plan` picks from carry kernels well below
+    // that), but it is the genuine lower bound the review asked for, and the
+    // one direction `KernelsTooOld` never checked.
+    if let (Some(cap), Some(min)) = (cap_major, arch_min) {
+        if cap < min {
+            return Preflight::CardBelowKernelFloor {
+                cap_major: cap,
+                cap_minor: cap_minor.unwrap_or(0),
+                min,
+                name: card_name,
+            };
         }
     }
     if !stdout.contains("MUSUBI_OK") {
@@ -1108,10 +1353,15 @@ pub fn install_character_trainer(
     let cancel = state.trainer_cancel.clone();
     let pid_slot = state.trainer_process.clone();
     let env_broken = state.trainer_env_broken.clone();
+    // Cloned here, resolved (nvidia-smi and all) inside the thread: the same
+    // card the setup's own smoke test measures is the one training pins to
+    // later, see `resolve_trainer_gpu`.
+    let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
 
     std::thread::spawn(move || {
-        match provision_trainer_env(&root, &python_bin, false, &install, "installing", &cancel, &pid_slot) {
+        let device = resolve_trainer_gpu(&gpu_selection);
+        match provision_trainer_env(&root, &python_bin, false, &install, "installing", &cancel, &pid_slot, device.as_ref()) {
             Ok(()) => {
                 env_broken.store(false, Ordering::SeqCst);
                 set_status(&install, "complete", "Trainer environment ready.")
@@ -1157,11 +1407,20 @@ pub(crate) enum VenvAction {
 /// not start and the version for one that does, and a venv built from a
 /// Python outside the trainer's range is exactly as unusable as a dead one.
 /// It ran fine on sockenmonster's machine, its pip just refused musubi.
-pub(crate) fn venv_action(python_exists: bool, python_version: Option<&str>) -> VenvAction {
+///
+/// `arch_ok` is the Opus review's finding on this exact function: a venv
+/// built from a 32-bit or ARM64 Python 3.11/3.12 reports a version
+/// `trainer_supports_python` accepts, so before this it always read `Keep`
+/// -- gekiritz's "3.11-Umgebung loeschen half nicht" (Rebuild only ever fired
+/// on the FIRST build; a Keep venv was never re-examined the same way) is
+/// exactly the gap this closes. `true` on a platform where architecture is
+/// not checked (see `python_version_and_arch`, Windows only) so this stays a
+/// no-op everywhere else.
+pub(crate) fn venv_action(python_exists: bool, python_version: Option<&str>, arch_ok: bool) -> VenvAction {
     match (python_exists, python_version) {
         (false, _) => VenvAction::Create,
         (true, None) => VenvAction::Rebuild,
-        (true, Some(v)) if !trainer_supports_python(v) => VenvAction::Rebuild,
+        (true, Some(v)) if !trainer_supports_python(v) || !arch_ok => VenvAction::Rebuild,
         (true, Some(_)) => VenvAction::Keep,
     }
 }
@@ -1183,11 +1442,22 @@ pub(crate) fn venv_create_args(action: VenvAction) -> &'static [&'static str] {
 /// Python is deliberately not the pointer: it short-circuits as soon as any
 /// Python exists, which on a 3.14 machine is exactly the one that cannot help.
 /// The last sentence is the marker `already_explained` looks for.
-pub(crate) fn no_trainer_python_message(found: &[String], os: &str, winget_tried: bool) -> String {
+///
+/// K4, 2026-09-18: `found` used to be versions alone, so the message named
+/// what version was on the machine but not where LU looked or which install
+/// it was reading. gekiritz's rebuild loop (see `python_version_and_arch`)
+/// is exactly the case where two Pythons report the same version and only
+/// one of them is real; the path is what lets the customer, or us reading a
+/// Discord paste, tell which is which.
+pub(crate) fn no_trainer_python_message(found: &[(String, String)], os: &str, winget_tried: bool) -> String {
     let have = if found.is_empty() {
         "no Python that starts".to_string()
     } else {
-        format!("Python {}", found.join(" and "))
+        found
+            .iter()
+            .map(|(path, version)| format!("Python {version} at {path}"))
+            .collect::<Vec<_>>()
+            .join(" and ")
     };
     let get = match os {
         "windows" if winget_tried => {
@@ -1220,6 +1490,23 @@ fn trainer_base_python(
             if !crate::python::is_real_python(&p) || seen.iter().any(|(s, _)| s.eq_ignore_ascii_case(&p)) {
                 continue;
             }
+            // K4: a 32-bit or ARM64 Python answers `sys.version_info` exactly
+            // like a normal one, builds a venv that looks complete, and only
+            // dies once pip resolves torch, which reports as the wrong
+            // Python-version message and sends the customer back to the same
+            // interpreter. Excluding it here, before the venv is ever built,
+            // is what makes the retry pick a different one instead of
+            // looping (gekiritz, Discord 2026-09-16).
+            #[cfg(target_os = "windows")]
+            match crate::python::python_version_and_arch(&p) {
+                Some((v, true)) => seen.push((p, v)),
+                Some((v, false)) => push_log(
+                    state,
+                    &format!("Skipping {p} (Python {v}): not a 64-bit x86 build, the trainer's PyTorch wheels do not exist for it."),
+                ),
+                None => {}
+            }
+            #[cfg(not(target_os = "windows"))]
             if let Some(v) = crate::python::python_version(&p) {
                 seen.push((p, v));
             }
@@ -1248,9 +1535,8 @@ fn trainer_base_python(
         // that matters, the interpreter on disk is.
         found = survey();
     }
-    let versions: Vec<String> = found.iter().map(|(_, v)| v.clone()).collect();
     let (path, version) = choose_trainer_python(&found)
-        .ok_or_else(|| no_trainer_python_message(&versions, std::env::consts::OS, winget_tried))?;
+        .ok_or_else(|| no_trainer_python_message(&found, std::env::consts::OS, winget_tried))?;
     if path != python_bin {
         let default = found
             .first()
@@ -1412,15 +1698,24 @@ pub(crate) fn runtime_library_missing(tail: &str) -> bool {
     )
 }
 
-/// The card's memory as the probe reports it, against the recipe's floor.
-pub(crate) fn vram_verdict(vram_mib: Option<u64>) -> Option<String> {
+/// The card's memory as the probe reports it, against the floor the CHOSEN
+/// precision actually needs (Nachbesserung Runde 2: a fixed floor was
+/// precision-blind, see `vram_floor_mib`).
+pub(crate) fn vram_verdict(vram_mib: Option<u64>, precision: &TrainPrecision) -> Option<String> {
     let mib = vram_mib?;
-    if mib >= TRAINER_VRAM_FLOOR_MIB {
+    let floor = vram_floor_mib(precision);
+    if mib >= floor {
         return None;
     }
+    let recipe = if precision.fp8 {
+        "it was proven on a 12 GB card with fp8 weights and block swapping"
+    } else {
+        "without fp8 weight storage this needs noticeably more headroom"
+    };
     Some(format!(
-        "This card has {:.0} GB of memory and the local training recipe needs 12 GB: it was proven on a 12 GB card with fp8 weights and block swapping, and below that the first training step runs out of memory after both cache steps. Character Studio in Cloud mode trains the same character without this limit.",
-        mib as f64 / 1024.0
+        "This card has {:.0} GB of memory and the local training recipe needs {:.0} GB: {recipe}, and below that the first training step runs out of memory after both cache steps. Character Studio in Cloud mode trains the same character without this limit.",
+        mib as f64 / 1024.0,
+        floor as f64 / 1024.0,
     ))
 }
 
@@ -1429,6 +1724,18 @@ pub(crate) fn parse_vram_mib(stdout: &str) -> Option<u64> {
         .lines()
         .find_map(|l| l.trim().strip_prefix("VRAM_MIB "))
         .and_then(|v| v.trim().parse().ok())
+}
+
+/// `(major, minor)` from the preflight's own `CAP 8 6` line -- the same
+/// number `preflight_verdict` reads, kept as a pair here because the
+/// training recipe (`train_precision_for_capability`) needs the minor digit
+/// too (8.0 has hardware bf16, 7.9 does not exist, but the boundary is real).
+pub(crate) fn parse_capability(stdout: &str) -> Option<(u32, u32)> {
+    let rest = stdout.lines().find_map(|l| l.trim().strip_prefix("CAP "))?;
+    let mut parts = rest.split_whitespace();
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 /// The run's own dead ends, named. CUDA out of memory is the one a 12 GB card
@@ -1464,14 +1771,24 @@ pub(crate) fn training_failure_message(err: &str, vram_mib: Option<u64>) -> Stri
 struct ProbeOutcome {
     verdict: Preflight,
     vram_mib: Option<u64>,
+    /// `(major, minor)`, read once here so `start_character_training` builds
+    /// its recipe from the exact same probe the VRAM check already used --
+    /// not a second call that could in principle answer a different card.
+    cap: Option<(u32, u32)>,
 }
 
 /// One probe for every place that asks whether the environment loads: the end
-/// of a setup, the start of a run, and the check after a repair.
-fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome {
+/// of a setup, the start of a run, and the check after a repair. `device`, if
+/// given, pins this probe to the same single card the run itself trains on
+/// (Opus review of K3: the VRAM check has to measure the card that trains,
+/// not whatever the driver puts at index 0).
+fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, device: Option<&TrainerGpuChoice>, label: &str) -> ProbeOutcome {
     let mut probe = Command::new(vpy);
     probe.args(["-c", TORCH_PREFLIGHT_PY]);
     trainer_child_env(&mut probe);
+    if let Some(choice) = device {
+        pin_trainer_gpu(&mut probe, choice);
+    }
     #[cfg(target_os = "windows")]
     probe.creation_flags(CREATE_NO_WINDOW);
     match probe.output() {
@@ -1485,6 +1802,7 @@ fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome
                     gpu,
                 ),
                 vram_mib: parse_vram_mib(&stdout),
+                cap: parse_capability(&stdout),
             }
         }
         Err(e) => ProbeOutcome {
@@ -1493,8 +1811,57 @@ fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome
                 os_error::english(&e)
             )),
             vram_mib: None,
+            cap: None,
         },
     }
+}
+
+/// Nachbesserung Runde 4 (Opus review, Runde 3 of bau/review-trainer.md):
+/// bitsandbytes was the wrong reason. The real floor is bfloat16 itself, and
+/// it is not optional the way `train_precision_for_capability` used to treat
+/// it. Read in the trainer's own source (`src/musubi_tuner/zimage/`, the
+/// only local model this trainer runs, see below):
+///
+/// - `zimage_utils.py:123`: loading the DiT's fp8 weight sets
+///   `org_dtype = torch.bfloat16` ("model weight is fp8 in loading, but
+///   original dtype is bfloat16") and dequantizes to bf16, never fp16.
+/// - `zimage_utils.py:211`: the text encoder cache step wraps its forward
+///   pass in `torch.autocast(device_type=..., dtype=torch.bfloat16)`,
+///   hardcoded, independent of `--mixed_precision`.
+/// - `zimage_train_network.py:146`: the sample-prompt path is hardcoded
+///   bf16 too (unused here, since this trainer never samples).
+///
+/// `--mixed_precision fp16` therefore never reaches the step that actually
+/// needs a dtype: the text encoder cache (`--fp8_llm`, set at
+/// `trainer_child_env`'s call site below) hits `torch.autocast(...,
+/// torch.bfloat16)` regardless, and a card without bf16 either raises out
+/// of `is_bf16_supported()` or limps through an emulated path unusable for
+/// a real run. fp16 was never a rescue for this model, it was a second,
+/// silent way to die a few minutes further into the run. The honest fix is
+/// the floor itself: compute capability 8.0, Ampere, the generation bf16
+/// tensor cores start at.
+///
+/// This is currently a Z-Image-specific floor, not a general LU one: this
+/// trainer drives exactly one local model (`zimage_train_network.py`, see
+/// `training_command`), so one constant is enough today. A second local
+/// trainer with its own dtype requirements would need its own floor, not a
+/// wider one here.
+const TRAINER_MIN_PROVEN_COMPUTE_CAP: (u32, u32) = (8, 0);
+
+/// Refuses a card below `TRAINER_MIN_PROVEN_COMPUTE_CAP` in plain English,
+/// before a single byte of torch downloads. Pure so the wording is a unit
+/// test; the caller reads `cap` with `nvidia-smi --query-gpu=compute_cap`
+/// (`detect_nvidia_compute_cap`), which needs no torch on disk, so this runs
+/// even on a machine that has never had the trainer environment set up.
+pub(crate) fn capability_floor_refusal(cap: (u32, u32), card_name: &str) -> Option<String> {
+    let (major, minor) = cap;
+    let (min_major, min_minor) = TRAINER_MIN_PROVEN_COMPUTE_CAP;
+    if major > min_major || (major == min_major && minor >= min_minor) {
+        return None;
+    }
+    Some(format!(
+        "{card_name} has compute capability {major}.{minor}. Local character training needs at least compute capability {min_major}.{min_minor}: the model code of this trainer requires bfloat16, which this GPU generation does not support. This is a hardware floor, not a broken install; Character Studio in Cloud mode trains the same character with credits instead."
+    ))
 }
 
 /// The four install steps, idempotent by design: an existing checkout and a
@@ -1519,8 +1886,21 @@ fn provision_trainer_env(
     status_kind: &str,
     cancel: &Arc<std::sync::atomic::AtomicBool>,
     pid_slot: &Arc<Mutex<Option<u32>>>,
+    device: Option<&TrainerGpuChoice>,
 ) -> Result<(), String> {
     let tag = if repairing { "Repairing the trainer environment" } else { "Setting up the trainer" };
+
+    // Nachbesserung Runde 2, the honest refusal for a card genuinely below
+    // the floor: read BEFORE anything downloads, including the 2.5 GB torch
+    // install, with nvidia-smi alone so it needs no torch on disk yet. See
+    // `capability_floor_refusal` for the floor and its source.
+    if let Some(choice) = device {
+        if let Some(cap) = crate::commands::install::detect_nvidia_compute_cap() {
+            if let Some(msg) = capability_floor_refusal(cap, &choice.name) {
+                return Err(msg);
+            }
+        }
+    }
 
     // Decided first, before a clone, a venv and 2.5 GB of wheels: a machine
     // whose card has no PyTorch build should not have to pay for all of that
@@ -1587,18 +1967,34 @@ fn provision_trainer_env(
     // not fix; a venv from the wrong Python was kept and failed at step 4.
     let vpy_path = venv_python(root);
     let exists = vpy_path.exists();
-    let venv_version = if exists {
-        crate::python::python_version(&vpy_path.to_string_lossy())
+    // Version AND architecture: see `venv_action`'s doc comment for why a
+    // venv that answers "3.11" is not automatically one the trainer can use.
+    let (venv_version, venv_arch_ok) = if !exists {
+        (None, true)
     } else {
-        None
+        #[cfg(target_os = "windows")]
+        {
+            match crate::python::python_version_and_arch(&vpy_path.to_string_lossy()) {
+                Some((v, ok)) => (Some(v), ok),
+                None => (None, true),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            (crate::python::python_version(&vpy_path.to_string_lossy()), true)
+        }
     };
-    let action = venv_action(exists, venv_version.as_deref());
+    let action = venv_action(exists, venv_version.as_deref(), venv_arch_ok);
     if action != VenvAction::Keep {
         // A rebuild deletes what is there, and it only starts here because
         // trainer_base_python has already proven there is something to
         // rebuild WITH.
         if action == VenvAction::Rebuild {
             push_log(state, &match venv_version.as_deref() {
+                Some(v) if !venv_arch_ok => format!(
+                    "The trainer environment was built with Python {v} at {}, which is not a 64-bit x86 build: no PyTorch wheel exists for it. Rebuilding it with Python {base_version}, your training images and base models are left alone.",
+                    vpy_path.display(),
+                ),
                 Some(v) => format!("The trainer environment was built with Python {v}, which the trainer cannot use (it needs {TRAINER_PYTHON_RANGE}). Rebuilding it with Python {base_version}, your training images and base models are left alone."),
                 None => "The trainer environment is there but its Python does not start any more. Rebuilding it from scratch, your training images and base models are left alone.".to_string(),
             });
@@ -1658,7 +2054,7 @@ fn provision_trainer_env(
     set_status(state, status_kind, &format!("{tag}: checking that PyTorch loads..."));
     let gpu = training_gpu_label();
     let venv_exe = venv_python(root);
-    if let Preflight::TorchBroken(first_tail) = probe_trainer_env(&venv_exe, gpu, "after setup").verdict {
+    if let Preflight::TorchBroken(first_tail) = probe_trainer_env(&venv_exe, gpu, device, "after setup").verdict {
         let mut tail = first_tail;
         if std::env::consts::OS == "windows" && runtime_library_missing(&tail) {
             set_status(
@@ -1671,7 +2067,7 @@ fn provision_trainer_env(
                 Err(e) if e == "cancelled" => return Err(e),
                 Err(e) => push_log(state, &format!("LU could not install the Visual C++ runtime: {}", useful_tail(&e))),
             }
-            match probe_trainer_env(&venv_exe, gpu, "after the runtime install").verdict {
+            match probe_trainer_env(&venv_exe, gpu, device, "after the runtime install").verdict {
                 Preflight::TorchBroken(again) => tail = again,
                 _ => return Ok(()),
             }
@@ -1769,6 +2165,61 @@ pub fn clear_training_set(app: tauri::AppHandle, setId: String) -> Result<(), St
 
 // ── the training run ─────────────────────────────────────────────────────────
 
+/// The mixed-precision recipe a card's own compute capability can run.
+/// Nachbesserung after the Opus review of `0e826c22`/`4a3ba7a0`: `--mixed_precision
+/// bf16 --fp8_base --fp8_scaled --optimizer_type adamw8bit` used to be fixed
+/// regardless of the card.
+///
+/// `--fp8_base`/`--fp8_scaled` are weight STORAGE, not a compute path: read
+/// in the trainer's own source, `src/musubi_tuner/modules/fp8_optimization_utils.py:365-433`
+/// (`fp8_linear_forward_patch`). SM 8.9 is required only for `use_scaled_mm`
+/// (`torch._scaled_mm`, lines 409/411), which this recipe never sets; the
+/// default path (lines 418-433) dequantizes the stored fp8 weight back to
+/// bf16 and calls plain `F.linear`, which runs on any CUDA card. fp8 storage
+/// therefore stays on for any measured card, regardless of capability.
+///
+/// `--optimizer_type adamw8bit` stays on too: bitsandbytes' README states
+/// "SM60+ minimum" for its CUDA build, well below the floor bf16 itself
+/// needs (see below), so any card that clears bf16 clears this too.
+///
+/// bf16 is NOT optional the way `--mixed_precision fp16` would suggest, and
+/// this recipe never actually offers fp16 any more (Nachbesserung Runde 4,
+/// Opus review Runde 3 of bau/review-trainer.md): read in the trainer's own
+/// source, `src/musubi_tuner/zimage/zimage_utils.py:123` dequantizes the
+/// DiT's fp8 weight straight to `torch.bfloat16` on load, and
+/// `zimage_utils.py:211` wraps the text encoder cache step in
+/// `torch.autocast(dtype=torch.bfloat16)`, hardcoded, independent of
+/// `--mixed_precision`. A card without bf16 hardware therefore dies in the
+/// text encoder cache step regardless of what this recipe picks; `fp16` was
+/// never a rescue for this model, only a second, later, equally silent way
+/// to die. `capability_floor_refusal` (compute capability 8.0, Ampere) is
+/// what actually protects a card like this now, called before any card ever
+/// reaches this function: `install_character_trainer`/`provision_trainer_env`
+/// before the torch download, and `start_character_training` again before
+/// every run, download or not. This function can therefore assume any
+/// MEASURED capability it sees has already cleared that floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrainPrecision {
+    pub(crate) mixed_precision: &'static str,
+    pub(crate) save_precision: &'static str,
+    pub(crate) fp8: bool,
+    pub(crate) optimizer_type: &'static str,
+}
+
+/// `cap` is `None` only when the preflight could not read one at all (a
+/// probe that failed to run, or a non-NVIDIA card `capability_floor_refusal`
+/// has no opinion on), which should never reach step 3 on NVIDIA: kept
+/// conservative (fp16, no fp8, plain AdamW) rather than assuming the best
+/// case on an unmeasured card. Any MEASURED capability has already cleared
+/// `capability_floor_refusal`'s bf16 floor by the time it reaches here, see
+/// the doc comment on `TrainPrecision`.
+pub(crate) fn train_precision_for_capability(cap: Option<(u32, u32)>) -> TrainPrecision {
+    if cap.is_none() {
+        return TrainPrecision { mixed_precision: "fp16", save_precision: "fp16", fp8: false, optimizer_type: "AdamW" };
+    }
+    TrainPrecision { mixed_precision: "bf16", save_precision: "bf16", fp8: true, optimizer_type: "adamw8bit" }
+}
+
 /// The files and numbers one run of step 3 is made of.
 struct TrainStep<'a> {
     dit: &'a str,
@@ -1778,6 +2229,7 @@ struct TrainStep<'a> {
     steps: &'a str,
     out_dir: &'a str,
     out_name: &'a str,
+    precision: TrainPrecision,
 }
 
 /// Step 3, the train itself: the venv's own python runs musubi's trainer, the
@@ -1810,21 +2262,24 @@ struct TrainStep<'a> {
 fn training_command(vpy: &str, repo: &Path, step: &TrainStep<'_>) -> Command {
     let mut cmd = Command::new(vpy);
     // What `--num_cpu_threads_per_process 1` used to set, nothing more.
-    cmd.current_dir(repo).env("OMP_NUM_THREADS", "1").args([
-        "src/musubi_tuner/zimage_train_network.py",
+    cmd.current_dir(repo).env("OMP_NUM_THREADS", "1").arg("src/musubi_tuner/zimage_train_network.py").args([
         "--dit", step.dit,
         "--vae", step.vae,
         "--text_encoder", step.text_encoder,
         "--dataset_config", step.dataset,
-        "--sdpa", "--mixed_precision", "bf16",
-        "--fp8_base", "--fp8_scaled",
+    ]);
+    cmd.args(["--sdpa", "--mixed_precision", step.precision.mixed_precision]);
+    if step.precision.fp8 {
+        cmd.args(["--fp8_base", "--fp8_scaled"]);
+    }
+    cmd.args([
         "--blocks_to_swap", "16",
         "--timestep_sampling", "shift", "--weighting_scheme", "none", "--discrete_flow_shift", "2.0",
-        "--optimizer_type", "adamw8bit", "--learning_rate", "1e-4", "--gradient_checkpointing",
+        "--optimizer_type", step.precision.optimizer_type, "--learning_rate", "1e-4", "--gradient_checkpointing",
         "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
         "--network_module", "networks.lora_zimage", "--network_dim", "32",
         "--max_train_steps", step.steps,
-        "--save_precision", "bf16",
+        "--save_precision", step.precision.save_precision,
         "--seed", "42",
         "--output_dir", step.out_dir,
         "--output_name", step.out_name,
@@ -1914,6 +2369,10 @@ pub fn start_character_training(
     // ComfyUI's ACTUAL address here (user-configured host/port from AppState,
     // not a hardcoded localhost:8188) and move the verdict in.
     let comfy_vram_target = crate::commands::process::comfy_vram_target(state.inner());
+    // Same reason, same pattern: resolved for real (nvidia-smi and all)
+    // inside the thread, from the Hardware tab's own pick, so a repair mid
+    // run and the training step after it measure and train the same card.
+    let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
 
     std::thread::spawn(move || {
@@ -1961,16 +2420,33 @@ pub fn start_character_training(
         // install plans from, so the check and the repair cannot disagree
         // about what is in the machine.
         let gpu_label = training_gpu_label();
+        // Resolved once, used everywhere below: the same card the VRAM
+        // preflight measures is the one CUDA_VISIBLE_DEVICES pins the whole
+        // run to (Opus review of K3: measuring device 0 while training
+        // whatever the Hardware tab or the user's own environment chose was
+        // the same class of bug as pinning the run to a bare index).
+        let device = resolve_trainer_gpu(&gpu_selection);
+        match &device {
+            Some(d) => push_log(&run, &format!(
+                "Training on {} (index {}, {}, {}).",
+                d.name,
+                d.index,
+                d.source,
+                d.memory_mib.map_or("memory unknown".to_string(), |m| format!("{:.0} GB", m as f64 / 1024.0)),
+            )),
+            None => push_log(&run, "Could not identify a single NVIDIA card to pin the run to; letting the driver pick."),
+        }
 
         set_status(&run, "running", "Checking the training environment...");
-        let first = probe_trainer_env(&vpy, gpu_label, "first check");
+        let first = probe_trainer_env(&vpy, gpu_label, device.as_ref(), "first check");
         let verdict = first.verdict;
         let mut vram_mib = first.vram_mib;
+        let mut cap = first.cap;
         if !verdict.is_ok() {
             push_log(&run, &verdict.message());
             push_log(&run, "Repairing it now, no action needed. Your training images and base models are left alone.");
             let force = verdict.needs_torch_reinstall();
-            if let Err(e) = provision_trainer_env(&root, &python_bin, force, &run, "running", &cancel, &pid_slot) {
+            if let Err(e) = provision_trainer_env(&root, &python_bin, force, &run, "running", &cancel, &pid_slot, device.as_ref()) {
                 if e == "cancelled" {
                     set_status(&run, "cancelled", &e);
                     return;
@@ -1989,9 +2465,10 @@ pub fn start_character_training(
             // Only a SECOND failure is a dead end. Report what is still wrong
             // plus the tail of the repair log, so the message names the cause
             // instead of the symptom.
-            let repaired = probe_trainer_env(&vpy, gpu_label, "after repair");
+            let repaired = probe_trainer_env(&vpy, gpu_label, device.as_ref(), "after repair");
             let after = repaired.verdict;
             vram_mib = repaired.vram_mib;
+            cap = repaired.cap;
             if !after.is_ok() {
                 let tail = run.lock().ok()
                     .map(|st| st.logs.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join(" | "))
@@ -2008,9 +2485,35 @@ pub fn start_character_training(
         } else {
             env_broken.store(false, Ordering::SeqCst);
         }
-        // The card's memory, before ten minutes of caching: the recipe is a
-        // 12 GB recipe, and a smaller card dies in the first training step.
-        if let Some(msg) = vram_verdict(vram_mib) {
+        // Nachbesserung Runde 4: `provision_trainer_env`'s own
+        // `capability_floor_refusal` call only fires on a fresh install or a
+        // repair. A card that already has a HEALTHY environment (the common
+        // case on a second run) skips that whole branch and would otherwise
+        // reach `train_precision_for_capability` with a capability the
+        // recipe cannot actually honour. This is the same refusal, reusing
+        // the capability the preflight already measured instead of a second
+        // nvidia-smi call, so every run gets it, downloaded or not.
+        if let Some(c) = cap {
+            let name = device.as_ref().map_or("This GPU", |d| d.name.as_str());
+            if let Some(msg) = capability_floor_refusal(c, name) {
+                set_status(&run, "error", &msg);
+                return;
+            }
+        }
+        // The recipe, chosen from the same capability the preflight just
+        // read: the VRAM floor right below depends on it (Runde 2, a fixed
+        // 12 GB floor was precision-blind).
+        let precision = train_precision_for_capability(cap);
+        push_log(&run, &format!(
+            "Training recipe: {} mixed precision, fp8 weights {}, optimizer {}.",
+            precision.mixed_precision,
+            if precision.fp8 { "on" } else { "off" },
+            precision.optimizer_type,
+        ));
+
+        // The card's memory, before ten minutes of caching: below the
+        // recipe's own floor the run dies in the first training step.
+        if let Some(msg) = vram_verdict(vram_mib, &precision) {
             set_status(&run, "error", &msg);
             return;
         }
@@ -2034,6 +2537,9 @@ pub fn start_character_training(
             "--dataset_config", &toml_s,
             "--vae", &vae_s,
         ]);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c1, d);
+        }
         if let Err(e) = run_streamed(c1, "latent cache", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2053,6 +2559,9 @@ pub fn start_character_training(
             "--batch_size", "8",
             "--fp8_llm",
         ]);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c2, d);
+        }
         if let Err(e) = run_streamed(c2, "text encoder cache", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2088,7 +2597,7 @@ pub fn start_character_training(
         let steps_s = steps.to_string();
         let out_name = format!("char_{lora_name}_zimage");
         let out_dir_s = out_dir.to_string_lossy().to_string();
-        let c3 = training_command(&vpy_s, &repo, &TrainStep {
+        let mut c3 = training_command(&vpy_s, &repo, &TrainStep {
             dit: &dit_s,
             vae: &vae_s,
             text_encoder: &te_s,
@@ -2096,7 +2605,11 @@ pub fn start_character_training(
             steps: &steps_s,
             out_dir: &out_dir_s,
             out_name: &out_name,
+            precision,
         });
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c3, d);
+        }
         if let Err(e) = run_streamed(c3, "training", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2123,6 +2636,9 @@ pub fn start_character_training(
             "--output", &final_path.to_string_lossy(),
             "--target", "other",
         ]);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c4, d);
+        }
         if let Err(e) = run_streamed(c4, "lora convert", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2132,7 +2648,8 @@ pub fn start_character_training(
             &run,
             "complete",
             &format!(
-                "Character ready: {out_name}.safetensors is in your loras. Put '{trigger}' in a prompt on the Image tab with the LoRA active.",
+                "Character ready: {out_name}.safetensors is saved at {} and already in the LoRA picker on the Image tab. Put '{trigger}' in a prompt with the LoRA active.",
+                final_path.display(),
             ),
         );
         info!("character training complete");
@@ -2536,6 +3053,78 @@ mod tests {
         assert!(v.needs_torch_reinstall());
     }
 
+    /// The Opus review's lower bound (Nachbesserung 1): a card OLDER than
+    /// this build's kernel floor. `preflight_names_the_kernel_gap_on_blackwell_with_cu121`
+    /// above is the mirror case; this direction never had a test before.
+    #[test]
+    fn preflight_names_a_card_below_the_kernel_floor() {
+        use super::{preflight_verdict, Preflight};
+        // A hypothetical build whose kernels start at sm_70, read against a
+        // Maxwell-class card (compute capability 5.0). The concrete melder
+        // (Tesla P100, 6.0) is NOT this case -- both real channels carry
+        // kernels well below 6.0 -- which is exactly why this stays a
+        // synthetic, defensive test rather than a reproduction.
+        let out = "TORCH_OK 2.7.0+cu128\nCAP 5 0\nNAME Tesla M40\nARCHS sm_70 sm_75 sm_80 sm_86 sm_90\nMUSUBI_OK\n";
+        let v = preflight_verdict(true, out, "", Some("NVIDIA"));
+        assert_eq!(
+            v,
+            Preflight::CardBelowKernelFloor { cap_major: 5, cap_minor: 0, min: 7, name: Some("Tesla M40".to_string()) },
+        );
+        assert!(v.message().contains("Tesla M40"), "{}", v.message());
+        assert!(v.message().contains("5.0"), "{}", v.message());
+        assert!(v.message().contains("7.0"), "{}", v.message());
+        // No channel trainer_torch_plan picks would fix this: reinstalling is
+        // pointless, unlike KernelsTooOld where a newer channel might help.
+        assert!(!v.needs_torch_reinstall());
+    }
+
+    /// Nachbesserung Runde 2: the pre-download refusal, entirely separate
+    /// from `CardBelowKernelFloor` above (that one reads torch's OWN kernel
+    /// list, after ~2.5 GB already downloaded; this one reads nvidia-smi
+    /// alone, before any of it).
+    ///
+    /// Nachbesserung Runde 4 (Opus review Runde 3): the floor moved from
+    /// bitsandbytes' SM60 to compute capability 8.0. bitsandbytes was never
+    /// the real constraint; zimage_utils.py hardcodes bfloat16 in the text
+    /// encoder cache step regardless of `--mixed_precision`
+    /// (`src/musubi_tuner/zimage/zimage_utils.py:211`), so a card without
+    /// bf16 hardware dies there no matter what the optimizer floor allows.
+    #[test]
+    fn capability_floor_refuses_a_card_without_bf16_hardware() {
+        use super::capability_floor_refusal;
+        // Maxwell, compute capability 5.0: below the floor by a wide margin.
+        let msg = capability_floor_refusal((5, 0), "Tesla M40").expect("below the floor");
+        assert!(msg.contains("Tesla M40"), "{msg}");
+        assert!(msg.contains("5.0"), "{msg}");
+        assert!(msg.contains("8.0"), "names the floor: {msg}");
+        assert!(msg.contains("bfloat16"), "names the real reason: {msg}");
+        assert!(msg.contains("Cloud mode"), "names the way out: {msg}");
+    }
+
+    /// Tesla P100, sdrairsoft's card: compute capability 6.0. Runde 2 left
+    /// this card unrefused (bitsandbytes' own SM60 floor); Runde 3's review
+    /// found that wrong, since bf16 is hardcoded in the text encoder cache
+    /// step regardless of the optimizer. This is the concrete melder case
+    /// the fix protects.
+    #[test]
+    fn capability_floor_now_refuses_pascal_the_concrete_melder_case() {
+        use super::capability_floor_refusal;
+        let msg = capability_floor_refusal((6, 0), "Tesla P100").expect("Pascal has no bf16 hardware");
+        assert!(msg.contains("Tesla P100"), "{msg}");
+        assert!(msg.contains("6.0"), "{msg}");
+        assert!(msg.contains("bfloat16"), "{msg}");
+    }
+
+    #[test]
+    fn capability_floor_clears_ampere_the_proof_box_case() {
+        use super::capability_floor_refusal;
+        // RTX 3060, our own proof box: compute capability 8.6, above the
+        // 8.0 floor.
+        assert!(capability_floor_refusal((8, 6), "GeForce RTX 3060").is_none());
+        // Exactly the floor clears it too.
+        assert!(capability_floor_refusal((8, 0), "Some Ampere Card").is_none());
+    }
+
     #[test]
     fn preflight_catches_the_trainer_package_a_healthy_torch_hides() {
         use super::{preflight_verdict, Preflight};
@@ -2672,6 +3261,133 @@ mod tests {
         );
     }
 
+    /// K3, 2026-09-18, nachgebessert nach dem Opus-Review: `pin_trainer_gpu`,
+    /// not `trainer_child_env`, is what keeps `torch.cuda.device_count() > 1`
+    /// from being true inside a trainer child: the review's finding that a
+    /// hardcoded index "0" is neither guaranteed to be the strong card nor
+    /// respects the Hardware tab's own picker or a user-set
+    /// `CUDA_VISIBLE_DEVICES`.
+    #[test]
+    fn pin_trainer_gpu_narrows_the_child_to_the_chosen_card() {
+        let mut cmd = std::process::Command::new("python");
+        let choice = super::TrainerGpuChoice {
+            index: 1,
+            name: "RTX 3090 Ti".to_string(),
+            memory_mib: Some(24564),
+            source: "the Hardware tab's GPU selection",
+        };
+        super::pin_trainer_gpu(&mut cmd, &choice);
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&("CUDA_VISIBLE_DEVICES".into(), Some("1".into()))),
+            "the chosen card's index is not what the child sees: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "BLOCKER B2 (Runde 2): without this, CUDA's own FASTEST_FIRST default \
+             can pin a different physical card than the index promises: {envs:?}",
+        );
+    }
+
+    /// The priority order the review asked for: the Hardware tab's own pick
+    /// wins, then a `CUDA_VISIBLE_DEVICES` already on the process, then the
+    /// card with the most memory -- never a bare index 0.
+    #[test]
+    fn choose_trainer_gpu_prefers_the_hardware_tab_pick() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "RTX 3050".into(),
+                memory_mib: Some(8192),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "RTX 3090 Ti".into(),
+                memory_mib: Some(24564),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection { vendor: "nvidia".into(), indices: vec![1] };
+        let choice = super::choose_trainer_gpu(&cards, &selection, None).expect("a card was chosen");
+        assert_eq!(choice.index, 1);
+        assert_eq!(choice.source, "the Hardware tab's GPU selection");
+    }
+
+    /// Without a Hardware-tab pick, a `CUDA_VISIBLE_DEVICES` the user already
+    /// set on the process is respected, narrowed to its strongest entry, not
+    /// overwritten with a default.
+    #[test]
+    fn choose_trainer_gpu_respects_an_existing_cuda_visible_devices() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "Tesla P100 (display)".into(),
+                memory_mib: Some(4096),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "Tesla P100".into(),
+                memory_mib: Some(16384),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection::default();
+        let choice = super::choose_trainer_gpu(&cards, &selection, Some("1")).expect("a card was chosen");
+        assert_eq!(choice.index, 1);
+        assert_eq!(choice.source, "the CUDA_VISIBLE_DEVICES already set for this process");
+    }
+
+    /// Neither a Hardware-tab pick nor an existing env var: the card with the
+    /// most memory wins, not index 0. CUDA without `CUDA_DEVICE_ORDER` sorts
+    /// fastest-first, which is not the same promise.
+    #[test]
+    fn choose_trainer_gpu_falls_back_to_the_most_memory_not_index_zero() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "RTX 3050".into(),
+                memory_mib: Some(8192),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "RTX 3090 Ti".into(),
+                memory_mib: Some(24564),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection::default();
+        let choice = super::choose_trainer_gpu(&cards, &selection, None).expect("a card was chosen");
+        assert_eq!(choice.index, 1, "index 0 was chosen instead of the card with more memory");
+        assert_eq!(choice.source, "the card with the most memory");
+    }
+
     /// Positive control, path 1 of 2: the setup's own smoke test. It runs
     /// `python -c "import torch ..."` outside run_child, so its environment is
     /// its own and has to carry the same knob.
@@ -2708,6 +3424,7 @@ mod tests {
                 steps: "400",
                 out_dir: "/t/out",
                 out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 9))),
             },
         );
         super::trainer_child_env(&mut cmd);
@@ -2738,6 +3455,7 @@ mod tests {
                 steps: "400",
                 out_dir: "/t/out",
                 out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 9))),
             },
         );
         assert_eq!(
@@ -2764,6 +3482,74 @@ mod tests {
             !code.contains("accelerate.exe") && !code.contains("\"launch\""),
             "the accelerate launcher is back in the production code",
         );
+    }
+
+    // ── Nachbesserung 1 (Runde 4 corrected again): bf16 is not optional for
+    // this model, so it is no longer part of what this function decides ──
+    // Runde 2 had bf16 fall back to fp16 below compute capability 8.0. Runde
+    // 3's Opus review found that fp16 was never a real rescue: zimage_utils.py
+    // hardcodes bfloat16 in the text encoder cache step regardless of
+    // `--mixed_precision` (see the doc comment on TrainPrecision), so a card
+    // that cannot do bf16 dies there anyway. `capability_floor_refusal` now
+    // refuses such a card before this function is ever called with its
+    // capability, which makes the old fp16 branch dead code: deleted.
+
+    #[test]
+    fn train_precision_gives_any_measured_card_the_full_bf16_recipe() {
+        use super::train_precision_for_capability;
+        // Every one of these has already cleared capability_floor_refusal's
+        // 8.0 floor in practice; the function no longer branches on the
+        // exact number, only on whether one was measured at all.
+        for cap in [(8, 0), (8, 6), (8, 9), (9, 0), (12, 0)] {
+            let p = train_precision_for_capability(Some(cap));
+            assert_eq!(p.mixed_precision, "bf16", "{cap:?}");
+            assert_eq!(p.save_precision, "bf16", "{cap:?}");
+            assert!(p.fp8, "{cap:?}");
+            assert_eq!(p.optimizer_type, "adamw8bit", "{cap:?}");
+        }
+    }
+
+    #[test]
+    fn train_precision_with_no_measured_capability_stays_conservative() {
+        use super::train_precision_for_capability;
+        let unknown = train_precision_for_capability(None);
+        assert_eq!(unknown.mixed_precision, "fp16");
+        assert!(!unknown.fp8, "an unmeasured card gets the fully conservative recipe, fp8 included");
+        assert_eq!(unknown.optimizer_type, "AdamW");
+    }
+
+    /// Positive control: sdrairsoft's Tesla P100 (compute capability 6.0)
+    /// must never reach `training_command` at all any more; it is refused
+    /// by `capability_floor_refusal` before the trainer environment is even
+    /// installed. See `capability_floor_now_refuses_pascal_the_concrete_melder_case`.
+    #[test]
+    fn pascal_is_refused_before_training_command_is_ever_built() {
+        use super::capability_floor_refusal;
+        assert!(
+            capability_floor_refusal((6, 0), "Tesla P100").is_some(),
+            "a card this function would have to build fp16 for must be refused first",
+        );
+    }
+
+    #[test]
+    fn the_training_command_keeps_fp8_on_an_ampere_card() {
+        let cmd = super::training_command(
+            "/tmp/venv/bin/python",
+            std::path::Path::new("/tmp/musubi-tuner"),
+            &super::TrainStep {
+                dit: "/m/dit.safetensors",
+                vae: "/m/ae.safetensors",
+                text_encoder: "/m/qwen.safetensors",
+                dataset: "/t/set.toml",
+                steps: "400",
+                out_dir: "/t/out",
+                out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 6))),
+            },
+        );
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "--fp8_base"), "the 3060 proof box needs fp8 to fit in 12 GB: {args:?}");
+        assert!(args.iter().any(|a| a == "--fp8_scaled"), "{args:?}");
     }
 
     #[test]
@@ -2862,7 +3648,7 @@ mod shutdown_tests {
     #[test]
     fn a_venv_whose_python_no_longer_starts_gets_rebuilt() {
         use super::{venv_action, venv_create_args, VenvAction};
-        assert_eq!(venv_action(true, None), VenvAction::Rebuild);
+        assert_eq!(venv_action(true, None, true), VenvAction::Rebuild);
         // A rebuild must clear: the old site-packages belongs to an
         // interpreter that no longer exists, and pip would repair on top of it.
         assert_eq!(venv_create_args(VenvAction::Rebuild), ["-m", "venv", "--clear"]);
@@ -2871,11 +3657,11 @@ mod shutdown_tests {
     #[test]
     fn a_working_venv_is_kept_and_a_missing_one_is_created() {
         use super::{venv_action, venv_create_args, VenvAction};
-        assert_eq!(venv_action(true, Some("3.11.7")), VenvAction::Keep);
-        assert_eq!(venv_action(false, None), VenvAction::Create);
+        assert_eq!(venv_action(true, Some("3.11.7"), true), VenvAction::Keep);
+        assert_eq!(venv_action(false, None, true), VenvAction::Create);
         // POSIX: venv/bin/python is a symlink, so a dead base already shows up
         // as absent. That is why this only ever bit Windows.
-        assert_eq!(venv_action(false, Some("3.12.1")), VenvAction::Create);
+        assert_eq!(venv_action(false, Some("3.12.1"), true), VenvAction::Create);
         assert_eq!(venv_create_args(VenvAction::Create), ["-m", "venv"]);
         assert_eq!(venv_create_args(VenvAction::Keep), ["-m", "venv"]);
     }
@@ -2892,12 +3678,30 @@ mod shutdown_tests {
     #[test]
     fn a_venv_from_a_python_the_trainer_cannot_use_is_rebuilt_not_kept() {
         use super::{venv_action, VenvAction};
-        assert_eq!(venv_action(true, Some("3.14.6")), VenvAction::Rebuild, "sockenmonster's venv");
-        assert_eq!(venv_action(true, Some("3.13.5")), VenvAction::Rebuild, "the box's newest Python");
-        assert_eq!(venv_action(true, Some("3.9.13")), VenvAction::Rebuild, "too old is as wrong as too new");
+        assert_eq!(venv_action(true, Some("3.14.6"), true), VenvAction::Rebuild, "sockenmonster's venv");
+        assert_eq!(venv_action(true, Some("3.13.5"), true), VenvAction::Rebuild, "the box's newest Python");
+        assert_eq!(venv_action(true, Some("3.9.13"), true), VenvAction::Rebuild, "too old is as wrong as too new");
         for v in ["3.10.6", "3.11.7", "3.12.1"] {
-            assert_eq!(venv_action(true, Some(v)), VenvAction::Keep, "{v}");
+            assert_eq!(venv_action(true, Some(v), true), VenvAction::Keep, "{v}");
         }
+    }
+
+    /// K4, nachgebessert nach dem Opus-Review: before this, `arch_ok` did not
+    /// exist and a venv built from a 32-bit or ARM64 Python 3.11 -- a version
+    /// `trainer_supports_python` accepts -- always read Keep on this Keep
+    /// path, so "delete the 3.11 environment" (gekiritz was told this) had
+    /// nothing to do here: the NEXT setup run rebuilt with the same bad
+    /// interpreter, because nothing on the Keep path ever asked its
+    /// architecture.
+    #[test]
+    fn a_venv_from_the_wrong_architecture_is_rebuilt_even_with_a_good_version() {
+        use super::{venv_action, VenvAction};
+        assert_eq!(
+            venv_action(true, Some("3.11.7"), false),
+            VenvAction::Rebuild,
+            "a right-looking version must not save a wrong-architecture venv",
+        );
+        assert_eq!(venv_action(true, Some("3.11.7"), true), VenvAction::Keep);
     }
 
     #[test]
@@ -2938,10 +3742,12 @@ mod shutdown_tests {
     #[test]
     fn when_no_python_fits_the_message_names_what_is_there_and_where_to_get_one() {
         use super::{install_failed_message, no_trainer_python_message, repair_aborted_message, Preflight};
-        let found = vec!["3.14.6".to_string()];
+        let found = vec![("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())];
         let win = no_trainer_python_message(&found, "windows", true);
         assert!(win.contains("3.10, 3.11 or 3.12"), "{win}");
         assert!(win.contains("has Python 3.14.6"), "{win}");
+        // K4: the path is what tells two same-version Pythons apart.
+        assert!(win.contains("at C:\\Python314\\python.exe"), "{win}");
         assert!(win.contains("winget") && win.contains("python.org/downloads/windows"), "{win}");
         assert!(win.contains("Set up trainer"), "{win}");
         // Settings > Install Python short-circuits as soon as ANY Python exists,
@@ -3000,7 +3806,7 @@ mod shutdown_tests {
         let step2 = &src[src.find("    // 2) venv").expect("step 2 marker")..];
         let step2 = &step2[..step2.find("// 3) torch").expect("step 3 marker")];
         assert!(
-            step2.contains("venv_action(exists, venv_version.as_deref())"),
+            step2.contains("venv_action(exists, venv_version.as_deref(), venv_arch_ok)"),
             "step 2 must decide with venv_action on the venv's version, not with a bare exists()",
         );
         assert!(
@@ -3089,7 +3895,7 @@ mod shutdown_tests {
     #[test]
     fn an_error_that_already_names_its_button_is_left_alone() {
         use super::{install_failed_message, no_trainer_python_message, repair_aborted_message, Preflight};
-        let eigen = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        let eigen = no_trainer_python_message(&[("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())], "windows", false);
         assert_eq!(install_failed_message(&eigen), eigen);
         assert_eq!(
             repair_aborted_message(&Preflight::TorchBroken("x".into()), &eigen),
@@ -3426,13 +4232,49 @@ mod journey_tests {
         assert!(TORCH_PREFLIGHT_PY.contains("VRAM_MIB"), "the probe script has to print it");
         assert_eq!(parse_vram_mib("TORCH_OK 2.5.1\nCUDA 1\nCAP 8 6\nARCHS sm_86\nVRAM_MIB 12288\n"), Some(12288));
         assert_eq!(parse_vram_mib("TORCH_OK 2.5.1\nCUDA 0\n"), None);
-        assert!(vram_verdict(Some(12288)).is_none(), "the box's 12 GB card trains");
-        assert!(vram_verdict(Some(16 * 1024)).is_none());
-        assert!(vram_verdict(None).is_none(), "no card reported is the processor case, handled elsewhere");
-        let small = vram_verdict(Some(8 * 1024)).expect("8 GB is below the floor");
+        let fp8_on = train_precision_for_capability(Some((8, 6)));
+        assert!(vram_verdict(Some(12288), &fp8_on).is_none(), "the box's 12 GB card trains");
+        assert!(vram_verdict(Some(16 * 1024), &fp8_on).is_none());
+        assert!(vram_verdict(None, &fp8_on).is_none(), "no card reported is the processor case, handled elsewhere");
+        let small = vram_verdict(Some(8 * 1024), &fp8_on).expect("8 GB is below the floor");
         assert!(small.contains("8 GB"), "{small}");
         assert!(small.contains("12 GB"), "{small}");
         assert!(small.contains("Cloud mode"), "names the way that works: {small}");
+    }
+
+    /// Nachbesserung Runde 2: the floor moves with the precision that will
+    /// actually run. An unmeasured card (fp8 off, the fully conservative
+    /// fallback) needs more headroom than the fp8-on floor the 3060 box
+    /// proved -- a card between the two floors must be refused only in the
+    /// no-fp8 case, not the fp8 one.
+    #[test]
+    fn vram_floor_follows_the_chosen_precision_not_a_fixed_number() {
+        let fp8_on = train_precision_for_capability(Some((8, 6)));
+        let fp8_off = train_precision_for_capability(None);
+        assert!(fp8_on.fp8);
+        assert!(!fp8_off.fp8);
+        let between = 16 * 1024; // 16 GB: above the fp8 floor, below the no-fp8 one.
+        assert!(vram_verdict(Some(between), &fp8_on).is_none(), "16 GB trains fine with fp8 on");
+        let msg = vram_verdict(Some(between), &fp8_off).expect("16 GB is below the no-fp8 floor");
+        assert!(msg.contains("16 GB"), "{msg}");
+        assert!(msg.contains("24 GB"), "names the higher floor: {msg}");
+    }
+
+    /// Nachbesserung Runde 4: `provision_trainer_env`'s own
+    /// `capability_floor_refusal` call only runs on a fresh install or a
+    /// repair. A card with an already-healthy environment (the common case
+    /// on every run after the first) skipped that branch entirely and would
+    /// have reached `train_precision_for_capability` unrefused -- this
+    /// wiring test pins the second call site `start_character_training`
+    /// needs so that gap cannot come back silently.
+    #[test]
+    fn every_run_checks_the_capability_floor_before_choosing_a_precision() {
+        let src = include_str!("trainer.rs");
+        let body = &src[src.find("pub fn start_character_training").expect("start fn")..];
+        let body = &body[..body.find("pub fn character_training_status").expect("end of run")];
+        let floor_at = body.find("capability_floor_refusal(").expect("the run checks the floor at all");
+        let precision_at = body.find("train_precision_for_capability(cap)").expect("the run picks a precision");
+        assert!(floor_at < precision_at, "the floor must be checked before a precision is chosen, not after");
     }
 
     #[test]
@@ -3491,7 +4333,7 @@ mod journey_tests {
         assert!(!body.contains("Command::new(\"git\")"), "provision itself must not require git");
         assert!(body.contains("disk_room_message(root, free, needed_gib)"), "room is asked before the first byte");
         assert_eq!(body.matches("pip_with_retry(").count(), 2, "both pip steps retry a dropped download");
-        assert!(body.contains("probe_trainer_env(&venv_exe, gpu, \"after setup\")"), "the setup proves the environment loads");
+        assert!(body.contains("probe_trainer_env(&venv_exe, gpu, device, \"after setup\")"), "the setup proves the environment loads");
         assert!(body.contains("winget_install(\"Microsoft.VCRedist.2015+.x64\", false"), "the runtime is installed, not linked");
         let base = &src[src.find("fn trainer_base_python(").expect("base")..];
         let base = &base[..base.find("fn musubi_source_marker").expect("end of base")];
@@ -3520,7 +4362,7 @@ mod journey_tests {
         // The sentence names the versions, and the range is the one musubi and
         // the wheels agree on.
         assert_eq!(TRAINER_PYTHON_RANGE, "3.10, 3.11 or 3.12");
-        let msg = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        let msg = no_trainer_python_message(&[("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())], "windows", false);
         assert!(msg.contains("3.10, 3.11 or 3.12"), "{msg}");
         assert!(msg.contains("3.14.6"), "the message names what is on the machine: {msg}");
         assert!(!trainer_supports_python("3.13.0") && !trainer_supports_python("3.14.6"));

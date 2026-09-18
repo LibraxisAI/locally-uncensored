@@ -214,7 +214,20 @@ export function CreateExpProvider({ children }: { children: ReactNode }) {
       })
     } catch { /* node probe is best-effort */ }
   }, [connected, setCaps])
-  useEffect(() => { void refreshModelLists() }, [refreshModelLists])
+  // K3 proof-vorgabe Station 10 / GH #109, the completion case: a character
+  // trained locally lands in models/loras the same way a manually dropped
+  // .safetensors does, and needed the same manual Rescan click to appear in
+  // the LoRA stack. `bumpCharactersVersion()` already fires the moment
+  // `useCreate` sees the run finish (`src/hooks/useCreate.ts`); reusing it
+  // here instead of adding a second "training done" signal keeps the picker
+  // in sync with zero clicks, matching what the finished-training message
+  // now claims. Runde 2 (Opus review): this ALSO replaces the plain
+  // "refresh once on connect" effect the round-1 fix had; connected flips
+  // once per session and charactersVersion starts at the same value, so the
+  // dependency below already fires on mount, a second effect only refreshed
+  // twice on every connect.
+  const charactersVersion = useCreateStore((s) => s.charactersVersion)
+  useEffect(() => { void refreshModelLists() }, [charactersVersion, refreshModelLists])
 
   // Rebuild the ComfyUI venv via the same status contract the installer uses,
   // narrating pip's progress (GH #98). Throws with the last log line on error.

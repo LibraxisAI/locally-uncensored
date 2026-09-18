@@ -435,6 +435,55 @@ pub fn python_version(exe: &str) -> Option<String> {
     if v.is_empty() { None } else { Some(v) }
 }
 
+/// True for a 64-bit x86 interpreter, the only architecture PyTorch's Windows
+/// CUDA wheels exist for. `bits` is `struct.calcsize('P') * 8`, which is what
+/// actually answers "32-bit or 64-bit": a 32-bit interpreter running under
+/// WOW64 on a 64-bit Windows still reports `platform.machine() == "AMD64"`,
+/// because that reads the OS, not the process. `machine` is
+/// `platform.machine()`, which is what actually answers "x86 or ARM": a
+/// native ARM64 interpreter is genuinely 64-bit, and torch still has no
+/// Windows wheel for it. Both have to agree.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn is_trainer_arch(bits: u32, machine: &str) -> bool {
+    bits == 64 && machine.eq_ignore_ascii_case("AMD64")
+}
+
+/// [`python_version`] plus [`is_trainer_arch`] in one process spawn.
+///
+/// gekiritz (Discord, 2026-09-16): "Set up trainer" kept reporting "the
+/// Python in the trainer environment ... needs 3.10, 3.11 or 3.12", rebuilt
+/// on request, and kept failing the same way. `python_version` alone cannot
+/// see why: it only reads `sys.version_info`, which a 32-bit or ARM64 Python
+/// 3.11/3.12 answers exactly like a normal one. Such an interpreter passes
+/// every check `trainer_base_python` runs, builds a venv that looks complete,
+/// and only dies once pip actually resolves torch, with "Could not find a
+/// version that satisfies the requirement torch", which `pip_failure_kind`
+/// reads as `NoMatchingWheel` and reports as the wrong-Python-version
+/// message. The version was never the problem, so the button that message
+/// points at chose the same interpreter again on every retry.
+#[cfg(target_os = "windows")]
+pub fn python_version_and_arch(exe: &str) -> Option<(String, bool)> {
+    let out = python_command(exe)
+        .args([
+            "-c",
+            "import struct,platform;print('%d.%d.%d'%__import__('sys').version_info[:3]);print(struct.calcsize('P')*8);print(platform.machine())",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let version = lines.next().unwrap_or("").trim().to_string();
+    let bits: u32 = lines.next().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+    let machine = lines.next().unwrap_or("").trim().to_string();
+    if version.is_empty() {
+        return None;
+    }
+    Some((version, is_trainer_arch(bits, &machine)))
+}
+
 /// Every interpreter this machine has, LU's usual order, duplicates and the
 /// Store stub dropped. `get_python_bin` answers "which Python does LU use";
 /// a lane whose wheels stop at a version has to ask "which Pythons are
@@ -1006,6 +1055,32 @@ mod tests {
         fs::create_dir_all(tmp.join("NotPython").join("nested")).unwrap();
         assert!(scan_python_subdirs(&tmp, "test").is_none());
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // ── K4: a 64-bit interpreter can still be the wrong architecture ────────
+    // (gekiritz, Discord 2026-09-16: a 3.11/3.12 that passes every version
+    // check and still cannot install torch).
+
+    #[test]
+    fn a_64_bit_x86_interpreter_is_the_only_one_the_trainer_wants() {
+        assert!(is_trainer_arch(64, "AMD64"));
+        // platform.machine() case varies by Python build; the check must not.
+        assert!(is_trainer_arch(64, "amd64"));
+    }
+
+    #[test]
+    fn a_native_arm64_interpreter_is_64_bit_and_still_wrong() {
+        // The pointer-size check alone would let this through: ARM64 Windows
+        // Python is genuinely 64-bit, torch just has no wheel for it.
+        assert!(!is_trainer_arch(64, "ARM64"));
+    }
+
+    #[test]
+    fn a_32_bit_interpreter_is_wrong_even_when_wow64_says_amd64() {
+        // A 32-bit interpreter on 64-bit Windows still reports
+        // platform.machine() == "AMD64" (that reads the OS, not the
+        // process); struct.calcsize('P') is the one that catches it.
+        assert!(!is_trainer_arch(32, "AMD64"));
     }
 
     // ── the launcher registry, read for a lane that needs a versioned Python ─
