@@ -60,7 +60,17 @@ const params = {
 function vaeEnum(list: string[]) {
   vi.mocked(localFetch).mockResolvedValue({
     ok: true,
-    json: async () => ({ VAELoader: { input: { required: { vae_name: [list] } } } }),
+    // K2: findMatchingClipVision() probes /object_info/CLIPVisionLoader and
+    // findFramePackCLIPPair (Punkt 2 of the nachbessert list) probes
+    // /object_info/CLIPLoader for the text_encoders folder listing, same
+    // live-list-first fix as the VAE above, just for FramePack's other two
+    // loader nodes. The mock answers every /object_info/<node> call with the
+    // same body regardless of which node was asked for, so it needs all keys.
+    json: async () => ({
+      VAELoader: { input: { required: { vae_name: [list] } } },
+      CLIPVisionLoader: { input: { required: { clip_name: [['sigclip_vision_patch14_384.safetensors']] } } },
+      CLIPLoader: { input: { required: { clip_name: [['clip_l.safetensors', 'llava_llama3_fp8_scaled.safetensors']] } } },
+    }),
   } as never)
 }
 
@@ -130,5 +140,37 @@ describe('the built FramePack graph', () => {
   it('a disk without the 1.0 VAE fails with the download hint, not a ComfyUI 400', async () => {
     vaeEnum([VAE_15])
     await expect(buildDynamicWorkflow(params as never)).rejects.toThrow(/No FramePack VAE found.*hunyuan_video_vae_bf16/s)
+  })
+
+  // K2 nachbessert (Punkt 2): DualCLIPLoader's clip_name1/clip_name2 used to
+  // be hardcoded literals ('clip_l.safetensors' / 'llava_llama3_fp8_scaled.
+  // safetensors') REGARDLESS of the live CLIP enum. This mock answers with
+  // DIFFERENT filenames (a plausible post-3.0 folder rename), so the test
+  // only passes if the values genuinely came from findFramePackCLIPPair.
+  it('DualCLIPLoader uses whatever the live CLIP enum actually names, not the historic literal filenames', async () => {
+    vi.mocked(localFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        VAELoader: { input: { required: { vae_name: [BOTH_VAES] } } },
+        CLIPVisionLoader: { input: { required: { clip_name: [['sigclip_vision_patch14_384.safetensors']] } } },
+        CLIPLoader: { input: { required: { clip_name: [['text_encoders/clip_l.safetensors', 'text_encoders/llava_llama3_fp8_scaled.safetensors']] } } },
+      }),
+    } as never)
+    const wf = await buildDynamicWorkflow(params as never)
+    const [, dualClip] = Object.entries(wf).find(([, v]) => v.class_type === 'DualCLIPLoader')!
+    expect(dualClip.inputs?.clip_name1).toBe('text_encoders/clip_l.safetensors')
+    expect(dualClip.inputs?.clip_name2).toBe('text_encoders/llava_llama3_fp8_scaled.safetensors')
+  })
+
+  it('a disk missing the llava_llama3 encoder fails with the download hint, not a ComfyUI 400', async () => {
+    vi.mocked(localFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        VAELoader: { input: { required: { vae_name: [BOTH_VAES] } } },
+        CLIPVisionLoader: { input: { required: { clip_name: [['sigclip_vision_patch14_384.safetensors']] } } },
+        CLIPLoader: { input: { required: { clip_name: [['clip_l.safetensors']] } } },
+      }),
+    } as never)
+    await expect(buildDynamicWorkflow(params as never)).rejects.toThrow(/No FramePack llava_llama3 text encoder found/)
   })
 })

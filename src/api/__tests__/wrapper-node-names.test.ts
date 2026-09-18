@@ -44,7 +44,7 @@ const CORE_NODES = new Set([
   'LoadVideo', 'AudioEncoderLoader',
   // conditioning
   'CLIPTextEncode', 'CLIPSetLastLayer', 'CLIPVisionEncode', 'ConditioningZeroOut',
-  'InpaintModelConditioning', 'AudioEncoderEncode', 'ModelSamplingSD3',
+  'InpaintModelConditioning', 'AudioEncoderEncode', 'ModelSamplingSD3', 'ModelSamplingAuraFlow',
   'SVD_img2vid_Conditioning', 'VideoLinearCFGGuidance',
   // latents
   'EmptyLatentImage', 'EmptyLTXVLatentVideo', 'Wan22ImageToVideoLatent', 'TrimVideoLatent',

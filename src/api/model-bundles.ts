@@ -237,6 +237,42 @@ export function getImageBundles(): ModelBundle[] {
         },
       ],
     },
+    // K9 nachbessert Runde 3 (GH #136): Krea 2 checkpoints come from LU's
+    // built-in CivitAI search, not this catalog, so there is no "Krea 2"
+    // checkpoint bundle here to attach these to. Without an entry the
+    // "Download X from the Model Manager" text findMatchingVAE/findMatchingCLIP
+    // throw (comfyui.ts) named two files the Model Manager had no way to
+    // actually get, so a customer who followed the message got stuck at the
+    // next step. Companions-only bundle, same pattern as every other type's
+    // files array, so the get-path is real: search "Krea 2" in the Model
+    // Manager, download both, done. Addresses verified reachable via HEAD
+    // (2026-09-18) against the official Comfy-Org/Krea-2 repackage.
+    {
+      name: 'Krea 2 Companion Files (Text Encoder + VAE)',
+      description: 'Not a checkpoint: the two files a Krea 2 CivitAI download needs alongside it (text encoder + VAE). Get the checkpoint itself from CivitAI search first.',
+      tags: ['Krea 2', 'Companion Files', 'Text Encoder', 'VAE'],
+      verified: true,
+      totalSizeGB: 5.5,
+      vramRequired: 'depends on the checkpoint',
+      workflow: 'krea2',
+      url: 'https://huggingface.co/Comfy-Org/Krea-2',
+      files: [
+        {
+          name: 'Qwen3-VL 4B Text Encoder (FP8)',
+          description: 'Required text encoder for Krea 2 (matches the "qwen3vl_4b_fp8_scaled" pipeline, e.g. LUSTIFY! v10 Krea2).',
+          pulls: '', tags: ['Text Encoder', '4.9 GB'], updated: '',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors',
+          filename: 'qwen3vl_4b_fp8_scaled.safetensors', subfolder: 'text_encoders', sizeGB: 4.9,
+        },
+        {
+          name: 'Qwen Image VAE',
+          description: 'Required autoencoder for Krea 2 (matches the "qwen_image_vae" pipeline variant).',
+          pulls: '', tags: ['VAE', '242 MB'], updated: '',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors',
+          filename: 'qwen_image_vae.safetensors', subfolder: 'vae', sizeGB: 0.24,
+        },
+      ],
+    },
     {
       name: 'Z-Image Turbo (Unfiltered, Fast)',
       description: 'Explicitly unfiltered image model. 8 to 15 seconds per image. No safety filters. Text to Image and Image to Image.',

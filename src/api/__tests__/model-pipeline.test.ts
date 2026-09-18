@@ -151,25 +151,25 @@ describe('COMPONENT_REGISTRY', () => {
   })
 
   it('FLUX 1 uses T5 encoder', () => {
-    expect(COMPONENT_REGISTRY.flux.clip!.patterns).toContain('t5xxl')
+    expect(COMPONENT_REGISTRY.flux.clip!.matchPatterns).toContain('t5xxl')
   })
 
   it('FLUX 2 uses Qwen/Mistral encoder (NOT T5)', () => {
-    const patterns = COMPONENT_REGISTRY.flux2.clip!.patterns
+    const patterns = COMPONENT_REGISTRY.flux2.clip!.matchPatterns
     expect(patterns).toContain('qwen')
     expect(patterns).not.toContain('t5xxl')
   })
 
   it('Wan uses UMT5 encoder', () => {
-    expect(COMPONENT_REGISTRY.wan.clip!.patterns).toContain('umt5')
+    expect(COMPONENT_REGISTRY.wan.clip!.matchPatterns).toContain('umt5')
   })
 
   it('Hunyuan uses Qwen encoder', () => {
-    expect(COMPONENT_REGISTRY.hunyuan.clip!.patterns).toContain('qwen')
+    expect(COMPONENT_REGISTRY.hunyuan.clip!.matchPatterns).toContain('qwen')
   })
 
   it('LTX uses Gemma encoder', () => {
-    expect(COMPONENT_REGISTRY.ltx.clip!.patterns).toContain('gemma')
+    expect(COMPONENT_REGISTRY.ltx.clip!.matchPatterns).toContain('gemma')
   })
 
   it('every downloadUrl is HTTPS', () => {
@@ -203,10 +203,10 @@ describe('Encoder-Type consistency', () => {
       const reg = COMPONENT_REGISTRY[type as ModelType]
       if (!reg.clip) return
       // At least one pattern should be in the expected list
-      const hasMatch = reg.clip.patterns.some(p =>
+      const hasMatch = reg.clip.matchPatterns.some(p =>
         expected.encoderPatterns.some(e => p.includes(e) || e.includes(p))
       )
-      expect(hasMatch, `${type}: registry patterns ${reg.clip.patterns} should overlap with ${expected.encoderPatterns}`).toBe(true)
+      expect(hasMatch, `${type}: registry patterns ${reg.clip.matchPatterns} should overlap with ${expected.encoderPatterns}`).toBe(true)
     })
   }
 })

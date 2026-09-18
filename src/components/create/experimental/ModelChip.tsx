@@ -2,11 +2,23 @@ import { useCreateStore } from '../../../stores/createStore'
 import { useCloudCatalogStore, defaultCloudModel, opPickerModels, modelCostHint } from '../../../stores/cloudCatalogStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { useUIStore } from '../../../stores/uiStore'
+import { useContentPolicy } from '../../../hooks/useContentPolicy'
 import { Select, type SelectOption } from '../ui/Select'
 import { TYPE_BADGE } from './badges'
 import { resolveLocalOpPick, videoLaneModels } from '../../../api/comfyui'
 
 const CLOUD_BADGE = { label: 'Cloud', color: 'bg-violet-500/15 text-violet-500 dark:text-violet-200' }
+// C2: the "No refusals" mark on models the provider ships with its own
+// filter off (CloudModel.adult, web parity: apps/web/components/create/
+// experimental/ModelChip.tsx). The mark says what the MODEL can do and
+// decides nothing itself: while the account's content policy still filters
+// (anything but 'off'), it stays pale, since the account setting is the
+// boundary, not the model. No adult vocabulary here, this surface sits on
+// the payment domain.
+const NO_REFUSALS_COLOR = {
+  filtering: 'text-gray-500 dark:text-gray-600',
+  open: 'text-purple-600 dark:text-purple-300',
+}
 
 // Local-mode discovery (2.5.8): hosted models ride at the bottom of the local
 // picker as teaser rows — picking one opens the Cloud sheet instead of
@@ -35,6 +47,7 @@ function CloudModelChip() {
   // slider live so the shown price is the billed price (A3, sockenmonster).
   const musicDuration = useCreateStore((s) => s.musicDuration)
   const models = useCloudCatalogStore((s) => s.models)
+  const contentPolicy = useContentPolicy()
 
   const isVideo = mode === 'video'
   const kind = isVideo ? 'video' : 'image'
@@ -80,7 +93,11 @@ function CloudModelChip() {
     value: m.id,
     label: m.label,
     sublabel: modelCostHint(m, op, op === 'music' ? musicDuration : undefined),
-    badge: CLOUD_BADGE,
+    // adult models keep the standard Cloud badge everywhere EXCEPT the row
+    // itself, where "No refusals" is strictly more informative, matching web.
+    badge: m.adult
+      ? { label: 'No refusals', color: contentPolicy === 'off' ? NO_REFUSALS_COLOR.open : NO_REFUSALS_COLOR.filtering }
+      : CLOUD_BADGE,
   }))
 
   return (

@@ -305,9 +305,9 @@ describe('discover — data validation', () => {
         const spec = COMPONENT_REGISTRY[t]
         if (spec.needsSeparateVAE && spec.vae) {
           expect(spec.vae.downloadUrl).toMatch(/^https:\/\//)
-          expect(typeof spec.vae.downloadName).toBe('string')
+          expect(typeof spec.vae.downloadFilename).toBe('string')
           expect(typeof spec.vae.subfolder).toBe('string')
-          expect(Array.isArray(spec.vae.patterns)).toBe(true)
+          expect(Array.isArray(spec.vae.matchPatterns)).toBe(true)
         }
       }
     })
@@ -318,7 +318,7 @@ describe('discover — data validation', () => {
         const spec = COMPONENT_REGISTRY[t]
         if (spec.needsSeparateCLIP && spec.clip) {
           expect(spec.clip.downloadUrl).toMatch(/^https:\/\//)
-          expect(typeof spec.clip.downloadName).toBe('string')
+          expect(typeof spec.clip.downloadFilename).toBe('string')
         }
       }
     })

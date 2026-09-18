@@ -116,6 +116,11 @@ export const MODEL_TYPE_DEFAULTS: Record<ModelType, {
   sdxl:        { steps: 25, cfgScale: 7.0, sampler: 'dpmpp_2m',       scheduler: 'karras', width: 1024, height: 1024 },
   flux:        { steps: 20, cfgScale: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   flux2:       { steps: 20, cfgScale: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
+  // K9 (GH #136, corrected Runde 3): mirrors comfyui.ts's
+  // MODEL_TYPE_DEFAULTS.krea2 - scheduler 'beta', the reporter's only
+  // PROVEN successful run (FinePorn v4 NVFP4), not the unproven 'simple'
+  // this used to copy from the OTHER author's recipe (LUSTIFY! v10 Krea2).
+  krea2:       { steps: 8,  cfgScale: 1.0, sampler: 'euler',           scheduler: 'beta',   width: 1024, height: 1024 },
   zimage:      { steps: 12, cfgScale: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   ernie_image: { steps: 20, cfgScale: 4.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   wan:         { steps: 25, cfgScale: 5.0, sampler: 'euler',           scheduler: 'normal', width: 848,  height: 480, frames: 49, fps: 16 },

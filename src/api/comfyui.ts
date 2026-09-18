@@ -152,7 +152,7 @@ export function galleryTypeForFile(
 // 2.5.8: ace / wans2v / wananimate / wanvace are the specialized local-lane
 // architectures (music, talking character, motion control). They are neither
 // image nor video picker material — each lane has its own model list.
-export type ModelType = 'flux' | 'flux2' | 'zimage' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
+export type ModelType = 'flux' | 'flux2' | 'krea2' | 'zimage' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
 export type VideoBackend = 'wan' | 'animatediff' | 'none'
 
 export interface ClassifiedModel {
@@ -265,6 +265,18 @@ export function classifyModel(name: string | null | undefined): ModelType {
   if (lower.includes('flux-2') || lower.includes('flux2')) return 'flux2'
   if (lower.includes('flux')) return 'flux'
 
+  // Krea 2 (K9, GH #136 atobo): CivitAI ships these as a single checkpoint
+  // file, but the base model is a decoupled UNETLoader + CLIPLoader(type=
+  // "krea2") + VAE pipeline, NOT a self-contained CheckpointLoaderSimple
+  // graph. Before this check the name fell through to 'unknown', which
+  // CLASSIFIED it as an ordinary checkpoint and loaded it with
+  // CheckpointLoaderSimple, and the file has no embedded CLIP, so ComfyUI
+  // answered "clip input is invalid: None". Detect before the 'xl' suffix
+  // scan below: CivitAI filenames commonly end "...Krea2_fp8.safetensors",
+  // which would otherwise never reach it anyway, but keep the ordering
+  // explicit so a future tag never sneaks in ahead of it.
+  if (lower.includes('krea')) return 'krea2'
+
   // Explicit architecture tags
   if (lower.includes('sdxl') || lower.includes('sd_xl')) return 'sdxl'
   if (lower.includes('sd15') || lower.includes('sd_1') || lower.includes('v1-5') || lower.includes('sd1.5')) return 'sd15'
@@ -284,7 +296,7 @@ export function classifyModel(name: string | null | undefined): ModelType {
 }
 
 export function isImageModelType(type: ModelType): boolean {
-  return type === 'flux' || type === 'flux2' || type === 'zimage' || type === 'ernie_image' || type === 'sdxl' || type === 'sd15' || type === 'unknown'
+  return type === 'flux' || type === 'flux2' || type === 'krea2' || type === 'zimage' || type === 'ernie_image' || type === 'sdxl' || type === 'sd15' || type === 'unknown'
 }
 
 export function isVideoModelType(type: ModelType): boolean {
@@ -399,6 +411,15 @@ export const MODEL_TYPE_DEFAULTS: Record<string, ModelTypeDefaults> = {
   sdxl:   { steps: 25, cfg: 7.0, sampler: 'dpmpp_2m',        scheduler: 'karras', width: 1024, height: 1024, frames: 1, fps: 1 },
   flux:   { steps: 20, cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   flux2:  { steps: 20, cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
+  // Krea 2 (GH #136, corrected Runde 3): the issue documents two author
+  // recipes that share nothing but euler / CFG 1 / 8 steps / 1024x1024 -
+  // FinePorn v4 NVFP4 (the reporter's only PROVEN successful run) uses
+  // scheduler 'beta' and no extra sampling node; LUSTIFY! v10 Krea2 uses
+  // 'simple' plus ModelSamplingAuraFlow shift 4 (see buildDynamicWorkflow's
+  // unet_krea2 comment). classifyModel cannot tell the two apart, so this
+  // default follows the one run the issue actually confirms working rather
+  // than guessing at the other.
+  krea2:  { steps: 8,  cfg: 1.0, sampler: 'euler',           scheduler: 'beta',   width: 1024, height: 1024, frames: 1, fps: 1 },
   zimage: { steps: 12, cfg: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   unknown:{ steps: 25, cfg: 7.0, sampler: 'euler',           scheduler: 'normal', width: 1024, height: 1024, frames: 1, fps: 1 },
   // ── Video ──
@@ -435,90 +456,14 @@ export const MODEL_TYPE_DEFAULTS: Record<string, ModelTypeDefaults> = {
 
 // ─── Component Requirements per model type ───
 
-export interface ComponentSpec {
-  matchPatterns: string[]
-  downloadFilename: string
-  downloadUrl?: string
-}
-
-export interface ComponentRequirements {
-  loader: 'UNETLoader' | 'CheckpointLoaderSimple' | 'ImageOnlyCheckpointLoader'
-  needsSeparateVAE: boolean
-  needsSeparateCLIP: boolean
-  vae?: ComponentSpec
-  clip?: ComponentSpec
-  clipType?: string
-}
-
-export const COMPONENT_REGISTRY: Record<string, ComponentRequirements> = {
-  sd15: { loader: 'CheckpointLoaderSimple', needsSeparateVAE: false, needsSeparateCLIP: false },
-  sdxl: { loader: 'CheckpointLoaderSimple', needsSeparateVAE: false, needsSeparateCLIP: false },
-  flux: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'flux',
-    vae: { matchPatterns: ['ae', 'flux'], downloadFilename: 'ae.safetensors' },
-    clip: { matchPatterns: ['t5'], downloadFilename: 't5xxl_fp8_e4m3fn.safetensors' },
-  },
-  flux2: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'flux2',
-    vae: { matchPatterns: ['flux2', 'flux'], downloadFilename: 'flux2-vae.safetensors' },
-    clip: { matchPatterns: ['qwen', 'mistral'], downloadFilename: 'qwen_3_4b_fp4_flux2.safetensors' },
-  },
-  zimage: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'qwen_image',
-    vae: { matchPatterns: ['ae', 'flux'], downloadFilename: 'ae.safetensors' },
-    clip: { matchPatterns: ['qwen_3_4b', 'qwen3'], downloadFilename: 'qwen_3_4b.safetensors' },
-  },
-  ernie_image: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'flux2',
-    vae: { matchPatterns: ['flux2-vae', 'flux2', 'flux'], downloadFilename: 'flux2-vae.safetensors' },
-    clip: { matchPatterns: ['ministral-3-3b', 'ministral', 'ernie-image-prompt-enhancer'], downloadFilename: 'ministral-3-3b.safetensors' },
-  },
-  wan: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'wan',
-    vae: { matchPatterns: ['wan', 'hunyuan'], downloadFilename: 'wan_2.1_vae.safetensors' },
-    clip: { matchPatterns: ['umt5', 'wan'], downloadFilename: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors' },
-  },
-  hunyuan: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'wan',
-    vae: { matchPatterns: ['hunyuanvideo', 'hunyuan', 'wan'], downloadFilename: 'hunyuanvideo15_vae_fp16.safetensors' },
-    clip: { matchPatterns: ['qwen', 'llava', 'umt5'], downloadFilename: 'qwen_2.5_vl_7b_fp8_scaled.safetensors' },
-  },
-  ltx: {
-    loader: 'UNETLoader', needsSeparateVAE: false, needsSeparateCLIP: true, clipType: 'ltxv',
-    clip: { matchPatterns: ['gemma'], downloadFilename: 'gemma_3_12B_it_fp8_scaled.safetensors' },
-  },
-  mochi: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'mochi',
-    vae: { matchPatterns: ['mochi'], downloadFilename: 'mochi_vae.safetensors' },
-    clip: { matchPatterns: ['t5'], downloadFilename: 't5xxl_fp16.safetensors' },
-  },
-  cosmos: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'cosmos',
-    vae: { matchPatterns: ['cosmos'], downloadFilename: 'cosmos_cv8x8x8_1.0.safetensors' },
-    clip: { matchPatterns: ['oldt5'], downloadFilename: 'oldt5_xxl_fp8_e4m3fn_scaled.safetensors' },
-  },
-  cogvideo: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'cogvideo',
-    vae: { matchPatterns: ['cogvideox', 'cogvideo'], downloadFilename: 'cogvideox_vae_bf16.safetensors' },
-    clip: { matchPatterns: ['t5'], downloadFilename: 't5xxl_fp16.safetensors' },
-  },
-  svd: {
-    loader: 'ImageOnlyCheckpointLoader', needsSeparateVAE: false, needsSeparateCLIP: false,
-  },
-  framepack: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'wan',
-    vae: { matchPatterns: ['hunyuan_video_vae', 'hunyuan'], downloadFilename: 'hunyuan_video_vae_bf16.safetensors' },
-    clip: { matchPatterns: ['llava', 'qwen', 'umt5'], downloadFilename: 'llava_llama3_fp8_scaled.safetensors' },
-  },
-  pyramidflow: {
-    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: false, clipType: 'pyramidflow',
-    vae: { matchPatterns: ['pyramid'], downloadFilename: 'pyramid_flow_vae_bf16.safetensors' },
-  },
-  allegro: {
-    loader: 'UNETLoader', needsSeparateVAE: false, needsSeparateCLIP: false, clipType: 'allegro',
-  },
-  unknown: { loader: 'CheckpointLoaderSimple', needsSeparateVAE: false, needsSeparateCLIP: false },
-}
+// K9 (GH #136): the registry used to be declared here AND, separately, in
+// discover.ts, two copies of the same per-model-type data that both had to
+// be remembered on every new architecture. Krea 2 only reached one of them.
+// Canonical data now lives in component-registry.ts (Audit W-T2 pattern,
+// same fix as pulling the bundle catalog into model-bundles.ts); both
+// comfyui.ts and discover.ts import it and neither has to import the other.
+export type { ComponentSpec, ComponentRequirements } from './component-registry'
+export { COMPONENT_REGISTRY } from './component-registry'
 
 // ─── Connection & Info ───
 
@@ -1466,6 +1411,16 @@ export async function findMatchingVAE(modelType: ModelType): Promise<string> {
     if (match) return match
     throw new Error(`No FLUX 2 VAE found. Download "flux2-vae.safetensors" from the Model Manager.`)
   }
+  if (modelType === 'krea2') {
+    // Krea 2's companion VAE is not standardized across CivitAI finetunes
+    // (GH #136 saw both qwen_image_vae and wan_2.1_vae). Try a Krea-named
+    // file first, then the two variants confirmed by the issue reporter.
+    const match = vaes.find(v => lower(v).includes('krea'))
+      || vaes.find(v => lower(v).includes('qwen_image'))
+      || vaes.find(v => /wan[._]?2[._]?1/.test(lower(v)))
+    if (match) return match
+    throw new Error(`No Krea 2 VAE found. Download "qwen_image_vae.safetensors" (or "wan_2.1_vae.safetensors", depending on the checkpoint) from the Model Manager.`)
+  }
   if (modelType === 'hunyuan') {
     // HunyuanVideo has its own VAE — prefer it, fall back to Wan VAE
     const match = vaes.find(v => lower(v).includes('hunyuanvideo'))
@@ -1557,6 +1512,26 @@ export async function findFluxCLIPPair(): Promise<{ t5: string; clipL: string }>
 }
 
 /**
+ * K2 (review-create.md nachbessert, Punkt 2): FramePack's DualCLIPLoader
+ * (type "hunyuan_video") wrote `clip_l.safetensors` and
+ * `llava_llama3_fp8_scaled.safetensors` straight into the node, same
+ * hardcoded-literal failure class the rest of K2 already fixed for VAE/CLIP/
+ * audio_encoder/clip_vision in the other builders. Resolved now against the
+ * live CLIP enum, same shape as findFluxCLIPPair above, with the same
+ * actionable "download <file>" errors on a miss.
+ */
+export async function findFramePackCLIPPair(): Promise<{ clipL: string; llavaLlama3: string }> {
+  const clips = await getCLIPModels()
+  if (clips.length === 0) throw new Error('No text encoder models found. Download a CLIP/T5 model for your model type from the Model Manager.')
+  const lower = (s: string) => s.toLowerCase()
+  const clipL = clips.find(c => lower(c).includes('clip_l'))
+  const llavaLlama3 = clips.find(c => lower(c).includes('llava'))
+  if (!clipL) throw new Error(`No FramePack CLIP-L text encoder found. Download "clip_l.safetensors" from the Model Manager.`)
+  if (!llavaLlama3) throw new Error(`No FramePack llava_llama3 text encoder found. Download "llava_llama3_fp8_scaled.safetensors" from the Model Manager.`)
+  return { clipL, llavaLlama3 }
+}
+
+/**
  * Pick the right text encoder for a model.
  *
  * @param modelType — ModelType from `classifyModel`.
@@ -1609,6 +1584,15 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
     if (match) return match
     throw new Error(`No ERNIE-Image text encoder found. Download "ernie-image-prompt-enhancer.safetensors" from the Model Manager.`)
   }
+  if (modelType === 'krea2') {
+    // Krea 2 uses Qwen3-VL 4B, shipped under different quant-tier filenames
+    // by different finetune authors (GH #136: qwen3vl_4b_int8_convrot vs
+    // qwen3vl_4b_fp8_scaled), so match on the qwen3vl family, not one filename.
+    const match = clips.find(c => lower(c).includes('qwen3vl') || lower(c).includes('qwen3_vl'))
+      || clips.find(c => lower(c).includes('qwen') && lower(c).includes('vl'))
+    if (match) return match
+    throw new Error(`No Krea 2 text encoder found. Download "qwen3vl_4b_fp8_scaled.safetensors" from the Model Manager.`)
+  }
   if (modelType === 'flux') {
     const match = clips.find(c => lower(c).includes('t5') && !lower(c).includes('umt5'))
       || clips.find(c => lower(c).includes('clip_l'))
@@ -1658,6 +1642,42 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
   }
   // SDXL/SD1.5/SVD/Allegro/PyramidFlow checkpoints include CLIP — any works
   return clips[0]
+}
+
+/**
+ * K2 (mrvideogame9829/sockenmonster, Discord "HELP WITH MODELS"/help-18,
+ * 2026-09-15/17): the Talking Character (lipsync) and Motion (animate)
+ * builders hardcoded `audio_encoder_name: 'wav2vec2_large_english_fp16.
+ * safetensors'` straight into AudioEncoderLoader, never checked against
+ * ComfyUI's live enum. A box that doesn't have that exact file (a different
+ * quant, a subfolder, or simply nothing installed) submitted it verbatim and
+ * ComfyUI's /prompt validator rejected the node with "Value not in list",
+ * the same failure mode Bug C already fixed for CLIPLoader, just not carried
+ * over to the newer local lanes. Same no-silent-fallback rule as
+ * findMatchingVAE/findMatchingCLIP: resolve against the live list, throw an
+ * actionable "download <file>" message on a miss.
+ */
+export async function findMatchingAudioEncoder(): Promise<string> {
+  const encoders = await getAudioEncoderModels()
+  if (encoders.length === 0) {
+    throw new Error('No audio encoder models found. Download "wav2vec2_large_english_fp16.safetensors" from the Model Manager.')
+  }
+  const match = encoders.find((e) => e.toLowerCase().includes('wav2vec2'))
+  return match ?? encoders[0]
+}
+
+/**
+ * Same fix as findMatchingAudioEncoder, for CLIPVisionLoader. FramePack
+ * hardcoded `clip_name: 'sigclip_vision_patch14_384.safetensors'` unchecked;
+ * resolve against the live list instead.
+ */
+export async function findMatchingClipVision(): Promise<string> {
+  const models = await getCLIPVisionModels()
+  if (models.length === 0) {
+    throw new Error('No CLIP-Vision models found. Download "sigclip_vision_patch14_384.safetensors" from the Model Manager.')
+  }
+  const match = models.find((m) => m.toLowerCase().includes('sigclip'))
+  return match ?? models[0]
 }
 
 async function findAnimateDiffModel(): Promise<string> {

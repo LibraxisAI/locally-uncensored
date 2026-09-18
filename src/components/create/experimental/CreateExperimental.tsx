@@ -21,6 +21,7 @@ import { BannerText } from './BannerText'
 import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
 import { INTENT_MAP, isIntentAvailable } from './intents'
+import { modelForOp } from '../../../stores/cloudCatalogStore'
 import { stageShowsSetupCard, laneModelCount } from './stageGate'
 import { isMlxImageHost } from '../../../api/mlx-image'
 import { fetchGalleryItemBlob } from './galleryUrl'
@@ -188,6 +189,7 @@ function CreateExperimentalInner() {
   // text-to-image instead of an edit). Hide the action where the lane can't
   // run, using the same rule the IntentBar renders from.
   const editAvailable = isIntentAvailable('edit', backend, isMlxImageHost())
+  const animateAvailable = isIntentAvailable('animate', backend, isMlxImageHost())
 
   // Pull a finished result back in as the working source (ImageRef). Needed
   // because a text-to-image run leaves `source` empty — without this, "Edit
@@ -206,6 +208,30 @@ function CreateExperimentalInner() {
       setMaskOpen(true)
     } catch (err) {
       setError(`Could not load the result for editing: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [adoptResult, setError])
+
+  // C1: "Animate this image" on a finished result (web parity, createStore's
+  // animateFrom / OutputView.tsx). setIntent('animate') already keeps the
+  // current source in place (see createStore.ts's 'animate' case, which
+  // deliberately skips ...dropAll), but a fresh t2i result was never adopted
+  // as `source` in the first place, so setSource still has to run after it,
+  // exactly like editResultWithMask does for 'edit'. No mask step needed here.
+  //
+  // C1 nachbessert, Punkt 8: also coerce cloudVideoModel onto a real i2v
+  // model via modelForOp, the same coercion submit/the credits gate already
+  // apply. Without this the ModelChip kept showing whatever was picked for
+  // the PREVIOUS intent (e.g. a t2v-only model), which the run itself never
+  // used, since modelForOp silently swaps to i2vModels()[0] at submit time.
+  // Web's animateFrom does the equivalent set for parity.
+  const animateResult = useCallback(async (item: GalleryItem) => {
+    const state = useCreateStore.getState()
+    state.setIntent('animate')
+    state.setCloudVideoModel(modelForOp('video', 'animate', state.cloudVideoModel))
+    try {
+      state.setSource(await adoptResult(item))
+    } catch (err) {
+      setError(`Could not load the result for animating: ${err instanceof Error ? err.message : String(err)}`)
     }
   }, [adoptResult, setError])
 
@@ -345,6 +371,7 @@ function CreateExperimentalInner() {
           displayed={displayed}
           onOpenMaskEditor={() => setMaskOpen(true)}
           onEditResult={editAvailable ? (it) => { void editResultWithMask(it) } : undefined}
+          onAnimateResult={animateAvailable ? (it) => { void animateResult(it) } : undefined}
           onFullscreen={(it) => setLightbox(it)}
         />
         <CreatePanel open={panelOpen} onOpenChange={setPanelOpen} activeId={shownId} onSelect={openGalleryItem} />
