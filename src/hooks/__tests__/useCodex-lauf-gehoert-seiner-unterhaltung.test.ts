@@ -1,68 +1,137 @@
 /**
- * B2 Commit 6: mirror the useChat.ts fix into useCodex.ts, the second copy
- * of the same logic.
+ * @vitest-environment jsdom
  *
- * `runningRef` in useCodex.ts is a single boolean per HOOK INSTANCE, not per
- * run, and CodexView is not remounted on a conversation switch, so one
- * `useCodex()` instance really does serve every Code conversation for the
- * whole window (same premise as the useChat.ts bug, see
- * useChat-zwei-laeufe-vermischen-nicht.test.ts).
+ * Nachbesserung 8 (review-lanes.md, Runde 3): dieser Test war ein reiner
+ * Quelltextpin (Regex auf eine vollstaendige `for`-Schleifen-Zeile), der
+ * Implementierungsdetails prueft statt Verhalten, und bei jedem harmlosen
+ * Umbau der Schleifenbedingung rot wuerde, ohne dass etwas kaputt ist. Der
+ * Bericht der vorigen Runde begruendete das mit "die Nachbardateien machen
+ * es auch so", was der Pruefer zu Recht als keine Begruendung zurueckwies.
  *
- * Three places read or write that shared flag as if it belonged to the ONE
- * run currently in flight:
+ * Ersetzt durch einen echten Verhaltensbeweis fuer den Wiedereintritts-
+ * Riegel, den Nachbesserung 5 dieser Runde in useCodex.ts nachgezogen hat
+ * (`activeCodexRuns`, dieselbe Form wie `activeAgentRuns` in
+ * useAgentChat.ts): ein Prompt, zweimal schnell hintereinander gesendet auf
+ * DERSELBEN Unterhaltung, darf nur EINMAL tatsaechlich lossenden, und ein
+ * Doppelklick OHNE bestehende Unterhaltung darf nur EINE Unterhaltung
+ * erzeugen statt zwei.
  *
- *  - The ReAct loop's own iteration guard (`... && runningRef.current && ...`
- *    and `if (!runningRef.current || abort.signal.aborted) break`): if
- *    conversation A finishes (its `finally` sets `runningRef.current = false`)
- *    while conversation B is still mid-loop on the SAME hook instance, B's
- *    very next iteration check reads `false` and B's loop exits early, not
- *    because B was stopped, but because A happened to finish first.
- *  - The `/loop` pass driver's re-entry gate (`if (runningRef.current) {
- *    clear the loop; return }`): meant to defer a pass while ITS OWN
- *    conversation is still busy, it actually fires whenever ANY conversation
- *    on this hook instance is running, so a manual send in conversation A
- *    silently cancels conversation B's scheduled loop pass.
- *
- * Fix: the ReAct loop already carries a per-call `abort` (its own
- * AbortController) and every conversation already has a canonical,
- * per-conversation stop flag (`lib/run-stop.ts`'s `isRunStopped`), both are
- * genuinely scoped to the right run. The `/loop` gate is rewritten to ask
- * the STORE whether THIS conversation is generating, not the shared ref.
- * `runningRef` itself is retired; nothing correctness-critical should still
- * read it once these three spots stop.
- *
- * This reads the source directly (the same shape as
- * loop-detection.test.ts / useCodex-streaming.test.ts in this same
- * directory): a genuine behavioral repro needs two full ReAct runs
- * interleaved through real tool-call rounds, which the existing behavioral
- * useCodex tests do not attempt either, the wiring pin is what this file's
- * neighbours already rely on for logic this deep in the hook.
+ * `resolveChatWorkspaceSlug` ist die erste echte Abhaengigkeit hinter dem
+ * Riegel (Zeile ~428 in useCodex.ts, vor jedem Provider-/Speicher-Zugriff),
+ * also der fruehestmoegliche Beobachtungspunkt: haelt der Riegel, wird sie
+ * fuer den zweiten Aufruf nie erreicht.
  *
  * Run: npx vitest run src/hooks/__tests__/useCodex-lauf-gehoert-seiner-unterhaltung.test.ts
  */
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
-import { fileURLToPath } from 'url'
-import { dirname, join } from 'path'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { renderHook, act } from '@testing-library/react'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-const src = readFileSync(join(__dirname, '../useCodex.ts'), 'utf8')
+const slugCalls = { count: 0 }
+vi.mock('../../api/workspace-slug', () => ({
+  // Throws after counting: the guard is what this test proves, not the rest
+  // of the send pipeline. A fast, deterministic failure here also exercises
+  // the wrapping try/catch Nachbesserung 5 added around the whole body (the
+  // safety net that keeps a thrown error from leaving the conversation
+  // permanently locked out of sending).
+  resolveChatWorkspaceSlug: async () => {
+    slugCalls.count++
+    throw new Error('workspace slug unavailable (test)')
+  },
+}))
 
-describe('a codex run in useCodex.ts is gated by its OWN state, not a shared hook-instance flag', () => {
-  it('runningRef is gone: no other conversation\'s finally can flip this run\'s own loop guard', () => {
-    expect(src).not.toMatch(/runningRef/)
+import { useCodex } from '../useCodex'
+import { useChatStore } from '../../stores/chatStore'
+import { useModelStore } from '../../stores/modelStore'
+import { useCodexStore } from '../../stores/codexStore'
+
+function silenceUnhandled(p: Promise<unknown>) {
+  p.catch(() => {})
+  return p
+}
+
+beforeEach(() => {
+  slugCalls.count = 0
+  useChatStore.setState({ conversations: [], activeConversationId: null })
+  useCodexStore.setState({ sendsInFlight: 0, threads: {}, workingDirectory: '' })
+  useModelStore.setState({ models: [], activeModel: 'ollama::qwen3:14b' })
+})
+afterEach(() => vi.restoreAllMocks())
+
+describe('a Codex run in useCodex.ts is gated by its OWN conversation, not a shared hook-instance flag', () => {
+  it('two fast sends on the SAME existing conversation only let the first one through', async () => {
+    const { result } = renderHook(() => useCodex())
+    const convId = useChatStore.getState().createConversation('ollama::qwen3:14b', '', 'codex')
+    useChatStore.getState().setActiveConversation(convId)
+
+    let p1!: Promise<unknown>
+    let p2!: Promise<unknown>
+    act(() => {
+      p1 = silenceUnhandled(result.current.sendInstruction('first'))
+      // Immediate second send, no await in between: the exact double-submit
+      // shape (two Enters before React re-renders Send into Stop).
+      p2 = silenceUnhandled(result.current.sendInstruction('second'))
+    })
+    await act(async () => { await Promise.allSettled([p1, p2]) })
+
+    // Only the FIRST call ever reached past the guard.
+    expect(slugCalls.count).toBe(1)
+    // Still exactly one conversation: the second call did not create its own.
+    expect(useChatStore.getState().conversations.length).toBe(1)
   })
 
-  it('the ReAct loop bound checks this run\'s own abort signal and its own conversation\'s stop flag', () => {
-    expect(src).toMatch(/for \(let i = 0; i < MAX_CODEX_ITERATIONS && !abort\.signal\.aborted && !isRunStopped\(convId\); i\+\+\)/)
+  it('a double-click with NO existing conversation creates exactly ONE, not two', async () => {
+    const { result } = renderHook(() => useCodex())
+    expect(useChatStore.getState().activeConversationId).toBeNull()
+
+    let p1!: Promise<unknown>
+    let p2!: Promise<unknown>
+    act(() => {
+      p1 = silenceUnhandled(result.current.sendInstruction('first'))
+      p2 = silenceUnhandled(result.current.sendInstruction('second'))
+    })
+    await act(async () => { await Promise.allSettled([p1, p2]) })
+
+    expect(useChatStore.getState().conversations.length).toBe(1)
+    expect(slugCalls.count).toBe(1)
   })
 
-  it('the mid-loop break also reads only this run\'s own signal', () => {
-    expect(src).toMatch(/if \(abort\.signal\.aborted \|\| isRunStopped\(convId\)\) break/)
+  it('COUNTER-CHECK: a run in a DIFFERENT conversation is not blocked by this one', async () => {
+    const { result } = renderHook(() => useCodex())
+    const convA = useChatStore.getState().createConversation('ollama::qwen3:14b', '', 'codex')
+    useChatStore.getState().setActiveConversation(convA)
+
+    let pA!: Promise<unknown>
+    act(() => { pA = silenceUnhandled(result.current.sendInstruction('task-A')) })
+
+    // Switch to a brand-new conversation B before A's send has settled.
+    const convB = useChatStore.getState().createConversation('ollama::qwen3:14b', '', 'codex')
+    useChatStore.getState().setActiveConversation(convB)
+
+    let pB!: Promise<unknown>
+    act(() => { pB = silenceUnhandled(result.current.sendInstruction('task-B')) })
+
+    await act(async () => { await Promise.allSettled([pA, pB]) })
+
+    // Both reached the same dependency: A's run in flight did not block B's.
+    expect(slugCalls.count).toBe(2)
   })
 
-  it('the /loop pass driver defers on ITS OWN conversation generating, not on any conversation running', () => {
-    expect(src).toContain("if (useGenerationStore.getState().generating[convForLoop])")
+  it('the guard does not leak: a failed send frees the conversation for the next one', async () => {
+    const { result } = renderHook(() => useCodex())
+    const convId = useChatStore.getState().createConversation('ollama::qwen3:14b', '', 'codex')
+    useChatStore.getState().setActiveConversation(convId)
+
+    await act(async () => {
+      await result.current.sendInstruction('first').catch(() => {})
+    })
+    expect(slugCalls.count).toBe(1)
+
+    // A second, later send on the SAME conversation must go through, the
+    // wrapping try/catch Nachbesserung 5 added is exactly what keeps the
+    // thrown error above from locking this conversation out forever.
+    await act(async () => {
+      await result.current.sendInstruction('second').catch(() => {})
+    })
+    expect(slugCalls.count).toBe(2)
   })
 })
