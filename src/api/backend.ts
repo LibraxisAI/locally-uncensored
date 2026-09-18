@@ -475,6 +475,36 @@ export async function backendCall<T = unknown>(
     // an honest "desktop-only" status instead of "Unknown backend command".
     install_tts: { path: "/local-api/install-tts", method: "POST" },
     install_tts_status: { path: "/local-api/install-tts" },
+    // K7 (GH #135): the MLX image/video pipeline had NO dev-server route at
+    // all, so any of these thrown from the browser dev surface (Mac running
+    // `npm run dev` without Tauri) surfaced as "Unknown backend command: X"
+    // instead of the same honest desktop-only answer install_tts already
+    // gives. See dev-server/mlx-media-stubs.ts for the shared stub handler
+    // and its reasoning; the systematic check behind this list is
+    // dev-server/__tests__/mlx-media-endpoint-coverage.test.ts.
+    mlx_status: { path: "/local-api/mlx-status" },
+    mlx_start: { path: "/local-api/mlx-start", method: "POST" },
+    mlx_unload: { path: "/local-api/mlx-unload", method: "POST" },
+    mlx_generate: { path: "/local-api/mlx-generate", method: "POST" },
+    mlx_image_models: { path: "/local-api/mlx-image-models" },
+    mlx_image_install_model: { path: "/local-api/mlx-image-install-model", method: "POST" },
+    mlx_image_install_status: { path: "/local-api/mlx-image-install-status" },
+    mlx_image_delete_model: { path: "/local-api/mlx-image-delete-model", method: "POST" },
+    install_mlx_diffusion: { path: "/local-api/install-mlx-diffusion", method: "POST" },
+    install_mlx_diffusion_status: { path: "/local-api/install-mlx-diffusion" },
+    set_hf_token: { path: "/local-api/set-hf-token", method: "POST" },
+    hf_token_present: { path: "/local-api/hf-token-present" },
+    video_status: { path: "/local-api/video-status" },
+    video_list_models: { path: "/local-api/video-list-models" },
+    video_install_mlx: { path: "/local-api/video-install-mlx", method: "POST" },
+    video_install_mlx_status: { path: "/local-api/video-install-mlx" },
+    video_install_model: { path: "/local-api/video-install-model", method: "POST" },
+    video_install_model_status: { path: "/local-api/video-install-model-status" },
+    video_delete_model: { path: "/local-api/video-delete-model", method: "POST" },
+    video_generate: { path: "/local-api/video-generate", method: "POST" },
+    video_progress: { path: "/local-api/video-progress" },
+    video_cancel: { path: "/local-api/video-cancel", method: "POST" },
+    read_media_file: { path: "/local-api/read-media-file", method: "POST" },
     transcribe: { path: "/local-api/transcribe", method: "POST" },
     execute_code: { path: "/local-api/execute-code", method: "POST" },
     // file_read / file_write: ABSICHTLICH NICHT HIER. Die beiden Dev-Endpunkte
