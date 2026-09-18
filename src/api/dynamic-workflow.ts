@@ -1,6 +1,6 @@
 import {
   classifyModel, findMatchingVAE, findMatchingCLIP, findFluxCLIPPair,
-  findMatchingAudioEncoder, findMatchingClipVision,
+  findMatchingAudioEncoder, findMatchingClipVision, findFramePackCLIPPair,
 } from './comfyui'
 import type { ModelType, GenerateParams, VideoParams } from './comfyui'
 import { log } from '../lib/logger'
@@ -278,13 +278,13 @@ export function determineStrategy(
   }
 
   // K9: this used to fall back to 'unet_flux' whenever CheckpointLoaderSimple
-  // was missing (rare — it is a core node, present on virtually every real
+  // was missing (rare, it is a core node, present on virtually every real
   // install), on the unstated assumption that any UNET-only file must be a
   // FLUX model. For a genuinely unrecognized architecture that is a silent
   // guess: it picks FLUX's CLIP type and VAE match patterns for a model that
   // may not be FLUX at all, which either fails confusingly or "succeeds"
   // with a wrong text encoder. classifyModel returning 'unknown' means LU
-  // could not name this model's architecture — say so honestly instead of
+  // could not name this model's architecture, so say so honestly instead of
   // routing it through a guessed pipeline. A real architecture (Krea 2,
   // FLUX 2, Z-Image, ...) has its own branch above and never reaches here.
   if (hasUNET && hasCLIPLoader && hasVAELoader) {
@@ -373,7 +373,7 @@ export function normalizeLoraStrengths(
  *  letting ComfyUI reject the whole workflow with "Value not in list". */
 export function resolveLoraNames(requested: string[], installed: string[]): string[] {
   return requested.map((req) => {
-    const hit = resolveOneLora(req, installed)
+    const hit = resolveLoaderName(req, installed)
     if (!hit) {
       const list = installed.length ? installed.slice(0, 12).join(', ') : '(none installed)'
       throw new Error(
@@ -385,7 +385,34 @@ export function resolveLoraNames(requested: string[], installed: string[]): stri
   })
 }
 
-function resolveOneLora(req: string, installed: string[]): string | null {
+/**
+ * Normalize a remembered loader value (path separator, case, an optional
+ * subfolder prefix) against ComfyUI's live enum for that loader, WITHOUT the
+ * loose substring tier resolveLoaderName uses for LoRA names below. That
+ * tier is right for a LoRA name an LLM paraphrased ("pixel art" for
+ * "pixel-art-xl.safetensors") but wrong here: a short live entry like
+ * "ae.safetensors" is a substring of almost anything ending in those two
+ * letters, so "old-2.6.9-remembered-vae.safetensors" would falsely resolve
+ * to it. K2 (review-create.md Punkt 3) only needs cosmetic drift covered
+ * (separator, case, subfolder prefix), never a guess at a DIFFERENT file.
+ */
+function normalizeLoaderValue(req: string, installed: string[]): string | null {
+  if (installed.includes(req)) return req
+  const norm = (s: string) => s.toLowerCase().replace(/\\/g, '/')
+  const rq = norm(req)
+  const exact = installed.filter((c) => norm(c) === rq)
+  if (exact.length === 1) return exact[0]
+  const rqBase = rq.split('/').pop() || rq
+  const byBase = installed.filter((c) => (norm(c).split('/').pop() || '') === rqBase)
+  if (byBase.length === 1) return byBase[0]
+  return null
+}
+
+/**
+ * Fuzzy-match a remembered LoRA name (file name, path separator and case
+ * left unspecified, or paraphrased by an LLM) against ComfyUI's live enum.
+ */
+function resolveLoaderName(req: string, installed: string[]): string | null {
   if (installed.includes(req)) return req
   const norm = (s: string) =>
     s.toLowerCase().replace(/\.(safetensors|pt|ckpt|bin)$/i, '').replace(/\\/g, '/')
@@ -395,7 +422,7 @@ function resolveOneLora(req: string, installed: string[]): string | null {
   const rq = norm(req)
   let hits = installed.filter((c) => norm(c) === rq)
   if (hits.length === 1) return hits[0]
-  // Enum entries can be "subfolder/name.safetensors" — try basename equality.
+  // Enum entries can be "subfolder/name.safetensors": try basename equality.
   const rqBase = rq.split('/').pop() || rq
   hits = installed.filter((c) => (norm(c).split('/').pop() || '') === rqBase)
   if (hits.length === 1) return hits[0]
@@ -464,7 +491,7 @@ export async function buildDynamicWorkflow(
     return buildSVDWorkflow(params as VideoParams, seed, nodes)
   }
   if (strategy === 'wan22') {
-    return buildWan22Workflow(params as VideoParams, seed, nodes, allNodes)
+    return await buildWan22Workflow(params as VideoParams, seed, nodes, allNodes)
   }
   if (strategy === 'framepack') {
     return await buildFramePackWorkflow(params as VideoParams, seed, nodes)
@@ -682,27 +709,41 @@ export async function buildDynamicWorkflow(
   }
 
   if (params.vae && params.vae !== 'auto') {
-    // K2: this override used to go straight into VAELoader unchecked — a
+    // K2: this override used to go straight into VAELoader unchecked, so a
     // stale remembered pick (a name that existed in an older LU/ComfyUI
     // install, a wrong path separator, a subfolder-qualified name ComfyUI's
     // enum does not use) reached /prompt as-is and came back "Value not in
     // list". `models.vaes` is the live VAELoader enum already read off this
-    // same /object_info response — validate against it before writing the
+    // same /object_info response, validate against it before writing the
     // node. Skip the check only when that enum came back empty (an older
     // ComfyUI that answered a different schema): saying nothing is safer
     // than a false rejection of a value we simply could not verify.
-    if (models.vaes.length > 0 && !models.vaes.includes(params.vae)) {
-      const list = models.vaes.slice(0, 12).join(', ')
-      throw new WorkflowUnavailableError(
-        `VAE "${params.vae}" is not installed in ComfyUI. Installed VAEs: ${list}. ` +
-        `Put the file into ComfyUI/models/vae and retry, or clear the VAE override.`,
-        strategy,
-      )
+    //
+    // K2 (review-create.md nachbessert, Punkt 3): a straight `includes()`
+    // rejected an installed file for a purely cosmetic mismatch (backslash
+    // vs slash, a leftover subfolder prefix, different case) even though
+    // ComfyUI would have accepted the LIVE spelling just fine. Normalize
+    // first via normalizeLoaderValue; on a hit, write the LIVE enum's own
+    // spelling to the node, not the remembered one, and only throw on a
+    // genuine miss.
+    let vaeName = params.vae
+    if (models.vaes.length > 0 && !models.vaes.includes(vaeName)) {
+      const resolved = normalizeLoaderValue(vaeName, models.vaes)
+      if (resolved) {
+        vaeName = resolved
+      } else {
+        const list = models.vaes.slice(0, 12).join(', ')
+        throw new WorkflowUnavailableError(
+          `VAE "${params.vae}" is not installed in ComfyUI. Installed VAEs: ${list}. ` +
+          `Put the file into ComfyUI/models/vae and retry, or clear the VAE override.`,
+          strategy,
+        )
+      }
     }
     const vaeId = String(n++)
     workflow[vaeId] = {
       class_type: 'VAELoader',
-      inputs: { vae_name: params.vae },
+      inputs: { vae_name: vaeName },
     }
     vaeSourceId = vaeId
     vaeOutputSlot = 0
@@ -1218,17 +1259,30 @@ export function snapWanLength(frames: number): number {
 }
 
 /**
- * Wan 2.2 TI2V-5B — one model, both modes. `Wan22ImageToVideoLatent` takes an
- * OPTIONAL `start_image`: present → image-to-video (the clip opens on the source
- * still), absent → text-to-video. Uses the Wan 2.2 VAE (NOT the 2.1 VAE — the 2.2
- * VAE has 16× spatial / 4× temporal compression, a different latent shape) and the
- * shared UMT5-XXL text encoder. `ModelSamplingSD3` applies Wan's sampling shift.
+ * Wan 2.2 TI2V-5B, one model, both modes. `Wan22ImageToVideoLatent` takes an
+ * OPTIONAL `start_image`: present is image-to-video (the clip opens on the
+ * source still), absent is text-to-video. Uses the Wan 2.2 VAE, not the 2.1
+ * VAE (the 2.2 VAE has 16x spatial / 4x temporal compression, a different
+ * latent shape) and the shared UMT5-XXL text encoder. `ModelSamplingSD3`
+ * applies Wan's sampling shift.
  *
  * I2V faithfulness (David 2026-06-11): an `ImageScale(crop:center)` aspect-fills
  * the source into the generation size, so the first frame matches the still
- * instead of being squished — the same fix proven on the SVD path.
+ * instead of being squished, the same fix proven on the SVD path.
+ *
+ * K2 (review-create.md nachbessert, Punkt 1): the CLIP/VAE names below used
+ * to be hardcoded literals, the same failure class as buildS2VWorkflow and
+ * buildMotionWorkflow (see their own K2 comments) and Node 3 in this builder
+ * is also the VAELoader, so an unresolved live enum produced the identical
+ * "Node 3 (VAELoader): Value not in list" here. Wan 2.2 TI2V-5B is the
+ * default local Animate model, so this is the actual path a customer hits.
+ * Resolved now via the same findMatchingCLIP/findMatchingVAE live-list
+ * resolvers Bug C and K2 already use elsewhere, with 'wan22' for the VAE
+ * (its own compression profile, comfyui.ts:1441) and 'wan' for the CLIP
+ * (wan22 shares the plain Wan UMT5 encoder, component-registry.ts confirms
+ * clipType: 'wan' for both wan and wan22).
  */
-function buildWan22Workflow(params: VideoParams, seed: number, nodes: CategorizedNodes, allNodes: NodePresence): ComfyApiGraph {
+async function buildWan22Workflow(params: VideoParams, seed: number, nodes: CategorizedNodes, allNodes: NodePresence): Promise<ComfyApiGraph> {
   const workflow: ComfyApiGraph = {}
   let n = 1
 
@@ -1238,6 +1292,11 @@ function buildWan22Workflow(params: VideoParams, seed: number, nodes: Categorize
   const height = snap32(params.height, 576)
   const length = snapWanLength(params.frames || 49)
 
+  const [wan22Clip, wan22Vae] = await Promise.all([
+    findMatchingCLIP('wan', params.model),
+    findMatchingVAE('wan22'),
+  ])
+
   const unetId = String(n++)
   const clipId = String(n++)
   const vaeId = String(n++)
@@ -1245,14 +1304,14 @@ function buildWan22Workflow(params: VideoParams, seed: number, nodes: Categorize
   const negId = String(n++)
 
   addUnetLoader(workflow, unetId, params.model, allNodes)
-  workflow[clipId] = { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } }
-  workflow[vaeId] = { class_type: 'VAELoader', inputs: { vae_name: 'wan2.2_vae.safetensors' } }
+  workflow[clipId] = { class_type: 'CLIPLoader', inputs: { clip_name: wan22Clip, type: 'wan', device: 'default' } }
+  workflow[vaeId] = { class_type: 'VAELoader', inputs: { vae_name: wan22Vae } }
   workflow[posId] = { class_type: 'CLIPTextEncode', inputs: { text: params.prompt, clip: [clipId, 0] } }
   workflow[negId] = { class_type: 'CLIPTextEncode', inputs: { text: params.negativePrompt || '', clip: [clipId, 0] } }
 
   // Optional LoRA chain (D#80, game-master0): video LoRAs are model-only, so
   // patch the UNET with LoraLoaderModelOnly (no clip side) before the sampling
-  // shift. Guarded on params.lora — a plain Wan 2.2 gen stays byte-identical.
+  // shift. Guarded on params.lora, a plain Wan 2.2 gen stays byte-identical.
   let wanModelSrc = unetId
   const wanLoras = normalizeLoraList(params.lora)
   if (wanLoras.length > 0) {
@@ -1478,8 +1537,9 @@ export function buildMusicWorkflow(params: LocalOpParams, seed: number, allNodes
  * 2026-09-15/17): the CLIP/VAE/audio-encoder filenames below used to be
  * written straight into their loader nodes as literal strings, never checked
  * against what ComfyUI actually has installed. Whichever one the box didn't
- * have failed validation with "Value not in list" — Node 3 (VAELoader) in
- * the reports, because that is the third node this builder creates. Resolve
+ * have failed validation with "Value not in list", specifically Node 3
+ * (VAELoader) in the reports, because that is the third node this builder
+ * creates. Resolve
  * every one of them against the live enum first (same rule Bug C already
  * applied to the FLUX/video lanes in buildDynamicWorkflow), so a mismatch is
  * caught before /prompt submission with an actionable "download <file>"
@@ -1565,8 +1625,8 @@ export async function buildS2VWorkflow(params: LocalOpParams, seed: number, allN
  * onnxruntime path works on every Windows box, no GPU wheel roulette).
  * The driving clip's own audio is carried over into the result.
  *
- * K2: same live-list-first fix as buildS2VWorkflow above — CLIP/VAE were
- * hardcoded literals here too.
+ * K2: same live-list-first fix as buildS2VWorkflow above, since CLIP/VAE
+ * were hardcoded literals here too.
  */
 export async function buildMotionWorkflow(params: LocalOpParams, seed: number, allNodes: NodePresence): Promise<ComfyApiGraph> {
   const workflow: ComfyApiGraph = {}
@@ -1703,11 +1763,14 @@ async function buildFramePackWorkflow(params: VideoParams, seed: number, nodes: 
   // documented low-VRAM combo and is what makes FramePack actually run on 12 GB
   // (and down to ~6 GB) instead of OOMing on every consumer card.
   workflow[modelId] = { class_type: 'LoadFramePackModel', inputs: { model: params.model, base_precision: 'bf16', quantization: 'fp8_e4m3fn', load_device: 'offload_device' } }
-  // DualCLIPLoader with type "hunyuan_video" — CLIPLoader type "wan" creates Llama2 with 128256 vocab
-  // but llava_llama3 has 128320 tokens, causing state_dict size mismatch. DualCLIPLoader handles both correctly.
-  workflow[clipId] = { class_type: 'DualCLIPLoader', inputs: { clip_name1: 'clip_l.safetensors', clip_name2: 'llava_llama3_fp8_scaled.safetensors', type: 'hunyuan_video' } }
+  // DualCLIPLoader with type "hunyuan_video": CLIPLoader type "wan" creates Llama2 with
+  // 128256 vocab but llava_llama3 has 128320 tokens, causing a state_dict size mismatch.
+  // DualCLIPLoader handles both correctly. K2 (Punkt 2): both names used to be hardcoded
+  // literals, resolved now via findFramePackCLIPPair against the live CLIP enum.
+  const framePackClips = await findFramePackCLIPPair()
+  workflow[clipId] = { class_type: 'DualCLIPLoader', inputs: { clip_name1: framePackClips.clipL, clip_name2: framePackClips.llavaLlama3, type: 'hunyuan_video' } }
   // K2: was a hardcoded literal never checked against the live CLIPVisionLoader
-  // enum — same "Value not in list" failure mode as the VAE below, just for a
+  // enum, same "Value not in list" failure mode as the VAE below, just for a
   // different node. Resolved against the live list like the VAE already is.
   workflow[clipVisionId] = { class_type: 'CLIPVisionLoader', inputs: { clip_name: await findMatchingClipVision() } }
   // FramePack is a HunyuanVideo 1.0 model. Its sampler allocates the history

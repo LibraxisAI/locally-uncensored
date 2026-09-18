@@ -270,7 +270,7 @@ export function classifyModel(name: string | null | undefined): ModelType {
   // "krea2") + VAE pipeline, NOT a self-contained CheckpointLoaderSimple
   // graph. Before this check the name fell through to 'unknown', which
   // CLASSIFIED it as an ordinary checkpoint and loaded it with
-  // CheckpointLoaderSimple — the file has no embedded CLIP, so ComfyUI
+  // CheckpointLoaderSimple, and the file has no embedded CLIP, so ComfyUI
   // answered "clip input is invalid: None". Detect before the 'xl' suffix
   // scan below: CivitAI filenames commonly end "...Krea2_fp8.safetensors",
   // which would otherwise never reach it anyway, but keep the ordering
@@ -450,9 +450,9 @@ export const MODEL_TYPE_DEFAULTS: Record<string, ModelTypeDefaults> = {
 // ─── Component Requirements per model type ───
 
 // K9 (GH #136): the registry used to be declared here AND, separately, in
-// discover.ts — two copies of the same per-model-type data that both had to
+// discover.ts, two copies of the same per-model-type data that both had to
 // be remembered on every new architecture. Krea 2 only reached one of them.
-// Canonical data now lives in component-registry.ts (Audit W-T2 pattern —
+// Canonical data now lives in component-registry.ts (Audit W-T2 pattern,
 // same fix as pulling the bundle catalog into model-bundles.ts); both
 // comfyui.ts and discover.ts import it and neither has to import the other.
 export type { ComponentSpec, ComponentRequirements } from './component-registry'
@@ -1505,6 +1505,26 @@ export async function findFluxCLIPPair(): Promise<{ t5: string; clipL: string }>
 }
 
 /**
+ * K2 (review-create.md nachbessert, Punkt 2): FramePack's DualCLIPLoader
+ * (type "hunyuan_video") wrote `clip_l.safetensors` and
+ * `llava_llama3_fp8_scaled.safetensors` straight into the node, same
+ * hardcoded-literal failure class the rest of K2 already fixed for VAE/CLIP/
+ * audio_encoder/clip_vision in the other builders. Resolved now against the
+ * live CLIP enum, same shape as findFluxCLIPPair above, with the same
+ * actionable "download <file>" errors on a miss.
+ */
+export async function findFramePackCLIPPair(): Promise<{ clipL: string; llavaLlama3: string }> {
+  const clips = await getCLIPModels()
+  if (clips.length === 0) throw new Error('No text encoder models found. Download a CLIP/T5 model for your model type from the Model Manager.')
+  const lower = (s: string) => s.toLowerCase()
+  const clipL = clips.find(c => lower(c).includes('clip_l'))
+  const llavaLlama3 = clips.find(c => lower(c).includes('llava'))
+  if (!clipL) throw new Error(`No FramePack CLIP-L text encoder found. Download "clip_l.safetensors" from the Model Manager.`)
+  if (!llavaLlama3) throw new Error(`No FramePack llava_llama3 text encoder found. Download "llava_llama3_fp8_scaled.safetensors" from the Model Manager.`)
+  return { clipL, llavaLlama3 }
+}
+
+/**
  * Pick the right text encoder for a model.
  *
  * @param modelType — ModelType from `classifyModel`.
@@ -1560,7 +1580,7 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
   if (modelType === 'krea2') {
     // Krea 2 uses Qwen3-VL 4B, shipped under different quant-tier filenames
     // by different finetune authors (GH #136: qwen3vl_4b_int8_convrot vs
-    // qwen3vl_4b_fp8_scaled) — match on the qwen3vl family, not one filename.
+    // qwen3vl_4b_fp8_scaled), so match on the qwen3vl family, not one filename.
     const match = clips.find(c => lower(c).includes('qwen3vl') || lower(c).includes('qwen3_vl'))
       || clips.find(c => lower(c).includes('qwen') && lower(c).includes('vl'))
     if (match) return match
@@ -1624,7 +1644,7 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
  * safetensors'` straight into AudioEncoderLoader, never checked against
  * ComfyUI's live enum. A box that doesn't have that exact file (a different
  * quant, a subfolder, or simply nothing installed) submitted it verbatim and
- * ComfyUI's /prompt validator rejected the node with "Value not in list" —
+ * ComfyUI's /prompt validator rejected the node with "Value not in list",
  * the same failure mode Bug C already fixed for CLIPLoader, just not carried
  * over to the newer local lanes. Same no-silent-fallback rule as
  * findMatchingVAE/findMatchingCLIP: resolve against the live list, throw an
