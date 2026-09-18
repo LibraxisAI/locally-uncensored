@@ -698,7 +698,29 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
             );
             return;
         }
-        // RUNDE5-B6-MARKER
+
+        // B6 (review Runde 4, Runde 5 Blocker): ComfyUI's own requirements.txt
+        // pulls torch/torchvision/torchaudio, so this pip call needed exactly
+        // the same preflight the install and repair paths already have, or a
+        // venv on an unsupported interpreter got pip's generic wheel-not-found
+        // error again, at this entry point instead of those two. Update does
+        // not rebuild a venv, so `UseInstead` is handled like the existing-venv
+        // branch of Install/Repair: point at Repair rather than silently
+        // switching interpreters under an environment nothing rebuilt.
+        let (_torch_args, _gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+        match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Update ComfyUI\" again") {
+            super::torch::TorchPythonDecision::Proceed => {}
+            super::torch::TorchPythonDecision::UseInstead { path, current_version, chosen_version } => {
+                update("error", &super::torch::existing_venv_needs_repair_message(current_version, &path, chosen_version));
+                return;
+            }
+            super::torch::TorchPythonDecision::Blocked(msg) => {
+                update("error", &msg);
+                return;
+            }
+        }
+
         {
             let reqs_str = reqs.to_string_lossy().to_string();
             let req_args = vec![
