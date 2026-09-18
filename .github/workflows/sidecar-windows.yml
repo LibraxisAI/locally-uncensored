@@ -29,9 +29,24 @@ env:
   # kept building. Keep the two lanes in sync.
   LLAMA_BUILD_CACHE: 'D:/lb'
 
+  # BLOCKER A1 (review-integ.md, Teil (a)): same pin as release.yml's env:
+  # block, for the same reason (see the comment there for the full sourcing:
+  # commit and sha256 both read off huggingface.co, size and MIT license
+  # named). Bump both files together; there is no shared config between these
+  # two separate workflow files to enforce that today (same limitation as
+  # VULKAN_SDK_VERSION two lines up, F-c2).
+  STORIES260K_REVISION: '499bc8821c6b12b4e53c5bffcb21ec206f212d81'
+  STORIES260K_SHA256: '270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d'
+
 jobs:
   sidecar-windows:
     runs-on: windows-latest
+    # BLOCKER A1: this job had no ceiling, so a hang anywhere in it (the boot
+    # smoke's own download included) could ride GitHub's 360-minute default
+    # out, the exact shape that hung release.yml's Linux lane for six hours
+    # on 2026-08-15. This job builds one platform with no signing step, so
+    # its ceiling sits below release.yml's build-tauri (90 minutes).
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -64,6 +79,8 @@ jobs:
 
       - name: Boot smoke — real model load + /health
         shell: pwsh
+        # BLOCKER A1: bounds the whole step, including the download.
+        timeout-minutes: 5
         run: |
           $bin = (Resolve-Path "src-tauri\bin\lu-llama-server-x86_64-pc-windows-msvc.exe").Path
           if (-not (Test-Path $bin)) { throw "sidecar binary missing" }
@@ -82,16 +99,31 @@ jobs:
           & $bin --version
           if ($LASTEXITCODE -ne 0) { throw "llama-server --version exited $LASTEXITCODE (run from $runDir)" }
           Pop-Location
-          # Tiny (~1.2 MB) public GGUF so /health proves a real model load,
-          # not just the HTTP layer. Lands in the cached build root, so the
-          # sidecar cache step keeps it across runs.
+          # Pinned, hashed and bounded: see BLOCKER A1 in this file's env:
+          # block for the sourcing and the license. Tiny (~1.2 MB) public
+          # GGUF so /health proves a real model load, not just the HTTP
+          # layer. Lands in the cached build root, so the sidecar cache step
+          # keeps it across runs.
           $model = "D:\lb\stories260K.gguf"
           if (-not (Test-Path $model)) {
-            curl.exe -fsSL --retry 3 -o $model `
-              "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+            curl.exe -fsSL --retry 3 --max-time 60 -o $model `
+              "https://huggingface.co/ggml-org/models/resolve/$env:STORIES260K_REVISION/tinyllamas/stories260K.gguf"
             if ($LASTEXITCODE -ne 0) { throw "smoke model download failed" }
           }
-          $proc = Start-Process -FilePath $bin -ArgumentList "--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow
+          $actualHash = (Get-FileHash -Path $model -Algorithm SHA256).Hash
+          if ($actualHash.ToLower() -ne $env:STORIES260K_SHA256.ToLower()) {
+            throw "stories260K.gguf did not match the pinned sha256 (expected $env:STORIES260K_SHA256, got $actualHash)"
+          }
+          # F-a2 (review-integ.md): --version exits before
+          # ggml_backend_load_all() ever runs (it cannot prove a CPU module
+          # loaded, which is why /health below carries the real proof), and
+          # --list-devices' own printed list excludes CPU on purpose
+          # (llama.cpp common/arg.cpp). What DOES name a loaded CPU module
+          # unconditionally, even in a release/NDEBUG build, is
+          # ggml-backend-reg.cpp's load_backend() success log line, so the
+          # server's own stderr is captured here and checked for it.
+          $serverLog = "$env:RUNNER_TEMP\boot-smoke.log"
+          $proc = Start-Process -FilePath $bin -ArgumentList "--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow -RedirectStandardOutput "$serverLog.out" -RedirectStandardError "$serverLog.err"
           $ok = $false
           foreach ($i in 1..40) {
             Start-Sleep -Milliseconds 400
@@ -101,8 +133,16 @@ jobs:
             } catch { }
           }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          if (-not $ok) { throw "llama-server /health never came up" }
-          Write-Host "OK - sidecar boots from the resource layout, loads a model and answers /health"
+          if (-not $ok) {
+            Write-Host "---- llama-server output ----"
+            Get-Content "$serverLog.out","$serverLog.err" -ErrorAction SilentlyContinue
+            throw "llama-server /health never came up"
+          }
+          if (-not (Select-String -Path "$serverLog.out","$serverLog.err" -Pattern "loaded CPU backend from" -Quiet -ErrorAction SilentlyContinue)) {
+            Get-Content "$serverLog.out","$serverLog.err" -ErrorAction SilentlyContinue
+            throw "ggml_backend_load_all() never logged a loaded CPU backend; no ggml-cpu-*.dll was found in $runDir"
+          }
+          Write-Host "OK - sidecar boots from the resource layout, loads a model, answers /health, and logged a loaded CPU backend"
 
       - name: Upload sidecar artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

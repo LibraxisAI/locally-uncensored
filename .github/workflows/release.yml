@@ -29,6 +29,25 @@ env:
   # keeps old versions up.
   VULKAN_SDK_VERSION: '1.4.313.2'
 
+  # BLOCKER A1 (review-integ.md, Teil (a)): the boot-smoke steps below used to
+  # pull this file from `resolve/main`, a moving pointer, with no hash check,
+  # no size check and no timeout on the curl call, precisely the shape that
+  # hung a step for six hours on 2026-08-15 (see the Linux-deps step's own
+  # comment further down) and, unlike that step, against a THIRD PARTY host
+  # rather than apt. Pinned here to one commit of ggml-org/models and its
+  # file's sha256, both read from the same huggingface.co page, not typed
+  # from memory:
+  #   https://huggingface.co/ggml-org/models/tree/main/tinyllamas (revision)
+  #   https://huggingface.co/ggml-org/models/blob/main/tinyllamas/stories260K.gguf (sha256, shown as its LFS OID)
+  # Size: 1,185,376 bytes (~1.2 MB). License: MIT, this exact checkpoint
+  # traces to karpathy/tinyllamas on Hugging Face, whose model card states
+  # "License: mit"; ggml-org/models' own README states these files are
+  # "Various models to be used in llama.cpp CI workflow. Do not use it in
+  # production.", exactly this use and never a shipped/bundled asset. Bump
+  # both values together, from that same page, when the pin needs to move.
+  STORIES260K_REVISION: '499bc8821c6b12b4e53c5bffcb21ec206f212d81'
+  STORIES260K_SHA256: '270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d'
+
 jobs:
   # The Latest flag comes off FIRST, before anything is gated or built.
   #
@@ -87,6 +106,16 @@ jobs:
 
   build-tauri:
     needs: gate
+    # BLOCKER A1 (review-integ.md): this job had no ceiling of its own, so it
+    # ran up to GitHub's 360-minute default. ci.yml's own tauri-build job
+    # (comment right above its identical timeout) already carries this exact
+    # fix for this exact incident: "A hung bundler must fail loudly rather
+    # than burn the 6-hour job ceiling, the way the Linux lane did on
+    # 2026-08-15" (see this job's boot-smoke steps below). This job additionally
+    # signs the bundle and builds every installer target (NSIS, MSI, deb,
+    # AppImage) that ci.yml's own tauri-build does not, so its ceiling is
+    # wider than that job's 60 minutes rather than equal to it.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -253,6 +282,10 @@ jobs:
       - name: Boot-smoke from a moved directory (K1, BLOCKER B3/B6)
         if: matrix.sidecar_triple == 'x86_64-unknown-linux-gnu'
         shell: bash
+        # BLOCKER A1: bounds the whole step, not only the curl call below, so
+        # a hang anywhere in it (the model-load poll included) fails within
+        # minutes instead of riding the job's own 90-minute ceiling out.
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           moved="$RUNNER_TEMP/moved-away-from-build-tree"
@@ -267,13 +300,41 @@ jobs:
           # first: cheap, and its own log line names every backend that
           # loaded (useful when the model-load step below fails and the
           # reason is "which backend" rather than "did anything load").
-          ( cd "$moved/llama" && "$bin" --list-devices )
+          #
+          # F-a2 (review-integ.md): the printed device LIST itself is not
+          # proof, because llama.cpp's --list-devices handler (common/arg.cpp)
+          # deliberately EXCLUDES CPU devices from what it prints
+          # (`if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU)`),
+          # so a CPU module could fail to load and this list would look
+          # identical. What DOES prove it, even in a release (NDEBUG) build
+          # where ggml_backend_load_all() passes silent=true, is the loader's
+          # own success line: ggml-backend-reg.cpp's load_backend() logs
+          # "loaded %s backend from %s" unconditionally, outside the
+          # `if (!silent)` guard that only gates the FAILURE/skip messages.
+          # Capture stderr (GGML_LOG goes there) and require that line, named
+          # for CPU specifically.
+          ( cd "$moved/llama" && "$bin" --list-devices ) >/tmp/list-devices.log 2>&1 || {
+            cat /tmp/list-devices.log
+            echo "FAIL: --list-devices exited non-zero" >&2
+            exit 1
+          }
+          cat /tmp/list-devices.log
+          grep -qi "loaded CPU backend from" /tmp/list-devices.log || {
+            echo "FAIL: ggml_backend_load_all() never logged a loaded CPU backend; no ggml-cpu-* module was found in $moved/llama" >&2
+            exit 1
+          }
           # Tiny (~1.2 MB) public GGUF so /health proves a real model load
           # (and therefore a real CPU-backend load), not just the HTTP
-          # layer or the exe's own DT_NEEDED resolution.
+          # layer or the exe's own DT_NEEDED resolution. Pinned, hashed and
+          # bounded: see BLOCKER A1 above the env: block at the top of this
+          # file for the full sourcing and the license.
           model="$RUNNER_TEMP/stories260K.gguf"
-          [ -f "$model" ] || curl -fsSL --retry 3 -o "$model" \
-            "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+          if [ ! -f "$model" ]; then
+            curl -fsSL --retry 3 --max-time 60 -o "$model" \
+              "https://huggingface.co/ggml-org/models/resolve/${STORIES260K_REVISION}/tinyllamas/stories260K.gguf"
+          fi
+          echo "${STORIES260K_SHA256}  $model" | sha256sum -c - \
+            || { echo "FAIL: stories260K.gguf did not match the pinned sha256" >&2; exit 1; }
           ( cd "$moved/llama" && "$bin" --host 127.0.0.1 --port 8129 -m "$model" >/tmp/boot-smoke.log 2>&1 ) &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
@@ -304,18 +365,40 @@ jobs:
       - name: "Boot-smoke: real model load plus /health (K1, Nachbesserung N5)"
         if: matrix.sidecar_triple == 'x86_64-pc-windows-msvc'
         shell: pwsh
+        # BLOCKER A1: see the Linux step above for why this step needs its
+        # own ceiling, not only the download's --max-time.
+        timeout-minutes: 5
         run: |
           $bin = (Resolve-Path "src-tauri\bin\lu-llama-server-${{ matrix.sidecar_triple }}.exe").Path
           $runDir = (Resolve-Path "src-tauri\resources\llama\${{ matrix.sidecar_triple }}").Path
           Push-Location $runDir
-          & $bin --list-devices
-          if ($LASTEXITCODE -ne 0) { throw "llama-server --list-devices exited $LASTEXITCODE (run from $runDir)" }
+          $listLog = "$env:RUNNER_TEMP\list-devices.log"
+          & $bin --list-devices *> $listLog
+          $listExit = $LASTEXITCODE
+          Get-Content $listLog
+          if ($listExit -ne 0) { throw "llama-server --list-devices exited $listExit (run from $runDir)" }
+          # F-a2 (review-integ.md): the printed device list itself excludes
+          # CPU on purpose (llama.cpp common/arg.cpp's --list-devices handler
+          # skips GGML_BACKEND_DEVICE_TYPE_CPU), so it cannot prove a CPU
+          # module loaded. ggml-backend-reg.cpp's load_backend() logs
+          # "loaded %s backend from %s" on every success unconditionally
+          # (the `if (!silent)` guard only gates the failure/skip messages,
+          # even in a release/NDEBUG build), so that line is the real proof.
+          if (-not (Select-String -Path $listLog -Pattern "loaded CPU backend from" -Quiet)) {
+            throw "ggml_backend_load_all() never logged a loaded CPU backend; no ggml-cpu-*.dll was found in $runDir"
+          }
           Pop-Location
+          # Pinned, hashed and bounded: see BLOCKER A1 above the env: block
+          # at the top of this file for the full sourcing and the license.
           $model = "$env:RUNNER_TEMP\stories260K.gguf"
           if (-not (Test-Path $model)) {
-            curl.exe -fsSL --retry 3 -o $model `
-              "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+            curl.exe -fsSL --retry 3 --max-time 60 -o $model `
+              "https://huggingface.co/ggml-org/models/resolve/$env:STORIES260K_REVISION/tinyllamas/stories260K.gguf"
             if ($LASTEXITCODE -ne 0) { throw "smoke model download failed" }
+          }
+          $actualHash = (Get-FileHash -Path $model -Algorithm SHA256).Hash
+          if ($actualHash.ToLower() -ne $env:STORIES260K_SHA256.ToLower()) {
+            throw "stories260K.gguf did not match the pinned sha256 (expected $env:STORIES260K_SHA256, got $actualHash)"
           }
           $proc = Start-Process -FilePath $bin -ArgumentList "--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow
           $ok = $false

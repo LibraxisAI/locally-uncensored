@@ -120,6 +120,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: '3.0.1',
     headline: 'A GPU without a measured free reading gets a safer plan, and Linux/AppImage installs stop losing environment variables to it',
     lines: [
+      'The local engine now picks its CPU code path at startup, so older processors without AVX2 can run local models instead of the engine exiting right after start.',
       'On a GPU where the free VRAM could not actually be measured (no nvidia-smi, for instance), the LU Engine used to plan layers as if the whole card were sitting empty and log "N MiB are free" for a number that was really the total size, other programs included. It now takes a bigger safety margin on that weaker reading and logs it correctly as total capacity, not free memory, so a start plans fewer layers rather than too many.',
       'Linux AppImage: a foreign program the app starts (git, a system Python, pip, ffmpeg, nvidia-smi, the coding agent shell, and now every program the Character Trainer starts too) no longer inherits the AppImage runtime\'s own LD_LIBRARY_PATH, PYTHONHOME and related variables. That inheritance made a perfectly healthy system Python fail to import ssl or find its standard library, with a diagnosis that pointed at a broken Python install rather than the real cause.',
       'On a platform where pip refuses to write into the system Python (Arch, Debian 12+, Fedora 38+, Ubuntu 23.04+), the isolated venv LU already built there no longer dies at the first pip call, and the same fix keeps the Coding Agent\'s own terminal from picking up the same poisoned environment for every git, pip or python command typed into it.',
@@ -132,7 +133,6 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'The LU Engine crashing immediately on an old CPU now says which instruction set is missing, measured from the CPU itself rather than guessed, and stops retrying the same binary a second time since it would only fail the same way again.',
           'The engine startup probe\'s log line read as if a model that is still loading, one that is thinking, and one that has genuinely failed all looked the same. The wording for each case is distinct now.',
           'The CI check that runs on every pull request now fails independently on each platform instead of one platform\'s failure hiding whatever the other platform would have found.',
-          'If you moved the Character Trainer\'s folder to a different drive in Settings, pip, Hugging Face and PyTorch now cache into that same folder instead of quietly filling up the system drive again. Left on the default location, nothing changes: your existing caches stay exactly where they already are, so this never triggers a second multi gigabyte download on its own.',
         ],
       },
     ],

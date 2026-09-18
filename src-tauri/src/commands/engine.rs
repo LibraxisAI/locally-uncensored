@@ -1394,6 +1394,33 @@ fn log_cpu_features_once() {
     });
 }
 
+/// Counts the CPU-variant modules actually sitting in the sidecar's backend
+/// folder (the same folder `resolve_engine_backend_dir` points at and
+/// `ggml_backend_load_all()` dlopens from at runtime), by the same
+/// loader-exact naming `backend_marker_filename` and `verify-sidecar-isa.sh`
+/// use ("[lib]ggml-cpu-<variant>.[dll|so]").
+///
+/// K1 (3.0.1, BLOCKER C1): after the sidecar rebuild the bundled build ships
+/// one variant per instruction-set floor instead of one AVX2-only binary, so
+/// a CPU that still faults on its first opcode is no longer explained by "the
+/// build requires AVX2" (Runde 3 disproved that: `verify-sidecar-isa.sh`
+/// disassembles the baseline variant and the exe itself and fails the build
+/// if either contains an AVX-or-above instruction). The far more likely cause
+/// is that this installation's copy of the folder counted here is short one
+/// or more files: a partial install, or an antivirus scanner that quarantined
+/// an unsigned `ggml-cpu-*` module (the exact pattern generic packer
+/// heuristics flag, review-integ.md Teil (a), Punkt 6). Counting the folder
+/// is what tells those two cases apart in the message instead of guessing.
+fn count_cpu_backend_modules(dir: &Path) -> usize {
+    let prefix = if cfg!(target_os = "windows") { "ggml-cpu-" } else { "libggml-cpu-" };
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+        .count()
+}
+
 /// The MEASURED names of the instruction sets this CPU is missing, out of
 /// the six the bundled sidecar's build actually requires (AVX, AVX2, BMI2,
 /// FMA, F16C, SSE4.2): pure, so `start_failure_message` can name exactly
@@ -1806,6 +1833,7 @@ pub(crate) fn start_failure_message(
     port: u16,
     budget: Duration,
     second: SecondAttempt,
+    backend_dir: Option<&Path>,
 ) -> String {
     let head = if is_illegal_instruction_exit(failure.exit_code) || is_sigill(failure.signal) {
         // K1 Runde 2, Punkt D: both the GPU and the CPU-only path run the
@@ -1814,21 +1842,27 @@ pub(crate) fn start_failure_message(
         // go in this one sentence, since the log line stderr would otherwise
         // add is empty: the child never gets far enough to print anything.
         //
-        // The review rejected the old wording on three counts, all fixed
-        // here: it named a competing product ("use Ollama") instead of a
-        // path inside LU itself; it said "for example AVX2" instead of the
-        // MEASURED missing features this machine actually has (`AVX2` may
-        // not even be the one missing on a given box); and it only ever
-        // fired on Windows, `exit_code` having no way to see a Linux SIGILL.
+        // BLOCKER C1 (review-integ.md, Teil (c)): this used to say "the
+        // bundled engine's build requires" the named instruction set and told
+        // the user to wait for "a build with broader CPU support". Both
+        // sentences were true against the pre-sidecar-rebuild engine and are
+        // false against this one: K1 ships one CPU-code-path variant per
+        // instruction-set floor, chosen at startup, and
+        // `verify-sidecar-isa.sh` disassembles the baseline variant on every
+        // build to prove it contains no AVX-or-above opcode. A crash here
+        // therefore does not mean no build exists for this CPU; it means
+        // something about THIS installation is broken. Counting the backend
+        // folder (`count_cpu_backend_modules`) tells the two likely breakages
+        // apart instead of guessing between them.
         let missing = missing_cpu_features();
         let missing_sentence = if missing.is_empty() {
             // The probe itself found nothing missing (or is not applicable,
             // non-x86_64): still true that the binary faulted on its first
             // opcode, just without a named cause to add.
-            "This CPU is missing an instruction set the bundled engine's build requires.".to_string()
+            "This CPU is missing an instruction set the loaded CPU module needs.".to_string()
         } else {
             format!(
-                "This CPU is missing {} the bundled engine's build requires.",
+                "This CPU is missing {} the loaded CPU module needs.",
                 if missing.len() == 1 {
                     format!("the {} instruction set", missing[0])
                 } else {
@@ -1836,11 +1870,34 @@ pub(crate) fn start_failure_message(
                 }
             )
         };
+        let module_count = backend_dir.map(count_cpu_backend_modules);
+        let repair_sentence = match module_count {
+            // No backend folder at all, or the folder is empty of CPU
+            // modules: the installation is missing files outright.
+            Some(0) | None => {
+                " The engine's own folder has none of the separate CPU builds it ships for older \
+                 processors, which usually means an incomplete install or a security scanner \
+                 quarantining an unsigned file it does not recognise. Reinstall Locally \
+                 Uncensored, or check your antivirus software's quarantine for a file named \
+                 ggml-cpu, then try again."
+                    .to_string()
+            }
+            // Some modules are present, so the install is not simply empty:
+            // the one this CPU needs is missing or was skipped, which points
+            // more at antivirus removal of a single file than a wholesale
+            // failed install.
+            Some(n) => format!(
+                " The engine's own folder holds {n} of the separate CPU builds it ships for older \
+                 processors, but not the one this CPU can run, which points at a security scanner \
+                 having quarantined that one file rather than a failed install. Reinstall Locally \
+                 Uncensored, or check your antivirus software's quarantine for a file named \
+                 ggml-cpu, then try again."
+            ),
+        };
         format!(
             "The LU Engine exited immediately with an illegal-instruction fault. {missing_sentence} \
-             The app did not retry, since the same binary would fail the same way again. Until a \
-             build with broader CPU support is available, use LU Cloud or a custom endpoint for this \
-             machine instead: open Settings, AI Backends and switch away from the LU Engine. \
+             The app did not retry, since the same binary would fail the same way again.{repair_sentence} \
+             LU Cloud or a custom endpoint (Settings, AI Backends) stay available in the meantime. \
              Check Settings, Troubleshoot for the CPU features line in the log."
         )
     } else if failure.port_taken {
@@ -2313,7 +2370,7 @@ fn start_after_stop(
     if !failure.died {
         // The budget ran out with the child still alive: it is loading slowly,
         // not failing. Retrying would just spend the budget twice.
-        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
+        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload, backend_dir.as_deref()));
     }
 
     if is_illegal_instruction_exit(failure.exit_code) || is_sigill(failure.signal) {
@@ -2332,7 +2389,7 @@ fn start_after_stop(
             signal = failure.signal.unwrap_or_default(),
             "the LU Engine crashed with an illegal-instruction fault, skipping the pointless second attempt"
         );
-        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
+        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload, backend_dir.as_deref()));
     }
 
     tracing::warn!(target: "engine", port, "the first start attempt exited before it served, retrying once");
@@ -2434,7 +2491,7 @@ fn start_after_stop(
             answer["cpuOnly"] = serde_json::json!(offload_was_tried);
             Ok(answer)
         }
-        Err(second) => Err(start_failure_message(&second, retry_port, deadline, second_attempt)),
+        Err(second) => Err(start_failure_message(&second, retry_port, deadline, second_attempt, backend_dir.as_deref())),
     }
 }
 
@@ -4335,11 +4392,11 @@ mod tests {
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory".into(),
             exit_code: None, signal: None };
-        let same = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let same = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(same.contains("It was tried twice"), "{same}");
         assert!(same.contains("set GPU Layers to 0"), "{same}");
 
-        let cpu = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::CpuOnly);
+        let cpu = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::CpuOnly, None);
         assert!(cpu.contains("The LU Engine exited before serving on port 8127."), "{cpu}");
         assert!(cpu.contains("Tried with GPU offload and again on CPU."), "{cpu}");
         assert!(!cpu.contains("GPU Layers"), "the way out was already taken:\n{cpu}");
@@ -5606,7 +5663,7 @@ mod tests {
             stderr: KAPUTTE_VERSION_STDERR.into(),
             exit_code: None, signal: None };
         let msg = with_note_on_top(
-            &start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload),
+            &start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None),
             RESTORED_NOTE,
         );
         let notiz = msg.find(RESTORED_NOTE).expect("the note is gone");
@@ -6001,7 +6058,7 @@ mod tests {
             port_taken: false,
             stderr: "bind: Address already in use".into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(
             !msg.contains("Reinstall"),
@@ -6013,7 +6070,7 @@ mod tests {
             port_taken: false,
             stderr: "something went wrong".into(),
             exit_code: None, signal: None };
-        assert!(start_failure_message(&other, 8127, Duration::from_secs(60), SecondAttempt::SameOffload).contains("Reinstall"));
+        assert!(start_failure_message(&other, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None).contains("Reinstall"));
     }
 
     #[test]
@@ -6026,7 +6083,7 @@ mod tests {
         assert!(!stderr_blames_the_port(oom));
         assert!(stderr_blames_the_gpu(oom));
         let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() , exit_code: None, signal: None };
-        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("GPU Layers to 0"), "the way out has to survive: {msg}");
         assert!(!msg.contains("could not open port"), "{msg}");
     }
@@ -6061,7 +6118,7 @@ mod tests {
         // out of the graphics-card answer.
         assert!(!stderr_blames_the_gpu(stderr), "a banner is not a defect");
         let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None, signal: None };
-        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "a busy port is not freed by CPU mode: {msg}");
     }
@@ -6103,7 +6160,7 @@ mod tests {
         // its budget spends the same budget again (up to 10 minutes on a big
         // GGUF) and re-runs the ComfyUI and Ollama evictions each time.
         let slow = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None, signal: None };
-        let msg = start_failure_message(&slow, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&slow, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(
             msg.contains("did not become healthy"),
             "the frontend matches on this phrase: {msg}"
@@ -6117,7 +6174,7 @@ mod tests {
             "something went wrong",
         ] {
             let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None, signal: None };
-            let m = start_failure_message(&died, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            let m = start_failure_message(&died, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
             assert!(!m.contains("did not become healthy"), "{m}");
         }
     }
@@ -6204,15 +6261,21 @@ mod tests {
             exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
             signal: None,
         };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(!msg.contains("0xC000001D"), "no OS-specific status code: {msg}");
         assert!(!msg.contains("STATUS_ILLEGAL_INSTRUCTION"), "{msg}");
         assert!(!msg.contains("for example AVX2"), "the guess is gone: {msg}");
         assert!(!msg.contains("Ollama"), "no competing product named: {msg}");
-        assert!(msg.contains("LU Cloud"), "an in-app action is offered: {msg}");
+        // BLOCKER C1 (review-integ.md): after the sidecar rebuild, "the
+        // bundled engine's build requires X" and "until a build with broader
+        // CPU support is available" are both false, K1 shipped exactly that
+        // broader build. The message must not claim the build itself lacks
+        // support for this CPU any more.
+        assert!(!msg.contains("build requires"), "the build-lacks-support claim is gone: {msg}");
+        assert!(!msg.contains("broader CPU support"), "{msg}");
+        assert!(msg.contains("LU Cloud"), "the cloud stays available, but not as the only answer: {msg}");
         assert!(msg.contains("did not retry"), "{msg}");
         assert!(!msg.contains("tried twice"), "no second try ran: {msg}");
-        assert!(!msg.contains("Reinstall"), "the cause is known, not generic: {msg}");
         assert!(
             !regex::Regex::new(r"\d+\.\d+\.\d+").unwrap().is_match(&msg),
             "no version number in an update promise: {msg}"
@@ -6221,9 +6284,115 @@ mod tests {
         // Negative control: an ordinary death (no illegal-instruction exit
         // code, no signal) is unaffected and keeps its own wording.
         let ordinary = StartFailure { exit_code: None, signal: None, ..f };
-        let ordinary_msg =
-            start_failure_message(&ordinary, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let ordinary_msg = start_failure_message(
+            &ordinary,
+            8127,
+            Duration::from_secs(60),
+            SecondAttempt::SameOffload,
+            None,
+        );
         assert!(!ordinary_msg.contains("illegal-instruction"), "{ordinary_msg}");
+    }
+
+    /// BLOCKER C1 (review-integ.md, Teil (c)): with no backend folder to
+    /// count at all (`None`, mirroring a fresh or broken install where
+    /// `resolve_engine_backend_dir` found nothing), the message must point at
+    /// an incomplete installation or antivirus quarantine and offer a
+    /// reinstall, not repeat the old "wait for a broader build" claim.
+    #[test]
+    fn illegal_instruction_with_no_backend_dir_blames_the_installation() {
+        let f = StartFailure {
+            died: true,
+            port_taken: false,
+            stderr: String::new(),
+            exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
+            signal: None,
+        };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
+        assert!(msg.contains("Reinstall Locally Uncensored"), "{msg}");
+        assert!(msg.to_lowercase().contains("antivirus"), "{msg}");
+        assert!(msg.contains("none of the separate CPU builds"), "{msg}");
+    }
+
+    /// Negative control for the two cases `count_cpu_backend_modules` tells
+    /// apart: a folder that holds every expected CPU variant still crashed,
+    /// so the wording must not claim the folder is empty (that would send a
+    /// user with a genuinely complete install looking for files that are
+    /// already there), while still pointing at antivirus/reinstall rather
+    /// than at "no build exists for this CPU".
+    #[test]
+    fn illegal_instruction_with_a_full_backend_dir_does_not_claim_it_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: &[&str] = if cfg!(target_os = "windows") {
+            &["ggml-cpu-x64.dll", "ggml-cpu-sse42.dll", "ggml-cpu-haswell.dll"]
+        } else {
+            &["libggml-cpu-x64.so", "libggml-cpu-sse42.so", "libggml-cpu-haswell.so"]
+        };
+        for name in names {
+            std::fs::write(dir.path().join(name), b"stub").unwrap();
+        }
+        let f = StartFailure {
+            died: true,
+            port_taken: false,
+            stderr: String::new(),
+            exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
+            signal: None,
+        };
+        let msg = start_failure_message(
+            &f,
+            8127,
+            Duration::from_secs(60),
+            SecondAttempt::SameOffload,
+            Some(dir.path()),
+        );
+        assert!(msg.contains("Reinstall Locally Uncensored"), "{msg}");
+        assert!(msg.to_lowercase().contains("antivirus"), "{msg}");
+        assert!(msg.contains("holds 3 of the separate CPU builds"), "{msg}");
+        assert!(!msg.contains("none of the separate CPU builds"), "a full folder is not an empty one: {msg}");
+
+        // Negative control: an EMPTY folder (created but never populated) is
+        // reported as empty, not as "3 of the separate CPU builds".
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty_msg = start_failure_message(
+            &f,
+            8127,
+            Duration::from_secs(60),
+            SecondAttempt::SameOffload,
+            Some(empty_dir.path()),
+        );
+        assert!(empty_msg.contains("none of the separate CPU builds"), "{empty_msg}");
+        assert!(!empty_msg.contains("holds 3"), "{empty_msg}");
+    }
+
+    /// `count_cpu_backend_modules` itself, isolated from the message
+    /// wording: loader-exact prefix, not a bare substring match, and unaware
+    /// of `ggml-base`/`ggml-vulkan`/the exe sitting in the same folder.
+    #[test]
+    fn count_cpu_backend_modules_counts_only_the_cpu_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = if cfg!(target_os = "windows") { "ggml-cpu-" } else { "libggml-cpu-" };
+        let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
+        for variant in ["x64", "sse42", "haswell"] {
+            std::fs::write(dir.path().join(format!("{prefix}{variant}.{ext}")), b"stub").unwrap();
+        }
+        // Siblings that must NOT be counted: the shared runtime, the GPU
+        // backend, and the exe itself.
+        let base = if cfg!(target_os = "windows") { "ggml-base.dll" } else { "libggml-base.so" };
+        let vulkan = if cfg!(target_os = "windows") { "ggml-vulkan.dll" } else { "libggml-vulkan.so" };
+        std::fs::write(dir.path().join(base), b"stub").unwrap();
+        std::fs::write(dir.path().join(vulkan), b"stub").unwrap();
+        assert_eq!(count_cpu_backend_modules(dir.path()), 3);
+
+        // Negative control: a directory holding only the non-CPU siblings
+        // counts as zero, not as "found something".
+        let siblings_only = tempfile::tempdir().unwrap();
+        std::fs::write(siblings_only.path().join(base), b"stub").unwrap();
+        std::fs::write(siblings_only.path().join(vulkan), b"stub").unwrap();
+        assert_eq!(count_cpu_backend_modules(siblings_only.path()), 0);
+
+        // A directory that does not exist at all behaves like an empty one
+        // instead of panicking (a stale or unresolved backend_dir).
+        assert_eq!(count_cpu_backend_modules(&dir.path().join("does-not-exist")), 0);
     }
 
     #[test]
@@ -6245,7 +6414,7 @@ mod tests {
             exit_code: None,
             signal: Some(SIGILL),
         };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("illegal-instruction"), "SIGILL reads as the same crash: {msg}");
         assert!(msg.contains("did not retry"), "{msg}");
         assert!(!msg.contains("0xC000001D"), "{msg}");
@@ -6330,7 +6499,7 @@ mod tests {
             port_taken: false,
             stderr: "ggml_cuda_init: failed to initialize CUDA: no kernel image is available for execution on the device".into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("exited again"), "{msg}");
         assert!(msg.contains("tried twice"), "{msg}");
         assert!(msg.contains("GPU Layers to 0"), "{msg}");
@@ -6345,7 +6514,7 @@ mod tests {
             port_taken: false,
             stderr: "llama_model_load: error loading model: unknown model architecture 'wanx'".into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
     }
@@ -6374,7 +6543,7 @@ srv    llama_server: exiting due to model loading error";
             port_taken: false,
             stderr: KAPUTTE_GGUF_STDERR.into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("graphics-card"), "{msg}");
@@ -6592,7 +6761,7 @@ srv    llama_server: exiting due to model loading error";
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("graphics-card"), "{msg}");
@@ -6609,7 +6778,7 @@ srv    llama_server: exiting due to model loading error";
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory\nllama_model_load: error loading model: unable to allocate CUDA0 buffer\nllama_model_load_from_file_impl: failed to load model".into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("could not read the model file"), "{msg}");
     }
@@ -6617,7 +6786,7 @@ srv    llama_server: exiting due to model loading error";
     #[test]
     fn a_stranger_on_the_port_keeps_its_own_message() {
         let f = StartFailure { died: true, port_taken: true, stderr: String::new() , exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("occupying the port"), "{msg}");
         assert!(!msg.contains("tried twice"), "{msg}");
     }
@@ -6625,7 +6794,7 @@ srv    llama_server: exiting due to model loading error";
     #[test]
     fn a_slow_load_still_reports_the_budget_and_never_claims_a_crash() {
         let f = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(220), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(220), SecondAttempt::SameOffload, None);
         assert!(msg.contains("did not become healthy on port 8127 within 220s"), "{msg}");
         assert!(!msg.contains("exited"), "{msg}");
     }
@@ -6643,7 +6812,7 @@ srv    llama_server: exiting due to model loading error";
             port_taken: false,
             stderr: "lu-llama-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file: No such file or directory".into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("libvulkan.so.1"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
         // The engine's own last words still ride along for a bug report.
@@ -6729,7 +6898,7 @@ srv    llama_server: exiting due to model loading error";
             port_taken: false,
             stderr: "ggml_vulkan: no devices found".into(),
             exit_code: None, signal: None };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("GPU Layers to 0"), "{msg}");
         assert!(!msg.contains("apt install"), "{msg}");
         // And an empty stderr names no library at all.
