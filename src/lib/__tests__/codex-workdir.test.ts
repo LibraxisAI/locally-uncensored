@@ -2,72 +2,23 @@
  * The two verdicts A8 turned out to need, pulled out of the hook and the two
  * views so they can be tested at all (review S6, S3).
  *
- * The precedence used to be a three-line boolean chain inside a 2000-line
- * send, and "is a run in flight" was written out by hand on each surface, once
- * per surface, differently. That is how the first cut of the fix ended up
- * overwriting a deliberate per-chat workspace and locking the folder picker
- * whenever an unrelated Chat tab was streaming.
+ * "Is a run in flight" was written out by hand on each surface, once per
+ * surface, differently. That is how the first cut of the fix ended up locking
+ * the folder picker whenever an unrelated Chat tab was streaming.
+ *
+ * Die Rangfolge des Arbeitsordners stand bis 3.0.0 ebenfalls hier, als zweite
+ * Rechnung ohne Aufrufer. Sechs Faelle massen sie, und keiner davon fasste die
+ * ausgelieferte Rechnung an. Beides ist weg; gemessen wird die lebende Stelle
+ * in `src/hooks/codex/__tests__/ein-lauf.test.ts` (R2-42).
  *
  * Run: npx vitest run src/lib/__tests__/codex-workdir.test.ts
  */
 import { describe, it, expect } from 'vitest'
 import {
-  CODEX_SANDBOX,
   CODEX_WORKDIR_LOCK_TITLE,
   codexBusyReason,
   codexFallbackLabel,
-  resolveCodexWorkDir,
 } from '../codex-workdir'
-
-const WINDOWS_PATH = 'C:\\Users\\helpslowlydying\\Documents\\My Projects'
-
-describe('where the Coding Agent works', () => {
-  it('the thread wins, it carries what the picker last said', () => {
-    expect(resolveCodexWorkDir({
-      threadDir: '/thread', workspacePath: '/workspace', storeDir: '/store',
-    })).toBe('/thread')
-  })
-
-  it("a thread holding the bare '.' is not a pick, so the workspace wins", () => {
-    expect(resolveCodexWorkDir({
-      threadDir: CODEX_SANDBOX, workspacePath: '/workspace', storeDir: '',
-    })).toBe('/workspace')
-    // Negative control: a real path in the same slot does win.
-    expect(resolveCodexWorkDir({
-      threadDir: '/thread', workspacePath: '/workspace', storeDir: '',
-    })).toBe('/thread')
-  })
-
-  it('an empty thread hands it to the per-chat workspace or the default one', () => {
-    expect(resolveCodexWorkDir({
-      threadDir: '', workspacePath: '/workspace', storeDir: '',
-    })).toBe('/workspace')
-  })
-
-  it('nothing anywhere means the per-chat sandbox', () => {
-    expect(resolveCodexWorkDir({
-      threadDir: '', workspacePath: null, storeDir: '',
-    })).toBe(CODEX_SANDBOX)
-    // Negative control against null and undefined leaking through as a path.
-    expect(resolveCodexWorkDir({
-      threadDir: undefined, workspacePath: undefined, storeDir: undefined,
-    })).toBe(CODEX_SANDBOX)
-  })
-
-  it('the picker still catches a thread that has not been synced yet', () => {
-    expect(resolveCodexWorkDir({
-      threadDir: '', workspacePath: null, storeDir: WINDOWS_PATH,
-    })).toBe(WINDOWS_PATH)
-  })
-
-  it('a Windows path passes through untouched', () => {
-    const out = resolveCodexWorkDir({
-      threadDir: WINDOWS_PATH, workspacePath: null, storeDir: '',
-    })
-    expect(out).toBe(WINDOWS_PATH)
-    expect(out).not.toContain('/')
-  })
-})
 
 describe('what the empty state is allowed to promise', () => {
   it('names the workspace that actually wins over an empty picker', () => {
@@ -81,7 +32,7 @@ describe('what the empty state is allowed to promise', () => {
 })
 
 describe('when the working directory is held', () => {
-  const free = { sendsInFlight: 0, threads: {}, loop: null }
+  const free = { sendsInFlight: 0, threads: {}, generating: {}, loop: null }
 
   it('is free when nothing at all is going on', () => {
     expect(codexBusyReason(free)).toBeNull()
@@ -91,8 +42,55 @@ describe('when the working directory is held', () => {
     expect(codexBusyReason({ ...free, sendsInFlight: 1 })).toBe('run')
   })
 
-  it('is held by a thread the store calls running', () => {
-    expect(codexBusyReason({ ...free, threads: { a: { status: 'running' } } })).toBe('run')
+  it('is held by a thread that is really streaming', () => {
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: { a: true },
+    })).toBe('run')
+  })
+
+  it('and by one waiting for an approval or writing its staged changes', () => {
+    // Beides ist laufende Arbeit. Der Vergleich von Hand fragte `=== running`
+    // und liess genau diese beiden Zustaende als "nichts los" durch.
+    for (const status of ['awaiting_approval', 'applying', 'cancelling'] as const) {
+      expect(codexBusyReason({
+        ...free,
+        threads: { a: { status } },
+        generating: { a: true },
+      }), status).toBe('run')
+    }
+  })
+
+  it('but a thread left standing on running by a dead run holds nothing', () => {
+    // Der Fall, der den Ordner fuer den Rest der Sitzung sperrte: Stop raeumt
+    // die Erzeugungsfahne sofort, der Status kommt erst im `finally` des Laufs
+    // zurueck, und ein Shell-Befehl, der das Signal nicht beachtet, dehnt das
+    // Fenster beliebig weit. Der Status allein ist kein Beweis, dass noch
+    // etwas laeuft.
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: {},
+    })).toBeNull()
+    // Und eine Fahne, die auf false steht, ist dasselbe wie keine.
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: { a: false },
+    })).toBeNull()
+  })
+
+  it('a run in ANOTHER chat still holds it, a chat tab streaming does not', () => {
+    // Beide Haelften auf einmal: die Fahne zaehlt nur zusammen mit einem
+    // Faden des Coding-Agenten, sonst sperrte jeder streamende Chat-Reiter
+    // diese Spalte mit (Pruefung S3).
+    expect(codexBusyReason({
+      ...free,
+      threads: { a: { status: 'running' } },
+      generating: { a: true },
+    })).toBe('run')
+    expect(codexBusyReason({ ...free, threads: {}, generating: { chat: true } })).toBeNull()
   })
 
   it('is held between two loop passes, where the thread says idle', () => {
@@ -117,5 +115,14 @@ describe('when the working directory is held', () => {
   it('says a different sentence for a loop than for a run', () => {
     expect(CODEX_WORKDIR_LOCK_TITLE.run).not.toBe(CODEX_WORKDIR_LOCK_TITLE.loop)
     expect(CODEX_WORKDIR_LOCK_TITLE.loop).toContain('loop')
+  })
+
+  it('and every sentence names a way out, not just a wait', () => {
+    // Warten ist keine Auskunft, solange der Nutzer nicht weiss, worauf. Beide
+    // Saetze nennen deshalb den Knopf, der die Sperre wirklich loest: Stop
+    // raeumt die Erzeugungsfahne, und der Ordner ist im selben Augenblick frei.
+    for (const satz of Object.values(CODEX_WORKDIR_LOCK_TITLE)) {
+      expect(satz, satz).toContain('Stop')
+    }
   })
 })

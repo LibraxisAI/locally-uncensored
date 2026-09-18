@@ -24,6 +24,27 @@ const MAC_OPTS: TauriMockOptions = {
   platform: 'mac',
 }
 
+test('mac model install reports the missing snapshot component without claiming success', async ({ page }) => {
+  const error = 'Model installation did not finish: unet/diffusion_pytorch_model.fp16.safetensors is missing (expected 5.1 GB). Retry the download to repair the missing files.'
+  await page.addInitScript(tauriMockInit, {
+    ...MAC_OPTS,
+    mlx: { engineInstalled: true, installedImages: [], imageInstallError: error },
+  })
+  await seedOnboardingDone(page)
+  await routeCloud(page, { license: 'active', access: true, mediaLive: true })
+  await page.goto('/')
+  await expect(cloudSwitch(page)).toBeVisible({ timeout: 20_000 })
+  await page.getByRole('button', { name: /^Settings$/ }).click()
+  await page.getByRole('button', { name: /AI Backends/i }).click()
+  await page.getByRole('button', { name: /Local Media \(Apple MLX\)/i }).click()
+  const row = page.locator('div.items-start.justify-between').filter({ has: page.getByText('SD Turbo', { exact: true }) })
+  await row.getByRole('button', { name: /^Install$/ }).click()
+  await expect(page.getByText(error, { exact: true }).first()).toBeVisible({ timeout: 20_000 })
+  await expect(row.getByRole('button', { name: /^Install$/ })).toBeEnabled()
+  await expect(row.getByRole('button', { name: /Remove/i })).toHaveCount(0)
+  expect((await mlxCalls(page)).some(call => call.cmd === 'mlx_image_install_model' && call.id === 'sd-turbo')).toBe(true)
+})
+
 async function bootLocalCreate(page: Page, opts: TauriMockOptions) {
   await page.addInitScript(tauriMockInit, opts)
   await seedOnboardingDone(page)

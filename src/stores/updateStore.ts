@@ -133,6 +133,16 @@ interface UpdateState {
   releaseNotes: string | null
   isChecking: boolean
   lastChecked: number | null
+  /**
+   * R2-12: eine gescheiterte Pruefung schrieb dasselbe wie eine erfolgreiche.
+   * Die Einstellungsseite las daraus den gruenen Haken "You are on the latest
+   * version.", und R2-13: `lastChecked` sperrte danach sechs Stunden lang jede
+   * automatische Wiederholung. Wer beim Start offline war, bekam also einen
+   * Haken, den niemand geprueft hatte, und der halbe Tag verging, bevor die App
+   * es noch einmal versuchte. Eine gescheiterte Pruefung setzt deshalb dieses
+   * Feld und laesst `lastChecked` in Ruhe.
+   */
+  lastCheckFailed: boolean
   dismissed: string | null
   /** Fetch the update in the background as soon as it is found, so the badge
    *  offers a one-click Restart instead of a download the user has to sit
@@ -173,6 +183,18 @@ interface UpdateState {
 const GITHUB_REPO = 'purpledoubled/locally-uncensored'
 const CHECK_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
 const INITIAL_DELAY = 5_000
+/** Eigener, kurzer Deckel fuer die Pruefung beim Programmstart. Der
+ *  6-Stunden-Deckel oben gilt fuer das Intervall in einem laufenden Prozess;
+ *  auf den Start angewandt verschluckt er die Pruefung ganz, weil
+ *  `lastChecked` den Neustart ueberlebt und `onRehydrateStorage` ihn nur dann
+ *  nullt, wenn eine gespeicherte `latestVersion` oder `updateAvailable`
+ *  danebensteht. T13b hat am 12.09.2026 auf der Box gemessen, was das kostet:
+ *  drei Starts, null Pruefungen, `lastChecked` beim dritten Start 47 Sekunden
+ *  alt. Wer die App oefter als alle sechs Stunden neu startet, bekommt sonst
+ *  nie eine automatische Pruefung. Eine Viertelstunde laesst jeden echten
+ *  Start pruefen und faengt nur den Nutzer ab, der dreimal hintereinander
+ *  neu startet. */
+const STARTUP_STALE = 15 * 60 * 1000 // 15 minutes
 
 // ── Non-serializable update object (module-level) ─────────────
 
@@ -232,6 +254,7 @@ export const useUpdateStore = create<UpdateState>()(
       releaseNotes: null,
       isChecking: false,
       lastChecked: null,
+      lastCheckFailed: false,
       dismissed: null,
       autoDownload: true,
 
@@ -280,6 +303,7 @@ export const useUpdateStore = create<UpdateState>()(
                 releaseNotes: update.body ? truncateNotes(update.body) : null,
                 isChecking: false,
                 lastChecked: Date.now(),
+                lastCheckFailed: false,
                 ...(isNewTarget
                   ? {
                       downloadStatus: 'idle' as DownloadStatus,
@@ -313,6 +337,7 @@ export const useUpdateStore = create<UpdateState>()(
               set({
                 isChecking: false,
                 lastChecked: Date.now(),
+                lastCheckFailed: false,
                 updateAvailable: false,
                 latestVersion: null,
                 releaseNotes: null,
@@ -325,7 +350,7 @@ export const useUpdateStore = create<UpdateState>()(
               { headers: { 'Accept': 'application/vnd.github.v3+json' } }
             )
             if (!res.ok) {
-              set({ isChecking: false, lastChecked: Date.now() })
+              set({ isChecking: false, lastCheckFailed: true })
               return
             }
             const data = await res.json()
@@ -338,10 +363,11 @@ export const useUpdateStore = create<UpdateState>()(
               releaseNotes: data.body ? truncateNotes(data.body) : null,
               isChecking: false,
               lastChecked: Date.now(),
+              lastCheckFailed: false,
             })
           }
         } catch {
-          set({ isChecking: false, lastChecked: Date.now() })
+          set({ isChecking: false, lastCheckFailed: true })
         }
       },
 
@@ -644,7 +670,11 @@ export function initUpdateChecker() {
   _initDone = true
 
   setTimeout(() => {
-    useUpdateStore.getState().checkForUpdate()
+    const { lastChecked, checkForUpdate } = useUpdateStore.getState()
+    // Erzwingen, sobald die letzte Pruefung aelter als die Viertelstunde ist:
+    // sonst faengt der 6-Stunden-Deckel diesen Aufruf ab, und ein Nutzer, der
+    // die App oft neu startet, sieht nie eine Pruefung.
+    void checkForUpdate(!lastChecked || Date.now() - lastChecked > STARTUP_STALE)
   }, INITIAL_DELAY)
 
   setInterval(() => {

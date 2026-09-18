@@ -75,7 +75,7 @@ const { useModelStore } = await import('../../stores/modelStore')
 const { useLuEngineSwitchStore } = await import('../../stores/luEngineSwitchStore')
 
 const LMS = 'openai::qwen2.5-0.5b-instruct'
-const OLLAMA = 'llama3.2:3b'
+const OLLAMA = 'test-model:8b'
 
 /** Was LM Studio ueber den geteilten openai-Steckplatz meldet. */
 function lmStudioIstDa() {

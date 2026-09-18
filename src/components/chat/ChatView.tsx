@@ -17,6 +17,7 @@ import { useDocsAvailability } from '../../hooks/useDocsAvailability'
 import { AgentModeToggle } from './AgentModeToggle'
 import { AgentWorkspaceBadge } from './AgentWorkspaceBadge'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
+import { CHAT_BASE_SYSTEM_PROMPT } from '../../lib/system-prompt'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import { ChevronDown, Download, Wrench, Radio, RefreshCw, X } from 'lucide-react'
@@ -40,6 +41,7 @@ import { PermissionOverrideBar } from './PermissionOverrideBar'
 import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
+import { composerBusy } from '../../lib/composer-busy'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { displayModelName } from '../../api/providers'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -112,11 +114,15 @@ export function ChatView() {
 
   // Per-conversation generating flag (David 2026-06-12): the typing indicator
   // + realtime counter must show ONLY in the chat that is actually generating,
-  // not in every other chat the user switches to. `isGenerating` from the hook
-  // is global (and stays so for the input, where it guards shared stream refs);
-  // the visual indicators below read this conversation-scoped map instead.
+  // not in every other chat the user switches to.
+  //
+  // Since T1 point 4 the COMPOSER reads it too. It used to read the hook's
+  // app-wide `isGenerating`, so every other conversation lost its Send button
+  // and got a Stop button that aborted the foreign run. `composerBusy` splits
+  // the one flag into the two questions the composer actually has.
   const generatingMap = useGenerationStore((s) => s.generating)
   const activeGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
+  const busy = composerBusy(isGenerating, generatingMap, activeConversationId)
 
   const docCount = useRAGStore((s) =>
     activeConversationId ? (s.documents[activeConversationId] || []).length : 0
@@ -201,7 +207,10 @@ export function ChatView() {
       .find((c) => c.id === activeConversationId)
     if (!activeConv) return
     try {
-      await remoteRestart(activeConv.model, activeConv.systemPrompt)
+      // Der Grundtext, nie die Person: ein Neustart darf nicht heimlich
+      // dispatchen, was der Dispatch selbst bewusst weglaesst. Siehe
+      // Sidebar.tsx, handleDispatch.
+      await remoteRestart(activeConv.model, CHAT_BASE_SYSTEM_PROMPT)
       useRemoteStore.setState({ dispatchedConversationId: activeConversationId })
     } catch {
       // #29: restart now rethrows. The store's `error` already holds the
@@ -231,7 +240,7 @@ export function ChatView() {
     : !activeModel
       // Der Waehler steht IM Composer und oeffnet nach oben. Der alte Satz
       // hier hiess „Select a model above." und zeigte in die falsche Richtung.
-      ? { subline: 'Pick a model in the box below, then type.', cta: null }
+      ? { subline: 'Choose a model below. Automatic picks require a known size of at least 7B.', cta: null }
       // Der Modellname steht auf einer EIGENEN Zeile und wird gekuerzt: er ist
       // haeufig 50+ Zeichen lang (`hf.co/DevQuasar/huihui-ai_Qwen3-4B-abliterated-GGUF`),
       // und im Fliesstext liess er die Zeile dreimal umbrechen.
@@ -621,7 +630,8 @@ export function ChatView() {
             <ChatInput
               onSend={sendMessage}
               onStop={stopGeneration}
-              isGenerating={isGenerating}
+              isGenerating={busy.thisChat}
+              busyElsewhere={busy.otherChat}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}

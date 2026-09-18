@@ -14,6 +14,58 @@
  * changes expander, grouped into sections (Local, Cloud), and may be long.
  */
 
+import { CLOUD_PITCH, CLOUD_REFUSAL_LINE, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from './cloud-pitch'
+
+/**
+ * The two model numbers the 3.0.0 sheet quotes, in one place and read, never
+ * typed.
+ *
+ * The catalogue itself lives in the web repository, in
+ * `apps/web/lib/chat/tier-models.ts`; this app reads it from the server at run
+ * time and ships no copy of it. `src/lib/cloud-pitch.ts` is where the counts
+ * that have to exist before anyone signs in are written down, and
+ * `scripts/check-cloud-sales.mjs` pins every one of them to that file in the
+ * web repository. That script is RUN BY HAND before a release: it needs a
+ * checkout of the web repository as its argument and therefore stands in no
+ * workflow and in no npm script. Nobody may rely on it catching a drift on its
+ * own. What runs on every commit is the literal tripwire in
+ * `__tests__/die-verkaufszahlen-sind-von-hand-gehalten.test.ts`; it holds the
+ * seven numbers in `cloud-pitch.ts` against written-out values, so a changed
+ * number has to be changed twice, on purpose.
+ *
+ * This is not decoration. The sheet quoted a denominator of 46 while the guard
+ * on the same commit printed "27/47 chat", because one number was prose and the
+ * other was read from its source. Prose cannot be wrong out loud, which is also
+ * why the test forbids the typed form outright instead of only checking that
+ * today's digits happen to be right.
+ */
+/**
+ * Der Nenner der Marke ist der MESSLAUF, nicht der Katalog (R2-10, R6-5).
+ *
+ * Stand dort der Katalog, behauptete das Blatt, jedes Katalogmodell sei
+ * gemessen worden, und die Differenz zur Markenzahl seien Durchgefallene.
+ * Gemessen wurde nur, was am Tag des Laufs im Katalog stand; V4.1 Flash kam am
+ * selben Tag danach dazu und traegt bis zu seiner Messung keine Marke. Der
+ * Katalog steht weiter im Blatt, aber in seinem eigenen Halbsatz statt als
+ * Nenner einer Aussage, die er nicht traegt.
+ */
+export const SHEET_CHAT_MODELS = CLOUD_PITCH.measuredChatModels
+export const SHEET_CATALOGUE_MODELS = CLOUD_PITCH.chatModels
+/**
+ * Die Markenzahl steht seit dem Entscheid vom 12.09.2026 auf der STRENGEN
+ * Regel: nur ein Modell, das in beiden Laeufen beide Fragen beantwortet hat,
+ * traegt die Marke. Ihre Quelle ist `no-refusals-measurement.md`, und der
+ * Waechter zaehlt dort die Zeilen, statt eine zweite Zahl zu tippen.
+ */
+export const SHEET_MARKED_MODELS = CLOUD_PITCH.unfilteredChatModels
+
+/**
+ * Die Tagesgrenze der Flash-Klasse, formatiert wie im Kundentext (R5-44).
+ * Getippt stand sie dreimal neben derselben Zahl aus CLOUD_PITCH und konnte
+ * still auseinanderlaufen.
+ */
+const FLASH_DAILY = CLOUD_PITCH.flashDailyTokens.toLocaleString('en-US')
+
 export interface ReleaseNoteSection {
   title: string
   items: string[]
@@ -24,6 +76,30 @@ export interface ReleaseNote {
   version: string
   /** One line the user reads first. */
   headline: string
+  /**
+   * Der Cloud-Block, der VOR allem anderen auf dem Blatt steht (David,
+   * 13.09.2026).
+   *
+   * Dieselben drei Zeilen und derselbe Abo-Satz wie im Verkaufs-Panel am
+   * Wolkenschalter, aus denselben Konstanten. Das Blatt ist die einzige
+   * Stelle, an der ein bestehender Kunde nach einer Aktualisierung etwas
+   * erfaehrt, also steht das Angebot dort oben und nicht zwischen den
+   * Fehlerbehebungen.
+   *
+   * Optional: nur das Blatt der laufenden Version traegt ihn. Eine alte Notiz
+   * bekommt rueckwirkend kein Angebot.
+   */
+  cloud?: {
+    /** Die drei gezaehlten Zeilen. */
+    lines: string[]
+    /**
+     * Der Messsatz zur Verweigerungsquote, zeichengleich mit dem CHANGELOG.
+     * Die Zahl darin ist aus der Messdatei gerechnet, nicht getippt.
+     */
+    measured: string
+    /** Der Abo-Satz, zeichengleich mit Panel, CHANGELOG und Guthaben-Dialog. */
+    note: string
+  }
   /** Two to five short lines. Anything longer goes into `details`. */
   lines: string[]
   /** The full list behind the expander, grouped into sections. */
@@ -31,6 +107,95 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  // 3.0.0 ist gebaut, aber nicht veroeffentlicht: kein Tag, kein Release. Seit
+  // dem 11.09.2026 stehen alle fuenf Manifeste auf 3.0.0, also liest die
+  // Tabelle diesen Eintrag als den der LAUFENDEN Version, und der Waechter in
+  // stores/__tests__/releaseNotesStore.test.ts haelt ihn an die Version. Der
+  // Eintrag steht hier und nicht in einer Textdatei daneben, weil nur hier
+  // geprueft wird, ob eine Zusage im Text zur Wirklichkeit im Code passt.
+  {
+    version: '3.0.0',
+    headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
+    // Gelesen, nicht getippt: dieselben Funktionen, die das Verkaufs-Panel
+    // fuellen. Eine zweite Fassung derselben drei Zahlen waere genau der
+    // Fehler, den der Waechter unter diesem Blatt seit R2-11 verhindert.
+    cloud: {
+      lines: cloudSalesLines(),
+      measured: CLOUD_REFUSAL_LINE,
+      note: CLOUD_SUBSCRIBER_LINE,
+    },
+    lines: [
+      `${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS} cloud chat models we measured answer in full without refusing, and only those carry the No refusals mark. The catalogue holds ${SHEET_CATALOGUE_MODELS} chat models. We asked them, twice each, and counted only the ones that answered both times. The mark comes from that measurement, never from the model name.`,
+      // Der Bezugspunkt der 12 steht ausgeschrieben, nie als Rueckverweis.
+      // "12 of those models" stand direkt hinter der Zeile darueber, und die
+      // nennt zwei Mengen: den Messlauf und den Katalog. Wer "those" auf die
+      // naechstgelegene Zahl las, bekam die Schnittmenge aus gemessenen und
+      // abrechnungsfreien Modellen zugesagt, die nirgends gemessen ist
+      // (R6-7, derselbe Fund wie in cloud-pitch.ts). Das Cloud-Tor nennt den
+      // Katalog seit diesem Fund ausdruecklich; T13 hat am 12.09.2026 auf der
+      // Box gemessen, dass Blatt und Tor deshalb verschiedene Bezugspunkte
+      // trugen. Beide nennen jetzt denselben.
+      `${CLOUD_PITCH.flashModels} of the ${SHEET_CATALOGUE_MODELS} models in the catalogue cost no credits at all in chat on an active paid plan, up to ${FLASH_DAILY} input and output tokens per day. API keys keep paying credits, and accounts without an active plan keep paying credits too.`,
+      'A content policy setting in your account: Strict, Standard, or off. It applies to cloud image and video. Text was never filtered by us.',
+      `${CLOUD_PITCH.openVideoModels} video models and ${CLOUD_PITCH.openImageModels} image models without a built-in content restriction. Every one of the video ones starts from a picture, so in the browser studio at lu-labs.ai a finished image now has an Animate button that carries it straight over.`,
+      'Sampling controls sit next to the prompt: temperature, top P and answer length. They open as a small window above the prompt row, with an x to close it, so nothing you are typing moves out from under you. The measurement showed the system prompt matters more, so the default persona has a real role again instead of an empty one.',
+    ],
+    details: [
+      {
+        title: 'Models and marks',
+        items: [
+          `The ${SHEET_CHAT_MODELS} cloud chat models that were in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${CLOUD_PITCH.heldBackChatModels} answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet.`,
+          'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
+          'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number. The second one only shows on a plan that pays for it, because on any other account those models cost credits.',
+          `Chroma, Prefect Pony XL, Neta Lumina and the ${CLOUD_PITCH.openVideoModels} open video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.`,
+        ],
+      },
+      {
+        title: 'Flash chat without credits',
+        items: [
+          `${CLOUD_PITCH.flashModels} models run unmetered in chat inside the apps: GLM 5.3 Flash, DeepSeek V4 Flash 0731, Ling 3.0 flash, gpt-oss 120B, gpt-oss 20B, Gemma 4 26B, Gemma 4 31B Turbo, Qwen3 32B, Qwen 3.5 9B, Llama 3.3 70B Turbo, Llama 3.1 8B Turbo and Mistral Small 3.2 24B.`,
+          `The ceiling is ${FLASH_DAILY} input and output tokens per account per day, resetting at 00:00 UTC, one free request at a time. It went up tenfold from the ceiling of the first version, where a working day ran out before lunch.`,
+          'It is a benefit of an active paid plan. An account without an active plan keeps its starting credits and pays credits for Flash exactly like for any other model.',
+          'API keys always pay credits, including on these models. The unmetered path is the app, not the endpoint.',
+        ],
+      },
+      {
+        title: 'Content policy',
+        items: [
+          'The setting lives in your LU Cloud account and reads the same in the desktop app and in the browser, because it is one setting behind one route, not two copies.',
+          'Whether Off asks you to confirm your age is decided by the server, and in this release it does not ask. The app shows that step only when the server asks for it.',
+          'Two lines no setting moves: material involving minors is refused on every request, and you may not upload a photograph of a real, identifiable person without their consent.',
+          'The refusal message used to say cloud rendering cannot do this at all, which sent people to a local backend for something that was a setting. It now names the setting and where it is.',
+        ],
+      },
+      {
+        title: 'Prompt and sampling',
+        items: [
+          'Temperature, top P and maximum answer length sit next to the model picker, with the current temperature visible and one reset for all of them. Top K stays on the settings page, next to the backends that read it. The controls open over the prompt row instead of pushing it down. An x closes the window, and so do Escape and a click outside. Clicking the trigger a second time no longer does, because it used to close the panel under your own pointer. Reasoning models accept these and react less to them, which the help line says instead of hiding the control.',
+          "The default persona had an empty system prompt. An empty prompt is not neutral: the model falls back to whatever its provider trained it to be, and that is where the refusals come from. It now states the role, one line on how to answer, and one line saying that the user's subject is the subject. No topic list in either direction.",
+          'Chat, Agent and Coding all send that baseline now. The persona switch decides which PERSONA applies, not whether anything is sent at all.',
+        ],
+      },
+      {
+        title: 'Fixes',
+        items: [
+          'The agent can leave a workspace folder. The x on the folder pill drops it and forgets the remembered default with it, in new chats and in old ones, and the agent falls back to ~/agent-workspace until you pick a new one. A folder that kept coming back is what made changing it feel useless.',
+          'Models under 7B carry a plain warning in the catalogue and are no longer offered as a starting pick for chat.',
+          'Training a character LoRA no longer dies with the libuv error on Windows. The trainer started a distributed launcher that switched to multi GPU mode on machines with two cards; it now runs the training script directly, on one card, and the error text of a failed run is readable and can be copied.',
+          'When the LU Engine exits before it serves, the log file now says why: the full command line, the exit code, the memory the card reported and the number of layers it was given. A card that is too small for the model gets a measured layer count instead of all of them, and if the first start still fails the second runs on the CPU and says so.',
+          'Switching Cloud off starts the LU Engine again and puts your last local model back in the picker. Each mode keeps its own pick now, so the trip into the cloud and back no longer leaves you on "Select a chat model". If the engine fails to come up, the reason stands above the prompt instead of only in the log file.',
+          'Stop means stop. A finished background agent no longer wakes the main agent into a hidden turn, a stop between two loop passes ends the loop, and a shell command the agent started is killed with it.',
+          'Stop in one chat no longer stops the answer running in another. The app still answers one chat at a time, so a second chat keeps its Send button where it is, disabled, and says that another chat is still answering, instead of turning into a Stop button for the run in that other chat.',
+          'The Code tab tells you why a folder was refused instead of accepting it and then failing on every file. A turn cut off at the token limit now says so in the answer, with the plan step it stopped on, instead of ending without a word.',
+          'The maximum answer length field replaces what is in it instead of growing in front of it. Typing 512 into a field holding 0 used to leave 0512 on the screen: the number that got sent was the one you meant all along, the line you were reading was not.',
+          'A custom OpenAI compatible backend is asked for its real context window. llama.cpp, vLLM and KoboldCpp answer directly, the number carries a label saying where it came from, the context picker is available for your own backend, and no guessed budget is sent as max tokens any more.',
+          'When that backend reports both a running window and a training limit, the running one wins. A server started with 16K no longer reads as 40K, and the context picker stops at what the server really has. A limit with nothing running behind it is labelled as the training limit, and no budget is derived from it.',
+          'A large model download no longer looks frozen at zero. The bar was watching the model folder while the downloader filled a shared chunk cache beside it, so the bytes that really arrived were never counted. It counts that cache as well now, from the moment the download starts. On Windows it also counts the transfer figure a network read is booked under, which is the half we have not yet watched on a real download.',
+          'A 2 GB card can still turn a 3B model into garbage. The layer count is now measured against the card, which should help, but we have not seen that card in the house, so the report stays open.',
+        ],
+      },
+    ],
+  },
   {
     version: '2.6.9',
     headline: 'The navigation is back to the 2.6.7 layout, and updates work on every Linux install',

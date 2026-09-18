@@ -146,14 +146,22 @@ describe('G37: llama.cpp /props decides when the enhanced listing says nothing',
     for (const m of models) expect(m.supportsTools).toBe(true)
   })
 
-  it('NEGATIVE CONTROL: the enhanced listing wins, /props is not even asked', async () => {
-    // LM Studio answers per model; a server-wide flag must not override that,
-    // and the extra request must not fire when the listing already spoke.
+  it('NEGATIVE CONTROL: the enhanced listing wins, and /props is not paid per model', async () => {
+    // LM Studio answers per model; a server-wide flag must not override that.
+    //
+    // GH #129 hat die zweite Haelfte dieser Probe umgeschrieben. Bis dahin
+    // stand hier `requested.some(/props) === false`, weil /props NUR die
+    // Werkzeugfrage beantwortete. Seither ist dasselbe /props auch die
+    // Kontextauskunft fuer llama.cpp, und diese Attrappe nennt nirgends ein
+    // Fenster, also wird es dafuer einmal gefragt. Was die Probe schuetzt,
+    // bleibt: die Werkzeugantwort kommt weiter aus der erweiterten Liste, und
+    // /props wird nicht je Modell bezahlt (drei Modelle, hoechstens eine
+    // Anfrage).
     propsAnswer = LLAMA_PROPS_NO_TOOLS
     const p = await makeProvider({ id: 'openai', name: 'LM Studio', baseUrl: 'http://localhost:1234/v1', apiKey: '', enabled: true, isLocal: true })
     const models = await p.listModels()
     expect(models.find(m => m.id === 'qwen2.5-0.5b-instruct')!.supportsTools).toBe(true)
-    expect(requested.some(u => u.endsWith('/props'))).toBe(false)
+    expect(requested.filter(u => u.endsWith('/props')).length).toBeLessThanOrEqual(1)
   })
 })
 

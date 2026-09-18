@@ -177,6 +177,7 @@ pub(crate) fn descendants(root: u32, sys: &sysinfo::System) -> Vec<u32> {
 /// shell itself, so a timed-out `npm run dev`, build script or spawned server
 /// kept running after the tool call gave up — still holding its port and CPU,
 /// and still writing into a pipe nobody reads.
+#[cfg(not(windows))]
 pub(crate) fn kill_tree(root: u32) {
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut sys = System::new();
@@ -189,6 +190,234 @@ pub(crate) fn kill_tree(root: u32) {
         if let Some(p) = sys.process(Pid::from_u32(pid)) {
             p.kill();
         }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn kill_tree(root: u32) {
+    if root == 0 { return; }
+    // sysinfo0.33 kills each snapshot member with a separate taskkill /PID.
+    // During shell startup a new child can appear between those calls and
+    // retain the output pipe after its parent dies. Ask Windows to end the
+    // owned tree in one operation, not a stale list of individual processes.
+    let mut command = Command::new("taskkill.exe");
+    command.args(["/PID", &root.to_string(), "/T", "/F"])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    crate::process_util::suppress_window(&mut command);
+    if let Ok(mut killer) = command.spawn() {
+        finish_tree_kill(&mut killer);
+    }
+}
+
+#[cfg(windows)]
+fn finish_tree_kill(killer: &mut std::process::Child) {
+    // Der Aufrufer toetet danach die Shell als Rueckfall. Kehrt diese Stelle
+    // vor taskkill zurueck, verschwindet dessen Wurzel vor der Baumsuche und
+    // das Kind ueberlebt. Den Helfer weiterlaufen zu lassen reicht nicht:
+    // sein Ende muss vor dem Rueckfall liegen. Auf der Box mit einem um
+    // 2,5 Sekunden verzoegerten Helfer samt Gegenprobe nachgewiesen.
+    let _ = killer.wait();
+}
+
+#[cfg(all(test, windows))]
+mod windows_stop_tests {
+    use super::*;
+    use crate::test_support::{is_alive, worker_descendants_of};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_slow_tree_killer_finishes_before_the_shell_fallback() {
+        let mut shell = Command::new("powershell.exe");
+        shell.args(["-NoProfile", "-NonInteractive", "-Command", "ping -n 31 127.0.0.1"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        crate::process_util::suppress_window(&mut shell);
+        let mut shell = shell.spawn().expect("start test shell");
+        let (_, out_done) = drain(shell.stdout.take().unwrap());
+        let (_, err_done) = drain(shell.stderr.take().unwrap());
+        let ready = Instant::now();
+        let children = loop {
+            let children = worker_descendants_of(shell.id());
+            if !children.is_empty() { break children; }
+            if ready.elapsed() >= Duration::from_secs(30) {
+                kill_tree(shell.id());
+                let _ = shell.wait();
+                panic!("test shell did not start its child");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(children.iter().all(|pid| is_alive(*pid)));
+
+        // Ein echter PID-begrenzter taskkill, nur sein Start liegt sicher
+        // hinter der alten Zwei-Sekunden-Frist. Keine globale PATH-Aenderung.
+        let mut killer = Command::new("powershell.exe");
+        killer.args(["-NoProfile", "-NonInteractive", "-Command", &format!(
+            "Start-Sleep -Milliseconds 2500; & $env:SystemRoot\\System32\\taskkill.exe /PID {} /T /F",
+            shell.id(),
+        )]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        crate::process_util::suppress_window(&mut killer);
+        let mut killer = killer.spawn().expect("start delayed tree killer");
+        finish_tree_kill(&mut killer);
+        let _ = shell.kill();
+        let _ = shell.wait();
+        let _ = killer.wait();
+        settle(&out_done, &err_done, Duration::from_millis(500));
+        let survivors: Vec<_> = children.into_iter().filter(|pid| is_alive(*pid)).collect();
+        let drained = out_done.load(Ordering::Acquire) && err_done.load(Ordering::Acquire);
+
+        // Auch die rote Gegenprobe raeumt ausschliesslich ihre Kinder ab.
+        for pid in &survivors { kill_tree(*pid); }
+        assert!(survivors.is_empty(), "shell fallback orphaned children: {survivors:?}");
+        assert!(drained, "cancelled tree retained an output pipe");
+    }
+}
+
+// ── Stop erreicht einen schon gestarteten Befehl ──────────────────────────
+//
+// Bis heute konnte es das nicht, und der Kommentar an `executeShellExecute`
+// auf der anderen Seite der Bruecke sagte es offen: "the bridge has NO cancel
+// for it. Rust `shell_execute` takes no run id and there is no
+// shell_execute_cancel, so the child keeps running to its own timeout. The
+// executor stops WAITING on it, which ends the run and the UI, but the process
+// survives."
+//
+// Der Ausfuehrer hoert also auf zu warten, die Oberflaeche wird ruhig, und der
+// Befehl laeuft zu Ende: ein Build, ein Testlauf, ein Skript, das Dateien
+// anfasst, bis zu zwei Minuten nachdem der Mensch Stop gedrueckt hat. Das ist
+// dieselbe Sorte Luege wie ein Stopp-Knopf, der nichts abbricht, nur auf der
+// Maschine des Nutzers statt auf der Rechnung.
+//
+// Was fehlte, war eine KENNUNG: ohne sie hat der Abbruch nichts, worauf er
+// zeigen koennte. Der Aufrufer schickt jetzt eine mit, diese Karte haelt die
+// zugehoerige Prozesskennung, und `shell_execute_cancel` faellt den Baum mit
+// derselben `kill_tree`, die auch die Zeitgrenze benutzt.
+//
+// Der Wettlauf ist mitgedacht und der Grund fuer `cancelled` neben `pid`: der
+// Abbruch kann eintreffen, BEVOR der Prozess ueberhaupt existiert. Dann gibt es
+// keine Prozesskennung zu toeten, und ohne Merker liefe der Befehl los,
+// nachdem er abgebrochen wurde. Die Karte merkt sich den Abbruch also auch
+// ohne pid, und der Start sieht danach.
+
+/// Ein Vordergrundbefehl, solange er laeuft. `pid` fehlt im Fenster zwischen
+/// Anmelden und Start.
+#[derive(Default)]
+struct RunningShell {
+    pid: Option<u32>,
+    cancelled: bool,
+}
+
+static RUNNING_SHELLS: once_cell::sync::Lazy<Mutex<std::collections::HashMap<String, RunningShell>>> =
+    once_cell::sync::Lazy::new(Default::default);
+
+/// Diesen Lauf anmelden, bevor gestartet wird. Ein Abbruch, der schon da war,
+/// bleibt stehen — sonst gewaenne der Start den Wettlauf gegen den Stop.
+fn shell_register(call_id: &str) {
+    let mut karte = RUNNING_SHELLS.lock().unwrap();
+    karte.entry(call_id.to_string()).or_default();
+}
+
+/// Die Prozesskennung nachtragen. Gibt `true`, wenn inzwischen abgebrochen
+/// wurde: dann ist der eben gestartete Prozess sofort wieder zu toeten.
+fn shell_attach_pid(call_id: &str, pid: u32) -> bool {
+    let mut karte = RUNNING_SHELLS.lock().unwrap();
+    match karte.get_mut(call_id) {
+        Some(eintrag) => {
+            eintrag.pid = Some(pid);
+            eintrag.cancelled
+        }
+        // Nicht angemeldet heisst: dieser Lauf traegt keine Kennung, er ist
+        // also auch nicht abbrechbar. Kein Grund, ihn zu toeten.
+        None => false,
+    }
+}
+
+fn shell_is_cancelled(call_id: &str) -> bool {
+    RUNNING_SHELLS.lock().unwrap().get(call_id).map(|e| e.cancelled).unwrap_or(false)
+}
+
+fn shell_unregister(call_id: &str) {
+    RUNNING_SHELLS.lock().unwrap().remove(call_id);
+}
+
+/// Abmelden beim Verlassen, an EINER Stelle.
+///
+/// `shell_execute_sync` kehrt an sechs Stellen zurueck, darunter zwei
+/// Fehlerpfade mit `?`. Eine Aufraeumzeile, die an jeder davon stehen muss,
+/// steht irgendwann an einer nicht mehr, und der Eintrag bliebe fuer den Rest
+/// der Sitzung liegen: eine Karte, die nur waechst, und eine Kennung, die ein
+/// spaeterer Abbruch auf einen laengst toten Prozess zeigen laesst. Dieselbe
+/// Begruendung wie bei `lib/run-slot.ts` auf der anderen Seite.
+struct ShellSlot(Option<String>);
+
+impl ShellSlot {
+    fn new(call_id: Option<&str>) -> Self {
+        let kennung = call_id.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        if let Some(id) = kennung.as_deref() {
+            shell_register(id);
+        }
+        Self(kennung)
+    }
+
+    fn id(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+impl Drop for ShellSlot {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.as_deref() {
+            shell_unregister(id);
+        }
+    }
+}
+
+/// Abbrechen. Gibt die Prozesskennung zurueck, falls der Prozess schon lebt.
+///
+/// Der Eintrag wird ANGELEGT, wenn es ihn noch nicht gibt: ein Abbruch, der
+/// den Start ueberholt, muss stehen bleiben, bis der Start ihn liest.
+fn shell_mark_cancelled(call_id: &str) -> Option<u32> {
+    let mut karte = RUNNING_SHELLS.lock().unwrap();
+    let eintrag = karte.entry(call_id.to_string()).or_default();
+    eintrag.cancelled = true;
+    eintrag.pid
+}
+
+/// Was ein abgebrochener Befehl zurueckgibt.
+///
+/// Eigenes Feld `cancelled` und NICHT `timedOut`: eine Zeitgrenze ist etwas,
+/// das dem Befehl passiert ist, ein Abbruch etwas, das der Mensch getan hat.
+/// Auf der anderen Seite haengt daran, welchen Satz das Modell zu lesen bekommt.
+/// `exitCode` bleibt -1, wie bei der Zeitgrenze auch, denn einen echten gibt es
+/// nicht mehr.
+fn cancelled_result(stdout: String) -> serde_json::Value {
+    serde_json::json!({
+        "stdout": stdout,
+        "stderr": "Cancelled: the user stopped the run.",
+        "exitCode": -1,
+        "timedOut": false,
+        "cancelled": true,
+    })
+}
+
+/// Stop fuer einen laufenden `shell_execute`.
+///
+/// Ruft der Ausfuehrer, sobald das Abbruchsignal des Laufs feuert. Unbekannte
+/// Kennungen sind KEIN Fehler: der Befehl kann in derselben Millisekunde fertig
+/// geworden sein, und eine Fehlermeldung dafuer haette der Mensch nicht
+/// verursacht.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn shell_execute_cancel(callId: String) -> Result<bool, String> {
+    let pid = shell_mark_cancelled(&callId);
+    match pid {
+        Some(p) => {
+            tokio::task::spawn_blocking(move || kill_tree(p))
+                .await
+                .map_err(|e| format!("Task join error: {}", e))?;
+            Ok(true)
+        }
+        // Noch kein Prozess: der Merker steht, und der Start toetet sofort
+        // selbst, sobald er ihn liest.
+        None => Ok(false),
     }
 }
 
@@ -312,9 +541,10 @@ pub async fn shell_execute(
     stdin: Option<String>,
     chatId: Option<String>,
     workingDirectory: Option<String>,
+    callId: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tokio::task::spawn_blocking(move || {
-        shell_execute_sync(command, args, cwd, timeout, shell, stdin, chatId, workingDirectory)
+        shell_execute_sync(command, args, cwd, timeout, shell, stdin, chatId, workingDirectory, callId)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -333,7 +563,11 @@ fn shell_execute_sync(
     stdin: Option<String>,
     chat_id: Option<String>,
     working_directory: Option<String>,
+    call_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // VOR dem Bauen des Befehls angemeldet, damit ein Abbruch, der den Start
+    // ueberholt, einen Platz hat, an dem er stehen bleiben kann.
+    let slot = ShellSlot::new(call_id.as_deref());
     let timeout_ms = timeout.unwrap_or(120_000);
     // Shell name in, program + argument form out — the same function the
     // background twin in bg_tasks.rs calls, so the two cannot drift apart.
@@ -387,6 +621,18 @@ fn shell_execute_sync(
 
     let mut child = cmd.spawn().map_err(|e| format!("Spawn shell: {}", os_error::english(&e)))?;
 
+    // Der Abbruch kann zwischen Anmelden und Start eingetroffen sein. Dann gab
+    // es keine Prozesskennung zu toeten, und dieser Prozess hier ist genau der,
+    // den niemand mehr wollte.
+    if let Some(id) = slot.id() {
+        if shell_attach_pid(id, child.id()) {
+            kill_tree(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(cancelled_result(String::new()));
+        }
+    }
+
     // Write on a thread: the child may fill its output pipes before it has
     // consumed stdin, and a blocking write here would deadlock against the
     // drain below.
@@ -415,6 +661,19 @@ fn shell_execute_sync(
     let timeout_dur = std::time::Duration::from_millis(timeout_ms);
 
     loop {
+        // Der Stop steht VOR dem Abholen des Endstands. Andersherum gewaenne
+        // ein Befehl, den `shell_execute_cancel` gerade erschlagen hat, einen
+        // gewoehnlichen Exit-Code, und das Modell bekaeme einen Fehlschlag
+        // gemeldet statt eines Abbruchs, den der Mensch selbst ausgeloest hat.
+        if slot.id().map(shell_is_cancelled).unwrap_or(false) {
+            kill_tree(child.id());
+            let _ = child.kill();
+            let _ = child.wait(); // reap, or the shell lingers as a zombie
+            settle(&out_done, &err_done, std::time::Duration::from_millis(200));
+            // Was der Befehl bis hierher gedruckt hat, kommt mit — dieselbe
+            // Regel wie bei der Zeitgrenze ein paar Zeilen weiter unten.
+            return Ok(cancelled_result(captured_text(&out_buf)));
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 settle(&out_done, &err_done, std::time::Duration::from_millis(500));
@@ -449,6 +708,111 @@ fn shell_execute_sync(
             }
             Err(e) => return Err(format!("Wait error: {}", e)),
         }
+    }
+}
+
+/// Der Abbruch eines schon gestarteten Befehls.
+///
+/// Geprueft wird die BUCHFUEHRUNG, nicht das Toeten selbst: `kill_tree` haengt
+/// am Betriebssystem und an echten Prozessen, die Reihenfolge dagegen ist
+/// reine Logik und genau die Stelle, an der ein Abbruch lautlos verlorengeht.
+///
+/// Der teuerste Fall steht zuerst: der Abbruch, der den Start UEBERHOLT. Ohne
+/// den Merker gaebe es in diesem Fenster keine Prozesskennung zu toeten, der
+/// Befehl liefe an, nachdem der Mensch ihn gestoppt hat, und niemand saehe es.
+///
+/// Lauf: cargo test shell_cancel
+#[cfg(test)]
+mod shell_cancel_tests {
+    use super::*;
+
+    /// Eigene Kennung je Test: die Karte ist prozessweit, und cargo faehrt die
+    /// Tests eines Binaries nebenlaeufig.
+    fn kennung(name: &str) -> String {
+        format!("test-{}-{:?}", name, std::thread::current().id())
+    }
+
+    #[test]
+    fn shell_cancel_ein_abbruch_vor_dem_start_bleibt_stehen() {
+        let id = kennung("vor-dem-start");
+        shell_register(&id);
+        // Der Abbruch kommt, waehrend noch kein Prozess existiert.
+        assert_eq!(shell_mark_cancelled(&id), None, "es gibt noch keine Prozesskennung");
+        // Und der Start liest ihn: `true` heisst "sofort wieder toeten".
+        assert!(shell_attach_pid(&id, 4242), "der Start muss den Abbruch sehen");
+        shell_unregister(&id);
+    }
+
+    #[test]
+    fn shell_cancel_ein_abbruch_ohne_anmeldung_legt_den_merker_an() {
+        // Die Reihenfolge, die der Wettlauf zwischen Fenster und Bruecke
+        // wirklich erzeugt: der Abbruch ist schneller als der Rust-Aufruf.
+        let id = kennung("ueberholt");
+        assert_eq!(shell_mark_cancelled(&id), None);
+        shell_register(&id); // darf den Merker NICHT ueberschreiben
+        assert!(shell_is_cancelled(&id));
+        assert!(shell_attach_pid(&id, 7));
+        shell_unregister(&id);
+    }
+
+    #[test]
+    fn shell_cancel_findet_den_laufenden_prozess() {
+        let id = kennung("laeuft");
+        shell_register(&id);
+        assert!(!shell_attach_pid(&id, 1234), "ohne Abbruch laeuft er weiter");
+        assert!(!shell_is_cancelled(&id));
+        assert_eq!(shell_mark_cancelled(&id), Some(1234), "die Prozesskennung kommt zurueck");
+        assert!(shell_is_cancelled(&id), "und die Schleife sieht den Abbruch");
+        shell_unregister(&id);
+    }
+
+    #[test]
+    fn shell_cancel_ein_lauf_ohne_kennung_ist_unberuehrt() {
+        // Altbestand und die Fernbruecke schicken keine Kennung. Die duerfen
+        // nicht plombiert werden, nur weil ein anderer Lauf abgebrochen wurde.
+        let id = kennung("fremd");
+        shell_mark_cancelled(&id);
+        assert!(!shell_attach_pid("gar-nicht-angemeldet", 99));
+        assert!(!shell_is_cancelled("gar-nicht-angemeldet"));
+        shell_unregister(&id);
+    }
+
+    #[test]
+    fn shell_cancel_der_platz_meldet_sich_beim_verlassen_ab() {
+        // Sonst waechst die Karte mit jedem Befehl, und eine spaeter erneut
+        // vergebene Kennung zeigte auf einen laengst toten Prozess.
+        let id = kennung("aufraeumen");
+        {
+            let slot = ShellSlot::new(Some(&id));
+            assert_eq!(slot.id(), Some(id.as_str()));
+            shell_attach_pid(&id, 31337);
+            assert_eq!(shell_mark_cancelled(&id), Some(31337));
+        }
+        assert!(!shell_is_cancelled(&id), "der Eintrag ist weg, nicht nur zurueckgesetzt");
+        assert_eq!(shell_mark_cancelled(&id), None);
+        shell_unregister(&id);
+    }
+
+    #[test]
+    fn shell_cancel_eine_leere_kennung_zaehlt_als_keine() {
+        // JSON aus dem Fenster kann "" liefern. Ein Platz unter dem leeren
+        // Namen waere ein Eimer, in dem sich alle Laeufe treffen.
+        let slot = ShellSlot::new(Some("   "));
+        assert_eq!(slot.id(), None);
+        let ohne = ShellSlot::new(None);
+        assert_eq!(ohne.id(), None);
+    }
+
+    #[test]
+    fn shell_cancel_die_antwort_nennt_den_abbruch_und_nicht_die_zeitgrenze() {
+        // Eine Zeitgrenze ist etwas, das dem Befehl passiert ist, ein Abbruch
+        // etwas, das der Mensch getan hat. Das Modell liest den Unterschied.
+        let v = cancelled_result("halb fertig".to_string());
+        assert_eq!(v["cancelled"], serde_json::json!(true));
+        assert_eq!(v["timedOut"], serde_json::json!(false));
+        assert_eq!(v["exitCode"], serde_json::json!(-1));
+        assert_eq!(v["stdout"], serde_json::json!("halb fertig"));
+        assert!(v["stderr"].as_str().unwrap().contains("stopped the run"));
     }
 }
 

@@ -45,6 +45,12 @@ export function RemoteAccessDocs() {
         paired device. Generation still happens locally.
       </p>
 
+      <p className="text-[0.6rem] text-gray-500 leading-relaxed">
+        Persona settings are not bidirectionally synced. A dispatched chat carries its desktop
+        instructions to the phone. Persona changes on the phone stay in that browser and do not
+        update the desktop persona.
+      </p>
+
       <div className="space-y-2.5">
         <Step n={1} icon={<Plug size={12} className="text-gray-500" />} title="Open the Remote tab">
           In the sidebar, switch to the <span className="text-gray-400 font-medium">Remote</span> tab
@@ -61,7 +67,7 @@ export function RemoteAccessDocs() {
         <Step n={3} icon={<Globe size={12} className="text-gray-500" />} title="Dispatch over the internet">
           Choose <span className="text-gray-400 font-medium">Dispatch → Internet</span> instead to
           reach LU from anywhere. LU starts a Cloudflare tunnel and gives you a public
-          <span className="text-gray-400"> https://…trycloudflare.com</span> URL — no router or
+          <span className="text-gray-400"> https://…trycloudflare.com</span> URL, with no router or
           port-forwarding setup. The tunnel only exists while the session is dispatched.
         </Step>
 
@@ -89,15 +95,15 @@ export function RemoteAccessDocs() {
           <span className="text-[0.65rem] font-medium text-gray-400">What a paired device may do</span>
         </div>
         <p className="text-[0.55rem] text-gray-500 leading-relaxed">
-          Three permission switches (in the Remote Access panel above) gate what a remote device can
+          Four permission switches (in the Remote Access panel above) gate what a remote device can
           trigger on this machine. All are off until you turn them on:
         </p>
         <ul className="space-y-1.5">
           <li>
             <p className="text-[0.6rem] text-gray-700 dark:text-gray-300">Filesystem Access</p>
             <p className="text-[0.55rem] text-gray-500">
-              Lets the remote agent read and write files and run shell commands in the dispatched
-              working folder. Leave off if you only want to chat.
+              Lets the remote agent read and write files in the dispatched working folder. Leave
+              off if you only want to chat.
             </p>
           </li>
           <li>
@@ -111,6 +117,13 @@ export function RemoteAccessDocs() {
             <p className="text-[0.6rem] text-gray-700 dark:text-gray-300">Process Control</p>
             <p className="text-[0.55rem] text-gray-500">
               Allows starting and stopping local backends (ComfyUI, Ollama) from the remote device.
+            </p>
+          </li>
+          <li>
+            <p className="text-[0.6rem] text-gray-700 dark:text-gray-300">Shell &amp; Code Execution</p>
+            <p className="text-[0.55rem] text-gray-500">
+              Lets the remote device run shell commands and code on this machine. The riskiest of the
+              four; leave it off unless you trust every device on the network.
             </p>
           </li>
         </ul>

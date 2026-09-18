@@ -52,19 +52,20 @@ export function meterState(
 
   // Absent fields mean a pre-0029 server: uncapped, never gate on data we do
   // not have. Video's monthly room is extended by the wallet because top-up
-  // credits are exempt from the sub-budget; the training count is a hard count
-  // the wallet cannot buy past.
+  // credits are exempt from the sub-budget. Beyond included trainings, the
+  // paid wallet must cover the complete selected run (server migration 0047).
   const videoRoom = quota.video ? quota.video.remaining + topup : Infinity
   const trainingsLeft = quota.trainings ? quota.trainings.remaining : Infinity
+  const trainingPackRun = isTraining && cost > 0 && topup >= cost
 
   if (remaining < cost) return { kind: 'insufficient', remaining, cost }
-  if (isTraining && trainingsLeft <= 0) return { kind: 'no-trainings' }
+  if (isTraining && trainingsLeft <= 0 && !trainingPackRun) return { kind: 'no-trainings' }
   if (isVideoBudget && videoRoom < cost) return { kind: 'no-video-budget' }
 
   const runsPool = isVideoBudget ? Math.min(remaining, videoRoom) : remaining
   const byCredits = cost > 0 ? Math.floor(runsPool / cost) : null
   const runsLeft =
-    byCredits === null ? null : isTraining ? Math.min(trainingsLeft, byCredits) : byCredits
+    byCredits === null ? null : isTraining && !trainingPackRun ? Math.min(trainingsLeft, byCredits) : byCredits
 
   // No tier caps video below its pool since 2026-08-05, so on a plain plan
   // videoRoom always covers `remaining` and this stays false. It turns itself

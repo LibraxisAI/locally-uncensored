@@ -27,6 +27,7 @@ export interface TauriMockOptions {
     videoEngineInstalled?: boolean
     installedImages?: string[]
     installedVideos?: string[]
+    imageInstallError?: string
   }
   /**
    * Which OS the app should believe it is on. `isMacOS()` reads
@@ -89,7 +90,7 @@ export interface TauriMockOptions {
 }
 
 export const DEFAULT_ASSISTANT_REPLY = 'PONG_BUILTIN_OK the built-in engine answered.'
-export const DEFAULT_MODEL_NAME = 'qwen2.5-0.5b-instruct-q4_k_m'
+export const DEFAULT_MODEL_NAME = 'qwen2.5-7b-instruct-q4_k_m'
 
 /**
  * The function body below is serialized and runs in the PAGE context — it must
@@ -295,6 +296,7 @@ export function tauriMockInit(opts: TauriMockOptions) {
           destDir: args?.destDir,
           filename: fn,
           expectedBytes: args?.expectedBytes,
+          expectedSha256: args?.expectedSha256,
         })
         return Promise.resolve({ status: 'started', id: `dl-${fn}` })
       }
@@ -403,7 +405,9 @@ export function tauriMockInit(opts: TauriMockOptions) {
         record('__E2E_MLX_CALLS__', { cmd, id: m?.id })
         return Promise.resolve({ ok: true, status: 'installing', id: m?.id })
       case 'mlx_image_install_status': {
-        const s = installStatus('image')
+        const s = installStatus('image', opts.mlx?.imageInstallError && slot.image !== null
+          ? { status: 'error', error: opts.mlx.imageInstallError, logs: [opts.mlx.imageInstallError] }
+          : undefined)
         if (s.status === 'complete' && pendingImageId) {
           mlx.images.add(pendingImageId)
           pendingImageId = null
@@ -618,6 +622,10 @@ export function tauriMockInit(opts: TauriMockOptions) {
         return Promise.resolve({ files: [], count: 0 })
 
       default:
+        // Tauri v2 unlisten calls the injected event registry before IPC.
+        // Use the already unique callback ID as this fixture's listener ID.
+        if (cmd === 'plugin:event|listen') return Promise.resolve(args.handler)
+        if (cmd === 'plugin:event|unlisten') return Promise.resolve(null)
         // Record system-browser opens so specs can assert redirect targets
         // (pricing CTA, closed-beta link) without leaving the page.
         if (cmd === 'plugin:shell|open') {
@@ -659,4 +667,9 @@ export function tauriMockInit(opts: TauriMockOptions) {
   }
   // Legacy v1 alias some detection code still probes for.
   w.__TAURI__ = w.__TAURI_INTERNALS__
+  w.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener(_event: string, eventId: number) {
+      w.__TAURI_INTERNALS__.unregisterCallback(eventId)
+    },
+  }
 }

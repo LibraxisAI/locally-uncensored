@@ -1,4 +1,5 @@
 import { useCodex } from '../../hooks/useCodex'
+import { MemorySources } from './MemorySources'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
 import { useCodexStore } from '../../stores/codexStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -59,7 +60,16 @@ export function CodexView() {
   // Derselbe Weckhaken wie im Agentenweg: eine Hintergrundaufgabe endet fast
   // immer NACH dem Zug, der sie startete, und ohne diesen Haken erfuehre das
   // Modell davon erst bei der naechsten Eingabe des Menschen.
-  useBackgroundAgentWake(useChatStore((s) => s.activeConversationId), sendInstruction)
+  //
+  // R2-18: `sendInstruction` nimmt (text, opts), der Haken ruft aber
+  // (text, images, opts). Das Objekt mit `hiddenUser: true` landete damit auf
+  // Position 3 und fiel weg, also stand die Weckzeile als sichtbare
+  // Nutzernachricht im Verlauf, als haette der Mensch sie getippt. Ein Adapter
+  // schiebt sie auf die Stelle, an der sie gelesen wird.
+  useBackgroundAgentWake(
+    useChatStore((s) => s.activeConversationId),
+    (text, _images, opts) => sendInstruction(text, opts),
+  )
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const conversations = useChatStore((s) => s.conversations)
   const thread = useCodexStore((s) => activeConversationId ? s.threads[activeConversationId] : undefined)
@@ -113,10 +123,12 @@ export function CodexView() {
   // found none. The header always shows the folder, so it also carries the way
   // to give it back. Locked, not hidden, while a coding turn is in flight, and
   // the verdict is the shared one so the two buttons cannot drift apart.
+  // Beide Karten, aus demselben Grund wie im Explorer: ein Faden, der auf
+  // 'running' stehengeblieben ist, sperrt den Ordner nicht mehr allein.
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
   const loop = useAgentLoopStore((s) => s.loop)
-  const lockReason = codexBusyReason({ sendsInFlight, threads, loop })
+  const lockReason = codexBusyReason({ sendsInFlight, threads, generating: generatingMap, loop })
 
   // Where the agent goes while no folder is picked: a per-chat workspace or
   // settings.defaultWorkspace both beat an empty picker, so the header and the
@@ -575,6 +587,7 @@ export function CodexView() {
                           </>
                         )
                       })()}
+                      {msg.role === 'assistant' && <MemorySources sources={msg.memorySources} />}
                     </div>
                   </div>
                 )

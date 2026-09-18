@@ -461,9 +461,15 @@ pub fn video_install_model(state: &AppState, args: &Value) -> CmdResult {
         std::fs::create_dir_all(parent).map_err(|e| internal(os_error::english(&e)))?;
     }
     slot.start();
+    // Kein geteilter Zwischenspeicher: dieser Weg laedt mit `local_dir`, und
+    // huggingface_hub legt den Zwischenstand dann unter `<local_dir>/.cache`
+    // ab, also INNERHALB des Ordners, der hier gemessen wird. Der Xet-Cache
+    // liegt fuer diesen Weg trotzdem daneben (HF_HOME wird hier nicht gesetzt,
+    // also im Standardordner des Nutzers); siehe Bericht bauer-t, Fund 3.
     crate::install_state::watch_dir_size(
         slot.clone(),
         model_dir(entry.id),
+        None,
         (entry.size_gb as f64 * 1e9) as u64,
     );
     let slot2 = slot.clone();
@@ -811,14 +817,87 @@ pub(crate) fn run_streamed(slot: &crate::install_state::InstallSlot, cmd: &mut C
     let _ = t1.join();
     let _ = t2.join();
     if !status.success() {
-        return Err(format!("command exited {:?}", status.code()));
+        return Err(exit_reason(&status));
     }
     Ok(())
+}
+
+/// Why a child did not run to the end, in a sentence a user can act on.
+///
+/// The old line was `format!("command exited {:?}", status.code())`, and after
+/// a cancelled MLX download the panel read "command exited None" (bauer-m on
+/// the Mac, 11.09.2026, N4). `None` is not an error code, it is the ABSENCE of
+/// one: a process that ends on a signal never gets an exit code. Somebody
+/// whose download died after hours was handed the least informative line the
+/// app can produce.
+///
+/// The second half of that finding, that a cancelled download starts from zero
+/// again, is not ours to fix here: huggingface_hub has named its partial file
+/// `blobs/<sha256>.<8 random hex>.incomplete` since 1.18, deliberately, so
+/// that two writers cannot poison one shared partial, and no later run can
+/// pick it up (see mlx_snapshot.rs, `Partial`). What this message can do is
+/// stop it from being a surprise.
+fn exit_reason(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("The installer stopped with exit code {code}.");
+    }
+    let signal = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            status.signal()
+        }
+        #[cfg(not(unix))]
+        {
+            None::<i32>
+        }
+    };
+    let how = match signal {
+        Some(sig) => format!("The installer was stopped before it finished (signal {sig})."),
+        None => "The installer ended before it finished, without an exit code.".to_string(),
+    };
+    format!("{how} Start it again: a partial download cannot be resumed, so it begins from the start.")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "command exited None" war die Meldung nach einem abgebrochenen
+    /// MLX-Download (bauer-m N4). Siehe den Kopf von `exit_reason`.
+    // Der Rohstatus mit einem Signal darin gibt es nur unter Unix; auf Windows
+    // hat jeder beendete Prozess einen Code, dort kann "None" nicht entstehen.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_installer_says_what_happened_and_what_to_do() {
+        use std::os::unix::process::ExitStatusExt;
+        let killed = std::process::ExitStatus::from_raw(9); // SIGKILL, kein Exit-Code
+        assert_eq!(killed.code(), None, "die Ausgangslage des Befunds");
+        let msg = exit_reason(&killed);
+        assert!(!msg.contains("None"), "die alte Zeile ist zurueck: {msg}");
+        assert!(msg.contains("signal 9"), "{msg}");
+        assert!(msg.contains("Start it again"), "die Meldung nennt den naechsten Schritt nicht: {msg}");
+        assert!(msg.contains("begins from the start"), "{msg}");
+
+        // Gegenprobe: ein gewoehnlicher Fehlschlag nennt weiter seinen Code
+        // und erzaehlt nichts vom Fortsetzen.
+        let failed = std::process::ExitStatus::from_raw(1 << 8); // exit(1)
+        assert_eq!(failed.code(), Some(1));
+        let msg = exit_reason(&failed);
+        assert!(msg.contains("exit code 1"), "{msg}");
+        assert!(!msg.contains("Start it again"), "{msg}");
+
+        // Und der Satz erreicht die Oberflaeche wirklich: `run_streamed` ist
+        // der einzige Ort, der den Status eines Installationskindes in einen
+        // Fehler verwandelt, und er muss diesen hier nehmen.
+        let src = include_str!("video.rs");
+        // Nur der Rumpf von run_streamed, sonst faende sich der Aufruf in
+        // diesem Test selbst wieder und der Waechter bewiese nichts.
+        let body = &src[src.find("pub(crate) fn run_streamed").expect("run_streamed")
+            ..src.find("/// Why a child did not run to the end").expect("exit_reason")];
+        assert!(body.contains("Err(exit_reason(&status))"), "run_streamed meldet wieder selbst");
+        assert!(!body.contains("command exited"), "die alte Zeile steht wieder im Quelltext");
+    }
 
     #[test]
     fn catalog_ids_unique_and_covers_hardware_range() {

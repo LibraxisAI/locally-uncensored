@@ -89,18 +89,46 @@ fn resolve_existing_prefix(p: &Path) -> PathBuf {
 fn is_within(root: &Path, cand: &Path) -> bool {
     #[cfg(windows)]
     {
-        // Windows paths are case-insensitive; compare lowercased. Both sides go
-        // through the SAME key builder (which strips any `\\?\` verbatim prefix)
-        // so an extended-length root and a plain candidate — or vice versa —
-        // still compare equal.
-        let r = win_compare_key(root);
-        let c = win_compare_key(cand);
-        c == r || c.starts_with(&format!("{}/", r))
+        win_is_within(root, cand)
     }
     #[cfg(not(windows))]
     {
         cand == root || cand.starts_with(root)
     }
+}
+
+/// Zwei Schreibweisen desselben Ordners, nach genau der Regel, mit der
+/// `is_within` die Mitgliedschaft misst: gegenseitige Enthaltung IST
+/// Gleichheit. Auf Windows heisst das ohne Ruecksicht auf Gross- und
+/// Kleinschreibung, auf die Richtung der Schraegstriche und auf den `\\?\`
+/// Prefix.
+///
+/// Eine Funktion und keine Kopie an jeder Fundstelle: dieselbe Gleichheit wird
+/// an zwei Stellen gebraucht, in `may_be_a_picked_root` und beim Aufnehmen in
+/// die Erlaubnisliste, und als die zweite davon `PathBuf`-Gleichheit nahm,
+/// standen `D:\code` und `d:\CODE` beide in der Liste.
+fn same_root(a: &Path, b: &Path) -> bool {
+    is_within(a, b) && is_within(b, a)
+}
+
+/// The Windows containment rule, on nothing but the two comparison keys.
+///
+/// Windows paths are case-insensitive; both sides go through the SAME key
+/// builder (which strips any `\\?\` verbatim prefix) so an extended-length root
+/// and a plain candidate, or vice versa, still compare equal.
+///
+/// Split out of `is_within` so the rule can be MEASURED on a host that is not
+/// Windows. `Path::components()` reads `D:\code` as a drive path only on
+/// Windows; everywhere else it is one ordinary file name, so a macOS run of
+/// `is_within` answers a different question than the shipped build does and
+/// proves nothing about it. `win_compare_key` is pure string work, so these two
+/// lines are the same two lines on every host, which is what bug D needed and
+/// did not have.
+#[cfg(any(windows, test))]
+fn win_is_within(root: &Path, cand: &Path) -> bool {
+    let r = win_compare_key(root);
+    let c = win_compare_key(cand);
+    c == r || c.starts_with(&format!("{}/", r))
 }
 
 /// Jail `candidate` to `root`: return the normalized path when it stays inside
@@ -157,7 +185,7 @@ pub(crate) fn contain_within(root: &Path, candidate: &Path) -> Result<PathBuf, S
 /// MAX_PATH, but `workspace_root` stores the raw string — without normalizing
 /// both sides identically here, a legitimately-picked folder fails containment
 /// with "Path escapes the allowed workspace" (#79, DarkLordCmd / thecakeisnaoh).
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn win_compare_key(p: &Path) -> String {
     let s = p.to_string_lossy().to_lowercase().replace('\\', "/");
     let s = if let Some(rest) = s.strip_prefix("//?/unc/") {
@@ -252,9 +280,28 @@ pub(crate) fn allow_root_for_test(root: &Path) {
     let norm = lexical_normalize(root);
     may_be_a_picked_root(&norm).expect("a test root must be a folder a pick could produce");
     let mut roots = PICKED_ROOTS.lock().expect("allowlist");
-    if !roots.iter().any(|r| r == &norm) {
-        roots.push(norm);
+    add_root_unless_known(&mut roots, norm, same_root);
+}
+
+/// Eine Wurzel in die Erlaubnisliste aufnehmen, wenn keine SCHREIBWEISE von
+/// ihr schon drinsteht. Gibt `true` zurueck, wenn die Liste sich geaendert hat.
+///
+/// Die Vergleichsregel kommt von aussen herein, aus demselben Grund, aus dem
+/// `win_is_within` getrennt liegt: die Produktion gibt `same_root` hinein, ein
+/// Test auf einem Nicht-Windows-Rechner die Windows-Haelfte davon. Sonst misst
+/// der Lauf etwas anderes als der ausgelieferte Build, und genau dort sitzt
+/// dieser Fehler: `Path::components` liest `D:\code` nur unter Windows als
+/// Laufwerkspfad.
+fn add_root_unless_known(
+    roots: &mut Vec<PathBuf>,
+    norm: PathBuf,
+    same: impl Fn(&Path, &Path) -> bool,
+) -> bool {
+    if roots.iter().any(|r| same(r, &norm)) {
+        return false;
     }
+    roots.push(norm);
+    true
 }
 
 /// Record a folder the USER chose in a native dialog as a legitimate workspace
@@ -272,8 +319,7 @@ pub(crate) fn remember_picked_root(root: &Path) -> Result<(), String> {
     let norm = lexical_normalize(root);
     may_be_a_picked_root(&norm)?;
     if let Ok(mut roots) = PICKED_ROOTS.lock() {
-        if !roots.iter().any(|r| r == &norm) {
-            roots.push(norm);
+        if add_root_unless_known(&mut roots, norm, same_root) {
             save_picked_roots(&roots);
         }
     }
@@ -376,10 +422,10 @@ fn may_be_a_picked_root(norm: &Path) -> Result<(), String> {
         return refuse("a drive or filesystem root is not a workspace");
     }
     // Mutual containment == equality, and it stays case-insensitive on Windows
-    // the way every other comparison in this file is.
-    let same = |a: &Path, b: &Path| is_within(a, b) && is_within(b, a);
+    // the way every other comparison in this file is. `same_root` is that rule,
+    // and the allowlist's own duplicate check uses the same one.
     for bad in forbidden_exact_roots() {
-        if same(&lexical_normalize(&bad), norm) {
+        if same_root(&lexical_normalize(&bad), norm) {
             return refuse("a home or mount container is not a workspace");
         }
     }
@@ -409,21 +455,39 @@ fn may_be_a_picked_root(norm: &Path) -> Result<(), String> {
 /// A renderer cannot open a native folder dialog and click in it, so the list of
 /// folders a human picked there is a boundary it cannot cross at all.
 ///
-/// Two gates, in this order:
-///   1. the allowlist — an app work dir, or a folder the user picked in the
-///      native dialog (this run or an earlier one; see `PICKED_ROOTS`);
-///   2. `may_be_a_picked_root` — the handful of folders that are not a
-///      workspace even when a human clicked them.
+/// Two gates, and BOTH have to pass. `may_be_a_picked_root` runs first, for the
+/// sake of the message and nothing else. The set of roots this function
+/// accepts is the same either way, because a folder that gate refuses is also a
+/// folder `remember_picked_root` refuses to record, so it can never be in the
+/// allowlist.
+///
+///   1. `may_be_a_picked_root`, the handful of folders that are not a
+///      workspace even when a human clicked them, each with its own reason;
+///   2. the allowlist: an app work dir, or a folder the user picked in the
+///      native dialog (this run or an earlier one; see `PICKED_ROOTS`).
+///
+/// WHY THAT ORDER (bug D, aldrich_ironhart, Discord 2026-09-08). With the
+/// allowlist first, `$HOME`, `C:\Users` and everything under `AppData` were
+/// refused with "pick it again to allow it", an instruction that cannot work,
+/// because the dialog silently refuses to record exactly those folders. The
+/// user picks the folder, the picker hands the path back, the frontend puts it
+/// in the header as the working directory, and every file op answers with the
+/// same sentence for as long as the folder stays selected. Picking it again
+/// closes the loop instead of breaking it. The reason existed the whole time;
+/// only the order kept it from being said.
 ///
 /// Upgrade note: a workspace picked by a build older than this one was never
 /// recorded, so the first use after the update is refused until the user picks
 /// the folder again. That is one dialog, once, per folder — the alternative is
-/// trusting a path the WebView sent us, which is the hole being closed.
+/// trusting a path the WebView sent us, which is the hole being closed. That
+/// sentence is only honest for a folder a pick CAN allow, which is what the
+/// order above guarantees.
 fn check_workspace_root(root: &Path) -> Result<(), String> {
     let norm = lexical_normalize(root);
     if is_app_work_dir(&norm) {
         return Ok(());
     }
+    may_be_a_picked_root(&norm)?;
     let picked = PICKED_ROOTS
         .lock()
         .map(|roots| roots.iter().any(|r| is_within(r, &norm)))
@@ -435,7 +499,7 @@ fn check_workspace_root(root: &Path) -> Result<(), String> {
             root.display()
         ));
     }
-    may_be_a_picked_root(&norm)
+    Ok(())
 }
 
 /// `check_workspace_root` for callers outside this module (the Remote dispatch
@@ -447,6 +511,32 @@ fn check_workspace_root(root: &Path) -> Result<(), String> {
 /// native dialog — records.
 pub(crate) fn validate_workspace_root(root: &Path) -> Result<(), String> {
     check_workspace_root(root)
+}
+
+/// Darf dieser GEMERKTE Ordner ein Arbeitsordner sein? Fragen, ohne etwas zu
+/// tun.
+///
+/// Die Oberflaeche merkt sich Ordner an zwei Stellen, die keinen Dialog
+/// aufmachen: den Knopf "Use last folder" und den Vorgabeordner aus den
+/// Einstellungen, der ueber den Speicher des Browsers einen Neustart
+/// ueberlebt. Beide setzten ihren Pfad bisher einfach, und wenn die
+/// Erlaubnisliste ihn nicht kennt (frische Installation, geleerte Daten, ein
+/// Ordner direkt unter `$HOME`), landete der Nutzer in genau der Sackgasse,
+/// die Fehler D fuer den Dialog geschlossen hat: der Ordner steht in der
+/// Kopfzeile, und jede Dateioperation darunter antwortet mit einem Satz, den
+/// er nicht befolgen kann. Ohne Dialog, also ohne Weg heraus.
+///
+/// Es sind dieselben zwei Tore wie im Dialogweg, nur ohne Gedaechtnis:
+/// `may_be_a_picked_root` (dasselbe Tor, das `remember_picked_root` fragt,
+/// nicht eine zweite Abschrift davon) und danach die Erlaubnisliste. NICHTS
+/// wird aufgenommen, auch nicht still nachgezogen. Eine Fassung, die den alten
+/// Pfad beim Pruefen in die Liste schreibt, waere genau das Loch, das die
+/// Liste zuhaelt: die Oberflaeche darf ihre eigenen Wurzeln nicht erlauben,
+/// sonst reicht ein Skript im Renderer, um sich einen Ordner freizugeben.
+/// `a_folder_nobody_picked_still_gets_the_english_refusal` haelt das fest.
+#[tauri::command]
+pub fn validate_workspace_folder(path: String) -> Result<(), String> {
+    check_workspace_root(Path::new(&path))
 }
 
 /// Resolve + CONTAIN a tool-call path. A relative path resolves against the
@@ -1583,6 +1673,214 @@ mod workspace_allowlist_tests {
         let file = dir.join("workspace-roots.json");
         fs::write(&file, b"{ not json").unwrap();
         assert!(load_roots_from(&file).is_empty());
+    }
+}
+
+/// Bug D, symptom 3. Discord ticket, aldrich_ironhart, 2026-09-08, Windows 11,
+/// LU 2.6.8, provider Ollama:
+///
+///   "Error: Not an allowed workspace folder (only a folder you chose in LU's
+///    folder picker can be a workspace, pick it again to allow it): D:\code"
+///
+/// for a folder he had picked. Two halves of that chain had no measurement.
+///
+/// THE DURABLE HALF. Every other test here allows its root through
+/// `allow_root_for_test`, which says in its own doc comment that it does not
+/// persist. So the path the shipped app actually walks, `system::pick_folder`
+/// to `remember_picked_root` to `workspace-roots.json` to the next start, was
+/// never walked end to end, and "a pick survives a restart" was measured on
+/// `save_roots_to`/`load_roots_from` alone, two functions the dialog never
+/// calls directly.
+///
+/// THE MESSAGE. `check_workspace_root` asked the ALLOWLIST first and the
+/// structural gate second, so a folder that no pick can ever allow ($HOME,
+/// `C:\Users`, anything under `AppData`) came back with "pick it again to
+/// allow it", an instruction that cannot work. Picking it again produced the
+/// same sentence, because `system::pick_folder` threw the reason away
+/// (`let _ = remember_picked_root(p)`). That is a closed loop, and it is the
+/// reporter's sentence "even though that same folder was picked".
+///
+/// THE WINDOWS SHAPES. The reporter's path is `D:\code`, and the spellings that
+/// reach these functions differ: the dialog can hand back an extended-length
+/// `\\?\D:\code`, the frontend persists whatever it was given, and Windows folds
+/// case. The rule that decides all of them is `win_is_within`, which is pure
+/// string work and therefore measurable here.
+#[cfg(test)]
+mod bug_d_the_picked_folder_tests {
+    use super::*;
+
+    use crate::os_paths::{TestDir, test_dir};
+
+    fn unique(tag: &str) -> TestDir {
+        test_dir(&format!("bugd-{tag}"))
+    }
+
+    /// The whole chain the shipped app walks, including the file.
+    #[test]
+    fn the_folder_from_the_dialog_is_still_a_workspace_after_a_restart() {
+        let dir = unique("restart");
+        let project = dir.join("code");
+        fs::create_dir_all(&project).unwrap();
+
+        // Before the dialog: refused, and the refusal is the English sentence.
+        let before = check_workspace_root(&project).expect_err("a folder nobody picked must be refused");
+        assert!(before.contains("Not an allowed workspace folder"), "got: {before}");
+
+        // The dialog records it. THIS is the call `system::pick_folder` makes,
+        // and its result is what the picker used to discard.
+        remember_picked_root(&project).expect("the dialog's own folder must be recordable");
+        assert!(check_workspace_root(&project).is_ok(), "the folder was refused right after the pick");
+
+        // RESTART: a fresh process knows nothing but the file on disk.
+        let after_restart = load_roots_from(&picked_roots_file());
+        let norm = lexical_normalize(&project);
+        assert!(
+            after_restart.iter().any(|r| is_within(r, &norm)),
+            "the pick did not reach the file, so the next start refuses the folder again: {after_restart:?}",
+        );
+    }
+
+    /// The counter-check that keeps the fix honest: a folder nobody picked is
+    /// still refused, in English, and the file API stays closed for it.
+    #[test]
+    fn a_folder_nobody_picked_still_gets_the_english_refusal() {
+        let dir = unique("foreign");
+        let foreign = dir.join("not-picked");
+        fs::create_dir_all(&foreign).unwrap();
+        let err = check_workspace_root(&foreign).expect_err("a foreign folder must stay refused");
+        assert!(err.contains("Not an allowed workspace folder"), "got: {err}");
+        assert!(err.contains("pick it again to allow it"), "got: {err}");
+        let s = foreign.to_string_lossy().to_string();
+        assert!(resolve_path("secrets.txt", Some("c"), Some(&s)).is_err());
+    }
+
+    /// The loop the reporter was in: a folder no pick can EVER allow was told
+    /// to be picked again.
+    #[test]
+    fn a_folder_no_pick_could_ever_allow_is_not_told_to_pick_it_again() {
+        let home = dirs::home_dir().unwrap_or_default();
+        let impossible: Vec<PathBuf> = vec![
+            home.clone(),
+            home.join(".ssh"),
+            home.join("AppData"),
+            PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }),
+        ];
+        for bad in impossible {
+            // The dialog refuses to record it, that is the existing rule.
+            assert!(remember_picked_root(&bad).is_err(), "{bad:?} was recorded");
+            let err = check_workspace_root(&bad).expect_err("a forbidden root passed as a workspace");
+            assert!(
+                !err.contains("pick it again"),
+                "{bad:?} was refused with an instruction that cannot work: {err}",
+            );
+            assert!(err.contains("Not an allowed workspace folder"), "got: {err}");
+        }
+    }
+
+    /// `D:\code` in every spelling that reaches these functions on Windows.
+    /// Runs on any host: `win_is_within` is pure string work.
+    #[test]
+    fn every_windows_spelling_of_the_reported_folder_is_the_same_root() {
+        let picked = Path::new(r"D:\code");
+        for spelling in [
+            r"D:\code",        // what the frontend persisted
+            r"D:/code",         // forward slashes, as some callers hand it over
+            r"d:\CODE",        // Windows folds case
+            "D:\\code\\",      // a trailing separator
+            r"\\?\D:\code",    // extended-length, as the dialog can return it
+        ] {
+            assert!(
+                win_is_within(picked, Path::new(spelling)),
+                "{spelling} was not recognised as the picked folder",
+            );
+            assert!(
+                win_is_within(Path::new(spelling), picked),
+                "the picked folder was not recognised as {spelling}",
+            );
+        }
+        // Inside the project is inside the workspace ...
+        assert!(win_is_within(picked, Path::new(r"D:\code\src\main.rs")));
+        // ... and the component boundary still holds.
+        assert!(!win_is_within(picked, Path::new(r"D:\code-backup\id_rsa")));
+        assert!(!win_is_within(picked, Path::new(r"C:\code")));
+        // A UNC share, verbatim or plain, is one path.
+        assert!(win_is_within(Path::new(r"\\srv\share\proj"), Path::new(r"\\?\UNC\srv\share\proj\src")));
+    }
+
+    /// Der gemerkte Ordner wird gefragt, bevor er gesetzt wird.
+    ///
+    /// "Use last folder" und der Vorgabeordner aus den Einstellungen setzten
+    /// ihren Pfad ohne jede Frage. Kennt die Erlaubnisliste ihn nicht, steht
+    /// er danach in der Kopfzeile und jede Dateioperation antwortet mit einem
+    /// Satz, den der Nutzer nicht befolgen kann, ohne dass je ein Dialog
+    /// aufgegangen waere.
+    #[test]
+    fn a_picked_folder_validates_without_being_picked_again() {
+        let dir = unique("validate-ok");
+        let project = dir.join("code");
+        fs::create_dir_all(&project).unwrap();
+        allow_root_for_test(&project);
+        validate_workspace_folder(project.to_string_lossy().to_string())
+            .expect("a folder the user picked must validate");
+        // Unterordner des Projekts sind derselbe Arbeitsordner.
+        validate_workspace_folder(project.join("src").to_string_lossy().to_string())
+            .expect("a subfolder of the picked project must validate");
+    }
+
+    /// Die zwei Faelle, die der Melder beschreibt, und die Zusicherung, dass
+    /// das Fragen selbst nichts erlaubt.
+    #[test]
+    fn home_and_a_never_picked_folder_do_not_validate() {
+        let home = dirs::home_dir().unwrap_or_default();
+        let structural = validate_workspace_folder(home.to_string_lossy().to_string())
+            .expect_err("$HOME passed as a workspace");
+        assert!(structural.contains("Not an allowed workspace folder"), "got: {structural}");
+        // $HOME kann kein Dialog erlauben, also darf der Satz auch nicht danach
+        // verlangen. Dieselbe Reihenfolge wie im Dialogweg.
+        assert!(!structural.contains("pick it again"), "got: {structural}");
+
+        let dir = unique("validate-foreign");
+        let foreign = dir.join("not-picked");
+        fs::create_dir_all(&foreign).unwrap();
+        let s = foreign.to_string_lossy().to_string();
+        let refused = validate_workspace_folder(s.clone())
+            .expect_err("a folder nobody picked passed as a workspace");
+        assert!(refused.contains("Not an allowed workspace folder"), "got: {refused}");
+
+        // Und das Fragen hat nichts aufgenommen: derselbe Ordner wird beim
+        // zweiten Mal genauso abgelehnt. Ein Befehl, der beim Pruefen still
+        // nachzieht, waere das Loch, das die Erlaubnisliste zuhaelt.
+        assert!(validate_workspace_folder(s).is_err(), "the check recorded the folder it refused");
+        assert!(check_workspace_root(&foreign).is_err(), "the check recorded the folder it refused");
+    }
+
+    /// Derselbe Ordner, zweimal gewaehlt, in zwei Schreibweisen.
+    ///
+    /// Die Mitgliedschaft misst mit `win_is_within`, die Dopplungsprobe beim
+    /// Aufnehmen mass mit `PathBuf`-Gleichheit. Auf Windows sind das zwei
+    /// verschiedene Regeln, und die Liste nahm `D:\code` und `d:/CODE/` als
+    /// zwei Wurzeln auf, obwohl jede Pruefung danach sie als eine liest.
+    ///
+    /// Laeuft auf jedem Rechner: die Windows-Haelfte von `same_root` ist reine
+    /// Zeichenarbeit, und `Path::components` liest `D:\code` nur unter Windows
+    /// als Laufwerkspfad.
+    #[test]
+    fn two_spellings_of_one_picked_folder_stay_one_root() {
+        let win_same = |a: &Path, b: &Path| win_is_within(a, b) && win_is_within(b, a);
+        let mut roots: Vec<PathBuf> = Vec::new();
+        assert!(
+            add_root_unless_known(&mut roots, lexical_normalize(Path::new(r"D:\code")), win_same),
+            "the first pick was not recorded at all",
+        );
+        assert!(
+            !add_root_unless_known(&mut roots, lexical_normalize(Path::new(r"d:/CODE/")), win_same),
+            "the second spelling was treated as a new folder",
+        );
+        assert_eq!(
+            roots.len(),
+            1,
+            "one folder stands twice in the allowlist: {roots:?}",
+        );
     }
 }
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { safeJSONStorage } from '../lib/storage-quota'
+import { TRAIN_STEPS_DEFAULT } from '../lib/trainer-presets'
 import { isRecord } from '../types/json-guards'
 
 /**
@@ -520,7 +521,9 @@ export const useCreateStore = create<CreateState>()(
       characterTab: 'train' as 'train' | 'use',
       trainImages: [] as MediaRef[],
       triggerWord: '',
-      trainSteps: 1200,
+      // Dieselbe Zahl, die der Trainer ohne Angabe nimmt
+      // (`steps.unwrap_or(1200)`, trainer.rs), und die Stufe `Standard`.
+      trainSteps: TRAIN_STEPS_DEFAULT,
       selectedCharacter: null as CharacterRef | null,
       audioInput: null as MediaRef | null,
       voiceFromJob: null as { jobId: string; label: string } | null,

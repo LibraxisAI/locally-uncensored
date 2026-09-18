@@ -21,6 +21,16 @@ export interface CloudScenario {
   /** Server MEDIA_LIVE switch surfaced via the catalog. Default true. */
   mediaLive?: boolean
   tier?: string
+  /**
+   * /api/me license.paidPlan: hat dieses Konto je gezahlt?
+   *
+   * Die Freimengenmarke und der stehende Flash-Satz haengen daran und nicht am
+   * Lizenzstatus, weil der Chat-Vermittler nach derselben Regel abrechnet. Ohne
+   * Angabe fehlt das Feld in der Antwort, der Klient liest das als "noch nicht
+   * beantwortet" und verspricht nichts. Ein Fall, der die Marke sehen will,
+   * sagt es hier.
+   */
+  paidPlan?: boolean
 }
 
 const CORS: Record<string, string> = {
@@ -81,7 +91,7 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
           user: { id: USER.id, email: USER.email },
           license:
             scenario.license === 'active'
-              ? { status: 'active', tier, access }
+              ? { status: 'active', tier, access, ...(scenario.paidPlan === undefined ? {} : { paidPlan: scenario.paidPlan }) }
               : { status: 'none' },
           profile: null,
         }),
@@ -288,12 +298,15 @@ export function cloudSwitchBehindModal(page: Page) {
   return page.locator('button[role="switch"][aria-label="Cloud"]')
 }
 
-/** Sign in through the CloudGateModal that the header switch opens. The
- *  signed-out gate is a stepped flow: hero → plans → in-app sign-in. */
+/** Sign in through the CloudGateModal that the header switch opens.
+ *
+ *  Seit dem 13.09.2026 hat der abgemeldete Weg zwei Schritte statt drei: das
+ *  Verkaufs-Panel und die Anmeldung. Der Zwischenschritt mit den drei
+ *  Planknoepfen ist geloescht, der Kaufknopf geht in den Browser. Wer schon
+ *  zahlt, nimmt den Textlink darunter. */
 export async function signInViaGate(page: Page): Promise<void> {
   await cloudSwitch(page).click()
-  await page.getByRole('button', { name: /Get LU Cloud/i }).click()
-  await page.getByRole('button', { name: /Already got an account/i }).click()
+  await page.getByRole('button', { name: /Already subscribed\? Sign in/i }).click()
   await page.getByPlaceholder('Email').fill('qa@lu-labs.ai')
   await page.getByPlaceholder('Password').fill('e2e-password')
   await page.getByRole('button', { name: /^Sign in$/i }).click()

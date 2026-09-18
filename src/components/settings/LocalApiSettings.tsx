@@ -48,7 +48,7 @@ export function LocalApiSettings() {
   return (
     <div className="space-y-3">
       <p className="t-micro text-gray-600">
-        One OpenAI-compatible address for every model on this machine — LU Engine, Ollama
+        One OpenAI-compatible address for every model on this machine: LU Engine, Ollama
         and LM Studio under a single URL. Anything that can talk to OpenAI can talk to your
         local models through it.
       </p>
@@ -110,7 +110,7 @@ export function LocalApiSettings() {
         <div className="flex items-center gap-2">
           <Globe className="w-3 h-3 text-gray-500" />
           <span className="t-micro text-gray-500">
-            Browser access — leave empty if no web page should use the API.
+            Browser access. Leave empty if no web page should use the API.
           </span>
         </div>
         <input
@@ -127,7 +127,7 @@ export function LocalApiSettings() {
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <KeyRound className="w-3 h-3 text-gray-500" />
-          <span className="t-micro text-gray-500">Token — every request needs it, including from this machine.</span>
+          <span className="t-micro text-gray-500">Token. Every request needs it, including from this machine.</span>
         </div>
         <div className="flex items-center gap-2">
           <input
@@ -166,7 +166,7 @@ export function LocalApiSettings() {
             onClick={() => kopiere('curl', curlBeispiel(base, token, 'ollama/smollm2:135m'))}
             className="t-micro text-blue-400 hover:text-blue-300"
           >
-            {kopiert === 'curl' ? 'Kopiert' : 'Beispielaufruf kopieren (curl)'}
+            {kopiert === 'curl' ? 'Copied' : 'Copy an example call (curl)'}
           </button>
         </div>
       )}

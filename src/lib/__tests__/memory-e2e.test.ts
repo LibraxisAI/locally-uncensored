@@ -342,12 +342,6 @@ describe('Legacy addEntry Compat', () => {
     useMemoryStore.getState().addEntry('fact', 'Test', 'agent:web_search')
     expect(useMemoryStore.getState().entries[0].tags).toContain('agent:web_search')
   })
-
-  it('legacy getMemoryForPrompt still works', () => {
-    useMemoryStore.getState().addEntry('fact', 'Rememberable fact about TypeScript')
-    const prompt = useMemoryStore.getState().getMemoryForPrompt('TypeScript')
-    expect(prompt).toContain('TypeScript')
-  })
 })
 
 // ── v1 → v2 Migration ─────────────────────────────────────────

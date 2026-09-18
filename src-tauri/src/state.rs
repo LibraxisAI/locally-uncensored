@@ -48,6 +48,33 @@ pub struct BundledEngine {
     /// request resolving to the same argv reuses the running process, any
     /// difference (model, ctx, tuning, port) triggers a stop→start.
     pub args: Vec<String>,
+    /// True when the layer count inside `args` was MEASURED against the card
+    /// (the "auto" default) rather than typed by the user.
+    ///
+    /// The idempotence key needs the difference. Two auto starts whose
+    /// measurements differ by a few hundred MiB of free memory are the same
+    /// REQUEST and must not tear down a healthy engine over it, while a switch
+    /// between auto and a typed number is a different request even on the days
+    /// the two numbers happen to agree.
+    pub auto_layers: bool,
+    /// True when THIS process is the retry that dropped GPU offload after a
+    /// first attempt died (`engine.rs`, SecondAttempt::CpuOnly).
+    ///
+    /// NOT the same question as "does argv say `-ngl 0`". A user who typed 0
+    /// into Settings got exactly what he asked for and has nothing to be told
+    /// about; this flag marks the case where the app took the card away by
+    /// itself, which is the one the user never chose and until now could only
+    /// find in the log file.
+    pub cpu_fallback: bool,
+    /// What the start-time sanity probe (bug a, `engine_sanity.rs`) had to
+    /// work around for THIS process, as the one English sentence the user is
+    /// shown: restarted without Flash Attention, restarted on the processor,
+    /// or unreadable on the processor too. `None` on every ordinary start.
+    ///
+    /// Kept here for the same reason as `cpu_fallback`: the start call
+    /// answers it once, and a user who reads the window a minute later must
+    /// still be able to learn why the engine is not on the card.
+    pub sanity_note: Option<&'static str>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]

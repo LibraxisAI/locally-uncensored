@@ -23,7 +23,19 @@
  * loop).
  */
 
-/** Providers where a token sent is a token billed. */
+/**
+ * Providers where a token sent is a token billed.
+ *
+ * `openai` is on this list because that is the slot api.openai.com sits in. It
+ * is also the slot a llama.cpp on 127.0.0.1:8080, a vLLM in the LAN, LM Studio
+ * and this app's own engine sit in, because `ProviderId` is a fixed set of
+ * four and every OpenAI-protocol backend shares one of them. So the id alone
+ * cannot answer the cost question for this entry, and `localBackend` is what
+ * finishes it: where the send goes to a machine on this network, nobody is
+ * billed and there is nothing to cap. The classification itself is NOT
+ * repeated here as a second list; it lives in lib/lan-openai-slot.ts, which is
+ * the same answer the context window uses (GH #129).
+ */
 export const PAID_PROVIDER_IDS: ReadonlySet<string> = new Set(['lu-cloud', 'openai', 'anthropic'])
 
 /** Default ceiling for one sent step, in tokens. Power users may raise it. */
@@ -47,9 +59,18 @@ export interface SendWindowInput {
   capEnabled?: boolean
   /** settings.smallModelMode. */
   smallModelMode?: boolean
+  /**
+   * The send goes to a server on this machine or in the LAN
+   * (`sendsToALanBackend` in lib/lan-openai-slot). Only the `openai` slot can
+   * be either; left out, the provider id decides alone, which is what every
+   * caller did before 3.0.0.
+   */
+  localBackend?: boolean
 }
 
-export function isPaidProvider(providerId: string): boolean {
+export function isPaidProvider(providerId: string, localBackend?: boolean): boolean {
+  // A server in the next room bills nobody, whichever protocol it speaks.
+  if (localBackend === true) return false
   return PAID_PROVIDER_IDS.has(providerId)
 }
 
@@ -63,7 +84,7 @@ export function effectiveSendWindow(input: SendWindowInput): number {
     ? Math.floor(Math.min(window * SMALL_MODEL_SHARE, SMALL_MODEL_CEILING))
     : Math.floor(window * WINDOW_SHARE)
   if (input.capEnabled === false) return base
-  if (!isPaidProvider(input.providerId)) return base
+  if (!isPaidProvider(input.providerId, input.localBackend)) return base
   const cap =
     typeof input.sendWindowTokens === 'number' && input.sendWindowTokens > 0
       ? Math.floor(input.sendWindowTokens)

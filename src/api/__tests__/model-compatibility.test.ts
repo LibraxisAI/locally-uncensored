@@ -180,11 +180,17 @@ describe('getRecommendedAgentModels', () => {
     expect(providers.has('anthropic')).toBe(true)
   })
 
-  it('hermes3 is marked as hot', () => {
+  it('hermes3 is NOT recommended: 8B is under the 9B rule', () => {
+    // War bis 3.0.0 das Gegenteil ("hermes3 is marked as hot"). Der Fall hat
+    // die Zeile gehalten, die Davids 9B-Grenze verletzte (R5-68); er faellt
+    // mit ihr, statt sie zu ueberleben. Die Regel selbst steht in
+    // src/lib/__tests__/model-compatibility-smoke.test.ts.
+    //
+    // isAgentCompatible sagt weiter ja: das Modell KANN Werkzeuge, es wird nur
+    // nicht zum lokalen Laufen empfohlen. Zwei verschiedene Fragen.
     const models = getRecommendedAgentModels()
-    const hermes = models.find(m => m.name.includes('hermes3'))
-    expect(hermes).toBeDefined()
-    expect(hermes!.hot).toBe(true)
+    expect(models.find(m => m.name.includes('hermes3'))).toBeUndefined()
+    expect(isAgentCompatible('hermes3:8b')).toBe(true)
   })
 
   it('gemma4 26b MoE is in recommended models', () => {

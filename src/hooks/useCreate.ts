@@ -458,7 +458,15 @@ export function useCreate() {
         } else if (s.status === 'cancelled') {
           return
         } else {
-          setError(`Training failed. ${s.logs.slice(-3).join(' ')}`.slice(0, 420))
+          // The whole message, with its line breaks. It used to be the last
+          // three log lines glued together with spaces and cut at 420
+          // characters, which is how GitHub #121 reached us as "the error is
+          // cut off and I cannot copy it": the one line that matters is the
+          // traceback's last, and it was the one being dropped. `phase` is
+          // what the backend set as the failure; the log tail is the fallback
+          // for a status that arrived without one.
+          const detail = s.phase?.trim() || s.logs.slice(-8).join('\n').trim()
+          setError(detail ? `Training failed.\n${detail}` : 'Training failed.')
           return
         }
       }

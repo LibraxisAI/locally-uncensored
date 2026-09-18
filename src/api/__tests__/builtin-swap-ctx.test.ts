@@ -48,6 +48,12 @@ describe('preservedSwapCtx', () => {
   // NEGATIVE CONTROLS: every reason NOT to touch the tuning.
   it('leaves an expert value alone in both directions', () => {
     expect(preservedSwapCtx({ tuningCtx: 4096, currentCtx: 32768, ctxTrain: 131072 })).toBeUndefined()
+    // GH #129: eine ausdrueckliche Wahl von 8192 ist auch eine Wahl. Ohne die
+    // Marke sieht sie aus wie die Voreinstellung, und der Tausch gaebe dem
+    // Nutzer die 32768 zurueck, die er gerade weggewaehlt hat.
+    expect(preservedSwapCtx({
+      tuningCtx: 8192, tuningChosen: true, currentCtx: 32768, ctxTrain: 131072,
+    })).toBeUndefined()
     expect(preservedSwapCtx({ tuningCtx: 65536, currentCtx: 8192, ctxTrain: 131072 })).toBeUndefined()
   })
 

@@ -36,7 +36,7 @@ async function completeBuiltinOnboarding(page: Page) {
   await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible()
   await page.getByRole('button', { name: /Skip for now/i }).click()
   await expect(page.getByRole('heading', { name: /Pick a starter model/i })).toBeVisible()
-  await page.getByRole('button', { name: /Qwen 2\.5 0\.5B/i }).click()
+  await page.getByRole('button', { name: /Qwen 2\.5 7B/i }).click()
   await page.getByRole('button', { name: /Install \d+ model/i }).click()
   await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible({ timeout: 30_000 })
   await page.getByRole('button', { name: /Skip for now/i }).click()
@@ -94,7 +94,9 @@ test('die Kontextliste bleibt ganz in der Flaeche, die sie abschneiden koennte',
   // von der obersten Auswahl bis zur letzten Zeile. Ohne diese beiden Faelle
   // waere ein Menue gruen, das die Kante haelt und trotzdem an der Auswahl
   // vorbeigeht.
-  await expect(page.getByRole('button', { name: /^32K$/ })).toBeInViewport({ ratio: 1 })
+  // Seit dem 11.09.2026 heisst die oberste Zeile "32K · max": die Decke
+  // fuehrt die Liste sichtbar an.
+  await expect(page.getByRole('button', { name: /^32K( · max)?$/ })).toBeInViewport({ ratio: 1 })
   await expect(page.getByText('Reloads the model on change.')).toBeInViewport({ ratio: 1 })
 })
 

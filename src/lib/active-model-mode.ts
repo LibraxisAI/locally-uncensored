@@ -1,4 +1,5 @@
 import type { AppMode } from '../types/settings'
+import { canAutoSelectChat, type ChatSizeCandidate } from './chat-model-minimum'
 
 /**
  * Which chat model may stay selected under the current Local/Cloud switch.
@@ -14,10 +15,17 @@ import type { AppMode } from '../types/settings'
  * An empty list is not evidence that a model is gone. It is the absence of
  * evidence, and this rule is re-run the moment the real list lands.
  */
-export interface ModeCandidate {
+export interface ModeCandidate extends ChatSizeCandidate {
   name: string
   type?: string
   provider?: string
+}
+
+/** Was jeder der beiden Modi zuletzt gewaehlt hatte. Kein Modus schreibt in
+ *  die Erinnerung des anderen. */
+export interface RememberedPicks {
+  local: string | null
+  cloud: string | null
 }
 
 export interface ModePick {
@@ -58,6 +66,26 @@ export function pickForMode(
    * has to be in the list and still has to be usable in this mode.
    */
   requested: string | null = null,
+  /**
+   * Je Modus die Wahl, die dort zuletzt galt (stores/modelStore,
+   * `lastLocalModel` und `lastCloudModel`).
+   *
+   * Der Schalter hat EINE Wahl fuer zwei Modi gefuehrt, und jeder Wechsel hat
+   * die des anderen ueberschrieben. Beide Richtungen sind auf der Box gemessen
+   * worden. Rueckweg (T3, Fund 1, 11.09.2026): Cloud an, Cloud aus, und der
+   * Waehler stand auf `Select a chat model`, weil der lokale Name weg war und
+   * der Ersatz `canAutoSelectChat` bestehen muss, also mindestens 7B haben; das
+   * Modell der Box hat 3B. Hinweg (T1, Nebenfunde 7 und 3, 11.09.2026, im
+   * selben Bau frueher am Tag): "Der Cloud-Modus schaltet das Modell
+   * selbstaendig um. Beim Eintritt stand zweimal `Llama 3.1 8B Turbo` da,
+   * ohne dass ich es gewaehlt hatte". Das war der Kopf des Katalogs, nicht die
+   * letzte Wolkenwahl des Nutzers.
+   *
+   * Zwei getrennte Erinnerungen loesen beides: jeder Modus bekommt zurueck, was
+   * er zuletzt hatte, und der Kopf der Liste springt nur noch ein, wenn es dort
+   * wirklich noch keine Wahl gab.
+   */
+  remembered: RememberedPicks = { local: null, cloud: null },
 ): ModePick {
   // Nothing to judge against. THE guard: without it, the mount-time run of
   // this rule wipes a perfectly good persisted pick.
@@ -76,7 +104,21 @@ export function pickForMode(
   const current = activeModel ? models.find((m) => m.name === activeModel) : undefined
   if (current && wanted(current)) return { change: false, next: activeModel, usedRequest: false }
 
-  const fallback = models.find(wanted)
+  // Der Moduswechsel, beide Richtungen: `current` steht hier in der Liste und
+  // ist trotzdem nicht gewollt, gehoert also dem anderen Modus. Bevor der Kopf
+  // der Liste einspringt, bekommt dieser Modus die Wahl zurueck, die er zuletzt
+  // hatte. Eng an diesen einen Fall gebunden, damit die Erinnerung nirgends
+  // sonst in eine Wahl hineinredet, die gerade aus einem anderen Grund
+  // geraeumt wurde.
+  const zuletztHier = appMode === 'cloud' ? remembered.cloud : remembered.local
+  const behalten = current && zuletztHier
+    ? models.find((m) => m.name === zuletztHier)
+    : undefined
+  if (behalten && wanted(behalten)) {
+    return { change: activeModel !== behalten.name, next: behalten.name, usedRequest: false }
+  }
+
+  const fallback = models.find(model => wanted(model) && canAutoSelectChat(model))
   if (activeModel === null && !fallback) return { change: false, next: null, usedRequest: false }
   return { change: true, next: fallback ? fallback.name : null, usedRequest: false }
 }

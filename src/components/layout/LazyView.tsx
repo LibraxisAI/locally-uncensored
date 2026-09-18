@@ -39,7 +39,7 @@ type Loader = () => Promise<{ default: ComponentType }>
 function withOneRetry(load: Loader): Loader {
   return () =>
     load().catch((err: unknown) => {
-      log.warn('LazyView: Chunk-Import fehlgeschlagen, ein Nachschlag', { error: err })
+      log.warn('LazyView: chunk import failed, retrying once', { error: err })
       return new Promise<{ default: ComponentType }>((resolve, reject) => {
         setTimeout(() => { load().then(resolve, reject) }, 300)
       })

@@ -13,6 +13,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useCloudAuthStore, deriveCloudAvailable } from '../../stores/cloudAuthStore'
 import { cloudSwitchClick, CLOUD_ARM_TIMEOUT_MS } from '../../lib/cloud-switch-guard'
 import { reportCloudSwitch } from '../../api/funnel'
+import { cloudPitchLines } from '../../lib/cloud-pitch'
 import { cn } from '../create/ui/cn'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
 
@@ -80,7 +81,9 @@ export function CloudSwitch() {
         ? "Cloud mode is on. Chat, image and video run on LU's hosted GPUs. Click to go back to Local."
         : armed
           ? 'Click again to move the whole app to Cloud. Answers are then billed to your lu-labs.ai credits.'
-          : "Run LU on hosted GPUs with your lu-labs.ai account"}
+          // Der Schalter sagte nur, WAS er tut. Jetzt sagt er auch, wofuer.
+          // Die Zahlen kommen aus lib/cloud-pitch.ts und haengen am Katalog.
+          : cloudPitchLines().join('\n')}
       onClick={toggle}
       onBlur={() => setArmed(false)}
       className={cn(

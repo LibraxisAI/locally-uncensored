@@ -657,7 +657,7 @@ pub fn install_comfyui(
         // Step 4: the environment has to prove it starts. Everything above
         // reads pip exit codes; this reads the interpreter.
         update("installing", "Step 4/4: Checking that the environment really starts...");
-        match verify_and_heal_environment(&effective_python, &reqs, &install_status, Some(&cancel_flag)) {
+        match verify_and_heal_environment(&effective_python, &target_dir, &reqs, &install_status, Some(&cancel_flag)) {
             Ok(()) => {}
             Err(e) if e == "cancelled" => {
                 update("cancelled", "Install cancelled during the environment check.");

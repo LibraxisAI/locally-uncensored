@@ -4,6 +4,7 @@
 // handlers (Ollama routing, sharded confirm, bundle retry/clear, …) keep
 // working unchanged behind a new surface.
 import { useEffect, useRef, useState } from 'react'
+import { isBelowChatMinimum, SMALL_CHAT_MODEL_WARNING } from '../../lib/chat-model-minimum'
 import {
   Download, ExternalLink, Info, Check, ChevronDown, Loader2, RefreshCw,
   X, Flame, Wrench, Eye, Feather, HardDrive,
@@ -406,6 +407,12 @@ export function ModelTile({ variants, vramGb, isInstalled, dlState, onDownload, 
           <Info size={ICON_SM} />
         </button>
       </div>
+
+      {isBelowChatMinimum(sel) && (
+        <p data-testid="small-chat-model-warning" className="mt-2 text-xs leading-relaxed text-gray-700 dark:text-gray-200">
+          {SMALL_CHAT_MODEL_WARNING}
+        </p>
+      )}
 
       <div className="flex items-center gap-2 mt-2.5 min-h-[var(--control-h-sm)]">
         {/* Variant / size selector — only when the family ships several quants */}

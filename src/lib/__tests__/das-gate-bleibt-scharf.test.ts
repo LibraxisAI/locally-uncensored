@@ -43,8 +43,13 @@ import { ESLint } from 'eslint'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 let eslint: ESLint
-beforeAll(() => {
+beforeAll(async () => {
   eslint = new ESLint({ cwd: ROOT })
+  // Load the real configuration and parser during bounded suite setup, not the first assertion.
+  const [warmup] = await eslint.lintText('export const warmup: number = 1\n', {
+    filePath: resolve(ROOT, 'src/lib/__lint-probe.ts'),
+  })
+  expect(warmup.errorCount).toBe(0)
 })
 
 /** Regel-IDs, die eslint fuer diesen Quelltext meldet. */

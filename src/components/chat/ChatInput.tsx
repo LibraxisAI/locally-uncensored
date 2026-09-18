@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { SamplingControls } from './SamplingControls'
 import { Send, Square, Paperclip, X, Brain, Gauge, Terminal } from 'lucide-react'
 import { matchAgentCommands, type AgentCommand, type CommandScope } from '../../lib/agent-commands'
 import { VoiceButton } from './VoiceButton'
+import { FlashChatNotice } from './FlashChatNotice'
+import { ModelMarks } from './ModelMarks'
 import { ApprovalDialog } from './ApprovalDialog'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -19,7 +22,15 @@ import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
 interface Props {
   onSend: (content: string, images?: ImageAttachment[]) => void
   onStop: () => void
+  /** THIS conversation is answering: the slot shows Stop. */
   isGenerating: boolean
+  /**
+   * Another conversation is answering. The slot used to read one app-wide
+   * flag, so every other chat silently lost its Send button and grew a Stop
+   * that killed the foreign run (T1 nebenfund 4). Send stays where it is now
+   * and the composer says in one line why it is waiting.
+   */
+  busyElsewhere?: boolean
   pendingApproval?: AgentToolCall | null
   onApprove?: () => void
   onReject?: () => void
@@ -87,7 +98,7 @@ function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   })
 }
 
-export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
+export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -266,7 +277,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
   const sendLockRef = useRef(0)
   const handleSend = () => {
     const trimmed = input.trim()
-    if ((!trimmed && images.length === 0) || isGenerating || disabled) return
+    if ((!trimmed && images.length === 0) || isGenerating || busyElsewhere || disabled) return
     if (!passSendLock(sendLockRef)) return
     onSend(trimmed || '(image)', images.length > 0 ? images : undefined)
     setInput('')
@@ -362,6 +373,9 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
 
   return (
     <div className={`px-3 pb-2 pt-1 w-full ${COMPOSER_MAX_W} mx-auto`}>
+      {/* Was dieses Modell kann, bevor die Frage getippt ist. */}
+      <ModelMarks />
+      <FlashChatNotice />
       {/* Approval used to live here as a popup over the chat input.
           Per user feedback ("eventuell in den chat einarbeiten") it now
           renders INSIDE the pending tool-call block in MessageList, so
@@ -427,6 +441,19 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
         {/* Prompt area: hints, image previews, then the textarea (buttons live
             in the action bar below, web-parity two-row composer). */}
         <div className="px-3 pt-2.5">
+          {/* Another chat is answering. Saying so beats what this composer did
+              before, which was to drop the Send button without a word and put a
+              Stop button there that aborted the OTHER chat's run. One answer at
+              a time is what the app really does today: the local engine runs a
+              single slot, and the streaming buffers behind the composer are
+              shared. Whoever lifts that lifts this line with it. */}
+          {busyElsewhere && (
+            <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-busy-elsewhere">
+              <span className="flex-1 min-w-0">
+                Another chat is still answering. This app runs one answer at a time, so wait for it to finish or stop it in that chat.
+              </span>
+            </div>
+          )}
           {/* Non-image attach hint (GH #69). The clip is images-only; PDFs, Word,
               and text files go through the Documents panel so the model can read them. */}
           {docHint && (
@@ -637,6 +664,9 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
 
           <div className="flex-1 min-w-0" />
 
+          {/* Sampling controls sit next to the picker: same row, collapsed. */}
+          <div className="shrink-0"><SamplingControls /></div>
+
           {/* Model picker, opens upward from the composer */}
           <div className="shrink-0">{composerModel}</div>
 
@@ -667,7 +697,7 @@ export function ChatInput({ onSend, onStop, isGenerating, pendingApproval, onApp
             ) : (
               <button
                 onClick={handleSend}
-                disabled={(!input.trim() && images.length === 0) || isTranscribing}
+                disabled={(!input.trim() && images.length === 0) || isTranscribing || !!busyElsewhere}
                 className="lu-control lu-control--icon lu-primary w-full h-full"
                 aria-label="Send message"
               >

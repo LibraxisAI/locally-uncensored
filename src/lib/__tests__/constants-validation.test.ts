@@ -128,7 +128,14 @@ describe('constants-validation', () => {
       expect(coder).toBeDefined()
     })
 
-    it('contains the "unrestricted" persona with empty system prompt', () => {
+    // Bis 10.09.2026 stand hier `toBe('')`. Ein leerer Systemtext ist aber
+    // nicht neutral: das Modell faellt dann auf seine eigene Grundhaltung
+    // zurueck, und gemessen an 46 Katalogmodellen hat genau das sechs Modelle
+    // vom Antworten aufs Ablehnen gebracht. Die Rolle steht jetzt drin, der
+    // Test haelt fest, dass sie da ist und keine Inhaltsregel enthaelt.
+    // R5-3: leer, damit der Grundtext greift und der Hausteil genau einmal
+    // rausgeht. Die Rolle steht in CHAT_BASE_SYSTEM_PROMPT, nicht hier.
+    it('contains the "unrestricted" persona, and it carries no text of its own', () => {
       const unrestricted = BUILT_IN_PERSONAS.find(p => p.id === 'unrestricted')
       expect(unrestricted).toBeDefined()
       expect(unrestricted!.systemPrompt).toBe('')

@@ -67,7 +67,7 @@ describe('D-S02: die Eingangsseite sagt, wo man ist und was zu tun ist', () => {
     // oben; er steht also UNTER diesem Text, nicht darueber.
     // Im Code — der Kommentar an der Stelle NENNT den alten Satz.
     expect(VIEW_CODE).not.toContain('Select a model above')
-    expect(VIEW_CODE).toContain('Pick a model in the box below')
+    expect(VIEW_CODE).toContain('Choose a model below. Automatic picks require a known size of at least 7B.')
   })
 
   it('der Primaerknopf steht genau dort, wo der Composer nicht weiterhilft', () => {

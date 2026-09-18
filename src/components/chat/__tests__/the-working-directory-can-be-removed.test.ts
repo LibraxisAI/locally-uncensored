@@ -169,7 +169,25 @@ describe('a run in flight holds it', () => {
     const button = removeButton()!
     expect(button).not.toBeNull()
     expect((button as HTMLButtonElement).disabled).toBe(true)
-    expect(button.getAttribute('title')).toContain('Wait for the current run to finish')
+    expect(button.getAttribute('title')).toContain('Wait for it to finish or press Stop')
+  })
+
+  it('and says it where a disabled button cannot: in the column itself', () => {
+    // Der Grund hing nur als `title` an den beiden Knoepfen, und ein
+    // `disabled` Knopf nimmt keine Mauszeiger-Ereignisse an, also erschien er
+    // nie. Uebrig blieben zwei graue Knoepfe ohne ein Wort dazu.
+    act(() => {
+      useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
+      useCodexStore.getState().beginSend()
+    })
+    show()
+    const zeile = screen.getByTestId('explorer-workdir-lock')
+    expect(zeile.textContent).toContain('Stop')
+    // Negative Probe: ohne Sperre steht die Zeile nicht da.
+    cleanup()
+    act(() => useCodexStore.getState().endSend())
+    show()
+    expect(screen.queryByTestId('explorer-workdir-lock')).toBeNull()
   })
 
   it('holds it from the first synchronous moment of the send, before any await', () => {
@@ -194,12 +212,45 @@ describe('a run in flight holds it', () => {
     expect(useCodexStore.getState().workingDirectory).toBe(WINDOWS_PATH)
   })
 
-  it('a thread the store still calls running counts as a run too', () => {
+  it('a thread that is really streaming counts as a run too', () => {
     act(() => {
       useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
       useCodexStore.getState().initThread('conv-1', WINDOWS_PATH)
       useCodexStore.getState().setThreadStatus('conv-1', 'running')
     })
+    useGenerationStore.setState({ generating: { 'conv-1': true } })
+    show()
+    expect((removeButton() as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('but a run that is no longer alive lets the folder go again', () => {
+    // Der Haenger. `stopCodex` raeumt die Erzeugungsfahne SOFORT, der Status
+    // des Fadens kommt erst im `finally` des Laufs zurueck auf 'idle', und ein
+    // Shell-Befehl, der das Abbruchsignal nicht beachtet, dehnt dieses Fenster
+    // beliebig weit. Solange es offen stand, waren beide Knoepfe tot, der
+    // Grund war unsichtbar, und es gab keinen Weg heraus: der Ordner blieb
+    // gesperrt, bis die App neu startete.
+    act(() => {
+      useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
+      useCodexStore.getState().initThread('conv-1', WINDOWS_PATH)
+      useCodexStore.getState().setThreadStatus('conv-1', 'running')
+    })
+    useGenerationStore.setState({ generating: {} })
+    show()
+    expect((removeButton() as HTMLButtonElement).disabled).toBe(false)
+    expect(pickButton().disabled).toBe(false)
+    expect(screen.queryByTestId('explorer-workdir-lock')).toBeNull()
+    fireEvent.click(removeButton()!)
+    expect(useCodexStore.getState().workingDirectory).toBe('')
+  })
+
+  it('a run waiting for an approval still holds it, it is not finished', () => {
+    act(() => {
+      useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
+      useCodexStore.getState().initThread('conv-1', WINDOWS_PATH)
+      useCodexStore.getState().setThreadStatus('conv-1', 'awaiting_approval')
+    })
+    useGenerationStore.setState({ generating: { 'conv-1': true } })
     show()
     expect((removeButton() as HTMLButtonElement).disabled).toBe(true)
   })

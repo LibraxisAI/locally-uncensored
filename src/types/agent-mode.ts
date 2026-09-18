@@ -164,13 +164,21 @@ export interface MemoryFile {
   createdAt: number
   updatedAt: number
   source: string      // conversationId | 'manual' | 'auto:extraction'
+  /** Input modality, separate from the legacy source conversation ID. */
+  sourceKind?: 'chat' | 'voice' | 'screen'
+  /** Explicit user review time; cleared when the remembered fact changes. */
+  confirmedAt?: number
+  /** User-marked sensitive entries stay out of AI requests and embeddings. */
+  sensitive?: boolean
+  /** Stable project ID. Undefined retains legacy global memory behavior. */
+  scope?: string
   // ── Staleness / supersession (Feature FF, v2.5.0) ─────────────
   // All OPTIONAL so pre-v2.5 persisted memories rehydrate unchanged; the
   // store's migrate() leaves them undefined and the retrieval layer treats
   // undefined as "not stale".
   /** Id of the newer entry that replaced this one (UPDATE write-decision). */
   supersededBy?: string
-  /** Id of the entry this one replaced — back-pointer for audit / UI. */
+  /** Id of the entry this one replaced: back-pointer for audit / UI. */
   supersedesId?: string
   /** Explicitly flagged outdated → excluded from live retrieval, kept on disk. */
   stale?: boolean
@@ -179,8 +187,14 @@ export interface MemoryFile {
 }
 
 export interface MemorySettings {
-  autoExtractEnabled: boolean    // default false — opt-in (costs extra inference)
-  autoExtractInAllModes: boolean // default false — whether to also extract outside agent mode
+  // Both ship ON: stores/memoryStore.ts sets them true for a fresh profile and
+  // for the migration of an old one. Auto-extraction is opt-OUT, and it costs
+  // a second inference call. David decided that on 12.09.2026 (R2-48, R5-27),
+  // together with the cloud gate that used to keep it silently dead on the
+  // desktop (settings.memoryCloudOptIn, lib/constants.ts). What it costs
+  // stands next to the switch that turns it off.
+  autoExtractEnabled: boolean    // default true, costs extra inference
+  autoExtractInAllModes: boolean // default true, also extract outside agent mode
   maxMemoriesInPrompt: number    // default 10 (legacy; retrieval uses the budget tier / override)
   maxMemoryChars: number         // default 3000
   // User override for how many memories get injected into the prompt. null =

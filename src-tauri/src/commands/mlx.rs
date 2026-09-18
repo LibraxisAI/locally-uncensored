@@ -28,7 +28,7 @@ use crate::commands::CmdResult;
 use crate::state::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const MLX_PORT: u16 = 47712;
@@ -266,7 +266,8 @@ fn install_mlx_steps(slot: &crate::install_state::InstallSlot) -> Result<(), Str
     let mut prefetch_cmd = Command::new(venv_python());
     prefetch_cmd
         .args(["-c", prefetch])
-        .env("HF_HOME", mlx_root().join("cache"));
+        .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_XET_CACHE", hf_xet_cache_dir());
     apply_hf_token(&mut prefetch_cmd);
     let out = prefetch_cmd
         .output()
@@ -452,7 +453,7 @@ pub const IMAGE_CATALOG: &[ImageCatalogEntry] = &[
         id: "nsfw-gen-v2",
         name: "NSFW-gen v2",
         repo: "UnfilteredAI/NSFW-gen-v2",
-        size_gb: 5.3,
+        size_gb: 8.6,
         min_ram_gb: 16,
         steps: 30,
         guidance: 7.0,
@@ -463,9 +464,15 @@ pub const IMAGE_CATALOG: &[ImageCatalogEntry] = &[
         default_size: 1024,
         unfiltered: true,
         description: "Explicitly unfiltered SDXL by UnfilteredAI — no content restrictions, adult themes included.",
+        // This repo has fp16 weights for the unet and the VAE and none for
+        // either text encoder, so the fp16 patterns copied from the RealVisXL
+        // entry above matched no encoder file at all: GitHub 127. The install
+        // now resolves its file set from the hub listing and only falls back
+        // to these patterns when the listing cannot be read, but the patterns
+        // still have to name files this repository actually contains.
         allow: allow![
             "tokenizer/*", "tokenizer_2/*",
-            "text_encoder/*fp16*", "text_encoder_2/*fp16*",
+            "text_encoder/model.safetensors", "text_encoder_2/model.safetensors",
             "unet/*fp16*", "vae/*fp16*"
         ],
     },
@@ -528,60 +535,313 @@ fn image_model_cache_dir(repo: &str) -> PathBuf {
         .join(format!("models--{}", repo.replace('/', "--")))
 }
 
-fn image_model_is_installed(entry: &ImageCatalogEntry) -> bool {
-    let snaps = image_model_cache_dir(entry.repo).join("snapshots");
-    let Ok(read) = std::fs::read_dir(&snaps) else {
-        return false;
-    };
-    read.flatten().any(|e| snapshot_is_complete(&e.path()))
+/// The Xet chunk cache inside our HF_HOME (`cache/xet`).
+///
+/// huggingface_hub 1.x downloads over Xet by default, and Xet does not fill
+/// `<repo>/blobs/<sha>.incomplete` the way the plain HTTP path does: the bytes
+/// land here first, in a folder that sits NEXT TO the repo folder rather than
+/// inside it. The progress watcher therefore has to look at both, or it reads
+/// near zero for minutes while the line is busy (bauer-m, Mac, 11.09.2026, N1:
+/// "1.7 MB / 8.0 GB 0%" after four and a half minutes, with 2.1 MB sitting
+/// right here). Shared by every repo, so only its growth counts.
+///
+/// Pinned through `HF_XET_CACHE` on every command that downloads, so this path
+/// is what the library really uses and not what it happens to default to.
+fn hf_xet_cache_dir() -> PathBuf {
+    mlx_root().join("cache").join("xet")
 }
 
-/// A snapshot counts as installed only when the pipeline it manifests can
-/// actually load. `snapshot_download` writes the small JSONs first, so
-/// checking for `model_index.json` alone declared a download aborted after
-/// two seconds "Installed" (live find, 2026-07-31: configs plus the VAE on
-/// disk, unet and text_encoder missing, the row offered Remove and a render
-/// would have died on local_files_only). The manifest itself says which
-/// component directories exist; every model component among them must carry
-/// at least one non-empty weights file. Scheduler/tokenizer entries are
-/// config-only and skipped.
-fn snapshot_is_complete(snap: &std::path::Path) -> bool {
-    let index = snap.join("model_index.json");
-    let Ok(raw) = std::fs::read_to_string(&index) else {
+/// The snapshot directories of one repo, the revision `refs/main` points at
+/// first. A cache can hold more than one revision; the one the hub currently
+/// serves is the one an install has just written.
+fn snapshot_dirs(repo: &str) -> Vec<PathBuf> {
+    let root = image_model_cache_dir(repo);
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join("snapshots"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    if let Ok(rev) = std::fs::read_to_string(root.join("refs/main")) {
+        let head = root.join("snapshots").join(rev.trim());
+        if let Some(at) = dirs.iter().position(|d| *d == head) {
+            dirs.swap(0, at);
+        }
+    }
+    dirs
+}
+
+/// Does the load ask diffusers for `variant="fp16"`?
+///
+/// It has to be the same decision `plan_download` made, and that one is not
+/// all-or-nothing: `pick_weight_set` takes the fp16 family for every component
+/// that has one and the plain family for the rest, so a finished install of
+/// `UnfilteredAI/NSFW-gen-v2` holds fp16 weights in `unet/` and `vae/` and
+/// full-precision weights in both text encoders. diffusers resolves the
+/// variant per component, not per pipeline: `_identify_model_variants`
+/// (diffusers 0.38.0, `pipelines/pipeline_loading_utils.py`) collects only the
+/// subfolders that carry a matching file, and every other component is loaded
+/// with `variant=None`. Asking for fp16 on that mixed folder therefore works,
+/// while `variant=None` makes the loader look for the plain file in `unet/`
+/// and `vae/`, which is exactly the file the plan deliberately did not fetch,
+/// and `local_files_only` turns the miss into an abort instead of a download.
+/// The one snapshot that must not ask for fp16 is the one without a single
+/// fp16 file, because diffusers raises "no such modeling files are available"
+/// before it looks at any component.
+fn fp16_variant_usable(entry: &ImageCatalogEntry) -> bool {
+    if !entry.fp16_variant {
         return false;
+    }
+    match snapshot_dirs(entry.repo).into_iter().next() {
+        Some(snap) => fp16_present_in_any_component(&snap),
+        // Nothing on disk to judge by: the catalog flag stands.
+        None => true,
+    }
+}
+
+fn fp16_present_in_any_component(snap: &std::path::Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(snap.join("model_index.json")) else {
+        return true;
     };
-    let Ok(json) = serde_json::from_str::<Value>(&raw) else {
-        return false;
+    let Ok(manifest) = crate::commands::mlx_snapshot::parse_model_index(&raw) else {
+        return true;
     };
-    let Some(map) = json.as_object() else {
-        return false;
-    };
-    map.iter()
-        .filter(|(k, _)| !k.starts_with('_'))
-        // Only real component references count: a ["lib", "Class"] pair.
-        // Manifests also carry scalars (requires_safety_checker: true) and
-        // [null, null] stubs for absent components (feature_extractor,
-        // safety_checker); demanding weights for those declared every
-        // complete install missing.
-        .filter_map(|(k, v)| v.get(1).and_then(|c| c.as_str()).map(|class| (k, class)))
-        .filter(|(_, class)| {
-            !(class.contains("Scheduler")
-                || class.contains("Tokenizer")
-                || class.contains("Processor")
-                || class.contains("FeatureExtractor"))
-        })
-        .all(|(component, _)| {
-            let dir = snap.join(component);
-            let Ok(read) = std::fs::read_dir(&dir) else {
-                return false;
-            };
-            read.flatten().any(|f| {
-                let p = f.path();
-                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                (ext == "safetensors" || ext == "bin")
-                    && f.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    manifest.weights.iter().any(|component| {
+        std::fs::read_dir(snap.join(component))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|f| f.file_name().to_str().map(str::to_string))
+            .any(|name| {
+                // The same splitter the plan uses, so a sharded
+                // `model.fp16-00001-of-00002.safetensors` counts too.
+                crate::commands::mlx_snapshot::weights_family(&name)
+                    .is_some_and(|(_, variant)| variant.as_deref() == Some("fp16"))
             })
-        })
+    })
+}
+
+/// What the download plan asks the hub for.
+fn prefer_variant(entry: &ImageCatalogEntry) -> Option<&'static str> {
+    entry.fp16_variant.then_some("fp16")
+}
+
+/// What the load asks the sidecar for. The same answer as `prefer_variant`
+/// wherever the planned files actually landed.
+fn load_variant(entry: &ImageCatalogEntry) -> Option<&'static str> {
+    fp16_variant_usable(entry).then_some("fp16")
+}
+
+/// Audit every snapshot of the repo and keep the best answer. Offline on
+/// purpose: the Models page draws this row for each catalog entry and must not
+/// wait on the hub to do it.
+fn image_model_report(entry: &ImageCatalogEntry) -> crate::commands::mlx_snapshot::SnapshotReport {
+    let mut best: Option<crate::commands::mlx_snapshot::SnapshotReport> = None;
+    for snap in snapshot_dirs(entry.repo) {
+        let report = crate::commands::mlx_snapshot::audit_snapshot(&snap, None, prefer_variant(entry));
+        if report.is_complete() {
+            return report;
+        }
+        if best.as_ref().is_none_or(|b| report.defects.len() < b.defects.len()) {
+            best = Some(report);
+        }
+    }
+    best.unwrap_or(crate::commands::mlx_snapshot::SnapshotReport {
+        blocker: Some("no readable model snapshot was found".into()),
+        defects: Vec::new(),
+    })
+}
+
+fn image_model_is_installed(entry: &ImageCatalogEntry) -> bool {
+    image_model_report(entry).is_complete()
+}
+
+fn install_failed_message(report: &crate::commands::mlx_snapshot::SnapshotReport) -> String {
+    format!(
+        "Model installation did not finish: {}. Retry the download to repair the missing files.",
+        crate::commands::mlx_snapshot::describe(report)
+    )
+}
+
+/// The verdict on an install, as `Ok` for the completed slot and `Err` for the
+/// failed one. It is a function of its own because the two have to stay apart:
+/// a failure message handed to `complete()` paints the row green and offers
+/// Remove for a model that cannot load.
+fn install_outcome(
+    id: &str,
+    report: &crate::commands::mlx_snapshot::SnapshotReport,
+    fetched: &[String],
+) -> Result<String, String> {
+    if !report.is_complete() {
+        return Err(install_failed_message(report));
+    }
+    Ok(if fetched.is_empty() {
+        format!("{id} installed")
+    } else {
+        format!("{id} installed, re-fetched {}", fetched.join(", "))
+    })
+}
+
+/// A repo id is a catalog constant, never user input, but it is about to be
+/// pasted into a URL and a Python literal, so it is held to the shape the hub
+/// itself allows.
+fn is_repo_id(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    let (Some(org), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    [org, name].iter().all(|part| {
+        !part.is_empty()
+            && part.len() <= 96
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    })
+}
+
+/// One GET against the hub, with the Settings token when there is one.
+fn hub_get(url: &str) -> Result<String, String> {
+    crate::commands::proxy::validate_public_url(url)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut request = client.get(url);
+    if let Some(token) = hf_token() {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .map_err(|e| os_error::english_child_text(&e.to_string()).into_owned())?;
+    if !response.status().is_success() {
+        return Err(format!("the hub answered HTTP {}", response.status().as_u16()));
+    }
+    response.text().map_err(|e| e.to_string())
+}
+
+/// The commit the hub serves as `main` right now.
+///
+/// Everything an install does is pinned to it: the file listing, the download
+/// and the audit afterwards all have to be talking about the same revision, or
+/// a repo updated mid-install leaves a snapshot stitched from two versions.
+fn fetch_repo_revision(repo: &str) -> Result<String, String> {
+    if !is_repo_id(repo) {
+        return Err("not a repository id".into());
+    }
+    let raw = hub_get(&format!("https://huggingface.co/api/models/{repo}"))?;
+    let value: Value = serde_json::from_str(&raw).map_err(|_| "the hub returned an unreadable answer")?;
+    let sha = value
+        .get("sha")
+        .and_then(|s| s.as_str())
+        .ok_or("the hub named no commit for this repository")?;
+    if sha.len() < 7 || sha.len() > 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the hub named a commit we cannot use".into());
+    }
+    Ok(sha.to_string())
+}
+
+/// What the repo holds, straight from the hub: every file with its size and,
+/// for the LFS-backed weights, its sha256.
+fn fetch_repo_listing(
+    repo: &str,
+    revision: &str,
+) -> Result<Vec<crate::commands::mlx_snapshot::RepoFile>, String> {
+    if !is_repo_id(repo) {
+        return Err("not a repository id".into());
+    }
+    let raw = hub_get(&format!(
+        "https://huggingface.co/api/models/{repo}/tree/{revision}?recursive=true"
+    ))?;
+    crate::commands::mlx_snapshot::parse_repo_listing(&raw)
+}
+
+/// The pipeline manifest, read before the download so the file set can be
+/// derived from it rather than guessed.
+fn fetch_model_index(
+    repo: &str,
+    revision: &str,
+) -> Result<crate::commands::mlx_snapshot::Manifest, String> {
+    if !is_repo_id(repo) {
+        return Err("not a repository id".into());
+    }
+    let raw = hub_get(&format!(
+        "https://huggingface.co/{repo}/resolve/{revision}/model_index.json"
+    ))?;
+    crate::commands::mlx_snapshot::parse_model_index(&raw)
+}
+
+/// Fetch one file again and prove it is the file the hub lists.
+///
+/// The transfer goes through `huggingface_hub` like every other file of this
+/// lane, so the blob and its symlink land where the loader expects them. What
+/// is new is what happens afterwards: the size has to match and, when the hub
+/// states an LFS digest, the sha256 of the bytes on disk has to match it. A
+/// file that fails either is removed again instead of being left behind
+/// looking installed.
+fn refetch_file(
+    slot: &crate::install_state::InstallSlot,
+    python: &str,
+    repo: &str,
+    revision: &str,
+    snap: &Path,
+    repair: &crate::commands::mlx_snapshot::Repair,
+) -> Result<(), String> {
+    let cache = mlx_root().join("cache");
+    if repair.delete_first {
+        crate::commands::mlx_snapshot::drop_broken_file(snap, &cache, &repair.path)?;
+        slot.log(format!("discarded the broken copy of {}", repair.path));
+    }
+    if let Some(sha) = &repair.sha256 {
+        let dropped = crate::commands::mlx_snapshot::drop_orphaned_partials(snap, sha);
+        if dropped > 0 {
+            slot.log(format!(
+                "cleared {dropped} unfinished transfer(s) of {} that cannot be resumed",
+                repair.path
+            ));
+        }
+    }
+    slot.log(format!(
+        "re-fetching {} ({})",
+        repair.path,
+        crate::commands::mlx_snapshot::human_bytes(repair.expected_size)
+    ));
+    let script = format!(
+        "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id={r:?}, filename={f:?}, revision={v:?})",
+        r = repo,
+        f = repair.path,
+        v = revision,
+    );
+    let mut cmd = Command::new(python);
+    cmd.args(["-c", &script]).env("HF_HOME", &cache).env("HF_XET_CACHE", hf_xet_cache_dir());
+    apply_hf_token(&mut cmd);
+    crate::commands::video::run_streamed(slot, &mut cmd)
+        .map_err(|e| format!("re-fetching {}: {e}", repair.path))?;
+
+    let full = snap.join(&repair.path);
+    let size = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
+    if size != repair.expected_size {
+        return Err(format!(
+            "{} came back as {} instead of the {} the hub lists for it",
+            repair.path,
+            crate::commands::mlx_snapshot::human_bytes(size),
+            crate::commands::mlx_snapshot::human_bytes(repair.expected_size)
+        ));
+    }
+    if let Some(expected) = &repair.sha256 {
+        let actual = crate::commands::mlx_snapshot::sha256_of(&full)
+            .map_err(|e| format!("checksumming {}: {e}", repair.path))?;
+        if &actual != expected {
+            let _ = crate::commands::mlx_snapshot::drop_broken_file(snap, &cache, &repair.path);
+            return Err(format!(
+                "{} does not match the sha256 the hub lists for it and was discarded",
+                repair.path
+            ));
+        }
+        slot.log(format!("{} verified against sha256 {}", repair.path, expected));
+    }
+    Ok(())
 }
 
 pub fn mlx_image_models(_state: &AppState, _args: &Value) -> CmdResult {
@@ -642,12 +902,6 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
         return Ok(json!({ "ok": true, "status": "complete", "id": entry.id }));
     }
     slot.start();
-    slot.log(format!("pulling {} ({} GB)", entry.repo, entry.size_gb));
-    crate::install_state::watch_dir_size(
-        slot.clone(),
-        image_model_cache_dir(entry.repo),
-        (entry.size_gb as f64 * 1e9) as u64,
-    );
     let slot2 = slot.clone();
     let entry2 = entry.clone();
     std::thread::spawn(move || {
@@ -661,30 +915,132 @@ pub fn mlx_image_install_model(state: &AppState, args: &Value) -> CmdResult {
             slot2.fail(e);
             return;
         }
-        let patterns = entry2
-            .allow
-            .iter()
-            .map(|p| format!("{p:?}"))
-            .collect::<Vec<_>>()
-            .join(",");
+        // Ask the repo what it has before pulling anything. The hand-written
+        // allow patterns stay as the offline fallback and nothing more: a
+        // pattern that matches no file in this particular repo is how a
+        // download finishes at the promised size with a component left empty.
+        let revision = fetch_repo_revision(entry2.repo)
+            .map_err(|e| slot2.log(format!("could not read the current commit of {} ({e})", entry2.repo)))
+            .ok();
+        let listing = revision.as_deref().and_then(|rev| match fetch_repo_listing(entry2.repo, rev) {
+            Ok(files) => Some(files),
+            Err(e) => {
+                slot2.log(format!(
+                    "could not read the file list of {} ({e}) - falling back to the built-in download patterns",
+                    entry2.repo
+                ));
+                None
+            }
+        });
+        let prefer = prefer_variant(&entry2);
+        let plan = listing.as_ref().zip(revision.as_deref()).and_then(|(files, rev)| {
+            fetch_model_index(entry2.repo, rev)
+                .map_err(|e| slot2.log(format!("could not read model_index.json ({e})")))
+                .ok()
+                .map(|manifest| crate::commands::mlx_snapshot::plan_download(files, &manifest, prefer))
+        });
+        let patterns: Vec<String> = match &plan {
+            Some(plan) => {
+                for component in &plan.without_weights {
+                    slot2.log(format!("{} carries no weights file in this repository", component));
+                }
+                plan.files.iter().map(|f| f.path.clone()).collect()
+            }
+            None => entry2.allow.iter().map(|p| p.to_string()).collect(),
+        };
+        let total = plan
+            .as_ref()
+            .map(|p| p.bytes)
+            .unwrap_or((entry2.size_gb as f64 * 1e9) as u64);
+        slot2.log(format!(
+            "pulling {} ({})",
+            entry2.repo,
+            crate::commands::mlx_snapshot::human_bytes(total)
+        ));
+        crate::install_state::watch_dir_size(
+            slot2.clone(),
+            image_model_cache_dir(entry2.repo),
+            Some(hf_xet_cache_dir()),
+            total,
+        );
+
+        // A pinned revision also makes the snapshot directory predictable:
+        // it is `snapshots/<commit>`, not whatever `refs/main` happens to say
+        // afterwards.
+        let pin = match &revision {
+            Some(rev) => format!(", revision={rev:?}"),
+            None => String::new(),
+        };
         let script = format!(
-            "from huggingface_hub import snapshot_download; snapshot_download(repo_id={r:?}, allow_patterns=[{p}])",
+            "from huggingface_hub import snapshot_download; snapshot_download(repo_id={r:?}, allow_patterns=[{p}]{pin})",
             r = entry2.repo,
-            p = patterns,
+            p = patterns.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(","),
         );
         let mut cmd = Command::new(&python);
         cmd.args(["-c", &script])
-            .env("HF_HOME", mlx_root().join("cache"));
+            .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_XET_CACHE", hf_xet_cache_dir());
         apply_hf_token(&mut cmd);
         if let Err(e) = crate::commands::video::run_streamed(&slot2, &mut cmd) {
             slot2.fail(e);
-        } else if !image_model_is_installed(&entry2) {
-            slot2.fail("download finished but the model snapshot is incomplete");
-        } else {
-            slot2.complete(format!("{} installed", entry2.id));
+            return;
+        }
+        match finish_image_install(&slot2, &python, &entry2, revision.as_deref(), listing.as_deref()) {
+            Ok(done) => slot2.complete(done),
+            Err(why) => slot2.fail(why),
         }
     });
     Ok(json!({ "ok": true, "status": "installing", "id": entry.id }))
+}
+
+/// After the pull: check what landed, repair what did not, and say so.
+///
+/// A defect the hub can name is fetched again on the spot, one file at a time,
+/// and nothing that verifies is touched. Anything left after that is reported
+/// by name, because the sentence the reporter of GitHub 127 saw named nothing
+/// at all and left him with a 5 GB download and no way to tell what was wrong.
+fn finish_image_install(
+    slot: &crate::install_state::InstallSlot,
+    python: &str,
+    entry: &ImageCatalogEntry,
+    revision: Option<&str>,
+    listing: Option<&[crate::commands::mlx_snapshot::RepoFile]>,
+) -> Result<String, String> {
+    use crate::commands::mlx_snapshot as snapshot;
+    let prefer = prefer_variant(entry);
+    let pinned = revision
+        .map(|rev| image_model_cache_dir(entry.repo).join("snapshots").join(rev))
+        .filter(|dir| dir.is_dir());
+    let Some(snap) = pinned.or_else(|| snapshot_dirs(entry.repo).into_iter().next()) else {
+        return Err(install_failed_message(&snapshot::SnapshotReport {
+            blocker: Some("no readable model snapshot was found".into()),
+            defects: Vec::new(),
+        }));
+    };
+    let report = snapshot::audit_snapshot(&snap, listing, prefer);
+    if report.is_complete() {
+        return install_outcome(entry.id, &report, &[]);
+    }
+    let (repairs, stuck) = snapshot::repair_plan(&report.defects);
+    if repairs.is_empty() {
+        return install_outcome(entry.id, &report, &[]);
+    }
+    slot.log(format!(
+        "{} file(s) of the snapshot are missing or damaged, fetching them again",
+        repairs.len()
+    ));
+    let mut fetched: Vec<String> = Vec::new();
+    for repair in &repairs {
+        if let Err(e) = refetch_file(slot, python, entry.repo, revision.unwrap_or("main"), &snap, repair) {
+            slot.log(e);
+        } else {
+            fetched.push(repair.path.clone());
+        }
+    }
+    for defect in &stuck {
+        slot.log(format!("{} cannot be fetched again on its own", defect.path));
+    }
+    install_outcome(entry.id, &snapshot::audit_snapshot(&snap, listing, prefer), &fetched)
 }
 
 pub fn mlx_image_install_status(state: &AppState, _args: &Value) -> CmdResult {
@@ -757,7 +1113,7 @@ pub async fn mlx_generate(_state: &AppState, args: &Value) -> CmdResult {
         "height": req.height.unwrap_or(entry.default_size),
         "model_repo": entry.repo,
         "dtype": entry.dtype,
-        "variant": if entry.fp16_variant { Some("fp16") } else { None::<&str> },
+        "variant": load_variant(entry),
         "guidance": entry.guidance,
         "cfg_param": entry.cfg_param,
         "disable_safety_checker": entry.disable_safety_checker,
@@ -859,6 +1215,7 @@ pub fn mlx_start(_state: &AppState, _args: &Value) -> CmdResult {
         .arg(&server)
         .env("LU_MLX_PORT", MLX_PORT.to_string())
         .env("HF_HOME", mlx_root().join("cache"))
+        .env("HF_XET_CACHE", hf_xet_cache_dir())
         .stdout(stdout)
         .stderr(stderr);
     apply_hf_token(&mut server_cmd);
@@ -965,19 +1322,23 @@ mod tests {
     }
 
     /// The live find from 2026-07-31: a download killed two seconds in has
+    use crate::commands::mlx_snapshot::{audit_snapshot, describe, SnapshotReport};
+
     /// model_index.json and every config on disk, but no unet weights. That
     /// snapshot must NOT read as installed, or the row offers Remove and a
     /// local_files_only render dies. Weights present flips it to installed.
     #[test]
     fn aborted_snapshot_is_not_installed_until_weights_exist() {
-        let snap = std::env::temp_dir().join(format!("lu-snap-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&snap);
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
         for d in ["unet", "vae", "text_encoder", "scheduler", "tokenizer"] {
             std::fs::create_dir_all(snap.join(d)).unwrap();
         }
-        // The stubs real manifests carry (live dump 2026-07-31): [null, null]
-        // components, scalar flags, plain null. None of them may be demanded
-        // as directories, or every complete install reads as missing.
+        // The stubs real manifests carry: [null, null] components and scalar
+        // flags. Neither may be demanded as a directory, or every complete
+        // install reads as missing. All seven catalog repos read from the hub
+        // on 2026-09-11: four spell the empty image_encoder [null, null],
+        // three leave the key out, none of them writes a plain null.
         std::fs::write(
             snap.join("model_index.json"),
             r#"{
@@ -985,7 +1346,7 @@ mod tests {
               "feature_extractor": [null, null],
               "safety_checker": [null, null],
               "requires_safety_checker": true,
-              "image_encoder": null,
+              "image_encoder": [null, null],
               "scheduler": ["diffusers", "EulerDiscreteScheduler"],
               "text_encoder": ["transformers", "CLIPTextModel"],
               "tokenizer": ["transformers", "CLIPTokenizer"],
@@ -994,26 +1355,204 @@ mod tests {
             }"#,
         )
         .unwrap();
+        std::fs::write(snap.join("tokenizer/vocab.json"), "{}").unwrap();
         // Configs alone (the aborted-download shape): not installed.
         std::fs::write(snap.join("unet/config.json"), "{}").unwrap();
         std::fs::write(snap.join("vae/config.json"), "{}").unwrap();
-        assert!(!snapshot_is_complete(&snap), "configs without weights must not count");
+        assert!(!audit_snapshot(snap, None, None).is_complete(), "configs without weights must not count");
 
         // Weights for two of three model components: still not installed.
         std::fs::write(snap.join("vae/diffusion_pytorch_model.fp16.safetensors"), b"w").unwrap();
         std::fs::write(snap.join("text_encoder/model.fp16.safetensors"), b"w").unwrap();
-        assert!(!snapshot_is_complete(&snap), "a missing unet must not count");
+        assert!(!audit_snapshot(snap, None, None).is_complete(), "a missing unet must not count");
 
         // Zero-byte weights are a torn write, not an install.
         std::fs::write(snap.join("unet/diffusion_pytorch_model.fp16.safetensors"), b"").unwrap();
-        assert!(!snapshot_is_complete(&snap), "an empty weights file must not count");
+        assert!(!audit_snapshot(snap, None, None).is_complete(), "an empty weights file must not count");
 
         std::fs::write(snap.join("unet/diffusion_pytorch_model.fp16.safetensors"), b"w").unwrap();
-        assert!(snapshot_is_complete(&snap), "all model components carrying weights count");
+        assert!(audit_snapshot(snap, None, None).is_complete(), "all model components carrying weights count");
+        std::fs::write(snap.join("text_encoder/model.safetensors"), b"w").unwrap();
+        std::fs::remove_file(snap.join("text_encoder/model.fp16.safetensors")).unwrap();
+        assert!(audit_snapshot(snap, None, None).is_complete(), "plain weights are weights");
+    }
 
-        // Scheduler and tokenizer are config-only and must not be required
-        // to carry weights (they never do).
-        let _ = std::fs::remove_dir_all(&snap);
+    /// An SDXL snapshot with the components `UnfilteredAI/NSFW-gen-v2` has.
+    /// Only the names matter here, so every listed file gets one byte.
+    fn sdxl_snapshot(files: &[&str]) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
+        std::fs::write(
+            snap.join("model_index.json"),
+            r#"{
+              "_class_name": "StableDiffusionXLPipeline",
+              "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+              "text_encoder": ["transformers", "CLIPTextModel"],
+              "text_encoder_2": ["transformers", "CLIPTextModelWithProjection"],
+              "tokenizer": ["transformers", "CLIPTokenizer"],
+              "tokenizer_2": ["transformers", "CLIPTokenizer"],
+              "unet": ["diffusers", "UNet2DConditionModel"],
+              "vae": ["diffusers", "AutoencoderKL"]
+            }"#,
+        )
+        .unwrap();
+        for file in files {
+            let path = snap.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"w").unwrap();
+        }
+        temp
+    }
+
+    /// Bauer M, 2026-09-11, on a full install of `UnfilteredAI/NSFW-gen-v2`:
+    /// the plan fetches `unet/diffusion_pytorch_model.fp16.safetensors` and
+    /// leaves the text encoders at full precision, because that repo has no
+    /// fp16 encoder. The load then asked for `variant=null`, which sent
+    /// diffusers looking for the one file the plan had deliberately skipped.
+    /// Measured in the app's own venv (diffusers 0.38.0) on a rebuilt
+    /// miniature of that folder: `variant="fp16"` loads it, `variant=None`
+    /// dies with "Error no file named diffusion_pytorch_model.safetensors
+    /// found in directory .../vae".
+    #[test]
+    fn a_mixed_snapshot_loads_with_the_fp16_variant() {
+        let snap = sdxl_snapshot(&[
+            "unet/diffusion_pytorch_model.fp16.safetensors",
+            "vae/diffusion_pytorch_model.fp16.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+        ]);
+        assert!(
+            fp16_present_in_any_component(snap.path()),
+            "fp16 unet and vae beside full-precision text encoders is what the plan fetched"
+        );
+    }
+
+    /// The plan wanted fp16 for the unet and that file is not on disk. The vae
+    /// still carries one, and diffusers picks the variant per component, so
+    /// the load keeps asking for fp16 and the unet comes from its plain file.
+    #[test]
+    fn a_snapshot_that_lost_one_planned_fp16_file_still_uses_the_others() {
+        let snap = sdxl_snapshot(&[
+            "unet/diffusion_pytorch_model.safetensors",
+            "vae/diffusion_pytorch_model.fp16.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+        ]);
+        assert!(fp16_present_in_any_component(snap.path()), "one landed fp16 file is enough");
+    }
+
+    /// Not one fp16 file anywhere. Asking for the variant now raises "You are
+    /// trying to load the model files of the `variant=fp16`, but no such
+    /// modeling files are available." before any component is looked at, so
+    /// this is the one snapshot that has to load without a variant.
+    #[test]
+    fn a_snapshot_without_any_fp16_file_loads_without_the_variant() {
+        let snap = sdxl_snapshot(&[
+            "unet/diffusion_pytorch_model.safetensors",
+            "vae/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+        ]);
+        assert!(
+            !fp16_present_in_any_component(snap.path()),
+            "a snapshot without a single fp16 file has to load without the variant"
+        );
+    }
+
+    /// Sharded weights spell the variant with a dash after it, and Qwen-Image
+    /// sized repos are the reason that matters.
+    #[test]
+    fn a_sharded_fp16_family_counts_as_the_variant() {
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
+        std::fs::write(
+            snap.join("model_index.json"),
+            r#"{
+              "_class_name": "StableDiffusionPipeline",
+              "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+              "unet": ["diffusers", "UNet2DConditionModel"]
+            }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(snap.join("unet")).unwrap();
+        std::fs::write(snap.join("unet/diffusion_pytorch_model.fp16-00001-of-00002.safetensors"), b"w")
+            .unwrap();
+        assert!(fp16_present_in_any_component(snap), "a shard carries the variant too");
+    }
+
+    /// A repo the catalog never marked as fp16 is not asked about the disk.
+    #[test]
+    fn a_repo_without_the_catalog_flag_never_asks_for_a_variant() {
+        let plain = image_catalog_lookup("z-image-turbo").expect("catalog entry");
+        assert!(!plain.fp16_variant);
+        assert_eq!(load_variant(plain), None);
+        assert_eq!(prefer_variant(plain), None);
+    }
+
+    /// GitHub 127, suyashnatural, 2026-09-09: the sentence he was shown named
+    /// no file. The installer text now does, and still carries no private path.
+    #[test]
+    fn the_install_failure_names_the_file_and_no_private_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let snap = temp.path();
+        assert_eq!(
+            install_failed_message(&SnapshotReport {
+                blocker: Some("no readable model snapshot was found".into()),
+                defects: Vec::new(),
+            }),
+            "Model installation did not finish: no readable model snapshot was found. Retry the download to repair the missing files."
+        );
+        std::fs::write(
+            snap.join("model_index.json"),
+            r#"{"text_encoder": ["transformers", "CLIPTextModel"]}"#,
+        )
+        .unwrap();
+        let message = install_failed_message(&audit_snapshot(snap, None, None));
+        assert!(message.contains("text_encoder/ is missing"), "{message}");
+        assert!(!message.contains(snap.to_str().unwrap()), "no private paths in UI text");
+    }
+
+    #[test]
+    fn a_manifest_component_that_climbs_out_is_refused_without_being_echoed() {
+        let temp = tempfile::tempdir().unwrap();
+        for component in ["../outside", "..\\outside", "/outside", "a/b", "a\\b", "line\nbreak", "a:stream", ".. "] {
+            let manifest = json!({component: ["diffusers", "UNet2DConditionModel"]});
+            std::fs::write(temp.path().join("model_index.json"), manifest.to_string()).unwrap();
+            let report = audit_snapshot(temp.path(), None, None);
+            assert_eq!(report.blocker.as_deref(), Some("model_index.json contains an invalid component path"));
+            assert!(!report.is_complete());
+            assert!(!describe(&report).contains("outside"));
+        }
+    }
+
+    /// An install that did not finish must reach `fail`, not `complete` with a
+    /// failure sentence in it: the row would go green and offer Remove for a
+    /// model that cannot load.
+    #[test]
+    fn an_unfinished_install_is_an_error_and_a_repaired_one_says_what_it_fetched() {
+        let complete = SnapshotReport::default();
+        assert_eq!(install_outcome("nsfw-gen-v2", &complete, &[]).unwrap(), "nsfw-gen-v2 installed");
+        assert_eq!(
+            install_outcome("nsfw-gen-v2", &complete, &["text_encoder/model.safetensors".into()]).unwrap(),
+            "nsfw-gen-v2 installed, re-fetched text_encoder/model.safetensors"
+        );
+        let broken = SnapshotReport {
+            blocker: Some("model_index.json is missing or unreadable".into()),
+            defects: Vec::new(),
+        };
+        let failure = install_outcome("nsfw-gen-v2", &broken, &[]).unwrap_err();
+        assert!(failure.starts_with("Model installation did not finish:"), "{failure}");
+        assert!(!failure.contains("installed"), "{failure}");
+    }
+
+    #[test]
+    fn every_catalog_repo_is_a_repository_id() {
+        for entry in IMAGE_CATALOG {
+            assert!(is_repo_id(entry.repo), "{} has an unusable repo id", entry.id);
+        }
+        for bad in ["", "no-slash", "a/b/c", "../etc/passwd", "org/na me", "org/"] {
+            assert!(!is_repo_id(bad), "{bad} must not pass as a repo id");
+        }
     }
 
     #[test]

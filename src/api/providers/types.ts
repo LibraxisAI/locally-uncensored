@@ -8,6 +8,7 @@
 // ── Provider Identity ──────────────────────────────────────────
 
 import { LU_ENGINE_NAME } from '../../lib/engine-name'
+import type { ResolvedContextWindow } from '../../lib/context-source'
 
 export type ProviderId = 'ollama' | 'openai' | 'anthropic' | 'lu-cloud'
 
@@ -104,6 +105,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 // ── Model ──────────────────────────────────────────────────────
 
 export interface ProviderModel {
+  flash?: import('../../lib/flash-ui').FlashPolicy
+  /** Gemessenes Inhaltsverhalten aus dem Server-Katalog (LU Cloud /models
+   *  `unfiltered`), nie aus dem Modellnamen geraten. 'full' = das Modell
+   *  antwortet ohne Ablehnung. Fehlt das Feld, ist nichts gemessen und nichts
+   *  versprochen. */
+  unfiltered?: 'full' | 'partial'
+
   id: string            // Model ID as provider knows it (e.g. "gpt-4o", "claude-sonnet-4-20250514")
   name: string          // Display name
   provider: ProviderId
@@ -257,6 +265,15 @@ export interface ProviderClient {
 
   /** Get the context window size for a model. */
   getContextLength(model: string): Promise<number>
+
+  /** GH #129: dasselbe Fenster MIT der Auskunft, woher die Zahl stammt
+   *  (Server, Nutzer, geraten). Nur der OpenAI-kompatible Provider
+   *  beantwortet das; wo es fehlt, bleibt es bei der blossen Zahl. */
+  getContextWindow?(model: string, signal?: AbortSignal): Promise<ResolvedContextWindow>
+
+  /** GH #129: der Schluessel, unter dem die Fensterwahl des Nutzers fuer
+   *  dieses Modell an diesem Endpunkt liegt. */
+  contextWindowKey?(model: string): string
 
   /** G37b: the server's own live answer to "can this model take a native
    *  `tools` payload", asked at send time. Only the OpenAI-compat provider

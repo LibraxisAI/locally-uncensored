@@ -38,18 +38,14 @@ vi.mock('../backend', () => ({
   fetchExternal: vi.fn(),
 }))
 
-vi.mock('../comfyui', () => ({
-  getCheckpoints: () => getCheckpoints(),
-  getDiffusionModels: async () => [],
-  getVAEModels: async () => [],
-  getCLIPModels: async () => [],
-  getGgufUnetModels: () => getGgufUnetModels(),
-  // Sixth loader (2026-08-29): the AnimateDiff pack lists its motion modules
-  // itself. No motion module in these fixtures, so it answers empty.
-  getAnimateDiffModels: async () => [],
-  // Seventh loader (2026-08-29, abnahme counter-check): LoraLoader enumerates
-  // the loras folder, so a LoRA is judged like every other file now.
-  getLoraModels: async () => [],
+vi.mock('../comfyui', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../comfyui')>()),
+  // What the engine lists, per folder, through the one table every folder is
+  // read back with (COMFY_MODEL_FOLDERS).
+  readComfyFolderLists: async () => ({
+    checkpoints: await getCheckpoints(),
+    diffusion_models: await getGgufUnetModels(),
+  }),
   filterPartialFiles: async (names: string[]) => new Set(names),
   refreshComfyModels: (...a: unknown[]) => refreshComfyModels(...(a as [number])),
 }))
@@ -161,8 +157,10 @@ describe('a file complete on disk waits out the ComfyUI scan before it is called
     rec.stop()
 
     expect(rec.seen).toEqual([{ type: 'comfyui-download-exists', filename: VIDEO }])
-    // One lookup, no rescan round. This is the common case and it must stay free.
-    expect(getCheckpoints).toHaveBeenCalledTimes(1)
+    // No rescan round. This is the common case and it must stay free: the
+    // engine is asked which folders it enumerates and whether it lists this
+    // file, and that is the end of it.
+    expect(getCheckpoints.mock.calls.length).toBeLessThanOrEqual(2)
     expect(refreshComfyModels.mock.calls.filter((c) => c[0] === 1)).toHaveLength(0)
   })
 
@@ -302,18 +300,23 @@ describe('a file complete on disk waits out the ComfyUI scan before it is called
     expect(getCheckpoints).toHaveBeenCalledTimes(2)
   })
 
-  it('a subfolder ComfyUI never enumerates is not judged at all', async () => {
-    // Upscale models do not appear in these lists, so waiting on one would be
-    // certain failure on a click. (loras left this group on 2026-08-29: the
-    // LoRA folder IS enumerated, by LoraLoader, and the abnahme counter-check
-    // showed what not asking it costs.)
+  it('a folder THIS engine does not enumerate is not judged at all', async () => {
+    // The question moved with the table (COMFY_MODEL_FOLDERS): it is no longer
+    // "is this folder in a list of folders ComfyUI could enumerate" but "did
+    // the engine in front of us answer about it". The fixture's engine answers
+    // about checkpoints and diffusion_models and nothing else, so an upscale
+    // model gets no verdict here, and waiting on one would be certain failure
+    // on a click. (loras left this group on 2026-08-29: the LoRA folder IS
+    // enumerated, by LoraLoader, and the abnahme counter-check showed what not
+    // asking it costs.)
     const rec = recordVerdicts()
 
     await installBundleComplete(bundleOf([{ filename: '4x-UltraSharp.pth', subfolder: 'upscale_models' }]))
     rec.stop()
 
     expect(rec.seen).toEqual([{ type: 'comfyui-download-exists', filename: '4x-UltraSharp.pth' }])
-    expect(getCheckpoints).not.toHaveBeenCalled()
+    // No rescan round and no accusation: an unanswered folder is not a verdict.
+    expect(refreshComfyModels.mock.calls.filter((c) => c[0] === 1)).toHaveLength(0)
   })
 
   it('a LoRA IS judged now, so a finished LoRA download gets the same wait as any other file', async () => {

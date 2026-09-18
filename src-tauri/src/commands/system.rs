@@ -246,13 +246,23 @@ fn capture_screen_to(_tmp: &std::path::Path) -> Result<(), String> {
 /// `fs_read`. A renderer cannot open this dialog or click in it, so "folders a
 /// human chose here" is a set it cannot extend.
 ///
-/// Recording is best-effort on purpose: this dialog also picks folders that are
-/// not workspaces at all (the GGUF download path, for instance). A folder that
-/// may not be a jail root — `$HOME`, `/`, a credential directory — is simply
-/// not recorded, and the picker still returns it for those other uses; only
-/// `check_workspace_root` cares, and it refuses with the reason.
+/// Recording is best-effort for the callers that are not choosing a workspace:
+/// this dialog also picks the GGUF download folder, and that one may perfectly
+/// well live somewhere `check_workspace_root` would never accept as a jail root.
+/// Such a folder is simply not recorded and still comes back for its own use.
+///
+/// `as_workspace` is for the callers that ARE choosing a workspace, and it turns
+/// the refusal into this command's error instead of dropping it (bug D,
+/// aldrich_ironhart, Discord 2026-09-08). Without it the picker answered
+/// `Ok(Some(path))` for a folder it had just refused to record: the Code tab put
+/// that path in its header as the working directory, and every file op after it
+/// answered "pick it again to allow it", which the user had just done. The
+/// reason was produced, discarded here, and never reached anybody.
 #[tauri::command]
-pub async fn pick_folder(default_path: Option<String>) -> Result<Option<String>, String> {
+pub async fn pick_folder(
+    default_path: Option<String>,
+    as_workspace: Option<bool>,
+) -> Result<Option<String>, String> {
     let mut dialog = rfd::AsyncFileDialog::new();
     if let Some(ref p) = default_path {
         dialog = dialog.set_directory(p);
@@ -260,7 +270,10 @@ pub async fn pick_folder(default_path: Option<String>) -> Result<Option<String>,
     let result = dialog.pick_folder().await;
     let picked = result.map(|f| f.path().to_path_buf());
     if let Some(ref p) = picked {
-        let _ = crate::commands::filesystem::remember_picked_root(p);
+        let recorded = crate::commands::filesystem::remember_picked_root(p);
+        if as_workspace.unwrap_or(false) {
+            recorded?;
+        }
     }
     Ok(picked.map(|p| p.to_string_lossy().to_string()))
 }
@@ -295,12 +308,20 @@ pub fn exit_app(app: tauri::AppHandle) {
 /// Datei — `store_backup.json` — hat der Experiment-Build am 2026-08-31 im
 /// Verzeichnis der echten App überschrieben.
 pub(crate) fn persistent_dir() -> Result<std::path::PathBuf, String> {
-    #[cfg(target_os = "windows")]
+    #[cfg(test)]
+    {
+        if cfg!(windows) {
+            Ok(crate::os_paths::test_storage::display_data_dir())
+        } else {
+            Ok(crate::os_paths::data_dir().join("stores"))
+        }
+    }
+    #[cfg(all(not(test), target_os = "windows"))]
     {
         let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
         Ok(std::path::PathBuf::from(appdata).join(crate::app_identity::APP_DISPLAY_DIR))
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(test), not(target_os = "windows")))]
     {
         Ok(crate::os_paths::data_dir().join("stores"))
     }
@@ -603,7 +624,23 @@ pub(crate) fn write_onboarding_marker(done: bool) -> Result<(), String> {
 /// successful write — the marker is the one truth the windows are decided
 /// from, and moving them on a marker that is not there would leave the main
 /// window hidden behind a rule it can never satisfy.
-#[tauri::command]
+// ASYNC: this command BUILDS A WINDOW. `follow_marker(false)`, the
+// Settings "Re-run onboarding" path, goes through `onboarding_window::open`,
+// and that is the only WebviewWindowBuilder in the app. A synchronous Tauri
+// command runs in the CALLER's thread, and that is the main thread inside
+// WebView2's WebResourceRequested handler, with the deferral still open for
+// the very IPC request it is answering. Building a webview there pumps a
+// nested Windows message loop and waits on the same browser process that is
+// waiting for that answer: the command never returns, and with it the WHOLE
+// command layer stops answering anything (T11 point 2, 2026-09-11: four
+// empty chat replies, Models stuck on "Loading models", the window cross
+// dead, only taskkill /F /T helped). With `(async)` Tauri dispatches the body
+// off the main thread, so `Message::CreateWindow` is posted to the event loop
+// instead of being built in place. Same treatment `find_comfyui`
+// (commands/process.rs) and `fs_search` (commands/filesystem.rs) already got.
+// The window build arrived with be2e3849 (2026-09-01) and shipped in 2.6.8
+// and 2.6.9.
+#[tauri::command(async)]
 pub fn set_onboarding_done(app: tauri::AppHandle, done: Option<bool>) -> Result<(), String> {
     let done = done.unwrap_or(true);
     write_onboarding_marker(done)?;

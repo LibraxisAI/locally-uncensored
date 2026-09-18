@@ -177,15 +177,15 @@ export type AddonSource =
 /** Where a listed file actually sits, by the enum that listed it. The disk
  *  probe needs the folder, and the delete command resolves the same set.
  *
- *  The motion-module folder is spelled out rather than imported: discover.ts
- *  owns ANIMATEDIFF_SUBFOLDER and imports back into this module, so a static
- *  import here would be a cycle. A unit test pins the two spellings together
- *  so the duplicate cannot drift. */
+ *  The motion-module folder comes from ANIMATEDIFF_SUBFOLDER below rather than
+ *  being spelled out a second time: it used to live in discover.ts, which
+ *  imports back into this module, and the duplicate was held together by a unit
+ *  test instead of by there being only one of it. */
 export function subfolderForSource(source: ClassifiedModel['source']): string {
   switch (source) {
     case 'checkpoint': return 'checkpoints'
     case 'diffusion_model': return 'diffusion_models'
-    case 'motion_module': return 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
+    case 'motion_module': return ANIMATEDIFF_SUBFOLDER
     case 'lora': return 'loras'
     case 'vae': return 'vae'
     case 'text_encoder': return 'text_encoders'
@@ -707,37 +707,53 @@ export async function getDiffusionModels(): Promise<string[]> {
   return fetchNodeOptions('UNETLoader', 'unet_name', { strict: true })
 }
 
-export async function getVAEModels(): Promise<string[]> {
+/**
+ * One optional loader, with "the node is not registered here" told apart from
+ * "the node is registered and lists nothing".
+ *
+ * The difference decides whether a file may be called invisible. A loader that
+ * is simply absent (a ComfyUI older than the node, a distro that ships without
+ * it) has said nothing about the folder, and treating its silence as "ComfyUI
+ * cannot see your file" would send a perfectly installed bundle back to the
+ * download button. `null` is that silence; the folder is then left out of the
+ * lists below and nothing judges a file in it.
+ */
+async function nodeOptionsOrNull(node: string, field: string): Promise<string[] | null> {
   try {
-    return await fetchNodeOptions('VAELoader', 'vae_name')
+    const res = await localFetch(comfyuiUrl(`/object_info/${node}`), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
+    if (!res.ok) return null
+    const data = await res.json()
+    // ComfyUI answers 200 with `{}` for a class it does not know.
+    if (!data || typeof data !== 'object' || !(node in (data as Record<string, unknown>))) return null
+    return nodeComboOptions(data, node, field)
   } catch (err) {
-    log.warn('comfyui.fetch_vae_failed', { err })
-    return []
+    log.warn('comfyui.fetch_folder_failed', { node, err })
+    return null
   }
+}
+
+/** The loader for one folder of COMFY_MODEL_FOLDERS, by subfolder. The node and
+ *  field of a folder are spelled ONCE, in that table. */
+async function folderOptions(subfolder: string): Promise<string[] | null> {
+  const entry = COMFY_MODEL_FOLDERS.find((f) => f.subfolder === subfolder)
+  return entry ? entry.read() : null
+}
+
+export async function getVAEModels(): Promise<string[]> {
+  return (await folderOptions('vae')) ?? []
 }
 
 export async function getCLIPModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('CLIPLoader', 'clip_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_clip_failed', { err })
-    return []
-  }
+  return (await folderOptions('text_encoders')) ?? []
 }
 
 /**
- * F2 (cinemazverev GH#4): list LoRA files ComfyUI knows about. Pulls
- * the same enum LoraLoader's `lora_name` dropdown shows — anything the
- * user dropped into `<comfyui>/models/loras/`. Soft-fails to `[]` when
- * the LoraLoader node isn't registered (custom-node ComfyUI distros).
+ * F2 (cinemazverev GH#4): list LoRA files ComfyUI knows about. Pulls the same
+ * enum LoraLoader's `lora_name` dropdown shows, which is anything the user
+ * dropped into `<comfyui>/models/loras/`.
  */
 export async function getLoraModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('LoraLoader', 'lora_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_lora_failed', { err })
-    return []
-  }
+  return (await folderOptions('loras')) ?? []
 }
 
 /** The five folders the R5 re-measure (2026-08-30) found missing entirely.
@@ -746,43 +762,29 @@ export async function getLoraModels(): Promise<string[]> {
  *  listed all ten at once; the app showed five of them and never mentioned the
  *  other five. Two real files were invisible with them, an 817 MB CLIP-Vision
  *  encoder and, once the partial filter below was fixed, a 2.4 GB text
- *  encoder. Each of these is a stock ComfyUI loader over a stock folder, and
- *  each soft-fails to an empty list, so a distro that lacks one of the nodes
- *  costs that folder and nothing around it. */
+ *  encoder. */
 export async function getCLIPVisionModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('CLIPVisionLoader', 'clip_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_clip_vision_failed', { err })
-    return []
-  }
+  return (await folderOptions('clip_vision')) ?? []
+}
+
+/** The audio encoders the Talking Character lane needs (Wav2Vec2). Our catalog
+ *  has written into `models\audio_encoders` since the 2.5.8 lanes and nothing
+ *  read it back, so the file could be neither confirmed after its download nor
+ *  listed among the things taking up the disk. */
+export async function getAudioEncoderModels(): Promise<string[]> {
+  return (await folderOptions('audio_encoders')) ?? []
 }
 
 export async function getControlNetModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('ControlNetLoader', 'control_net_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_controlnet_failed', { err })
-    return []
-  }
+  return (await folderOptions('controlnet')) ?? []
 }
 
 export async function getUpscaleModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('UpscaleModelLoader', 'model_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_upscale_failed', { err })
-    return []
-  }
+  return (await folderOptions('upscale_models')) ?? []
 }
 
 export async function getStyleModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('StyleModelLoader', 'style_model_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_style_models_failed', { err })
-    return []
-  }
+  return (await folderOptions('style_models')) ?? []
 }
 
 /** Embeddings are the one folder no loader node enumerates: ComfyUI serves
@@ -832,12 +834,7 @@ export async function getSchedulers(): Promise<string[]> {
  *  This is also the node that answers in the newer COMBO schema on a real box,
  *  so it is the one that used to hand a bare "COMBO" string to callers. */
 export async function getAnimateDiffModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('ADE_LoadAnimateDiffModel', 'model_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_animatediff_failed', { err })
-    return []
-  }
+  return (await folderOptions('custom_nodes/ComfyUI-AnimateDiff-Evolved/models')) ?? []
 }
 
 // ─── Partial Download Filter ───
@@ -1193,6 +1190,89 @@ const INSTALLED_ADDON_LANES: Array<{ source: AddonSource; read: () => Promise<Cl
  *  of against the list that happens to be here. */
 export const INSTALLED_ADDON_SUBFOLDERS: string[] =
   INSTALLED_ADDON_LANES.map((lane) => subfolderForSource(lane.source))
+
+/** Where the AnimateDiff-Evolved pack keeps its motion modules. Not under
+ *  ComfyUI\models at all, which is exactly why the counter and the Installed
+ *  list used to miss a fully installed AnimateDiff bundle while its card said
+ *  Installed (counter-check on the Windows box, 2026-08-29). */
+export const ANIMATEDIFF_SUBFOLDER = 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
+
+/**
+ * THE table: every folder the Get button writes into, and the loader that
+ * lists it back.
+ *
+ * .__nothing_ (Discord help-chat, 2026-09-02): FramePack F1 and Wan 2.1
+ * installed through the Get button and appeared in no picker. The folder half
+ * of that is fixed where a file is written (src-tauri/.../comfy_folders.rs,
+ * which asks the running ComfyUI instead of guessing). This is the other half:
+ * until now the folders the catalog WRITES to and the folders the app READS
+ * back were two hand-written lists in two files, and they had already drifted.
+ *
+ * Two Get targets were in no reader at all:
+ *   * `clip_vision`, FramePack F1's 900 MB SigCLIP encoder.
+ *   * `audio_encoders`, the Wav2Vec2 encoder both Talking Character bundles
+ *     need, added with the 2.5.8 lanes and never read back anywhere.
+ * A file in either could not be confirmed after its download, and the bundle
+ * card's fallback could never call those bundles installed, because it looked
+ * up a folder nothing had filled.
+ *
+ * The guard against the next drift is a test, not a promise:
+ * `src/api/__tests__/get-target-is-a-folder-we-read.test.ts` walks every file
+ * of every bundle in the catalog and fails on a subfolder that is not in here.
+ */
+export const COMFY_MODEL_FOLDERS: Array<{
+  subfolder: string
+  /** The files ComfyUI lists in that folder, or `null` when the loader that
+   *  lists it is not registered in this ComfyUI at all. See
+   *  `nodeOptionsOrNull` for why the two are not the same answer. */
+  read: () => Promise<string[] | null>
+}> = [
+  // The two main-model loaders are the strict ones: their absence does not mean
+  // an empty folder, it means ComfyUI is not answering, and every caller here
+  // already treats that as "no verdict about anything".
+  { subfolder: 'checkpoints', read: getCheckpoints },
+  // Two loaders, one folder: UNETLoader enumerates .safetensors and .sft,
+  // ComfyUI-GGUF's own loader the .gguf quants beside them. Our own catalog
+  // ships video models both ways, and the pack being absent is normal.
+  {
+    subfolder: 'diffusion_models',
+    read: async () => {
+      const [unets, ggufs] = await Promise.all([
+        getDiffusionModels(),
+        nodeOptionsOrNull('UnetLoaderGGUF', 'unet_name'),
+      ])
+      return [...unets, ...(ggufs ?? [])]
+    },
+  },
+  { subfolder: 'vae', read: () => nodeOptionsOrNull('VAELoader', 'vae_name') },
+  { subfolder: 'text_encoders', read: () => nodeOptionsOrNull('CLIPLoader', 'clip_name') },
+  { subfolder: 'clip_vision', read: () => nodeOptionsOrNull('CLIPVisionLoader', 'clip_name') },
+  { subfolder: 'audio_encoders', read: () => nodeOptionsOrNull('AudioEncoderLoader', 'audio_encoder_name') },
+  { subfolder: 'loras', read: () => nodeOptionsOrNull('LoraLoader', 'lora_name') },
+  { subfolder: 'controlnet', read: () => nodeOptionsOrNull('ControlNetLoader', 'control_net_name') },
+  { subfolder: 'upscale_models', read: () => nodeOptionsOrNull('UpscaleModelLoader', 'model_name') },
+  { subfolder: 'style_models', read: () => nodeOptionsOrNull('StyleModelLoader', 'style_model_name') },
+  { subfolder: ANIMATEDIFF_SUBFOLDER, read: () => nodeOptionsOrNull('ADE_LoadAnimateDiffModel', 'model_name') },
+]
+
+/** Subfolders whose contents ComfyUI enumerates, which is the same thing as
+ *  "folders the visibility check can reason about". The table, as a set. */
+export const ENUM_SUBFOLDERS = new Set(COMFY_MODEL_FOLDERS.map((f) => f.subfolder))
+
+/** What each folder of the table holds right now, by subfolder. One round trip
+ *  per folder, asked once and used by every caller that needs more than one.
+ *
+ *  A folder whose loader is not registered here is LEFT OUT rather than
+ *  reported empty. The keys are therefore also the answer to "which folders can
+ *  be judged at all", which is what `judgeableFolders` hands to the callers
+ *  that decide whether a file may be called invisible. */
+export async function readComfyFolderLists(): Promise<Record<string, string[]>> {
+  const entries = await Promise.all(
+    COMFY_MODEL_FOLDERS.map(async (f) => [f.subfolder, await f.read()] as const),
+  )
+  return Object.fromEntries(entries.filter((e): e is readonly [string, string[]] => e[1] !== null))
+}
+
 
 /** Everything installed in the image lane, for the INVENTORY surfaces: the
  *  Models rail counter and the Installed tab. The image twin of

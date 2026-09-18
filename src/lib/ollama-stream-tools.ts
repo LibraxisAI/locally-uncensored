@@ -58,7 +58,7 @@ export async function streamOllamaChatWithTools(
   options: { temperature?: number; thinking?: boolean; maxTokens?: number; contextWindow?: number; signal?: AbortSignal },
   onContent: (content: string) => void,
   onThinking: (thinking: string) => void,
-): Promise<{ content: string; toolCalls: ToolCall[]; thinking: string; promptEvalCount: number; evalCount: number }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; thinking: string; promptEvalCount: number; evalCount: number; doneReason?: string }> {
   // Bug B3: this path talks to /api/chat behind the provider's back, so it
   // needs the same contract. It always sends a native `tools` payload (the
   // strategy resolution only routes here after Ollama reported the model's
@@ -170,6 +170,14 @@ export async function streamOllamaChatWithTools(
   // TokenCounter shows 100% real usage instead of a char/4 estimate.
   let promptEvalCount = 0
   let evalCount = 0
+  // Why the turn ENDED, straight from Ollama's final chunk. `wire.ts` has
+  // always parsed it and `ollama-provider.ts` has always handed it on as
+  // `finishReason`; this transport dropped it, and the coding loop therefore
+  // could not tell a turn the model never finished from a model that was done
+  // (bug D symptom 2, aldrich_ironhart, Discord 2026-09-08). A `length` cut
+  // arrives with no tool call, so the loop falls through `break-no-toolcalls`
+  // and the run ends without a word while the plan stands on its open step.
+  let doneReason: string | undefined
 
   // No-bytes watchdog (audit A7): a wedged runner behind a live connection
   // ends neither with data nor an error, and read() sat forever. Five silent
@@ -240,6 +248,7 @@ export async function streamOllamaChatWithTools(
       }
       if (j.prompt_eval_count !== undefined) promptEvalCount = j.prompt_eval_count
       if (j.eval_count !== undefined) evalCount = j.eval_count
+      if (j.done_reason) doneReason = j.done_reason
     }
   }
 
@@ -269,8 +278,9 @@ export async function streamOllamaChatWithTools(
       }
       if (j.prompt_eval_count !== undefined) promptEvalCount = j.prompt_eval_count
       if (j.eval_count !== undefined) evalCount = j.eval_count
+      if (j.done_reason) doneReason = j.done_reason
     }
   }
 
-  return { content, toolCalls, thinking, promptEvalCount, evalCount }
+  return { content, toolCalls, thinking, promptEvalCount, evalCount, doneReason }
 }

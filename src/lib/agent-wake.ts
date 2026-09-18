@@ -75,15 +75,31 @@ export function isUnreportedTerminal(t: AgentTask): boolean {
 export interface WakeDecision {
   wake: boolean
   /** Warum nicht — fuer Tests und Fehlersuche, nicht fuer die Oberflaeche. */
-  reason: 'has-results' | 'nothing-new' | 'run-active' | 'no-model' | 'no-conversation'
+  reason: 'has-results' | 'nothing-new' | 'run-active' | 'user-stopped' | 'no-model' | 'no-conversation'
 }
 
 /**
  * Darf jetzt geweckt werden?
  *
  * Die Reihenfolge der Ausgaenge ist Absicht: von billig nach teuer, und die
- * beiden Zustaende, in denen Wecken WEHTUT, stehen vorn.
+ * drei Zustaende, in denen Wecken WEHTUT, stehen vorn.
  *
+ *  - `user-stopped`: der Mensch hat Stop gedrueckt. Das ist der teuerste
+ *    Fehler von allen, und er stand hier bis zum 11.09.2026 nicht.
+ *
+ *    Ein Hintergrundagent laeuft nach Stop absichtlich weiter — sub-agent.ts
+ *    schreibt aus, warum: der Mensch wollte den Satz beenden, nicht die
+ *    bestellte Recherche. Sein ERGEBNIS holte danach aber den Hauptagenten
+ *    zurueck, und das ist ein voller Agentenzug in die Wolke, eine Sekunde
+ *    nach Stop, ohne dass jemand etwas geschrieben haette. Gemessen in der
+ *    Gegenprobe: ein Modellaufruf bis zum Stop, zweihundert danach. Genau der
+ *    Fehler, den helpslowlydying am 03.09.2026 gemeldet hat.
+ *
+ *    Der Merker in `lib/run-stop.ts` ist absichtlich klebrig bis zur naechsten
+ *    echten Anweisung. Genau das wird hier gebraucht: nach Stop schweigt das
+ *    Wecken, und die erste selbst getippte Nachricht macht es wieder scharf,
+ *    weil `beginRun` den Merker loescht. Die Ergebnisse gehen dabei nicht
+ *    verloren — `takeUnreported` laeuft im naechsten Zug und holt sie nach.
  *  - `run-active`: laeuft schon ein Zug, holt dessen eigene Schleife die
  *    Ergebnisse beim naechsten Durchgang von selbst ab. Hier zusaetzlich zu
  *    wecken hiesse, zwei Zuege in dasselbe Gespraech zu schicken — beide
@@ -96,9 +112,12 @@ export function shouldWakeParent(input: {
   conversationId: string | null | undefined
   tasks: readonly AgentTask[]
   isRunning: boolean
+  /** Hat der Mensch fuer dieses Gespraech Stop gedrueckt? (lib/run-stop.ts) */
+  isStopped: boolean
   activeModel: string | null | undefined
 }): WakeDecision {
   if (!input.conversationId) return { wake: false, reason: 'no-conversation' }
+  if (input.isStopped) return { wake: false, reason: 'user-stopped' }
   if (input.isRunning) return { wake: false, reason: 'run-active' }
   if (!input.activeModel) return { wake: false, reason: 'no-model' }
   const offen = input.tasks.some(isUnreportedTerminal)
@@ -115,6 +134,8 @@ export interface WakeWatcherPorts {
   conversationId: () => string | null | undefined
   tasks: (convId: string) => readonly AgentTask[]
   isRunning: (convId: string) => boolean
+  /** Hat der Mensch fuer dieses Gespraech Stop gedrueckt? (lib/run-stop.ts) */
+  isStopped: (convId: string) => boolean
   activeModel: () => string | null | undefined
   /** Der Weckzug. Fehler daraus dürfen den Wächter nicht umbringen. */
   send: (text: string) => Promise<unknown>
@@ -159,6 +180,7 @@ export function createWakeWatcher(ports: WakeWatcherPorts): WakeWatcher {
     conversationId: convId,
     tasks: ports.tasks(convId),
     isRunning: ports.isRunning(convId),
+    isStopped: ports.isStopped(convId),
     activeModel: ports.activeModel(),
   })
 
@@ -176,7 +198,10 @@ export function createWakeWatcher(ports: WakeWatcherPorts): WakeWatcher {
       if (!jetzt || busy) return
       // ZWEITE Pruefung nach der Frist. In dieser Sekunde kann der Mensch
       // selbst etwas geschickt haben — dann laeuft ein Zug, und dessen eigene
-      // Schleife nimmt die Ergebnisse ohnehin mit.
+      // Schleife nimmt die Ergebnisse ohnehin mit. Oder er hat Stop gedrueckt:
+      // die Sammelfrist ist eine volle Sekunde, in der der Weckzug schon
+      // beschlossen, aber noch nicht abgeschickt ist, und ein Zug, der eine
+      // Sekunde NACH Stop losgeht, ist genau der, den niemand bestellt hat.
       if (!urteilen(jetzt).wake) return
 
       // `busy` deckt die Luecke zwischen "wir schicken los" und "der

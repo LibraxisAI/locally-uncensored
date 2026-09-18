@@ -23,19 +23,14 @@ vi.mock('../backend', () => ({
   fetchExternal: vi.fn(),
 }))
 
-vi.mock('../comfyui', () => ({
-  // The engine lists nothing through the four loaders this check used to ask.
-  getCheckpoints: async () => [],
-  getDiffusionModels: async () => [],
-  getVAEModels: async () => [],
-  getCLIPModels: async () => [],
-  getGgufUnetModels: () => ggufUnets(),
-  // Sixth loader (2026-08-29): the AnimateDiff pack lists its motion modules
-  // itself. No motion module in these fixtures, so it answers empty.
-  getAnimateDiffModels: async () => [],
-  // Seventh loader (2026-08-29, abnahme counter-check): LoraLoader enumerates
-  // the loras folder. Nothing in these fixtures is a LoRA, so it answers empty.
-  getLoraModels: async () => [],
+vi.mock('../comfyui', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../comfyui')>()),
+  // Every folder the catalog writes into is read back through ONE table now
+  // (COMFY_MODEL_FOLDERS), so a fixture says what the engine lists per folder
+  // rather than faking a loader at a time. Here the engine has nothing but the
+  // quant ComfyUI-GGUF lists: UNETLoader cannot see a .gguf at all, which is
+  // the whole of GH #113's second half.
+  readComfyFolderLists: async () => ({ diffusion_models: await ggufUnets() }),
   filterPartialFiles: async (names: string[]) => new Set(names),
 }))
 

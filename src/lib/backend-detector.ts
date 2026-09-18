@@ -102,14 +102,26 @@ function extractPort(url: string): number {
 }
 
 /**
+ * Die Eintraege, die ein Scan wirklich abklopft.
+ *
+ * Warum das exportiert ist: der Assistent schrieb waehrend des Scans
+ * "Checking 12 backends on their default ports" und zaehlte dafuer seine
+ * EIGENE Liste (`BackendsStep.tsx`, `LOCAL_BACKENDS`), die Hilfeliste mit den
+ * Downloadlinks fuer den Fall, dass nichts gefunden wurde. Geklopft wird aber
+ * an dieser Liste hier, und in ihr steht unter anderem die eingebaute Maschine
+ * auf 8127, die in jener gar nicht vorkommt. Die Zahl auf dem Bildschirm war
+ * damit schlicht eine andere als die Zahl der Sonden. Jetzt zaehlt der Satz
+ * das, was er behauptet.
+ */
+export const PROBE_TARGETS = PROVIDER_PRESETS.filter(p => p.isLocal && p.baseUrl)
+
+/**
  * Detect all running local LLM backends by probing their default ports.
  * All probes run in parallel for speed.
  */
 export async function detectLocalBackends(): Promise<DetectedBackend[]> {
-  const localPresets = PROVIDER_PRESETS.filter(p => p.isLocal && p.baseUrl)
-
   const results = await Promise.allSettled(
-    localPresets.map(async (preset) => {
+    PROBE_TARGETS.map(async (preset) => {
       const isOllama = preset.providerId === 'ollama'
       const reachable = await probeBackend(preset.baseUrl, isOllama)
 

@@ -12,6 +12,7 @@
  */
 import { backendCall } from './backend'
 import type { ClassifiedModel, ModelType } from './comfyui'
+import { siGbToBytes } from '../lib/formatters'
 
 /** See the `invokeMedia` doc comment in `mlx-image.ts` — the Rust wrappers
  *  take a single `args: serde_json::Value` param, so the payload must be
@@ -40,7 +41,10 @@ export interface VideoModel {
   name: string
   family: 'wan_2' | 'ltx_2' | string
   repo: string
+  /** Wie der Katalog sie fuehrt: in Dezimal-GB. Fuer Text nie direkt nehmen. */
   sizeGB: number
+  /** Dieselbe Groesse in Bytes, am Rand gerechnet. Siehe `MlxImageModel`. */
+  sizeBytes: number
   minRamGB: number
   defaultFrames: number
   needsConvert: boolean
@@ -86,7 +90,11 @@ export async function getVideoStatus(): Promise<VideoStatus> {
 }
 
 export async function listVideoModels(): Promise<VideoModel[]> {
-  return invokeMedia<VideoModel[]>('video_list_models')
+  const catalog = await invokeMedia<VideoModel[]>('video_list_models')
+  // Dieselbe Grenze wie beim Bildkatalog: `src-tauri/src/commands/video.rs`
+  // rechnet seine Groessen mit `size_gb as f64 * 1e9` in Bytes um, zaehlt also
+  // in Dezimal-GB.
+  return catalog.map((m) => ({ ...m, sizeBytes: siGbToBytes(m.sizeGB) }))
 }
 
 export async function installMlxVideo(): Promise<{ ok: boolean; status: string }> {

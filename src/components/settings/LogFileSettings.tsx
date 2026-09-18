@@ -14,18 +14,13 @@
 import { useEffect, useState } from 'react'
 import { FileText, FolderOpen, Check, Copy } from 'lucide-react'
 import { backendCall, isTauri } from '../../api/backend'
+import { formatBytes } from '../../lib/formatters'
 
 interface LogLocation {
   dir: string
   file: string
   exists: boolean
   size_bytes: number
-}
-
-function prettySize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 export function LogFileSettings() {
@@ -92,7 +87,7 @@ export function LogFileSettings() {
 
       <p className="text-[0.6rem] text-gray-500 leading-relaxed">
         LU writes a log every day and keeps the last seven. Attach today's file
-        to a bug report — it holds what the app was doing right before the
+        to a bug report. It holds what the app was doing right before the
         problem, which a screenshot cannot show.
       </p>
 
@@ -105,7 +100,7 @@ export function LogFileSettings() {
           </div>
           <div className="text-[0.55rem] text-gray-500">
             {loc.exists
-              ? `today's file: ${prettySize(loc.size_bytes)}`
+              ? `today's file: ${formatBytes(loc.size_bytes)}`
               : 'nothing logged yet today'}
           </div>
         </>

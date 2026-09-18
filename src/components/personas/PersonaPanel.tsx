@@ -18,7 +18,12 @@ export function PersonaPanel() {
       {/* Master switch — controls whether any persona system prompt is
           applied at all. When off, every new chat runs the raw model. The
           picker below stays interactive so the user can pre-select a persona
-          for the moment they flip the switch on. (Ported from uselu web.) */}
+          for the moment they flip the switch on. (Ported from uselu web.)
+          The line under the switch names the per-chat toggle on purpose:
+          chatStore creates every new conversation with `personaEnabled:
+          false`, so a globally chosen persona is prepared, never applied
+          on its own. Two testers in a row read the old wording as a
+          promise and filed the missing persona as a bug (T13d). */}
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100 dark:border-white/[0.04]">
         <div className="flex flex-col">
           <span className="text-[0.7rem] font-medium text-gray-800 dark:text-gray-200">
@@ -26,7 +31,7 @@ export function PersonaPanel() {
           </span>
           <span className="text-[0.55rem] text-gray-500 dark:text-gray-500">
             {personasEnabled
-              ? 'Active persona is applied to new chats.'
+              ? 'Active persona is available in every chat. Switch it on per chat in the Plugins menu.'
               : 'Off: raw model, no persona prompt.'}
           </span>
         </div>

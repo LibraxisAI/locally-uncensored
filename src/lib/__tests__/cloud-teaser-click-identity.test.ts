@@ -108,10 +108,10 @@ describe('THE FIX: the clicked LU Cloud row is the model that comes out', () => 
   })
 })
 
-describe('NEGATIVE CONTROL: the rule without a request is untouched', () => {
-  it('no request, an out-of-mode pick: the old fallback, unchanged', () => {
+describe('automatic choice requires verified size, named requests retain identity', () => {
+  it('clears an out-of-mode pick when hosted sizes are unknown', () => {
     const pick = pickForMode(LOCAL.name, [LOCAL, ...HOSTED], 'cloud')
-    expect(pick.next).toBe('kimi-k3')
+    expect(pick.next).toBeNull()
     expect(pick.change).toBe(true)
     expect(pick.usedRequest).toBe(false)
   })
@@ -125,9 +125,9 @@ describe('NEGATIVE CONTROL: the rule without a request is untouched', () => {
     expect(pick.usedRequest).toBe(false)
   })
 
-  it('a request for a model that is not in the list falls back as before', () => {
+  it('does not substitute an unknown-size model for a missing request', () => {
     const pick = pickForMode(LOCAL.name, [LOCAL, ...HOSTED], 'cloud', 'a-model-that-left')
-    expect(pick.next).toBe('kimi-k3')
+    expect(pick.next).toBeNull()
     expect(pick.usedRequest).toBe(false)
   })
 
@@ -176,7 +176,11 @@ describe('the wiring, so the rule reaches the screen', () => {
   })
 
   it('the mode rule is asked with the request, and drops it once answered', () => {
-    expect(shell).toMatch(/pickForMode\(activeModel, allModels, appMode, pendingCloudModel\)/)
+    // Das fuenfte Argument ist die Wahl, die jeder der beiden Modi zuletzt
+    // hatte (Fund 1, T3 und T1 auf der Box). Der Auftrag hier bleibt das
+    // vierte und schlaegt die Erinnerung.
+    expect(shell).toMatch(/pickForMode\(activeModel, allModels, appMode, pendingCloudModel, \{/)
+    expect(shell).toMatch(/local: lastLocalModel,\s*\n\s*cloud: lastCloudModel,/)
     expect(shell).toMatch(/if \(pick\.usedRequest\) setPendingCloudModel\(null\)/)
   })
 

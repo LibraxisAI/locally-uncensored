@@ -24,6 +24,13 @@ export interface OllamaModel {
 
 // Cloud text model (OpenAI-compat or Anthropic) — lighter than OllamaModel
 export interface CloudModel {
+  flash?: import('../lib/flash-ui').FlashPolicy
+  /** Gemessenes Inhaltsverhalten aus dem Server-Katalog (LU Cloud /models
+   *  `unfiltered`), nie aus dem Modellnamen geraten. 'full' = das Modell
+   *  antwortet ohne Ablehnung. Fehlt das Feld, ist nichts gemessen und nichts
+   *  versprochen. */
+  unfiltered?: 'full' | 'partial'
+
   name: string
   model: string
   size: number

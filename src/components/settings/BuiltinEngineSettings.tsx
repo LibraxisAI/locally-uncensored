@@ -12,6 +12,7 @@ import { Hinweis } from '../ui/Hinweis'
 import { bundledEngineStatus, swapBundledModel, ENGINE_PORT } from '../../api/engine'
 import { useBuiltinEngineStatus } from '../../hooks/useBuiltinEngineStatus'
 import { enginePortLine } from '../../lib/engine-port'
+import { engineOffloadLine } from '../../lib/engine-offload'
 import type { BuiltinEngineTuning } from '../../types/settings'
 
 type KvType = BuiltinEngineTuning['cacheTypeK']
@@ -126,6 +127,16 @@ export function BuiltinEngineSettings() {
       <div className="t-micro text-gray-500" data-testid="builtin-engine-port">
         {enginePortLine(status, ENGINE_PORT)}
       </div>
+      {/* 3.0.0: how much of the model the card really took. Empty on the
+          ordinary machine, where every layer was asked for and got. A start
+          that ended on the processor by itself says so HERE as well as in the
+          standing line above the composer, because that line is an event and
+          walks away, while this stays true for as long as the process runs. */}
+      {engineOffloadLine(status) ? (
+        <div className="t-micro text-gray-500" data-testid="builtin-engine-offload">
+          {engineOffloadLine(status)}
+        </div>
+      ) : null}
 
       {/* Context length */}
       <div className="flex items-center justify-between">

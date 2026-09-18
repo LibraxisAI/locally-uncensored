@@ -40,7 +40,7 @@ function rundlauf(eintraege: MemoryFile[]): MemoryFile[] {
   leerenUndSetzen(eintraege)
   const md = useMemoryStore.getState().exportAsMarkdown()
   leerenUndSetzen([])
-  const zahl = useMemoryStore.getState().importFromMarkdown(md)
+  const zahl = useMemoryStore.getState().importFromMarkdown(md).added
   expect(zahl).toBe(eintraege.length)
   return useMemoryStore.getState().entries
 }
@@ -110,7 +110,7 @@ describe('der eigene Markdown-Export laesst sich wieder einlesen', () => {
     ].join('\n')
 
     leerenUndSetzen([])
-    expect(useMemoryStore.getState().importFromMarkdown(alt)).toBe(1)
+    expect(useMemoryStore.getState().importFromMarkdown(alt).added).toBe(1)
     const [zurueck] = useMemoryStore.getState().entries
     expect(zurueck.title).toBe('Arbeitet auf Deutsch')
     expect(zurueck.content).toBe(EINTRAG.content)
@@ -118,9 +118,48 @@ describe('der eigene Markdown-Export laesst sich wieder einlesen', () => {
     expect(zurueck.source).toBe('david')
   })
 
+  // R2-35: der Importausdruck las die Klammergruppe direkt hinter dem Inhalt,
+  // also verlor jeder Inhalt, der auf eine Klammergruppe endet, sie an die
+  // Marken. Der Weg dorthin war der eigene Export, deshalb steht der Fall hier
+  // beim Rundlauf und nicht bei den Bestandteilen.
+  it('HAUPTFALL R2-35: ein Inhalt, der auf eckige Klammern endet, ueberlebt den Rundlauf', () => {
+    const mitKlammer: MemoryFile = { ...EINTRAG, tags: [], title: 'Startbefehl', content: 'Start the app with [debug]' }
+    const [zurueck] = rundlauf([mitKlammer])
+
+    expect(zurueck.content).toBe('Start the app with [debug]')
+    expect(zurueck.tags).toEqual([])
+  })
+
+  it('R2-35: eine von Hand geschriebene Zeile, die auf Klammern endet, behaelt sie', () => {
+    leerenUndSetzen([])
+    expect(useMemoryStore.getState().importFromMarkdown('## User\n\n- Start the app with [debug]\n').added).toBe(1)
+    const [zurueck] = useMemoryStore.getState().entries
+    expect(zurueck.content).toBe('Start the app with [debug]')
+    expect(zurueck.tags).toEqual([])
+  })
+
+  it('NEGATIVKONTROLLE R2-35: echte Marken werden weiter zerlegt, auch neben einem Klammerinhalt', () => {
+    // Die Sperre darf die Marken nicht mitnehmen: eine Zeile mit Quelle traegt
+    // ihre Marken weiterhin, und sie tut es auch dann, wenn der Inhalt selbst
+    // auf eine Klammergruppe endet.
+    const mitBeidem: MemoryFile = { ...EINTRAG, title: 'Startbefehl', content: 'Start the app with [debug]' }
+    const [zurueck] = rundlauf([mitBeidem])
+
+    expect(zurueck.content).toBe('Start the app with [debug]')
+    expect(zurueck.tags).toEqual(['sprache', 'wichtig'])
+  })
+
+  it('NEGATIVKONTROLLE R2-35: Klammern mitten im Satz bleiben unberuehrt', () => {
+    leerenUndSetzen([])
+    expect(useMemoryStore.getState().importFromMarkdown('## User\n\n- Array syntax is a[0] and b[1]\n').added).toBe(1)
+    const [zurueck] = useMemoryStore.getState().entries
+    expect(zurueck.content).toBe('Array syntax is a[0] and b[1]')
+    expect(zurueck.tags).toEqual([])
+  })
+
   it('POSITIVKONTROLLE: der schlichte Strichpunkt ohne Auszeichnung geht auch ein', () => {
     leerenUndSetzen([])
-    expect(useMemoryStore.getState().importFromMarkdown('## User\n\n- Ein blanker Satz ohne alles\n')).toBe(1)
+    expect(useMemoryStore.getState().importFromMarkdown('## User\n\n- Ein blanker Satz ohne alles\n').added).toBe(1)
     expect(useMemoryStore.getState().entries[0].content).toBe('Ein blanker Satz ohne alles')
   })
 })

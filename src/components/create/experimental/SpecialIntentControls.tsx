@@ -22,6 +22,7 @@ import { startModelDownload, getDownloadProgress } from '../../../api/discover'
 import { useDownloadStore } from '../../../stores/downloadStore'
 import { getLoraModels } from '../../../api/comfyui'
 import { musicTakesLyrics, musicHowtoLines } from '../../../lib/render/music-ui'
+import { TRAIN_PRESETS, trainStepsNote } from '../../../lib/trainer-presets'
 import { useCreateExp } from './CreateContext'
 import { loadImageRef } from './loadImage'
 import { mediaRefFrom } from './mediaRef'
@@ -362,7 +363,7 @@ function LocalTrainControls() {
             {busy === 'install' ? 'Setting up…' : 'Set up trainer'}
           </Button>
         </div>
-        {note && <div className="t-label text-gray-600 max-w-[520px] text-center break-words">{note}</div>}
+        {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
   }
@@ -375,7 +376,7 @@ function LocalTrainControls() {
             {busy === 'bases' ? 'Downloading…' : 'Download base files'}
           </Button>
         </div>
-        {note && <div className="t-label text-gray-600 max-w-[520px] text-center break-words">{note}</div>}
+        {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
   }
@@ -393,11 +394,7 @@ function LocalTrainControls() {
           layoutId="train-steps"
           value={String(trainSteps)}
           onChange={(v) => setTrainSteps(Number(v))}
-          options={[
-            { value: '400', label: 'Quick' },
-            { value: '1200', label: 'Standard' },
-            { value: '2400', label: 'Thorough' },
-          ]}
+          options={TRAIN_PRESETS.map((p) => ({ value: String(p.steps), label: p.label }))}
         />
         <span className="t-label text-gray-600">
           {trainImages.length}/30 photos{trainImages.length < 4 ? ', need at least 4' : ''}
@@ -405,7 +402,11 @@ function LocalTrainControls() {
       </div>
       {!isGenerating && (
         <div className="t-label text-gray-600 flex items-center gap-1.5">
-          <span>Runs on your GPU and takes a while ({trainSteps} steps). The local chat model pauses for the run. The character lands in your local LoRAs.</span>
+          {/* Die Klammer nennt die Stufe UND die Zahl. Fund 2 der Kampagne
+              3.0.0: `(400 STEPS)` allein sagt nicht, welche der drei Stufen
+              gerade gilt, und ein Tester hielt Quick deshalb fuer wirkungslos,
+              obwohl Quick genau diese 400 sind. */}
+          <span>Runs on your GPU and takes a while ({trainStepsNote(trainSteps)}). The local chat model pauses for the run. The character lands in your local LoRAs.</span>
           {/* The run repairs its own environment now (A2), so this is no
               longer the only way out of a broken install. It stays because
               the button used to render ONLY while the environment counted as
@@ -421,6 +422,7 @@ function LocalTrainControls() {
           </button>
         </div>
       )}
+      {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
     </div>
   )
 }

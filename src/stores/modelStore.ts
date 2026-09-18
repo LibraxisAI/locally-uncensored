@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { safeJSONStorage } from '../lib/storage-quota'
+import { canAutoSelectChat } from '../lib/chat-model-minimum'
 import type { AIModel, PullProgress, ModelCategory } from '../types/models'
 import { unloadModel } from '../api/ollama'
 import { unloadLmStudioModel } from '../api/lmstudio'
@@ -38,6 +39,29 @@ export interface PullState {
 interface ModelState {
   models: AIModel[]
   activeModel: string | null
+  /**
+   * Die letzte LOKALE Chatwahl, damit sie den Ausflug in die Cloud ueberlebt.
+   *
+   * Fund 1 der Kampagne 3.0.0 (T3, Box, 11.09.2026): Cloud an, Cloud aus, und
+   * der Waehler stand auf `Select a chat model`. `activeModel` traegt in der
+   * Cloud den Wolkennamen, der lokale Name war damit weg, und die Ersatzregel
+   * in lib/active-model-mode darf von sich aus nur Modelle ab 7B waehlen. Das
+   * Modell der Box hat 3B, also blieb nichts uebrig. Hier steht, was der
+   * Nutzer zuletzt lokal gewaehlt hatte; gelesen wird es NUR beim Moduswechsel.
+   */
+  lastLocalModel: string | null
+  /**
+   * Dasselbe fuer die Wolke, damit der Hinweg nicht von selbst umschaltet.
+   *
+   * T1, Nebenfund 7 (Box, 11.09.2026, 15:23 bis 17:12 Boxzeit): "Der
+   * Cloud-Modus schaltet das Modell selbstaendig um. Beim Eintritt stand
+   * zweimal `Llama 3.1 8B Turbo` da, ohne dass ich es gewaehlt hatte." Das war
+   * der Kopf des Katalogs, der einsprang,
+   * weil die vorherige Wolkenwahl beim Rueckweg von der lokalen ueberschrieben
+   * worden war. Zwei Erinnerungen, eine je Modus, und keiner ueberschreibt die
+   * des anderen.
+   */
+  lastCloudModel: string | null
   activePulls: Record<string, PullState>
   isModelLoading: boolean
   categoryFilter: ModelCategory
@@ -134,6 +158,8 @@ export const useModelStore = create<ModelState>()(
     (set, get) => ({
       models: [],
       activeModel: null,
+      lastLocalModel: null,
+      lastCloudModel: null,
       activePulls: {},
       isModelLoading: false,
       categoryFilter: 'all',
@@ -151,9 +177,8 @@ export const useModelStore = create<ModelState>()(
           // model name persists in the picker after the underlying provider
           // (e.g. Ollama) was uninstalled or the model was deleted — the
           // dropdown then shows a dead name and clicking it opens an empty
-          // list. Falls back to the first available model, mirroring the
-          // first-launch behavior so a user is never stuck with no
-          // selection while a model exists.
+          // list. Automatic replacement uses the first eligible chat model;
+          // if none has a known size of at least 7B, require an explicit pick.
           // An empty list validates nothing. fetchModels writes its result
           // here even when every provider failed, and dropping the pick on
           // that answer is how a transient failure turned into a silently
@@ -170,11 +195,10 @@ export const useModelStore = create<ModelState>()(
           const stillValid =
             !!state.activeModel &&
             (models.length === 0 || models.some((m) => m.name === state.activeModel))
-          // Chat models only for the auto-select — ComfyUI image/video
-          // checkpoints share this list and must never become the active CHAT
-          // model (an unprefixed checkpoint name routes to Ollama and every
-          // send fails with model-not-found).
-          const firstChat = models.find((m) => m.type !== 'image' && m.type !== 'video')
+          // Automatic choices need a known size of at least 7B. Image/video,
+          // small models and opaque aliases require no implicit chat pick.
+          // The valid persisted choice above remains the user's decision.
+          const firstChat = models.find(canAutoSelectChat)
           return {
             models,
             inventoryLoaded: true,
@@ -197,7 +221,20 @@ export const useModelStore = create<ModelState>()(
       setActiveModel: (name) => {
         const prev = get().activeModel
         const prevModel = prev ? get().models.find((m) => m.name === prev) : undefined
-        set({ activeModel: name })
+        // Dieselbe Tuer, durch die JEDE Wahl geht, legt sie in die Erinnerung
+        // IHRES Modus. Eine Zeile, die gar keine Chatzeile ist, gehoert in
+        // keine von beiden; eine geraeumte Wahl (null) loescht keine, denn
+        // gelesen werden sie nur gegen die lebende Liste, und was dort fehlt,
+        // kommt ueber sie auch nicht zurueck.
+        const neueZeile = name ? get().models.find((m) => m.name === name) : undefined
+        const istChatzeile =
+          !!neueZeile && neueZeile.type !== 'image' && neueZeile.type !== 'video'
+        const merken = !istChatzeile
+          ? {}
+          : neueZeile.provider === 'lu-cloud'
+            ? { lastCloudModel: name }
+            : { lastLocalModel: name }
+        set({ activeModel: name, ...merken })
         // Befund 4 of the abnahme counter-check (2026-08-29): the open chat
         // kept the model it was created with while the wire of that same turn
         // already carried the new one. Every path that changes the selection
@@ -413,7 +450,36 @@ export const useModelStore = create<ModelState>()(
     {
       name: 'chat-models',
       storage: safeJSONStorage(),
-      partialize: (state) => ({ activeModel: state.activeModel, categoryFilter: state.categoryFilter }),
+      // Beide Erinnerungen liegen mit im Speicher, weil ein Ausflug einen
+      // App-Neustart ueberdauern kann: wer die App in der Cloud schliesst und
+      // am naechsten Tag lokal weiterarbeitet, bekommt dieselbe Wahl zurueck.
+      partialize: (state) => ({
+        activeModel: state.activeModel,
+        lastLocalModel: state.lastLocalModel,
+        lastCloudModel: state.lastCloudModel,
+        categoryFilter: state.categoryFilter,
+      }),
+      /**
+       * R2-27: die beiden Erinnerungen sind neu in 3.0.0, `activeModel` nicht.
+       * Ein Speicherstand aus 2.6.9 traegt deshalb ein aktives Modell und
+       * zweimal `null`, und es gab weder `migrate` noch `onRehydrateStorage`.
+       * Der erste Ausflug in die Cloud fand damit nichts zum Zurueckkommen, und
+       * der Rueckweg landete auf "Select a chat model" statt auf dem Modell,
+       * mit dem der Nutzer die App gerade noch benutzt hatte.
+       *
+       * Der Anbieter des NAMENS entscheidet, in welches Feld die Vorbelegung
+       * geht, und geschrieben wird nur, wo noch nichts steht: ein wirklich
+       * gespeicherter Wert ist immer die bessere Auskunft.
+       */
+      onRehydrateStorage: () => (state) => {
+        if (!state?.activeModel) return
+        const istCloud = state.activeModel.startsWith('lu-cloud::')
+        if (istCloud) {
+          if (!state.lastCloudModel) state.lastCloudModel = state.activeModel
+        } else if (!state.lastLocalModel) {
+          state.lastLocalModel = state.activeModel
+        }
+      },
     }
   )
 )

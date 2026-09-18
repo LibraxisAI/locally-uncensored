@@ -40,6 +40,7 @@ import { hfUrlToOllamaRef, hfUrlToLmStudioSubdir } from '../../lib/hf-to-provide
 import { pullModelTauri, checkConnection as checkOllama } from '../../api/ollama'
 import { activateBuiltinModel } from '../../api/engine'
 import { builtinModelNameFromPath } from '../../lib/builtin-model-identity'
+import { mayEnableFromWizard } from '../../lib/onboarding-provider-gate'
 import { bundledPickerIdForFile } from '../../lib/bundled-download-activation'
 import { backendCall } from '../../api/backend'
 import { getSystemVRAM } from '../../api/comfyui'
@@ -79,7 +80,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
   // Default the active sub-tab to whichever category actually has entries.
   // The previous fixed 'uncensored' default broke the onboarding starter card
   // entirely once P4 trimmed ONBOARDING_MODELS down to a single mainstream
-  // entry (Qwen 2.5 0.5B): the tab switcher hides itself when only one
+  // entry: the tab switcher hides itself when only one
   // category is populated, but the filter at render time still rejected every
   // mainstream model — leaving the user on an empty list with only "Skip for
   // now". This computed initial value keeps the switcher useful when both
@@ -216,8 +217,8 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
           // dir directly. We await completion here (not fire-and-forget) so the
           // engine starts on a fully-downloaded file and the first chat works.
           dlStore.getState().setMeta(model.filename, model.downloadUrl, 'gguf', destDir!)
-          const expectedBytes = model.sizeGB ? Math.round(model.sizeGB * 1_073_741_824) : undefined
-          await startModelDownloadToPath(model.downloadUrl, destDir!, model.filename, expectedBytes)
+          const expectedBytes = model.expectedBytes ?? (model.sizeGB ? Math.round(model.sizeGB * 1_073_741_824) : undefined)
+          await startModelDownloadToPath(model.downloadUrl, destDir!, model.filename, expectedBytes, model.sha256)
           dlStore.getState().startPolling()
           await awaitDownloadComplete(model.filename)
           // Same door as the Models page (lib/bundled-download-activation):
@@ -237,8 +238,8 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
           const subdir = hfUrlToLmStudioSubdir(model.downloadUrl)
           const targetDir = subdir ? `${destDir}/${subdir}` : destDir!
           dlStore.getState().setMeta(model.filename, model.downloadUrl, 'gguf', targetDir)
-          const expectedBytes = model.sizeGB ? Math.round(model.sizeGB * 1_073_741_824) : undefined
-          await startModelDownloadToPath(model.downloadUrl, targetDir, model.filename, expectedBytes)
+          const expectedBytes = model.expectedBytes ?? (model.sizeGB ? Math.round(model.sizeGB * 1_073_741_824) : undefined)
+          await startModelDownloadToPath(model.downloadUrl, targetDir, model.filename, expectedBytes, model.sha256)
           dlStore.getState().startPolling()
         }
         setPulledModels(prev => [...prev, name])
@@ -253,13 +254,8 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
     setStep('embeddings')
   }
 
-  // Detect system VRAM for model filtering.
-  //
-  // Level (a): silent on purpose. systemVRAM is only ever read as
-  // `if (systemVRAM && m.vramGB > systemVRAM) return false`, so a failed
-  // probe means the recommendation list is not narrowed — the user sees MORE
-  // models, not fewer, and every card still states its own VRAM need. There
-  // is no action to offer, and nothing was lost.
+  // Detect VRAM for a memory advisory. Failed probes leave the model visible
+  // with its stated requirements; they never imply that the model will fit.
   useEffect(() => { getSystemVRAM().then(v => setSystemVRAM(v)).catch(() => {}) }, [])
 
   // Die CHATFAEHIGEN Modelle, die der Nutzer schon hat, mit Namen und nicht
@@ -276,8 +272,17 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
   // Unterschied zwischen „wir wissen, dass er welche hat" und „er kann eins
   // davon waehlen": ohne sie liesse sich der Schritt gar nicht zeigen.
   const [installedModels, setInstalledModels] = useState<string[] | null>(null)
+  // Die Liste ist eine OLLAMA-Liste (`/api/tags`), und deshalb haengt sie an
+  // Ollamas Schalter. Wer den Anbieter in Settings ausgeschaltet hat, bekommt
+  // hier nichts angeboten, was der Assistent nicht einschalten darf: sonst
+  // waehlt ein Klick ein Modell, dessen Maschine dunkel bleibt. Erstlauf und
+  // frische Ablage tragen die Marke nicht, dort bleibt alles wie vorher.
+  const ollamaOffenbarUnerwuenscht = !mayEnableFromWizard(
+    useProviderStore(s => s.providers.ollama),
+  )
   useEffect(() => {
     if (step !== 'models') return
+    if (ollamaOffenbarUnerwuenscht) { setInstalledModels([]); return }
     let cancelled = false
     import('../../api/ollama').then(({ listModels }) =>
       listModels()
@@ -291,7 +296,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
         .catch(() => { if (!cancelled) setInstalledModels([]) })
     )
     return () => { cancelled = true }
-  }, [step])
+  }, [step, ollamaOffenbarUnerwuenscht])
 
   // EINE Quelle, zwei Leser: die Zahl ist die Laenge der Liste. Vorher waren
   // es zwei Groessen aus derselben Abfrage, und genau so faengt „zwei Pfade,
@@ -351,6 +356,10 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
    * dort die PRIMAERE Maschine bestimmt wird, hier ein einzelnes Modell).
    */
   const waehleInstalliertes = (name: string) => {
+    // Der Guertel zum Hosentraeger oben: einschalten nur, wenn der Nutzer den
+    // Anbieter nicht selbst ausgeschaltet hat. Beides zusammen ist EINE Regel,
+    // gefragt an der Stelle, die anbietet, und an der, die schreibt.
+    if (!mayEnableFromWizard(useProviderStore.getState().providers.ollama)) return
     setProviderConfig('ollama', { enabled: true })
     setActiveModel(name)
   }
@@ -467,8 +476,8 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
           // Filter by tab
           if (modelSubTab === 'uncensored' && !m.uncensored) return false
           if (modelSubTab === 'mainstream' && m.uncensored) return false
-          // Filter by VRAM if known
-          if (systemVRAM && m.vramGB > systemVRAM) return false
+          // Keep the chat starter visible on small GPUs; explain the memory
+          // requirement instead of replacing it with a sub-7B default.
           return true
         }).map((model) => {
           const selected = selectedModels.includes(model.name)
@@ -497,6 +506,9 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
                     )}
                   </div>
                   <p className={`text-[0.6rem] mt-0.5 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>{model.description}</p>
+                  {systemVRAM !== null && systemVRAM < model.vramGB && (
+                    <p className="text-xs mt-1 text-gray-500 dark:text-gray-400">Full GPU offload may not fit. Use CPU/offload settings or skip local setup.</p>
+                  )}
                   <p className={`text-[0.55rem] mt-0.5 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                     {model.size} · VRAM: {model.vram}
                   </p>

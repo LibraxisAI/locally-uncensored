@@ -1,5 +1,5 @@
 /**
- * A/B Compare Hook — sends the same prompt to two models in parallel.
+ * A/B Compare Hook: sends the same prompt to two models in parallel.
  */
 
 import { useCallback, useRef } from 'react'
@@ -8,6 +8,8 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { getProviderForModel, getProviderIdFromModel } from '../api/providers'
 import { getModelMaxTokens } from '../lib/context-compaction'
 import { applySendBudget, chatBudgetApplies, sharedChatSendBudget } from '../lib/chat-send-budget'
+import { sendsToALanBackend } from '../lib/lan-openai-slot'
+import { buildChatSystemPrompt } from '../lib/system-prompt'
 import { v4 as uuid } from 'uuid'
 import type { ChatMessage } from '../api/providers/types'
 import type { Message } from '../types/chat'
@@ -35,14 +37,20 @@ export function useABCompare() {
     store.startRound(userMessage)
 
     // Build messages for the providers
-    const persona = useSettingsStore.getState().getActivePersona()
+    //
+    // R2-8, zweite Haelfte, Entscheid David vom 12.09.2026: der Vergleich
+    // schickt KEINE Person mehr mit, nur die Frage. Er nahm bis dahin die
+    // global gewaehlte Person ohne Nachfrage, waehrend der Chat sie je
+    // Unterhaltung unterdrueckt. Wer zwei Modelle nebeneinander stellt, will
+    // die Modelle vergleichen; eine Rolle, die beide Seiten gleich faerbt und
+    // im Vergleichsfenster nirgends zu sehen ist, verfaelscht genau das.
+    //
+    // Der Hausteil bleibt. Ohne Systemtext antwortet ein Modell aus der
+    // Haltung seines Anbieters, und ein Vergleich, dessen beide Seiten so
+    // antworten, vergleicht nicht LU. `buildChatSystemPrompt({})` ist genau
+    // der Grundtext ohne Person, denselben schickt der Chat ohne Person.
     const chatMessages: ChatMessage[] = []
-    // `Persona` carries `systemPrompt`, never `prompt`: the old read was
-    // always undefined, so a comparison ran with no persona at all while the
-    // rest of the app (chat, Codex) sent one.
-    if (persona?.systemPrompt) {
-      chatMessages.push({ role: 'system', content: persona.systemPrompt })
-    }
+    chatMessages.push({ role: 'system', content: buildChatSystemPrompt({}) })
 
     // Include previous messages for context
     const prevMessages = useCompareStore.getState().messagesA.slice(0, -1) // exclude the empty assistant msg
@@ -70,6 +78,7 @@ export function useABCompare() {
               : 0,
             sendWindowTokens: settings.codexSendWindowTokens,
             contextDecay: settings.contextDecay,
+            localBackend: sendsToALanBackend(providerId),
           }
         }),
       ),
@@ -81,7 +90,7 @@ export function useABCompare() {
       topP: settings.topP,
       topK: settings.topK,
       maxTokens: settings.maxTokens || undefined,
-      // Bug AA v2.5.0 — forward num_ctx override to both A/B sides.
+      // Bug AA v2.5.0: forward num_ctx override to both A/B sides.
       contextWindow: settings.contextWindowOverride || undefined,
     }
     // 2.6.7 Denk-Audit, Loch 6: this hook sent no thinking signal at all and

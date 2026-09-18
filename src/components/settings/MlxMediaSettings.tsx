@@ -187,7 +187,7 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
 
   const modelRow = (
     kind: 'image' | 'video',
-    m: { id: string; name: string; sizeGB: number; minRamGB: number; unfiltered: boolean; description: string; installed: boolean },
+    m: { id: string; name: string; sizeBytes: number; minRamGB: number; unfiltered: boolean; description: string; installed: boolean },
     engineReady: boolean,
   ) => {
     const installing = busy?.kind === `${kind}-model` && 'id' in busy && busy.id === m.id
@@ -203,7 +203,7 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
           </div>
           <div className="text-[0.6rem] text-gray-500 leading-relaxed mt-0.5">{m.description}</div>
           <div className="text-[0.55rem] text-gray-500 mt-0.5 font-mono">
-            {m.sizeGB} GB download · needs {m.minRamGB} GB unified memory
+            {formatBytes(m.sizeBytes)} download · needs {m.minRamGB} GB unified memory
           </div>
         </div>
         <div className="shrink-0">

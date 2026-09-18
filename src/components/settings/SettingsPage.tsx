@@ -47,7 +47,9 @@ import { MCPServerSettings } from './MCPServerSettings'
 import { WorkflowList } from '../agents/WorkflowList'
 import { WorkflowBuilder } from '../agents/WorkflowBuilder'
 import { useUpdateStore, isNewerVersion } from '../../stores/updateStore'
-import { backendCall, isTauri, isMacOS, openExternal } from '../../api/backend'
+import { timeAgo } from '../../lib/time-ago'
+import { backendCall, isTauri, isMacOS, isWindows, openExternal } from '../../api/backend'
+import { comfyPathPlaceholder } from '../../lib/comfy-path-placeholder'
 import { troubleshootHinweis, type TroubleshootHinweis } from './troubleshoot-message'
 import { isMlxImageHost } from '../../api/mlx-image'
 import { ArrowUpCircle, KeyRound, RefreshCw } from 'lucide-react'
@@ -64,6 +66,7 @@ import {
 import { CivitaiApiKeySetting } from './CivitaiApiKeySetting'
 import { HfTokenSetting } from './HfTokenSetting'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
+import { ContentPolicySettings } from './ContentPolicySettings'
 
 // ── User profile picture (Appearance) ───────────────────────────
 // Self-contained like HfDownloadPathSetting. Stores the picture as a
@@ -1045,7 +1048,7 @@ export function ComfyUISettings() {
             type="text"
             value={customPath || status?.path || ''}
             onChange={e => { setCustomPath(e.target.value); setPathError(''); setPathSuccess(false) }}
-            placeholder="C:\ComfyUI"
+            placeholder={comfyPathPlaceholder(isWindows())}
             className="flex-1 px-2 py-1 rounded-lg border text-[0.6rem] font-mono bg-transparent border-white/10 text-gray-300 focus:outline-none focus:border-white/25"
           />
           <button
@@ -1747,6 +1750,11 @@ export function SettingsPage() {
               </button>
             </div>
           </Section>
+          {/* Dieselbe Einstellung wie in der Webanwendung, ueber dieselbe
+              Route. Zwei Kopien waeren zwei Wahrheiten. */}
+          <Section title="Content policy">
+            <ContentPolicySettings />
+          </Section>
           {/* Keys are minted and revoked on lu-labs.ai only; the desktop app
               never sees the plaintext, so this section just points there. */}
           <Section title="Cloud API Keys">
@@ -2249,8 +2257,19 @@ export function SettingsPage() {
 
 // ── Update Section ──────────────────────────────────────────────
 
+/** Der Satz "You are on the latest version." sagt nichts darueber, WANN
+ *  jemand nachgesehen hat. T13b hat am 12.09.2026 gemessen, wie weit das
+ *  auseinanderfallen kann: beim ersten Messlauf war die Aussage beim Oeffnen
+ *  rund eine Stunde und zwei Programmstarts alt und sah aus wie frisch. Diese
+ *  Zeile setzt das Datum daneben, in der Kurzform aus `src/lib/time-ago.ts`,
+ *  die im Haus schon fuer die Chatliste und das Agentenprotokoll laeuft. */
+export function lastCheckedText(ts: number, now: number = Date.now()): string {
+  const t = timeAgo(ts, now)
+  return t === 'now' ? 'Last checked just now' : `Last checked ${t} ago`
+}
+
 export function UpdateSection() {
-  const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
+  const { currentVersion, latestVersion, updateAvailable, releaseNotes, dismissed, isChecking, lastChecked, lastCheckFailed, autoDownload, downloadStatus, downloadProgress, downloadedBytes, totalBytes, errorMessage, progressNote, checkForUpdate, downloadUpdate, installAndRestart, clearDismiss, setAutoDownload, openReleasePage } = useUpdateStore()
   // Defensive: only treat the persisted `latestVersion` as actually newer if a
   // semver compare confirms it. Otherwise the binary was updated out-of-band
   // and the persisted value is stale (e.g. localStorage still says 2.3.8 while
@@ -2369,10 +2388,37 @@ export function UpdateSection() {
               )}
             </div>
           </div>
+        ) : lastCheckFailed ? (
+          /* R2-12: hier stand der gruene Haken auch dann, wenn die Pruefung gar
+             nicht durchgekommen war. Eine ruhige Zeile sagt, was wirklich
+             passiert ist, ohne aus einem Netzfehler einen Alarm zu machen. */
+          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-check-failed">
+            Could not check for updates. Check your connection and try again.
+          </div>
+        ) : lastChecked ? (
+          <div className="space-y-0.5" data-testid="update-latest">
+            <div className="flex items-center gap-2 text-[0.6rem] text-gray-600">
+              <Check size={12} className="text-emerald-500" />
+              You are on the latest version.
+            </div>
+            <div className="pl-5 text-[0.55rem] text-gray-600" data-testid="update-last-checked">
+              {lastCheckedText(lastChecked)}
+            </div>
+          </div>
         ) : (
-          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600">
-            <Check size={12} className="text-emerald-500" />
-            You are on the latest version.
+          /* Noch keine Pruefung ist durchgekommen. R2-12 hat den Haken vom
+             FEHLGESCHLAGENEN Versuch getrennt; hier fehlt der Versuch ganz.
+             Der Haken stand trotzdem da: beim Anlauf, bis die erste Pruefung
+             fuenf Sekunden spaeter zurueck ist, und nach jedem Neustart, weil
+             `onRehydrateStorage` den Zeitpunkt der letzten Pruefung wegwirft,
+             sobald die gespeicherte Version nicht neuer ist als die laufende.
+             T13 hat am 12.09.2026 auf der Box gemessen, was daran teuer ist:
+             der Satz stand vor UND nach dem Druck auf Check for updates
+             zeichengleich da, also sagt er dem Nutzer nichts darueber, ob
+             ueberhaupt jemand nachgesehen hat. Eine Zusage ohne Messung ist
+             hier dasselbe wie eine falsche. */
+          <div className="flex items-center gap-2 text-[0.6rem] text-gray-600" data-testid="update-not-checked">
+            Not checked yet.
           </div>
         )}
 

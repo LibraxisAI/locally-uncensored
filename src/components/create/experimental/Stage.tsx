@@ -498,7 +498,7 @@ const MAC_BUNDLE_COPY = {
   image: {
     icon: ImageIcon,
     title: 'Local image generation needs a one-time setup',
-    description: 'This sets up Apple MLX on this Mac and downloads the smallest image model to start with. More models — including unfiltered ones — are in Settings → AI Backends → Local Media.',
+    description: 'This sets up Apple MLX on this Mac and downloads the smallest image model to start with. More models, including unfiltered ones, are in Settings > AI Backends > Local Media.',
   },
   video: {
     icon: Film,

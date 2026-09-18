@@ -15,6 +15,7 @@ import { useActiveContextWindow } from '../../hooks/useActiveContextWindow'
 // zeigten denselben Wert verschieden (Gegenprobe G2, 04.09.2026).
 import { formatContextWindow } from '../../lib/formatters'
 import { ENGINE_DEFAULT_CTX } from '../../lib/builtin-ctx'
+import { SOURCE_LABEL, withStoredWindow } from '../../lib/context-source'
 import { platzFuerPopover, type PopoverPlatz } from '../../lib/popover-placement'
 
 const PRESETS = [4096, 8192, 16384, 32768, 65536, 131072]
@@ -157,7 +158,16 @@ export function ContextDropdown({ children }: { children?: ReactNode }) {
   const builtinCtx = useSettingsStore((s) => s.settings.builtinEngine.ctx)
   // The check-mark anchor: built-in reads its own tuning field, not the
   // Ollama/LM Studio override.
-  const selected = ctx.provider === 'builtin' ? builtinCtx : override
+  // GH #129: ein eigener OpenAI-kompatibler Server hat weder Ollamas num_ctx
+  // noch die Expertenwerte des Motors. Seine Wahl liegt je Endpunkt und Modell
+  // in `contextWindowByModel`, im SELBEN Speicher wie die beiden anderen
+  // (settingsStore), nur unter einem Schluessel statt in einem festen Feld.
+  const byModel = useSettingsStore((s) => s.settings.contextWindowByModel)
+  const selected = ctx.provider === 'builtin'
+    ? builtinCtx
+    : ctx.provider === 'custom'
+      ? (ctx.windowKey ? byModel?.[ctx.windowKey] ?? 0 : 0)
+      : override
   // Gibt es ueberhaupt einen Fuellstand zu zeigen? Genau die Bedingung, unter
   // der `TokenCounter` `null` zurueckgibt. Bewusst ein BOOLEAN als Selektor:
   // ein Abo auf `s.conversations` wuerde diesen Knopf bei jedem Streaming-Flush
@@ -169,22 +179,57 @@ export function ContextDropdown({ children }: { children?: ReactNode }) {
   // Nicht verstellbar (Cloud): kein Regler, aber der Fuellstand bleibt stehen.
   if (!activeModel || !ctx.adjustable) return <>{children}</>
 
-  const max = ctx.modelMax > 0 ? ctx.modelMax : 131072
-  const options = PRESETS.filter((p) => p <= Math.max(max, 4096))
-  const showMax = ctx.modelMax > 0 && !options.includes(ctx.modelMax) && ctx.modelMax > (options[options.length - 1] || 0)
+  /*
+   * Die Liste endet an der Decke, und die Decke ist der groesste Eintrag.
+   *
+   * Vorher hiess der oberste Eintrag nur dann `· max`, wenn die Decke keine
+   * der Voreinstellungen war. Bei einem Server, der mit 16384 laeuft, stand
+   * deshalb ein schlichtes `16K` ganz oben, und darueber (vor dem Fix vom
+   * 11.09.2026) noch `32K` und `40K · max`, die dieser Server gar nicht kann.
+   * Jetzt fuehrt die Decke die Liste immer sichtbar an, und die
+   * Voreinstellungen darueber fallen weg.
+   */
+  const cap = ctx.modelMax > 0 ? Math.max(ctx.modelMax, 4096) : 0
+  const options = PRESETS.filter((p) => (cap > 0 ? p < cap : true))
+  const showMax = cap > 0
+  /*
+   * Der Haken sitzt auf dem, was WIRKLICH gilt. Eine gespeicherte Wahl ueber
+   * dem Fenster des Servers ist auf das Fenster geklemmt, und ein Haken auf
+   * einer Zahl, die nirgends mehr in der Liste steht, waere unsichtbar.
+   */
+  const selectedNow = (ctx.clampedFrom ?? 0) > 0 ? ctx.contextWindow : selected
 
   const apply = async (value: number) => {
     setOpen(false)
+    /*
+     * Eigener OpenAI-kompatibler Server: die Zahl ist eine Angabe DARUEBER,
+     * was der Server geladen hat, kein Befehl AN ihn. Sein `-c` steht in
+     * seiner eigenen Kommandozeile, LU kann es nicht setzen, also wird hier
+     * auch nichts neu geladen. Gespeichert wird je Endpunkt und Modell; 0
+     * loescht den Eintrag und die Abfrage entscheidet wieder.
+     */
+    if (ctx.provider === 'custom') {
+      if (!ctx.windowKey) return
+      const current = useSettingsStore.getState().settings.contextWindowByModel
+      updateSettings({ contextWindowByModel: withStoredWindow(current, ctx.windowKey, value) })
+      setTick((t) => t + 1)
+      window.dispatchEvent(new Event('lu-context-reloaded'))
+      return
+    }
     // Built-in engine: ctx lives in the expert tuning, NOT contextWindowOverride
     // (that's the Ollama num_ctx lever). Persist, then relaunch the running
     // engine so the new -c is live immediately; a stopped engine simply picks
     // the value up on its next start.
     if (ctx.provider === 'builtin') {
       const tuning = useSettingsStore.getState().settings.builtinEngine
-      if (value === tuning.ctx) return
+      if (value === tuning.ctx && (value > 0) === (tuning.ctxChosen === true)) return
       setBusy(true)
       setApplyError(null)
-      updateSettings({ builtinEngine: { ...tuning, ctx: value } })
+      // GH #129: die Wahl wird mitgeschrieben, nicht nur die Zahl. Sonst ist
+      // ein ausdrueckliches 8K von der Voreinstellung 8192 nicht zu
+      // unterscheiden, und der Agentendeckel hebt den Motor trotzdem an.
+      // Auto (0) nimmt die Marke wieder zurueck.
+      updateSettings({ builtinEngine: { ...tuning, ctx: value, ctxChosen: value > 0 } })
       try {
         const status = await bundledEngineStatus()
         if (status?.running && status.model_path) await swapBundledModel(status.model_path)
@@ -237,7 +282,11 @@ export function ContextDropdown({ children }: { children?: ReactNode }) {
       <button
         onClick={() => setOpen((o) => !o)}
         disabled={busy}
-        title={`Context window: ${ctx.provider === 'lmstudio' ? "LM Studio's loaded context" : ctx.provider === 'builtin' ? "the LU Engine's loaded context" : 'Ollama num_ctx'}. Changing it reloads the model so it takes effect now.`}
+        title={
+          ctx.provider === 'custom'
+            ? `Context window: ${SOURCE_LABEL[ctx.source]}. This server decides its own context; pick the value it actually runs with so the counter and the request budget match it.`
+            : `Context window: ${ctx.provider === 'lmstudio' ? "LM Studio's loaded context" : ctx.provider === 'builtin' ? "the LU Engine's loaded context" : 'Ollama num_ctx'}. Changing it reloads the model so it takes effect now.`
+        }
         /* KF-9: der Knopf verdeckte seinen eigenen Messwert.
          *
          * Hier stand `aria-label="Context window"`. Ein `aria-label` ERSETZT
@@ -303,24 +352,28 @@ export function ContextDropdown({ children }: { children?: ReactNode }) {
               platz?.nachOben ? 'bottom-full mb-1' : 'top-full mt-1'
             }`}
           >
-            <button onClick={() => apply(0)} className={rowCls(selected === 0)}>
-              <span>Auto{ctx.provider === 'ollama' ? ` · ${formatContextWindow(effectiveContextWindow(ctx.modelMax, 0))}` : ctx.provider === 'builtin' ? ` · ${formatContextWindow(ENGINE_DEFAULT_CTX)}` : ''}</span>
-              {selected === 0 && <Check size={10} />}
+            <button onClick={() => apply(0)} className={rowCls(selectedNow === 0)}>
+              <span>Auto{ctx.provider === 'ollama' ? ` · ${formatContextWindow(effectiveContextWindow(ctx.modelMax, 0))}` : ctx.provider === 'builtin' ? ` · ${formatContextWindow(ENGINE_DEFAULT_CTX)}` : ctx.provider === 'custom' && ctx.source !== 'user' ? ` · ${formatContextWindow(ctx.contextWindow)}` : ''}</span>
+              {selectedNow === 0 && <Check size={10} />}
             </button>
             {options.map((p) => (
-              <button key={p} onClick={() => apply(p)} className={rowCls(selected === p)}>
+              <button key={p} onClick={() => apply(p)} className={rowCls(selectedNow === p)}>
                 <span>{formatContextWindow(p)}</span>
-                {selected === p && <Check size={10} />}
+                {selectedNow === p && <Check size={10} />}
               </button>
             ))}
             {showMax && (
-              <button onClick={() => apply(ctx.modelMax)} className={rowCls(selected === ctx.modelMax)}>
+              <button onClick={() => apply(ctx.modelMax)} className={rowCls(selectedNow === ctx.modelMax)}>
                 <span>{formatContextWindow(ctx.modelMax)} · max</span>
-                {selected === ctx.modelMax && <Check size={10} />}
+                {selectedNow === ctx.modelMax && <Check size={10} />}
               </button>
             )}
             <div className="mt-0.5 px-2 pt-1 border-t border-gray-100 dark:border-white/[0.06] text-[0.5rem] text-gray-400 leading-snug">
-              Reloads the model on change.
+              {ctx.provider !== 'custom'
+                ? 'Reloads the model on change.'
+                : (ctx.clampedFrom ?? 0) > 0
+                  ? `Your saved ${formatContextWindow(ctx.clampedFrom ?? 0)} is more than this server runs, so ${formatContextWindow(ctx.contextWindow)} is used. Start the server larger to use it.`
+                  : `Current value ${SOURCE_LABEL[ctx.source]}. Your pick is saved for this model on this server.`}
             </div>
           </div>
         </>

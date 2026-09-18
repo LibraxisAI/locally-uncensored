@@ -4,6 +4,7 @@ import { Modal } from '../ui/Modal'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { backendCall } from '../../api/backend'
+import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import type { AgentWorkspace } from '../../types/agent-workspace'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 
@@ -21,6 +22,13 @@ interface Props {
    * a folder there commits immediately (no second confirmation step).
    */
   initialWorkspace?: AgentWorkspace | null
+  /**
+   * Warum dieser Dialog ueberhaupt aufgeht. Gesetzt, wenn der gemerkte
+   * Vorgabeordner die Pruefung der Rust-Seite nicht bestanden hat: dann wird
+   * er NICHT gesetzt, und der Nutzer soll den Grund lesen, statt vor einem
+   * Dialog zu stehen, der ohne Anlass erscheint.
+   */
+  initialError?: string | null
 }
 
 /**
@@ -41,25 +49,43 @@ export function AgentWorkspaceDialog({
   onChoose,
   onClose,
   initialWorkspace,
+  initialError,
 }: Props) {
   const lastFolder = useAgentModeStore((s) => s.lastFolder)
   const [picking, setPicking] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(initialError ?? null)
   // Re-opened on an existing folder chat → jump straight to the extras
   // manager. Fresh activation → null → kind picker (folder pick commits).
   const [draft, setDraft] = useState<AgentWorkspace | null>(
     initialWorkspace && initialWorkspace.kind === 'folder' ? initialWorkspace : null,
   )
   const [rememberAsDefault, setRememberAsDefault] = useState(false)
+  // Der gemerkte Vorgabeordner, als Pfad. null, wenn keiner gemerkt ist.
+  const rememberedDefault = useSettingsStore(
+    (s) => (s.settings.defaultWorkspace?.kind === 'folder' ? s.settings.defaultWorkspace.path : null),
+  )
 
   const handleSandbox = () => {
     setError(null)
     onChoose({ kind: 'sandbox' })
   }
 
-  const handleUseLast = () => {
+  const handleUseLast = async () => {
     if (!lastFolder) return
     setError(null)
+    // Der gemerkte Ordner wird GEFRAGT, nicht geglaubt. Dieser Knopf ist kein
+    // Dialog: kommt der Pfad aus einer frischen Installation, aus geleerten
+    // Daten oder liegt er direkt unter $HOME, kennt die Erlaubnisliste ihn
+    // nicht, und gesetzt wuerde er jede spaetere Dateioperation mit einem Satz
+    // beantworten, den hier niemand befolgen kann. Abgelehnt heisst: nicht
+    // gesetzt, Grund sichtbar, und der Weg heraus ist der Dialog darunter.
+    setPicking(true)
+    const refusal = await rememberedFolderRefusal(lastFolder)
+    setPicking(false)
+    if (refusal) {
+      setError(refusal)
+      return
+    }
     // Selecting a folder IS the decision — commit + close (parity with Sandbox).
     onChoose({ kind: 'folder', path: lastFolder, extraPaths: [] })
   }
@@ -71,7 +97,12 @@ export function AgentWorkspaceDialog({
       // pick_folder returns the chosen path as a STRING (or null on cancel) —
       // NOT an object. Reading res.path here was the real bug: it was always
       // undefined, so onChoose never fired and the dialog never closed.
-      const res = await backendCall<string | null>('pick_folder', {})
+      //
+      // `asWorkspace: true` (Fehler D): eine Wurzel, die die Rust-Seite nicht
+      // annimmt, kommt jetzt als Fehler zurueck und landet im Kasten darunter,
+      // statt als Pfad ausgeliefert zu werden, den spaeter jede
+      // Dateioperation mit "pick it again to allow it" beantwortet.
+      const res = await backendCall<string | null>('pick_folder', { asWorkspace: true })
       if (res) {
         // Commit + close right after the folder is chosen. Picking IS the
         // decision — the dialog must go away (David 2026-06-06). Multi-repo
@@ -93,7 +124,9 @@ export function AgentWorkspaceDialog({
     setError(null)
     try {
       // pick_folder returns the path as a STRING (or null), not an object.
-      const res = await backendCall<string | null>('pick_folder', {})
+      // Ein Zusatzpfad ist genauso eine Kaefigwurzel wie der Hauptordner, also
+      // dieselbe Meldung (Fehler D).
+      const res = await backendCall<string | null>('pick_folder', { asWorkspace: true })
       if (!res) {
         setPicking(false)
         return
@@ -139,8 +172,12 @@ export function AgentWorkspaceDialog({
           </h3>
           <p className="text-[0.7rem] text-gray-500">
             {phase === 'pick'
-              ? 'Pick a folder to edit your real files, or use a sandbox to keep this chat isolated. You can change this later.'
+              ? 'Pick a folder to edit your real files, or use a separate workspace for this chat. You can change this later.'
               : 'Primary anchors relative paths. Extras give the agent absolute access, perfect for "sync the API in repo-A with the client in repo-B".'}
+          </p>
+          <p className="text-[0.7rem] text-gray-500" data-testid="workspace-security-boundary">
+            Workspace protection is a folder path jail, not a container or virtual machine.
+            Commands run on this computer. Review tool requests before allowing them.
           </p>
         </div>
 
@@ -155,7 +192,7 @@ export function AgentWorkspaceDialog({
             <WorkspaceOption
               icon={<Shield size={16} className="text-emerald-500" />}
               title="Sandbox"
-              body="Isolated workspace under ~/agent-workspace/. Nothing outside it can be touched."
+              body="Separate folder under ~/agent-workspace/, protected by the file tool path jail."
               onClick={handleSandbox}
               disabled={picking}
             />
@@ -235,6 +272,27 @@ export function AgentWorkspaceDialog({
                 Remember as default. Future chats open here without asking.
               </span>
             </label>
+
+            {/* Die zweite Haelfte des Berichts vom 01.09.2026: "Ordner wechseln
+                loest es nicht". Ein einmal gemerkter Vorgabeordner ueberspringt
+                die Frage in JEDEM neuen Agentenchat, und es gab keine Stelle,
+                an der man ihn wieder los wurde. Der Satz sagt, was gespeichert
+                ist, der Knopf loescht es. */}
+            {rememberedDefault && (
+              <div className="flex items-center justify-between gap-2 pt-1" data-testid="agent-workspace-default-note">
+                <span className="t-micro text-gray-500 truncate">
+                  Every new agent chat opens in {rememberedDefault} without asking.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => useSettingsStore.getState().updateSettings({ defaultWorkspace: null })}
+                  className="shrink-0 t-micro text-gray-500 underline hover:text-gray-800 dark:hover:text-white"
+                  data-testid="agent-workspace-forget-default"
+                >
+                  Forget it
+                </button>
+              </div>
+            )}
           </div>
         )}
 

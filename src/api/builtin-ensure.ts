@@ -30,6 +30,7 @@ import {
   builtinModelNameFromPath,
 } from '../lib/builtin-model-identity'
 import { hostOf, isLocalTransportFailure } from '../lib/local-backend-transport'
+import { announceEngineCpuFallback } from '../lib/engine-offload'
 
 interface EngineStatusLite {
   running: boolean
@@ -40,6 +41,11 @@ interface EngineStatusLite {
    *  not running. The ONLY honest answer to "which model is loaded": the
    *  `model` field of a request is a label llama-server ignores. */
   model_path?: string | null
+  /** Which port it really holds, and whether the app had to drop GPU offload
+   *  to get it serving. Both only so the fallback note below can be said from
+   *  the send path, which is the only status read the chat ever makes. */
+  port?: number | null
+  cpuOnly?: boolean
 }
 
 interface BundledList {
@@ -236,6 +242,10 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
   } catch {
     return // non-Tauri context (tests/browser) — nothing to manage
   }
+  // The chat draws the standing line and never polls the engine, so this is
+  // the one read on that side of the app. Says nothing when there is nothing
+  // to say, and nothing twice about the same engine (lib/engine-offload).
+  announceEngineCpuFallback(status)
   // Healthy AND holding what the caller wants: the only case that may skip
   // out. An engine whose status carries no model_path cannot be judged, so it
   // counts as a match and the send proceeds exactly as it did before.
@@ -282,6 +292,7 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
   // promised 32K (counter-check round 2, 2026-08-29). See lib/builtin-ctx.ts.
   const keepCtx = preservedSwapCtx({
     tuningCtx: settingsTuning?.ctx,
+    tuningChosen: settingsTuning?.ctxChosen,
     currentCtx: status?.ctx,
     ctxTrain: hit.ctx_train,
   })
@@ -344,7 +355,12 @@ export async function ensureBuiltinAgentCtx(modelName: string): Promise<void> {
   if (!isManagedBuiltinSlot()) return
   const settings = useSettingsStore.getState().settings
   const tuning = settings.builtinEngine as (typeof settings.builtinEngine) | undefined
-  if (tuning && typeof tuning.ctx === 'number' && tuning.ctx > 0 && tuning.ctx !== ENGINE_DEFAULT_CTX) {
+  // GH #129: die Marke zuerst. Ohne sie war "Nutzer hat 8K gewaehlt" von "nie
+  // angefasst" nicht zu unterscheiden, und der Deckel hob den Motor auf
+  // min(ctx_train, 32768) gegen den ausdruecklichen Wunsch. Jede andere Zahl
+  // war schon vorher eine Entscheidung.
+  if (tuning && typeof tuning.ctx === 'number' && tuning.ctx > 0 &&
+      (tuning.ctxChosen === true || tuning.ctx !== ENGINE_DEFAULT_CTX)) {
     return // explicit expert choice, do not second-guess it
   }
 
