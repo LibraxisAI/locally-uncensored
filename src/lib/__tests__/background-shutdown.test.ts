@@ -9,6 +9,12 @@
  * hooks/__tests__/signing-out-must-not-lie.test.ts, weil es dort schon die
  * ganze Sign-out-Vertragspruefung gibt). Je Ausloeser ein Fall.
  *
+ * Runde 2 (Final Verifier, 18.09.) fand zwei Blocker hier, beide unten
+ * nachgezogen: die Reichweite war auf `delegate_task`-Hintergrundlaeufe
+ * verengt (ein normaler Agent oder `/loop` OHNE Unteraufgabe entkam), und
+ * `offline` toetete mit dem klebrigen `stopRun`-Merker jede Agentenarbeit
+ * schon bei einem kurzen WLAN-Wackler.
+ *
  * Lauf: npx vitest run src/lib/__tests__/background-shutdown.test.ts
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -17,6 +23,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 const listeners: Record<string, ((e: unknown) => void)[]> = {}
 const unlisten = vi.fn()
 let tauriOn = false
+let windowVisible = false
 
 vi.mock('../../api/backend', () => ({
   isTauri: () => tauriOn,
@@ -27,9 +34,17 @@ vi.mock('@tauri-apps/api/event', () => ({
     return unlisten
   },
 }))
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({
+    isVisible: async () => windowVisible,
+  }),
+}))
 
 import { useAgentTaskStore } from '../../stores/agentTaskStore'
+import { useGenerationStore } from '../../stores/generationStore'
+import { useAgentLoopStore } from '../../stores/agentLoopStore'
 import { isRunStopped, __resetRunStopsForTests } from '../run-stop'
+import { useBackgroundShutdownStore } from '../../stores/backgroundShutdownStore'
 import {
   stopAllBackgroundWork,
   installBackgroundShutdown,
@@ -44,19 +59,41 @@ function laufendeAufgabe(id: string, convId: string): AbortController {
   return controller
 }
 
+/** A normal agent/chat stream mid-flight, with NO delegate_task sub-agent —
+ *  the shape Runde 2 found byConv could not see at all. */
+function laufenderStrom(convId: string): { aborted: () => boolean } {
+  let aborted = false
+  useGenerationStore.getState().registerAborter(convId, () => { aborted = true })
+  useGenerationStore.getState().setGenerating(convId, true)
+  return { aborted: () => aborted }
+}
+
+/** A /loop pass parked between two runs — nothing is "generating", so only
+ *  the loop store knows this conversation still has work pending. */
+function wartenderLoopPass(convId: string): void {
+  useAgentLoopStore.getState().start({
+    conversationId: convId, pass: 2, cap: 0, task: 'weiter', intervalMs: 1000, nextAt: Date.now() + 1000,
+  })
+}
+
 beforeEach(() => {
   useAgentTaskStore.setState({ byConv: {} })
+  useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
+  useAgentLoopStore.setState({ loop: null })
+  useBackgroundShutdownStore.setState({ notice: null })
   __resetRunStopsForTests()
   __resetBackgroundShutdownForTests()
   tauriOn = false
+  windowVisible = false
   for (const k of Object.keys(listeners)) delete listeners[k]
   unlisten.mockClear()
 })
 afterEach(() => {
   __resetBackgroundShutdownForTests()
+  vi.useRealTimers()
 })
 
-describe('stopAllBackgroundWork', () => {
+describe('stopAllBackgroundWork: reach (Runde 2, Blocker 2)', () => {
   it('cancels every running task in every conversation, not just the visible one', () => {
     const a = laufendeAufgabe('task-a', 'conv-A')
     const b = laufendeAufgabe('task-b', 'conv-B')
@@ -85,6 +122,40 @@ describe('stopAllBackgroundWork', () => {
     expect(c.signal.aborted).toBe(false)
     expect(isRunStopped('conv-1')).toBe(true)
   })
+
+  it('reaches a normal agent/chat stream that never started a delegate_task sub-agent', () => {
+    // The gap Runde 2 named as unclosed: byConv alone never sees this.
+    const strom = laufenderStrom('conv-plain')
+
+    stopAllBackgroundWork()
+
+    expect(strom.aborted()).toBe(true)
+    expect(isRunStopped('conv-plain')).toBe(true)
+  })
+
+  it('reaches a /loop pass waiting out its interval, which generates nothing right now', () => {
+    wartenderLoopPass('conv-loop')
+
+    stopAllBackgroundWork()
+
+    expect(useAgentLoopStore.getState().loop).toBeNull()
+    expect(isRunStopped('conv-loop')).toBe(true)
+  })
+
+  it('reaches all three shapes at once, none crowding out another', () => {
+    const task = laufendeAufgabe('task-x', 'conv-task')
+    const strom = laufenderStrom('conv-stream')
+    wartenderLoopPass('conv-loop')
+
+    stopAllBackgroundWork()
+
+    expect(task.signal.aborted).toBe(true)
+    expect(strom.aborted()).toBe(true)
+    expect(useAgentLoopStore.getState().loop).toBeNull()
+    expect(isRunStopped('conv-task')).toBe(true)
+    expect(isRunStopped('conv-stream')).toBe(true)
+    expect(isRunStopped('conv-loop')).toBe(true)
+  })
 })
 
 describe('installBackgroundShutdown: App beenden (pagehide + beforeunload)', () => {
@@ -108,41 +179,90 @@ describe('installBackgroundShutdown: App beenden (pagehide + beforeunload)', () 
   })
 })
 
-describe('installBackgroundShutdown: Netzabbruch (offline)', () => {
-  it('a dropped connection stops every running background task', () => {
+describe('installBackgroundShutdown: Netzabbruch (Runde 2, Blocker 1 — offline stoppt nichts mehr)', () => {
+  it('a dropped connection leaves running work running: retry.ts is built for exactly this', () => {
     installBackgroundShutdown()
     const c = laufendeAufgabe('task-z', 'conv-1')
 
     window.dispatchEvent(new Event('offline'))
 
-    expect(c.signal.aborted).toBe(true)
-    expect(isRunStopped('conv-1')).toBe(true)
+    expect(c.signal.aborted).toBe(false)
+    expect(isRunStopped('conv-1')).toBe(false)
+  })
+
+  it('shows a visible notice instead', () => {
+    installBackgroundShutdown()
+    window.dispatchEvent(new Event('offline'))
+    expect(useBackgroundShutdownStore.getState().notice).toEqual({ kind: 'offline' })
+  })
+
+  it('reconnecting clears the notice on its own, no user action needed', () => {
+    installBackgroundShutdown()
+    window.dispatchEvent(new Event('offline'))
+    expect(useBackgroundShutdownStore.getState().notice?.kind).toBe('offline')
+
+    window.dispatchEvent(new Event('online'))
+    expect(useBackgroundShutdownStore.getState().notice).toBeNull()
+  })
+
+  it('COUNTER-CHECK: a two-second wobble and reconnect never touches a running task', () => {
+    // The exact scenario Runde 2 named: WLAN wobble, VPN switch, sleep/wake.
+    installBackgroundShutdown()
+    const c = laufendeAufgabe('task-wobble', 'conv-1')
+
+    window.dispatchEvent(new Event('offline'))
+    window.dispatchEvent(new Event('online'))
+
+    expect(c.signal.aborted).toBe(false)
+    expect(isRunStopped('conv-1')).toBe(false)
   })
 })
 
-describe('installBackgroundShutdown: Fenster schliessen (app:hidden, nicht onCloseRequested)', () => {
+describe('installBackgroundShutdown: Fenster schliessen (app:hidden IST onCloseRequested)', () => {
   /**
-   * main.rs intercepts CloseRequested with api.prevent_close() and hides to
-   * the tray, the window's X does not quit this app. A JS onCloseRequested
-   * listener would fire on that exact same click and stop every background
-   * agent on a plain tray-hide, which is not what "Fenster schliessen" as a
-   * Stop trigger should mean here. main.rs already relays that moment to the
-   * frontend as `app:hidden` (useVoice.ts listens to it for the identical
-   * reason, mic/playback must not keep running behind a hidden window), so
-   * this module reuses that signal instead of registering a second listener
-   * for the same event.
+   * main.rs sendet `app:hidden` an GENAU EINER Stelle: im `CloseRequested`-
+   * Arm, direkt bevor es das Fenster in den Tray versteckt. Ein Horcher auf
+   * dieses Ereignis ist also derselbe X-Klick, nicht ein zweiter, getrennter
+   * Moment — mit derselben Karenzzeit, die main.rs fuer den lokalen-Modelle-
+   * Offload nach demselben Klick schon anwendet.
    */
-  it('reacts to app:hidden and stops every running background task', async () => {
+  it('reacts to app:hidden and, after the grace period, stops every running background task', async () => {
     tauriOn = true
+    vi.useFakeTimers()
     installBackgroundShutdown()
-    await new Promise((r) => setTimeout(r, 0))
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(listeners['app:hidden']).toBeDefined()
     const c = laufendeAufgabe('task-w', 'conv-1')
+    windowVisible = false
     for (const cb of listeners['app:hidden']) cb(undefined)
 
+    // Not yet — the mis-click grace period has not elapsed.
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(c.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(30_000)
     expect(c.signal.aborted).toBe(true)
     expect(isRunStopped('conv-1')).toBe(true)
+    expect(useBackgroundShutdownStore.getState().notice).toEqual({ kind: 'hidden-stopped', at: expect.any(Number) })
+  })
+
+  it('a reopen inside the grace period cancels the stop entirely (the mis-click case)', async () => {
+    tauriOn = true
+    vi.useFakeTimers()
+    installBackgroundShutdown()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const c = laufendeAufgabe('task-w2', 'conv-1')
+    for (const cb of listeners['app:hidden']) cb(undefined)
+
+    // The user re-opened the window well within the grace period.
+    windowVisible = true
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(c.signal.aborted).toBe(false)
+    expect(isRunStopped('conv-1')).toBe(false)
+    expect(useBackgroundShutdownStore.getState().notice).toBeNull()
   })
 
   it('does not register app:hidden outside Tauri (browser-dev / web build)', async () => {
