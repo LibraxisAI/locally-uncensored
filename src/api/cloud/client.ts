@@ -157,7 +157,14 @@ export async function cloudFetch(path: string, init: CloudFetchInit = {}): Promi
   // would merge them, but it is newer than the WKWebView LU runs inside on
   // older macOS, so the relay is wired by hand.
   const ac = new AbortController()
-  const relay = () => ac.abort(signal?.reason)
+  // D2 (3.0.1): set the moment the CALLER's own signal is why `ac` aborted,
+  // same idea as `timedOut` below but for cancellation instead of a deadline.
+  // Needed to tell "the user/run cancelled this" apart from "the network
+  // genuinely failed" in the catch — both end up as a plain, non-CloudJobError
+  // rejection from `fetch`/`untilAborted`, and only the second one should be
+  // reworded.
+  let callerAborted = false
+  const relay = () => { callerAborted = true; ac.abort(signal?.reason) }
   if (signal) {
     if (signal.aborted) relay()
     else signal.addEventListener('abort', relay, { once: true })
@@ -180,6 +187,29 @@ export async function cloudFetch(path: string, init: CloudFetchInit = {}): Promi
     // A 401 raised above is not a timeout and must keep its own status.
     if (timedOut && !(err instanceof CloudJobError)) {
       throw new CloudJobError('the cloud did not answer in time', 408)
+    }
+    // D2 (3.0.1): the window between a Desktop release and the matching Web
+    // deploy. The new Desktop build calls a route the still-old server does
+    // not have yet; an unmatched Next.js API route commonly answers without
+    // the app's CORS headers, so the browser never lets the fetch resolve to
+    // a status code at all — it rejects the plain `fetch()` call itself with
+    // `TypeError: Failed to fetch`. Every caller in this app reads `err instanceof
+    // Error ? err.message : ...` straight into its own error banner
+    // (ContentPolicySettings.tsx and others), so that raw engine string was
+    // the ENTIRE explanation a customer ever saw — no status, no next step.
+    // Excluded on purpose: `err instanceof CloudJobError` is already a real
+    // server answer (401 above, or one jsonOrError raised before it threw)
+    // and keeps its own accurate message; `callerAborted` is a deliberate
+    // cancel (Stop, a run tearing down), not a failure, and every existing
+    // caller already relies on a cancel staying a plain, non-CloudJobError
+    // rejection to tell the two apart. Only a bare, un-typed rejection that
+    // is NEITHER of those — a genuine network failure — gets reworded into
+    // something a customer can act on.
+    if (!callerAborted && !(err instanceof CloudJobError)) {
+      throw new CloudJobError(
+        'Could not reach the LU Cloud server. This can happen right after an app update while the server catches up — try again in a moment, or check for a newer version.',
+        0,
+      )
     }
     throw err
   } finally {

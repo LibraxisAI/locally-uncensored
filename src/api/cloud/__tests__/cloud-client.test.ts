@@ -197,6 +197,34 @@ describe('cloudFetch', () => {
     await expect(cloudFetch('/api/me', { signal: ac.signal })).rejects.toThrow()
   })
 
+  it('D2: a raw network failure becomes an actionable message, not the browser\'s own text', async () => {
+    // The window between a Desktop release and the matching Web deploy: the
+    // new app calls a route the still-old server does not have, an unmatched
+    // Next.js API route commonly answers without CORS headers, and the
+    // browser rejects the bare fetch() with a generic TypeError instead of
+    // ever handing back a status. Every caller in this app puts err.message
+    // straight into its own error banner, so this raw string used to be the
+    // ENTIRE explanation a customer ever saw.
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    const err = await cloudFetch('/api/account/content-policy').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(CloudJobError)
+    expect((err as CloudJobError).message).not.toBe('Failed to fetch')
+    expect((err as CloudJobError).message).toMatch(/could not reach/i)
+  })
+
+  it('D2: a deliberate cancel is NOT relabelled — it must stay tellable from a real failure', async () => {
+    // Regression guard for the fix above: it must only reword a genuine
+    // network failure, never a caller-initiated Stop/teardown, which every
+    // existing caller already distinguishes by checking `instanceof
+    // CloudJobError`.
+    const ac = new AbortController()
+    fetchMock.mockImplementation(hangingFetch())
+    const settled = cloudFetch('/api/me', { signal: ac.signal }).catch((e: unknown) => e)
+    ac.abort()
+    const err = await settled
+    expect(err).not.toBeInstanceOf(CloudJobError)
+  })
+
   it('preserves method, body and extra headers', async () => {
     fetchMock.mockResolvedValue(jsonRes({}))
     await cloudFetch('/api/jobs', {
