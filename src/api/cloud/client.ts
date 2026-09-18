@@ -18,8 +18,17 @@ export class CloudJobError extends Error {
   /** What `retry-after` asked for, in ms — the burst guard's window is fixed
    *  and up to a minute long, so the number is worth showing. */
   readonly retryAfterMs?: number
-  constructor(message: string, status: number, meta?: { code?: string; retryAfterMs?: number }) {
-    super(message)
+  constructor(
+    message: string,
+    status: number,
+    meta?: { code?: string; retryAfterMs?: number; cause?: unknown },
+  ) {
+    // Opus-Review Nachbesserung 7 (3.0.1, D2): the reworded network-failure
+    // message below intentionally loses the engine's own text — `cause`
+    // keeps it reachable for a log line without putting it back in front of
+    // the customer. `super(message)` alone (no options) when nothing is
+    // passed, matching every existing call site's behavior exactly.
+    super(message, meta && 'cause' in meta ? { cause: meta.cause } : undefined)
     this.name = 'CloudJobError'
     this.status = status
     this.code = meta?.code
@@ -123,6 +132,22 @@ export interface CloudFetchInit extends RequestInit {
   timeoutMs?: number
 }
 
+/**
+ * Opus-Review Nachbesserung 7 (3.0.1, D2): the closed set of raw rejection
+ * MESSAGES the fetch spec's own engines use for "this request never reached
+ * anything" — connection refused, DNS failure, CORS block, TLS failure. Not
+ * a generic `err instanceof TypeError` check: a broken response parser or a
+ * bad property access inside this app's own code also throws a TypeError,
+ * and relabelling THAT as "LU Cloud server unreachable" would hide a real
+ * bug behind a server-side explanation forever.
+ */
+const NETWORK_SHAPED_MESSAGE =
+  /Failed to fetch|NetworkError|Load failed|fetch failed|error sending request/i
+
+function looksLikeRawNetworkFailure(err: unknown): boolean {
+  return err instanceof Error && NETWORK_SHAPED_MESSAGE.test(err.message)
+}
+
 /** Settle `work` as soon as it settles, or reject the moment `signal` aborts.
  *
  *  For the steps of a request that take no AbortSignal of their own. The
@@ -202,13 +227,28 @@ export async function cloudFetch(path: string, init: CloudFetchInit = {}): Promi
     // and keeps its own accurate message; `callerAborted` is a deliberate
     // cancel (Stop, a run tearing down), not a failure, and every existing
     // caller already relies on a cancel staying a plain, non-CloudJobError
-    // rejection to tell the two apart. Only a bare, un-typed rejection that
-    // is NEITHER of those — a genuine network failure — gets reworded into
-    // something a customer can act on.
-    if (!callerAborted && !(err instanceof CloudJobError)) {
+    // rejection to tell the two apart.
+    //
+    // Opus-Review Nachbesserung 7: the ORIGINAL condition reworded EVERY bare
+    // rejection, including a genuine programming error that happens to throw
+    // inside this try block (a TypeError from a broken response parser, a bad
+    // property access) — a bug in this app's own code would come back
+    // relabelled as "LU Cloud server unreachable" forever, and the next
+    // report would chase the wrong half. `looksLikeRawNetworkFailure` only
+    // matches the small, closed set of messages the fetch spec and its
+    // engines actually use for "the request never reached anything": Chromium
+    // WebView2/Chrome ("Failed to fetch"), Firefox ("NetworkError when
+    // attempting to fetch"), Safari/WebKit ("Load failed"), and the Rust-side
+    // client this same request path uses under `npm run dev`/Node
+    // ("fetch failed" / "error sending request"). Anything else — including
+    // an error this app's own code raised — passes through unchanged. The
+    // original message still reaches the log, as `cause`, even though the
+    // customer only ever sees the actionable rewording.
+    if (!callerAborted && !(err instanceof CloudJobError) && looksLikeRawNetworkFailure(err)) {
       throw new CloudJobError(
         'Could not reach the LU Cloud server. This can happen right after an app update while the server catches up — try again in a moment, or check for a newer version.',
         0,
+        { cause: err },
       )
     }
     throw err

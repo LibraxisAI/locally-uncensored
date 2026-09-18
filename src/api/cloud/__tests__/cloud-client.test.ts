@@ -225,6 +225,42 @@ describe('cloudFetch', () => {
     expect(err).not.toBeInstanceOf(CloudJobError)
   })
 
+  it('D2 Nachbesserung 7: the original error survives as `cause`, for the log', async () => {
+    const original = new TypeError('Failed to fetch')
+    fetchMock.mockRejectedValue(original)
+    const err = await cloudFetch('/api/account/content-policy').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(CloudJobError)
+    expect((err as CloudJobError).cause).toBe(original)
+  })
+
+  it('D2 Nachbesserung 7: a genuine bug in this file is NOT relabelled as a server outage', async () => {
+    // The original condition caught ANY bare rejection, so a programming
+    // error thrown from inside cloudFetch's own try block — a broken
+    // response parser, a bad property access — came back saying "LU Cloud
+    // server unreachable" forever, hiding a real bug behind the wrong
+    // explanation. A TypeError whose message is not one of the network-shaped
+    // ones must pass through completely unchanged.
+    const bug = new TypeError("Cannot read properties of undefined (reading 'foo')")
+    fetchMock.mockRejectedValue(bug)
+    const err = await cloudFetch('/api/account/content-policy').catch((e: unknown) => e)
+    expect(err).toBe(bug)
+    expect(err).not.toBeInstanceOf(CloudJobError)
+  })
+
+  it.each([
+    ['Chromium/WebView2', 'TypeError', 'Failed to fetch'],
+    ['Firefox', 'TypeError', 'NetworkError when attempting to fetch resource.'],
+    ['Safari/WebKit', 'TypeError', 'Load failed'],
+    ['Node/undici (npm run dev)', 'TypeError', 'fetch failed'],
+    ['Rust-side client', 'Error', 'error sending request for url'],
+  ])('D2 Nachbesserung 7: %s\'s own network-failure wording is recognized', async (_engine, ctor, message) => {
+    const ErrCtor = ctor === 'TypeError' ? TypeError : Error
+    fetchMock.mockRejectedValue(new ErrCtor(message))
+    const err = await cloudFetch('/api/account/content-policy').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(CloudJobError)
+    expect((err as CloudJobError).message).toMatch(/could not reach/i)
+  })
+
   it('preserves method, body and extra headers', async () => {
     fetchMock.mockResolvedValue(jsonRes({}))
     await cloudFetch('/api/jobs', {
