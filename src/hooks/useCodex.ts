@@ -2570,10 +2570,15 @@ export function useCodex() {
   const sendRef = useRef<typeof sendInstruction | null>(null)
   sendRef.current = sendInstruction
 
-  const stopCodex = useCallback(() => {
+  const stopCodex = useCallback((conversationId?: string | null) => {
     // Stop means stop: also cancel a /loop pass that is waiting out its
     // interval, otherwise the run the user just killed comes back by itself.
-    const stoppedConvId = useChatStore.getState().activeConversationId
+    // B2 Commit 5: the caller names the run, see useAgentChat.ts's stopAgent
+    // for why (today's one caller already resolves it this way, but the
+    // function itself should not have to assume that).
+    const stoppedConvId = conversationId !== undefined
+      ? conversationId
+      : useChatStore.getState().activeConversationId
     // Both of these reach a run a PREVIOUS hook instance started (the Code view
     // remounts on every tab switch): the store holds that run's real aborter,
     // and the module-scoped stop is readable from its loop driver's finally,

@@ -1258,7 +1258,9 @@ export function useChat() {
    */
   const stopGeneration = useCallback(() => {
     const convId = useChatStore.getState().activeConversationId
-    stopAgent()
+    // B2 Commit 5: name the run explicitly instead of letting stopAgent
+    // re-read "the active conversation" itself.
+    stopAgent(convId)
     useGenerationStore.getState().abortConversation(convId)
     // Also interrupt an in-flight ComfyUI image/video gen, not just the JS loop —
     // otherwise the main Stop button leaves ComfyUI burning (only the in-chat

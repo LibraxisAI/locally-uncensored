@@ -2614,14 +2614,23 @@ export function useAgentChat() {
 
   // ── Stop the agent ────────────────────────────────────────────
 
-  const stopAgent = useCallback(() => {
+  const stopAgent = useCallback((conversationId?: string | null) => {
     // Stop means stop: also cancel a /loop pass waiting out its interval,
     // otherwise the run the user just killed comes back by itself. Recorded per
     // CONVERSATION so the finally of a pass started by a previous hook instance
     // (the chat view unmounts on a view switch) sees it too, and so the flag is
     // cleared again by the next real instruction instead of standing for the
     // rest of the session.
-    const stoppedConvId = useChatStore.getState().activeConversationId
+    //
+    // B2 Commit 5: the caller NAMES the run it means to stop instead of this
+    // function re-reading "whichever conversation happens to be visible
+    // right now" — the visible one is only ever correct because today's one
+    // caller (useChat.ts's stopGeneration) already resolved it that way. A
+    // future caller that stops a run the user is NOT looking at (a per-item
+    // Stop in a task list, say) would otherwise silently stop the wrong one.
+    const stoppedConvId = conversationId !== undefined
+      ? conversationId
+      : useChatStore.getState().activeConversationId
     stopRun(stoppedConvId)
     // B1 (3.0.1, Orchestrator-Entscheid): "Stop means stop" gilt auch fuer
     // Hintergrundauftraege dieser Unterhaltung, die per delegate_task
