@@ -225,9 +225,29 @@ jobs:
       # would turn CI red for a setup problem, not a regression. Two
       # substring filters are OR'd by the test harness, so both self-heal
       # tests run and nothing else ignored does.
+      #
+      # Runde 4 (review-engine.md Runde 3, Abschnitt 5): a filter that
+      # matches ZERO tests is not an error to libtest, it prints "0 passed"
+      # and exits 0. Both tests are `#[cfg(not(windows))]`, so on
+      # windows-latest this step always ran nothing and stayed silently
+      # green, including in a future where both tests are renamed or
+      # deleted outright, exactly the case this gate exists to catch. Two
+      # fixes: skip the step on Windows instead of pretending to run it
+      # there, and on the platform where it actually matters, grep the
+      # test harness's own summary line for "2 passed" so a filter that
+      # stops matching (a rename, a deletion) fails the step instead of
+      # quietly running nothing.
       - name: Cargo test (ignored self-heal tests, serial)
+        if: runner.os != 'Windows'
         working-directory: src-tauri
-        run: cargo test -- --ignored --test-threads=1 ssl_collision_is_retried_once genuine_ssl_gap_is_not_retried_forever
+        shell: bash
+        run: |
+          out="$(cargo test -- --ignored --test-threads=1 ssl_collision_is_retried_once genuine_ssl_gap_is_not_retried_forever 2>&1)"
+          echo "$out"
+          echo "$out" | grep -Eq '^test result: ok\. 2 passed; 0 failed;' || {
+            echo "::error::expected exactly 2 passed self-heal tests, the filter matched a different count (renamed or deleted test?)"
+            exit 1
+          }
 
       # Gating since 01.09.2026 — the debt this comment used to describe is paid.
       # The deny-by-default error sat at src/commands/secret.rs:173, not :108 as
