@@ -43,11 +43,17 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { useGenerationStore } from '../../stores/generationStore'
+import { useAgentTaskStore } from '../../stores/agentTaskStore'
+import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { stopAllBackgroundWork } from '../../lib/background-shutdown'
 import { admit, localLaneHolder, queuedRunIds, __resetRunLanesForTests } from '../../lib/run-lanes'
-import { __resetRunSlotsForTests } from '../../lib/run-slot'
 
 const chatStream = vi.fn()
 const addMemory = vi.fn(() => 'mem-1')
+/** The `AbortSignal` the extraction's last `chatStream` call was given, so a
+ *  test can check whether `stopAllBackgroundWork` actually reached it. */
+let lastSignal: AbortSignal | undefined
 
 let activeModel = 'qwen3:8b'
 let resolveStream: (() => void) | null = null
@@ -104,23 +110,34 @@ vi.mock('../../lib/memoryEmbedDB', () => ({
 
 const { extractMemoriesFromPair } = await import('../useMemory')
 
-/** A stream that hangs until the test resolves it by hand, mid-extraction. */
-function haengenderStream() {
+/** A stream that hangs until the test resolves it by hand, mid-extraction,
+ *  or until its `signal` aborts, mirroring the shape a real provider stream
+ *  takes when its underlying fetch is cancelled mid-flight. */
+function haengenderStream(signal?: AbortSignal) {
   return (async function* () {
     yield { content: '', done: false }
-    await new Promise<void>((resolve) => { resolveStream = resolve })
+    await new Promise<void>((resolve, reject) => {
+      resolveStream = resolve
+      signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })
     yield { content: '{"shouldSave": false, "memories": []}', done: true }
   })()
 }
 
 beforeEach(() => {
   __resetRunLanesForTests()
-  __resetRunSlotsForTests()
+  useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
+  useAgentTaskStore.setState({ byConv: {} })
+  useAgentLoopStore.setState({ loops: {} })
   chatStream.mockReset()
-  chatStream.mockImplementation(() => haengenderStream())
+  chatStream.mockImplementation((_model: string, _messages: unknown, options?: { signal?: AbortSignal }) => {
+    lastSignal = options?.signal
+    return haengenderStream(options?.signal)
+  })
   addMemory.mockClear()
   useCloudAuthStore.getState().setSignedOut()
   resolveStream = null
+  lastSignal = undefined
   activeModel = 'qwen3:8b'
 })
 
@@ -153,6 +170,32 @@ describe('extractMemoriesFromPair bucht die lokale Spur', () => {
 
     expect(localLaneHolder()).toBe('conv-b')
     expect(queuedRunIds()).toEqual([])
+  })
+
+  // Runde 5 Folgeposten 3 (review-lanes.md Runde 2, Punkt 5 Fund 4): a
+  // RUNNING extraction used to be unstoppable (`abort: () => {}`), so
+  // `stopAllBackgroundWork` (sign-out, window close, app quit) reached a
+  // QUEUED extraction but let a RUNNING one bill to completion after the
+  // user believed they had left.
+  it('stopAllBackgroundWork bricht eine LAUFENDE Extraktion wirklich ab', async () => {
+    await extractMemoriesFromPair('frage 1', 'x'.repeat(200), 'conv-a')
+    await extractMemoriesFromPair('frage 2', 'x'.repeat(200), 'conv-a')
+    const dritte = extractMemoriesFromPair('frage 3', 'x'.repeat(200), 'conv-a')
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    expect(localLaneHolder()).toBe('conv-a::memory-extraction')
+    expect(lastSignal?.aborted).toBe(false)
+
+    stopAllBackgroundWork()
+
+    expect(lastSignal?.aborted).toBe(true)
+    // The extraction's own outer try/catch swallows the resulting
+    // AbortError by contract (extraction failures are always silent), so the
+    // call still resolves cleanly, it just never saves anything.
+    await dritte
+    expect(addMemory).not.toHaveBeenCalled()
+    expect(localLaneHolder()).toBeNull()
   })
 
   it('GEGENPROBE: eine cloud-Unterhaltung braucht auf eine lokale Extraktion nicht zu warten', async () => {

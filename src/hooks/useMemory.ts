@@ -164,12 +164,19 @@ export async function extractMemoriesFromPair(
     // itself (it is `void`-fired, never awaited by the turn), so there is no
     // cycle for a real queue wait to close.
     //
-    // No real abort: this call has nothing running yet to interrupt when it
-    // is still queued, and a fire-and-forget extraction was never stoppable
-    // from the UI to begin with, so `stopAllBackgroundWork` draining it out
-    // of the queue (it just never runs) is the whole contract.
+    // Runde 5 Folgeposten 3 (review-lanes.md Runde 2, Punkt 5 Fund 4): a
+    // RUNNING extraction used to be unstoppable: `abort: () => {}` was a
+    // literal no-op, so `stopAllBackgroundWork` (sign-out, window close, app
+    // quit) reached a QUEUED extraction (pulls it out of the waiting room,
+    // it never runs) but not a running one: the stream kept going to
+    // completion after the user believed they had signed out, on a silent
+    // model call that still bills lu-cloud. A real `AbortController` closes
+    // that: `abort()` cancels the in-flight fetch, the `for await` loop below
+    // sees its `AbortError`, and the outer `catch` already swallows every
+    // extraction failure (silent by contract, always was).
+    const extractionAbort = new AbortController()
     await runInLane(
-      { conversationId: `${conversationId}::memory-extraction`, lane: laneOf(callModel, currentLaneFacts()), abort: () => {} },
+      { conversationId: `${conversationId}::memory-extraction`, lane: laneOf(callModel, currentLaneFacts()), abort: () => extractionAbort.abort() },
       async () => {
         // Same num_ctx as the chat that just ran on this model. Ollama reloads
         // the model whenever num_ctx changes between requests, so an
@@ -200,6 +207,7 @@ export async function extractMemoriesFromPair(
           // and the whole turn was lost without a word. Same number as the web.
           maxTokens: 800,
           contextWindow: numCtx,
+          signal: extractionAbort.signal,
         })
 
         for await (const chunk of stream) {
@@ -219,7 +227,7 @@ export async function extractMemoriesFromPair(
             // bounded and we don't fire N concurrent inferences. Each is
             // wrapped so one bad memory never aborts the rest.
             try {
-              await resolveAndSaveMemory(memory, conversationId, scope, sourceKind, guard)
+              await resolveAndSaveMemory(memory, conversationId, scope, sourceKind, guard, extractionAbort.signal)
             } catch {
               if (!guard.current()) return
               // Per-memory failure: fall back to a plain add so the fact
@@ -259,7 +267,7 @@ export async function extractMemoriesFromPair(
  * Fire-and-forget contract: any embedding/LLM failure falls back to a plain
  * addMemory so a fact is never silently dropped. Never blocks the chat turn.
  */
-async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope: string | undefined, sourceKind: MemoryFile['sourceKind'], guard: MemoryWriteGuard): Promise<void> {
+async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: string, scope: string | undefined, sourceKind: MemoryFile['sourceKind'], guard: MemoryWriteGuard, abortSignal: AbortSignal): Promise<void> {
   const memState = useMemoryStore.getState()
   const addPlain = (): string => {
     if (!guard.current()) return ''
@@ -361,7 +369,7 @@ async function resolveAndSaveMemory(memory: ExtractedMemory, conversationId: str
       topK,
     )
     let full = ''
-    const stream = provider.chatStream(modelId, messages, { temperature: 0.1, maxTokens: 300 })
+    const stream = provider.chatStream(modelId, messages, { temperature: 0.1, maxTokens: 300, signal: abortSignal })
     for await (const chunk of stream) {
       if (!guard.current()) return
       if (chunk.content) full += chunk.content
