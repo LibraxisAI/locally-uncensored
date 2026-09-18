@@ -22,6 +22,51 @@ import { MUTATING_TOOLS, allowedInReadOnlyTurn } from '../mutating-tools'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const read = (rel: string) => readFileSync(join(__dirname, rel), 'utf8')
 
+/**
+ * The body of a `const x = useCallback(() => { ... }, [deps])` found by
+ * `marker`, delimited by ITS OWN matching braces, not a byte count.
+ *
+ * Walks from the first `{` after the marker and tracks brace depth,
+ * skipping string, template-literal and comment content so a `{` or `}`
+ * inside a log line or a comment cannot throw the count off. Grows and
+ * shrinks with the function body, so a reformat or an added line inside it
+ * never makes a source-pinning test flicker red for no behavioural reason
+ * (the fixed 900-char slice this replaces did exactly that, see
+ * useCodex.ts `2685c483`).
+ */
+function extractUseCallbackBody(source: string, marker: string): string {
+  const markerIdx = source.indexOf(marker)
+  if (markerIdx < 0) throw new Error(`marker not found: ${marker}`)
+  const braceStart = source.indexOf('{', markerIdx)
+  if (braceStart < 0) throw new Error(`no opening brace after marker: ${marker}`)
+
+  let depth = 0
+  let i = braceStart
+  for (; i < source.length; i++) {
+    const ch = source[i]
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) { i++; break }
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch
+      i++
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === '\\') i++
+        i++
+      }
+    } else if (ch === '/' && source[i + 1] === '/') {
+      while (i < source.length && source[i] !== '\n') i++
+    } else if (ch === '/' && source[i + 1] === '*') {
+      i += 2
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++
+      i++
+    }
+  }
+  if (depth !== 0) throw new Error(`unbalanced braces reading body for: ${marker}`)
+  return source.slice(markerIdx, i)
+}
+
 type Call = { function: { name: string } }
 /** The guard both hooks apply before a batch executes. Since the 2.6.6 merge
  * it keeps shell_execute (the executor gates by command); everything else
@@ -146,10 +191,14 @@ describe('/loop actually loops', () => {
 
   it('stop cancels a pass that is waiting out its interval', () => {
     // Otherwise the run the user just killed comes back by itself.
+    //
+    // The body is taken from the source by its OWN closing brace, not by a
+    // fixed character count: a 900-char window went red on a harmless
+    // reformat or a new comment line inside the function, long before the
+    // guarded behaviour changed (hit once already, in 2685c483). Reading to
+    // the callback's actual end survives any reflow inside the body.
     const src = read('../../hooks/useCodex.ts')
-    const stopIdx = src.indexOf('const stopCodex = useCallback(')
-    expect(stopIdx).toBeGreaterThan(0)
-    const stopBody = src.slice(stopIdx, stopIdx + 900)
+    const stopBody = extractUseCallbackBody(src, 'const stopCodex = useCallback(')
     expect(stopBody).toContain('clearTimeout(codexLoopTimer)')
     // The stop is recorded MODULE-side, keyed by conversation (audit M1): a
     // hook-instance ref was invisible to the finally of a pass a previous
