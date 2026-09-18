@@ -3195,7 +3195,7 @@ pub async fn start_tunnel(
         {
             let tgz = dir.join("cloudflared.tgz");
             std::fs::write(&tgz, &bytes).map_err(|e| format!("write tgz: {}", os_error::english(&e)))?;
-            let status = std::process::Command::new("tar")
+            let status = crate::process_util::foreign_system_command("tar")
                 .arg("-xzf")
                 .arg(&tgz)
                 .arg("-C")
@@ -3227,7 +3227,7 @@ pub async fn start_tunnel(
     // `spawn_piped` gives it its own process group on Unix (so `kill_tree`
     // reaches anything it starts) and suppresses the console window on
     // Windows, exactly like every other child this app spawns.
-    let mut cmd = std::process::Command::new(&cf_path);
+    let mut cmd = crate::process_util::foreign_system_command(&cf_path);
     // 127.0.0.1 (not "localhost") avoids a ~2 s IPv6 (::1) connect detour on
     // some Windows boxes before cloudflared falls back to IPv4 (aldrich 2026-06).
     cmd.args(["tunnel", "--url", &format!("http://127.0.0.1:{}", port)]);

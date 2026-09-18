@@ -234,7 +234,7 @@ pub fn resolve_comfyui_venv_python(comfyui_dir: &Path) -> Option<String> {
 pub fn get_python_bin() -> String {
     for name in crate::os_paths::unix_python_candidates() {
         let Ok(path) = which::which(name) else { continue };
-        let mut cmd = Command::new(&path);
+        let mut cmd = python_command(&path);
         cmd.arg("--version");
         match cmd.output() {
             Ok(output) if output.status.success() => {
@@ -271,18 +271,18 @@ fn verify_python_path(path: &str) -> bool {
     if path.is_empty() || path.contains("WindowsApps") {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = python_command(path);
     cmd.arg("--version");
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// `where python` on PATH, skipping the WindowsApps Store-stub alias.
 #[cfg(target_os = "windows")]
 fn python_via_where() -> Option<String> {
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("python");
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     let output = where_cmd.output().ok()?;
     if !output.status.success() {
         return None;
@@ -305,9 +305,9 @@ fn python_via_where() -> Option<String> {
 /// for venv creation / pip), not the launcher shim.
 #[cfg(target_os = "windows")]
 fn python_via_py_launcher() -> Option<String> {
-    let mut cmd = Command::new("py");
+    let mut cmd = python_command("py");
     cmd.args(["-3", "-c", "import sys; print(sys.executable)"]);
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
@@ -472,9 +472,9 @@ pub fn python_interpreters() -> Vec<String> {
             found.push(p);
         }
     };
-    let mut launcher = Command::new("py");
+    let mut launcher = python_command("py");
     launcher.arg("-0p");
-    launcher.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut launcher);
     if let Ok(out) = launcher.output() {
         if out.status.success() {
             for p in launcher_list_paths(&String::from_utf8_lossy(&out.stdout)) {
@@ -482,9 +482,9 @@ pub fn python_interpreters() -> Vec<String> {
             }
         }
     }
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("python");
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     if let Ok(out) = where_cmd.output() {
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
