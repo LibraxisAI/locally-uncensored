@@ -13,6 +13,7 @@
 
 import { settleThinking } from '../../lib/thinking-stripper'
 import { toolResultIsFailure } from '../../lib/tool-result-failure'
+import { isRunStopped } from '../../lib/run-stop'
 // M7 / Audit W-T2: hier stand zweimal `await import('../mcp')`. Gesplittet hat
 // das nie — die Tonne mcp/index.ts hängt über useAgentChat, useCodex und
 // api/tool-registry.ts ohnehin statisch im Graph, also meldete Rolldown
@@ -760,6 +761,29 @@ export function buildDelegateExecutor(
       // Gefunden, weil der Store ihn seither als Pflicht fuehrt.
       id, convId, goal, context, background: true, startedAt: Date.now(), controller,
     })
+
+    // B1 Nachbesserung 2 (Opus-Review): Wettlauf Stop gegen Start. Zwischen
+    // `_inFlight++` weiter oben und diesem `start(...)` liegen zwei awaits
+    // (die zwei dynamischen imports), in deren Fenster ein Stop-Knopf
+    // `cancelAll` ueber eine Liste laufen liess, in der diese Aufgabe noch
+    // gar nicht stand — sie wurde erst DANACH eingetragen, mit einem
+    // Controller, den niemand mehr abbricht (der Lauf liest nur
+    // `gates.abortSignal`, nicht `isRunStopped`). Ergebnis: ein
+    // Hintergrundagent, der den Stop ueberlebt, bis sein Budget reisst.
+    // `isRunStopped` ist der klebrige, modulweite Merker aus lib/run-stop.ts,
+    // genau fuer diesen Fall gebaut — hier direkt nach dem Eintragen und vor
+    // dem ersten `runner(...)`-Aufruf geprueft schliesst das Fenster.
+    if (isRunStopped(convId)) {
+      controller.abort()
+      useAgentTaskStore.getState().finish(id, {
+        status: 'cancelled',
+        output: 'Cancelled before it could start: the user pressed Stop while this task was still being scheduled.',
+        endedAt: Date.now(),
+      })
+      _inFlight--
+      return `Task ${id} was cancelled before it started (Stop was pressed).`
+    }
+
     // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des Elternzugs:
     // sonst liesse sich eine einzelne Aufgabe nicht abbrechen, ohne den
     // ganzen Zug mitzunehmen.
