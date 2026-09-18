@@ -842,7 +842,7 @@ mod tests {
         let src = include_str!("comfy_install.rs");
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
-        let build = needle("create_comfyui_venv(&target_dir, &python_bin,", " Some(&cancel_flag))");
+        let build = needle("create_comfyui_venv(&target_dir, &chosen_python,", " Some(&cancel_flag))");
         let cancelled_arm = needle("\"Install cancelled while the venv", " was being created.\"");
         let failed_arm = needle("\"venv creation faile", "d.\\n\\n{}\"");
 

@@ -877,7 +877,7 @@ mod tests {
         let removal = needle("\"Removing the old venv (models, outputs", " and custom nodes stay untouched)...\",");
         let check = needle("update(\"cancelled\", \"Repair cance", "lled.\");");
         let step_one = needle("\"Step 1/4: Creating a fresh isolated venv", " inside the ComfyUI folder...\",");
-        let build = needle("create_comfyui_venv(&comfy_dir, &python_bin,", " Some(&cancel_flag))");
+        let build = needle("create_comfyui_venv(&comfy_dir, &chosen_python,", " Some(&cancel_flag))");
 
         let at_removal = src.find(&removal).expect("the venv removal step is gone");
         let at_check = src.find(&check).expect("the repair no longer stops between the delete and the venv build");
