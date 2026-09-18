@@ -52,15 +52,3 @@ export interface WorkflowTemplate {
   installedAt: number
   thumbnailUrl?: string
 }
-
-export interface WorkflowSearchResult {
-  name: string
-  description: string
-  source: WorkflowSource
-  sourceUrl: string
-  thumbnailUrl?: string
-  modelTypes: ModelType[]
-  mode: 'image' | 'video' | 'both'
-  downloadUrl?: string
-  rawWorkflow?: ComfyApiGraph
-}

@@ -5,7 +5,6 @@ import { log } from '../lib/logger'
 import { resolveRunSeed } from '../lib/run-seed'
 import type {
   WorkflowTemplate,
-  WorkflowSearchResult,
   WorkflowSource,
   ParameterMap,
 } from '../types/workflows'
@@ -386,65 +385,4 @@ export function parseImportedWorkflow(
     workflow,
     parameterMap,
   }
-}
-
-// ─── Built-in Templates ───
-
-export function getBuiltinTemplates(): WorkflowSearchResult[] {
-  return [
-    {
-      name: 'SDXL / SD 1.5 (Checkpoint)',
-      description: 'Standard workflow for SDXL and SD 1.5 models. Uses CheckpointLoaderSimple with KSampler, VAEDecode and SaveImage.',
-      source: 'manual',
-      sourceUrl: '',
-      modelTypes: ['sdxl', 'sd15'],
-      mode: 'image',
-      rawWorkflow: {
-        '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'model.safetensors' } },
-        '2': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
-        '3': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
-        '4': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
-        '5': { class_type: 'KSampler', inputs: { model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0], seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
-        '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
-        '7': { class_type: 'SaveImage', inputs: { images: ['6', 0], filename_prefix: 'locally_uncensored' } },
-      },
-    },
-    {
-      name: 'FLUX / FLUX 2 (UNET + CLIP + VAE)',
-      description: 'Workflow for FLUX and FLUX 2 models. Uses separate UNETLoader, CLIPLoader and VAELoader for modular architecture.',
-      source: 'manual',
-      sourceUrl: '',
-      modelTypes: ['flux', 'flux2'],
-      mode: 'image',
-      rawWorkflow: {
-        '1': { class_type: 'UNETLoader', inputs: { unet_name: 'model.safetensors', weight_dtype: 'default' } },
-        '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'clip.safetensors', type: 'flux', device: 'default' } },
-        '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
-        '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-        '5': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
-        '6': { class_type: 'KSampler', inputs: { model: ['1', 0], positive: ['4', 0], negative: ['4', 0], latent_image: ['5', 0], seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
-        '7': { class_type: 'VAEDecode', inputs: { samples: ['6', 0], vae: ['3', 0] } },
-        '8': { class_type: 'SaveImage', inputs: { images: ['7', 0], filename_prefix: 'locally_uncensored' } },
-      },
-    },
-    {
-      name: 'Wan / Hunyuan Video',
-      description: 'Video workflow for Wan 2.1/2.2 and Hunyuan models. Uses EmptyHunyuanLatentVideo for temporal latent space.',
-      source: 'manual',
-      sourceUrl: '',
-      modelTypes: ['wan', 'hunyuan'],
-      mode: 'video',
-      rawWorkflow: {
-        '1': { class_type: 'CLIPLoader', inputs: { clip_name: 'clip.safetensors', type: 'wan', device: 'default' } },
-        '2': { class_type: 'UNETLoader', inputs: { unet_name: 'model.safetensors', weight_dtype: 'default' } },
-        '3': { class_type: 'VAELoader', inputs: { vae_name: 'vae.safetensors' } },
-        '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 0] } },
-        '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 0] } },
-        '6': { class_type: 'EmptyHunyuanLatentVideo', inputs: { width: 848, height: 480, length: 24, batch_size: 1 } },
-        '7': { class_type: 'KSampler', inputs: { model: ['2', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0], seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
-        '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
-        '9': { class_type: 'SaveAnimatedWEBP', inputs: { images: ['8', 0], filename_prefix: 'locally_uncensored_vid', fps: 8, lossless: false, quality: 90, method: 'default' } },
-      },
-    },
-  ]
 }

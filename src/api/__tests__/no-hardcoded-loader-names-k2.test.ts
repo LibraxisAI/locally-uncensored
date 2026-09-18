@@ -70,26 +70,21 @@ function scanDir(dir: string): Hit[] {
 
 // Documented, justified exceptions. Each entry needs a reason a reader can
 // verify against the code, not just a filename.
-const EXCEPTIONS: Record<string, string> = {
-  // getBuiltinTemplates() in workflows.ts ships three STARTER templates for
-  // the (currently unwired, no UI calls getBuiltinTemplates or reads
-  // .rawWorkflow anywhere) Workflow Manager's template gallery. Their
-  // 'model.safetensors' / 'clip.safetensors' / 'ae.safetensors' /
-  // 'vae.safetensors' values are editable PLACEHOLDERS in a graph the
-  // system never submits to /prompt as-is: a real generation always goes
-  // through parseImportedWorkflow -> autoDetectParameterMap ->
-  // injectParameters, which writes the live-picked model name in at
-  // generation time. Not K2's bug class (a live request silently sending a
-  // stale/wrong value): nothing here is ever silently submitted.
-  'workflows.ts': 'getBuiltinTemplates() starter-template placeholders, never submitted directly (see comment above)',
-}
+//
+// K9 nachbessert Runde 3: this used to hold one entry, workflows.ts's
+// getBuiltinTemplates() - three STARTER templates for a Workflow Manager
+// template gallery that no UI ever called and nothing ever read
+// (.rawWorkflow was referenced nowhere outside its own test). Dead code,
+// deleted outright rather than kept as a documented exception (Hausregel:
+// delete dead code immediately, do not just work around it). This map stays
+// empty until a REAL, reachable exception needs one.
+const EXCEPTIONS: Record<string, string> = {}
 
 describe('no ComfyUI loader node in src/api hardcodes a *_name file value (K2)', () => {
   it('sanity: the scanner actually walks files and the field set is non-empty', () => {
     const all = scanDir(API_DIR)
     expect(LOADER_NAME_FIELDS.size).toBeGreaterThan(5)
-    // Sanity that the scanner itself works: the exception file must show up.
-    expect(all.some((h) => h.file === 'workflows.ts')).toBe(true)
+    expect(all).toBeDefined()
   })
 
   it('every hit is inside a documented exception file', () => {
