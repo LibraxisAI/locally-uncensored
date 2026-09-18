@@ -214,7 +214,9 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
         // further down instead of always `python_bin`.
         let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
         let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
-        let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Repair environment\" again") {
+        // Repair always rebuilds the venv from this interpreter, so the
+        // strict ensurepip probe applies (Runde 6, F11).
+        let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Repair environment\" again", true) {
             super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
             super::torch::TorchPythonDecision::UseInstead { path, .. } => {
                 update(
@@ -804,7 +806,9 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         // switching interpreters under an environment nothing rebuilt.
         let (_torch_args, _gpu_info, torch_index, torch_packages) = plan_pytorch_install();
         let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
-        match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Update ComfyUI\" again") {
+        // Runde 6, F11: Update never rebuilds the venv, so the light probe
+        // (ssl, pip) applies, not the ensurepip probe a venv build would need.
+        match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press \"Update ComfyUI\" again", false) {
             super::torch::TorchPythonDecision::Proceed => {}
             super::torch::TorchPythonDecision::UseInstead { path, current_version, chosen_version } => {
                 update("error", &super::torch::existing_venv_needs_repair_message(current_version, &path, chosen_version));

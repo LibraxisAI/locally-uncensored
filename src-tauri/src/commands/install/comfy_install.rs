@@ -486,7 +486,10 @@ pub fn install_comfyui(
             // and fail with pip's generic error, again. The venv itself is
             // still never rebuilt here (it may be hand-built, or carry
             // custom nodes' own state), only checked before the download.
-            let decision = super::torch::choose_torch_python(&venv_py, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again");
+            // Runde 6, F11: this branch never builds a venv, it only installs
+            // into the one that is already there, so `ensurepip` is not
+            // required of this interpreter, only that pip itself still works.
+            let decision = super::torch::choose_torch_python(&venv_py, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again", false);
             match super::torch::python_for_existing_venv(decision, &venv_py) {
                 Ok(py) => {
                     update(
@@ -507,7 +510,10 @@ pub fn install_comfyui(
             // Runs BEFORE `create_comfyui_venv`/PEP-668 detection so a
             // healthy choice never gets discarded for one that cannot serve
             // torch (Nachbesserung 6).
-            let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again") {
+            // No existing venv yet: `create_comfyui_venv` below may build one
+            // from this exact interpreter (only skipped when PEP 668 is not
+            // in effect), so the strict probe applies.
+            let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again", true) {
                 super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
                 super::torch::TorchPythonDecision::UseInstead { path, .. } => {
                     update(
@@ -893,7 +899,7 @@ mod tests {
         let src = include_str!("comfy_install.rs");
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
-        let existing_venv_check = needle("choose_torch_python(&venv_py,", " torch_index.as_deref(), &torch_package_refs, \"press Install ComfyUI again\")");
+        let existing_venv_check = needle("choose_torch_python(&venv_py,", " torch_index.as_deref(), &torch_package_refs, \"press Install ComfyUI again\", false)");
         let download_start = needle("Downloading PyTorch + Torchvision", " + Torchaudio (~2 GB total)");
 
         let at_check = src.find(&existing_venv_check).expect("the existing-venv path no longer checks torch/Python compatibility");

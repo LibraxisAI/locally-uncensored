@@ -347,6 +347,31 @@ fn python_can_build_a_venv(python_bin: &str) -> bool {
     matches!(run_probe_with_timeout(cmd, PYTHON_PROBE_TIMEOUT), Some(out) if out.status.success())
 }
 
+/// Review Runde 6, F11: the strict probe above asks for `ensurepip` even at
+/// call sites that will never run `python -m venv` with this interpreter at
+/// all, namely the interpreter of a venv that ALREADY EXISTS (Install over an
+/// existing venv, Update). `ensurepip` is what Debian/Ubuntu package
+/// separately (`python3-venv`); a customer who built that venv themselves
+/// with `virtualenv` or `uv` never needed `ensurepip` to get it, and this
+/// probe used to reject their perfectly working venv for lacking a package
+/// LU was never going to use. What those two call sites actually need from
+/// the interpreter is that it still runs pip: `ssl` (pip talks to the index
+/// over https) and `python -m pip --version` (pip is present and importable
+/// as a module, the same form every pip call in this codebase already uses).
+fn python_can_use_an_existing_venv(python_bin: &str) -> bool {
+    let mut ssl_cmd = crate::process_util::foreign_system_command(python_bin);
+    ssl_cmd.args(["-c", "import ssl"]);
+    crate::process_util::suppress_window(&mut ssl_cmd);
+    let ssl_ok = matches!(run_probe_with_timeout(ssl_cmd, PYTHON_PROBE_TIMEOUT), Some(out) if out.status.success());
+    if !ssl_ok {
+        return false;
+    }
+    let mut pip_cmd = crate::process_util::foreign_system_command(python_bin);
+    pip_cmd.args(["-m", "pip", "--version"]);
+    crate::process_util::suppress_window(&mut pip_cmd);
+    matches!(run_probe_with_timeout(pip_cmd, PYTHON_PROBE_TIMEOUT), Some(out) if out.status.success())
+}
+
 /// The newest interpreter this machine has for which the live index
 /// actually serves a wheel, among the ones `python_interpreters` found,
 /// AND that passes `probe` (in production, [`python_can_build_a_venv`]):
@@ -442,31 +467,50 @@ pub(crate) enum TorchPythonDecision {
 
 /// Runde 4, B7(b): at least one interpreter's VERSION matches what torch
 /// serves, but none of the version-matching candidates (current interpreter
-/// included) could pass the ssl/venv/ensurepip probe. This is a different
-/// customer situation from [`no_compatible_interpreter_message`] (which is
-/// "no version here serves torch at all") and needs different wording: the
-/// version is fine, but building a NEW venv with any of them would fail at
-/// `python -m venv` itself. On Debian/Ubuntu this is almost always the
-/// separately packaged `venv` support (`python3-venv`, or the minor-specific
-/// `python3.X-venv`), the exact package name this codebase already quotes
-/// at venv.rs's own `ensurepip` error hint and pip.rs's PEP-668 hint; not
-/// guessed here, reused for consistency. Other systems get the general
-/// reinstall suggestion instead of a distro package name nobody verified.
-pub(crate) fn venv_probe_failed_message(current: (u32, u32), interpreters: &[(String, Option<(u32, u32)>)], supported: &std::collections::BTreeSet<(u32, u32)>) -> String {
+/// included) could pass the probe. This is a different customer situation
+/// from [`no_compatible_interpreter_message`] (which is "no version here
+/// serves torch at all") and needs different wording: the version is fine,
+/// but the interpreter itself cannot be used.
+///
+/// Runde 6, F11: which failure this actually is depends on `will_build_venv`.
+/// At the two call sites that build (or rebuild) a venv with this
+/// interpreter, a failed probe means `python -m venv` itself would fail, and
+/// on Debian/Ubuntu that is almost always the separately packaged `venv`
+/// support (`python3-venv`, or the minor-specific `python3.X-venv`), the
+/// exact package name this codebase already quotes at venv.rs's own
+/// `ensurepip` error hint and pip.rs's PEP-668 hint. At the two call sites
+/// that only use an ALREADY EXISTING venv (Install over an existing venv,
+/// Update), no venv is ever built here, so that package name would be a
+/// false lead: what actually failed there is `ssl` or `pip` itself inside a
+/// venv nothing here builds.
+pub(crate) fn venv_probe_failed_message(
+    current: (u32, u32),
+    interpreters: &[(String, Option<(u32, u32)>)],
+    supported: &std::collections::BTreeSet<(u32, u32)>,
+    will_build_venv: bool,
+) -> String {
     let mut versions: Vec<String> = supported.iter().map(|(a, b)| format!("{a}.{b}")).collect();
     versions.sort();
+    let problem = if will_build_venv {
+        "it could not build a new virtual environment with it (a check of that interpreter's \
+         own ssl, venv and ensurepip support failed). On Debian or Ubuntu this usually means \
+         that Python's venv support is a separate package from Python itself: try \"sudo apt \
+         install python3-venv\", or \"python3.<minor>-venv\" for a specific version. On other \
+         systems, reinstalling that Python (for example \"pyenv install <version>\" again, or \
+         \"uv python install <version>\") usually restores a missing ssl or venv module too."
+    } else {
+        "its existing virtual environment's own pip no longer works (a check of that \
+         interpreter's own ssl and pip support failed). Reinstalling that Python (for example \
+         \"pyenv install <version>\" again, or \"uv python install <version>\") usually restores \
+         a missing ssl or pip module."
+    };
     format!(
         "This environment's Python is {maj}.{min}. LU found a Python version on this machine \
-         that PyTorch supports, but it could not build a new virtual environment with it (a \
-         check of that interpreter's own ssl, venv and ensurepip support failed). On Debian or \
-         Ubuntu this usually means that Python's venv support is a separate package from Python \
-         itself: try \"sudo apt install python3-venv\", or \"python3.<minor>-venv\" for a \
-         specific version. On other systems, reinstalling that Python (for example \"pyenv \
-         install <version>\" again, or \"uv python install <version>\") usually restores a \
-         missing ssl or venv module too. Versions LU's PyTorch build serves: {versions_joined}.\n\n\
-         Python interpreters LU found:\n{interpreters_block}",
+         that PyTorch supports, but {problem} Versions LU's PyTorch build serves: \
+         {versions_joined}.\n\nPython interpreters LU found:\n{interpreters_block}",
         maj = current.0,
         min = current.1,
+        problem = problem,
         versions_joined = versions.join(", "),
         interpreters_block = format_interpreter_lines(interpreters),
     )
@@ -497,10 +541,18 @@ pub(crate) fn venv_probe_failed_message(current: (u32, u32), interpreters: &[(St
 /// LU was about to proceed with be PROBED, not that it be auctioned off
 /// against a newer one. The rule is restored here: the interpreter that
 /// would be used anyway wins outright the moment it clears both bars
-/// (served by the live index, passes ssl/venv/ensurepip), regardless of
-/// what else is on the machine. A replacement is only ever looked for once
-/// `current_python` itself has failed one of the two.
-pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>, packages: &[&str], retry_action: &str) -> TorchPythonDecision {
+/// (served by the live index, passes the probe), regardless of what else is
+/// on the machine. A replacement is only ever looked for once `current_python`
+/// itself has failed one of the two.
+///
+/// Runde 6, F11: `will_build_venv` says whether LU is actually going to run
+/// `python -m venv` with `current_python` (Install without an existing venv,
+/// Repair, both of which rebuild) or only ever run pip inside a venv that
+/// already exists (Install over an existing venv, Update, neither of which
+/// touches `python -m venv`). It picks both the probe (ensurepip is required
+/// only when a venv will really be built) and the wording of a resulting
+/// failure message.
+pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>, packages: &[&str], retry_action: &str, will_build_venv: bool) -> TorchPythonDecision {
     let Some(current) = python_version_tuple(current_python) else {
         return TorchPythonDecision::Proceed;
     };
@@ -516,7 +568,8 @@ pub(crate) fn choose_torch_python(current_python: &str, index_url: Option<&str>,
         _ => return TorchPythonDecision::Proceed,
     };
     let interpreters = interpreter_inventory();
-    decide_torch_python(current_python, current, &supported, interpreters, retry_action, python_can_build_a_venv)
+    let probe: fn(&str) -> bool = if will_build_venv { python_can_build_a_venv } else { python_can_use_an_existing_venv };
+    decide_torch_python(current_python, current, &supported, interpreters, retry_action, will_build_venv, probe)
 }
 
 /// The pure decision core of [`choose_torch_python`], split out so B8's
@@ -531,6 +584,7 @@ fn decide_torch_python(
     supported: &std::collections::BTreeSet<(u32, u32)>,
     mut interpreters: Vec<(String, Option<(u32, u32)>)>,
     retry_action: &str,
+    will_build_venv: bool,
     mut probe: impl FnMut(&str) -> bool,
 ) -> TorchPythonDecision {
     if !interpreters.iter().any(|(p, _)| p == current_python) {
@@ -576,7 +630,7 @@ fn decide_torch_python(
         // probe. Two different customer stories need two different
         // messages: "torch does not serve any version I have" versus "I
         // have the right version, but it cannot build a venv" (B7(b)).
-        None if any_version_match => TorchPythonDecision::Blocked(venv_probe_failed_message(current, &interpreters, supported)),
+        None if any_version_match => TorchPythonDecision::Blocked(venv_probe_failed_message(current, &interpreters, supported, will_build_venv)),
         None => TorchPythonDecision::Blocked(no_compatible_interpreter_message(current, &interpreters, supported, retry_action)),
     }
 }
@@ -1016,6 +1070,7 @@ mod tests {
             &supported,
             interpreters,
             "press Repair environment again",
+            true,
             always_works,
         );
         assert!(
@@ -1043,6 +1098,7 @@ mod tests {
             &supported,
             interpreters,
             "press Repair environment again",
+            true,
             always_works,
         );
         match decision {
@@ -1072,7 +1128,7 @@ mod tests {
             }
             path != current
         };
-        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", probe);
+        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", true, probe);
         match decision {
             TorchPythonDecision::UseInstead { path, .. } => assert_eq!(path, "/usr/bin/python3.11"),
             _ => panic!("expected UseInstead"),
@@ -1088,12 +1144,129 @@ mod tests {
         let current = "/comfy/venv/bin/python3";
         let interpreters = vec![(current.to_string(), Some((3, 12)))];
         let supported = supported_3_10_through_13();
-        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", |_| false);
+        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", true, |_| false);
         match decision {
             TorchPythonDecision::Blocked(msg) => {
                 assert!(msg.contains("ssl, venv and ensurepip"), "{msg}");
             }
             _ => panic!("expected Blocked with the venv-probe-failed wording"),
+        }
+    }
+
+    // ── Runde 6, F11 (review Runde 6, Abschnitt 2): the strict venv-build
+    // probe (`import ssl, venv, ensurepip`) used to run even at call sites
+    // that never build a venv with this interpreter at all (Update, Install
+    // over an existing venv), rejecting a perfectly healthy, hand-built venv
+    // on Debian/Ubuntu just because `python3-venv` (which ships `ensurepip`
+    // separately there) was never installed. A fake interpreter that mirrors
+    // exactly that shape (ssl and pip both work, `ensurepip` does not) proves
+    // the light probe accepts it while the strict one still, correctly,
+    // rejects it.
+
+    #[cfg(not(windows))]
+    fn write_fake_python_missing_ensurepip(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-no-ensurepip.sh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"-c\" ]; then\n\
+             case \"$2\" in\n\
+             *ensurepip*) exit 1 ;;\n\
+             *) exit 0 ;;\n\
+             esac\n\
+             fi\n\
+             if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"pip\" ]; then\n\
+             echo \"pip 24.0\"\n\
+             exit 0\n\
+             fi\n\
+             exit 1\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[cfg(windows)]
+    fn write_fake_python_missing_ensurepip(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-no-ensurepip.bat");
+        std::fs::write(
+            &path,
+            "@echo off\r\n\
+             echo %* | findstr /C:\"ensurepip\" >nul\r\n\
+             if %errorlevel%==0 exit /b 1\r\n\
+             echo %* | findstr /C:\"-m pip\" >nul\r\n\
+             if %errorlevel%==0 (\r\n\
+             echo pip 24.0\r\n\
+             exit /b 0\r\n\
+             )\r\n\
+             echo %* | findstr /C:\"-c\" >nul\r\n\
+             if %errorlevel%==0 exit /b 0\r\n\
+             exit /b 1\r\n",
+        )
+        .unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[cfg(not(windows))]
+    fn write_fake_python_without_ssl(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-no-ssl.sh");
+        std::fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[cfg(windows)]
+    fn write_fake_python_without_ssl(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-no-ssl.bat");
+        std::fs::write(&path, "@echo off\r\nexit /b 1\r\n").unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn python_can_use_an_existing_venv_accepts_an_interpreter_missing_ensurepip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = write_fake_python_missing_ensurepip(dir.path());
+        assert!(python_can_use_an_existing_venv(&fake), "the light probe must accept an interpreter whose pip still works");
+        // Negative control: the strict venv-build probe must still reject
+        // this exact same interpreter, otherwise the two probes are not
+        // actually different and F11 changed nothing.
+        assert!(!python_can_build_a_venv(&fake), "the strict probe must still reject a missing ensurepip");
+    }
+
+    #[test]
+    fn python_can_use_an_existing_venv_still_rejects_a_dead_interpreter() {
+        // Negative control on the other axis: an interpreter that cannot
+        // even import ssl must be rejected by BOTH probes, light or strict.
+        // Without this, "light" could be read as "always true".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = write_fake_python_without_ssl(dir.path());
+        assert!(!python_can_use_an_existing_venv(&fake));
+        assert!(!python_can_build_a_venv(&fake));
+    }
+
+    #[test]
+    fn a_missing_ensurepip_probe_failure_on_an_existing_venv_does_not_mention_venv_building() {
+        // The wording, not just the probe, must be honest at a call site
+        // that never builds a venv: this failure is "pip inside your venv is
+        // broken", not "LU could not build a new virtual environment",
+        // which would be a false lead for a customer who never asked LU to
+        // build anything.
+        let current = "/comfy/venv/bin/python3";
+        let interpreters = vec![(current.to_string(), Some((3, 12)))];
+        let supported = supported_3_10_through_13();
+        let decision = decide_torch_python(current, (3, 12), &supported, interpreters, "retry", false, |_| false);
+        match decision {
+            TorchPythonDecision::Blocked(msg) => {
+                assert!(msg.contains("no longer works"), "{msg}");
+                assert!(!msg.contains("build a new virtual environment"), "{msg}");
+                assert!(!msg.contains("ensurepip"), "{msg}");
+                assert!(!msg.contains("python3-venv"), "{msg}");
+            }
+            _ => panic!("expected Blocked with the existing-venv wording"),
         }
     }
 }
