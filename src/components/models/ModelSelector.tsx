@@ -35,6 +35,7 @@ import {
 } from '../../api/lu-engine-switch'
 import { tryAcquireLuEngineSwap, releaseLuEngineSwap, luEngineSwapInFlight, useLuEngineSwapRunning } from '../../api/lu-engine-swap-lock'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { log } from '../../lib/logger'
 import { ModelPickerSkeleton } from '../layout/ViewSkeletons'
 import type { AIModel } from '../../types/models'
 import { MOTION_S } from '../ui/motion'
@@ -387,6 +388,68 @@ function groupByFamily(models: AIModel[]): { family: string; models: AIModel[] }
       return a.localeCompare(b)
     })
     .map(([family, models]) => ({ family, models }))
+}
+
+/**
+ * K6 (3.0.1): GitHub #132, AppImage/Ubuntu 24.04 — "it adds models and then
+ * breaks the selection field... it's fixed by restarting". Not reproduced in
+ * this pass (no Linux box available, see proof doc), but a restart-only fix
+ * for a component with no error boundary of its own is the exact signature
+ * of an uncaught render throw: ChatView wraps the WHOLE chat area in one
+ * ErrorBoundary (AppShell.tsx), so a single bad row breaking here during
+ * grouping would take the entire chat view down with it, not just this
+ * picker, and only a full remount (restart) clears a tripped React
+ * error-boundary. Grouping freshly downloaded, not-yet-fully-normalized model
+ * data is exactly the computation most likely to meet a field a fresh entry
+ * does not carry yet.
+ *
+ * Extracted as its own pure function for the same reason as the LM Studio
+ * helpers below: no test harness exists for the whole ModelSelector
+ * component, and this is exactly the kind of decision that needs a
+ * regression test more than it needs to stay physically inline.
+ *
+ * On success: real grouping, unchanged behaviour. On a throw: falls back to
+ * one flat, ungrouped list (still fully usable — every model is still there
+ * and still clickable) instead of letting the exception reach React and take
+ * the whole chat view with it, and logs which models were in play so the
+ * NEXT report carries a stack trace pointing at the real field instead of
+ * nothing at all.
+ */
+export function computeModelGroups(
+  textModels: AIModel[],
+  luEngineHoldsChat: boolean,
+  standbyName: string | null,
+  holderName: string | null,
+): { groups: { family: string; models: AIModel[] }[]; showHeadings: boolean; groupingFailed: boolean } {
+  try {
+    const wechsel = splitBackendSwitchRows(textModels, luEngineHoldsChat, standbyName, holderName)
+    const groups: { family: string; models: AIModel[] }[] = [
+      ...(wechsel.switching.length > 0 && wechsel.label
+        ? [{ family: wechsel.label, models: wechsel.switching }]
+        : []),
+      // Das fremde Backend, das den Platz haelt, unter seinem eigenen Namen
+      // statt verstreut ueber die Familien.
+      ...(wechsel.holding.length > 0 && wechsel.holderLabel
+        ? [{ family: wechsel.holderLabel, models: wechsel.holding }]
+        : []),
+      ...groupByFamily(wechsel.rest),
+    ]
+    // The one rule, asked rather than copied (second review): one group
+    // normally draws no heading, except the switch group, where the heading
+    // is the warning that picking from it moves the backend.
+    const showHeadings = needsBackendSwitchHeading(groups.map((g) => g.family), wechsel.label)
+    return { groups, showHeadings, groupingFailed: false }
+  } catch (e) {
+    log.error('[ModelSelector] grouping the model list threw, falling back to a flat ungrouped list', {
+      err: e, modelCount: textModels.length,
+      modelNames: textModels.slice(0, 20).map((m) => m.name),
+    })
+    return {
+      groups: textModels.length > 0 ? [{ family: '', models: textModels }] : [],
+      showHeadings: false,
+      groupingFailed: true,
+    }
+  }
 }
 
 // ── LM Studio selection helpers (§18) ─────────────────────────
@@ -1131,22 +1194,12 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   // wartenden Backends unter unserer eigenen Engine. Gibt es nichts zu
   // wechseln, gruppiert der Waehler nach Familie wie eh und je, denn dann gibt
   // es keine Folge zu melden und Abstammung ist, wonach Menschen waehlen.
-  const wechsel = splitBackendSwitchRows(textModels, luEngineHoldsChat, standbyName, holderName)
-  const groups: { family: string; models: AIModel[] }[] = [
-    ...(wechsel.switching.length > 0 && wechsel.label
-      ? [{ family: wechsel.label, models: wechsel.switching }]
-      : []),
-    // Das fremde Backend, das den Platz haelt, unter seinem eigenen Namen
-    // statt verstreut ueber die Familien.
-    ...(wechsel.holding.length > 0 && wechsel.holderLabel
-      ? [{ family: wechsel.holderLabel, models: wechsel.holding }]
-      : []),
-    ...groupByFamily(wechsel.rest),
-  ]
-  // The one rule, asked rather than copied (second review): one group normally
-  // draws no heading, except the switch group, where the heading is the
-  // warning that picking from it moves the backend.
-  const showHeadings = needsBackendSwitchHeading(groups.map((g) => g.family), wechsel.label)
+  //
+  // K6 (3.0.1): siehe computeModelGroups oben fuer die volle Begruendung, warum
+  // dieser Schritt jetzt gegen einen Absturz gepanzert ist statt roh JSX zu
+  // fuettern.
+  const { groups, showHeadings, groupingFailed } =
+    computeModelGroups(textModels, luEngineHoldsChat, standbyName, holderName)
   const hasOllamaModels = textModels.some(m => ('provider' in m && m.provider === 'ollama') || !('provider' in m))
   textModelsEmptyRef.current = textModels.length === 0
 
@@ -1242,6 +1295,23 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
             {appMode === 'cloud' && (
               <div className="px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] text-gray-500">
                 Cloud mode shows hosted models only. Switch the app to Local mode to use Ollama, LM Studio or the LU Engine.
+              </div>
+            )}
+
+            {/* K6: grouping threw and was caught above instead of crashing the
+                whole chat view. Says so, in the dropdown itself, with a way
+                to try again — the fallback list below still works, this is
+                just honesty about why it looks flat. */}
+            {groupingFailed && (
+              <div className="px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] text-amber-600 dark:text-amber-400 flex items-center justify-between gap-2">
+                <span>Couldn't group the model list, showing it flat.</span>
+                <button
+                  onClick={() => void fetchModels()}
+                  data-testid="model-grouping-retry"
+                  className="underline shrink-0"
+                >
+                  Retry
+                </button>
               </div>
             )}
 
