@@ -185,7 +185,10 @@ describe('/loop actually loops', () => {
     // Unlimited is only defensible if the user can see it and stop it.
     for (const f of ['../../hooks/useCodex.ts', '../../hooks/useAgentChat.ts']) {
       expect(read(f)).toContain('useAgentLoopStore.getState().start(')
-      expect(read(f)).toContain('useAgentLoopStore.getState().clear()')
+      // B2: clear() takes the conversation id now — a bare `clear()` with no
+      // argument doesn't compile any more (the store is per conversation),
+      // so this also pins that Stop names WHICH conversation's loop it ends.
+      expect(read(f)).toMatch(/useAgentLoopStore\.getState\(\)\.clear\([^)]+\)/)
     }
   })
 

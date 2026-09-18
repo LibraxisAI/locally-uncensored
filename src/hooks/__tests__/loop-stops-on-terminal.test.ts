@@ -53,7 +53,9 @@ describe.each([
 
   it('it clears the loop store, or the bar keeps promising a pass nobody runs', () => {
     const block = src.slice(src.indexOf(guard), src.indexOf(guard) + 700)
-    expect(block).toContain('useAgentLoopStore.getState().clear()')
+    // B2: clear() takes the conversation id (the store is per conversation
+    // now), so this also pins that the right run's loop is the one cleared.
+    expect(block).toMatch(/useAgentLoopStore\.getState\(\)\.clear\(convId\)/)
   })
 
   it('and says once why it stopped', () => {

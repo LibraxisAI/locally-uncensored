@@ -65,7 +65,7 @@ const removeButton = () => screen.queryByTestId('codex-remove-folder')
 beforeEach(() => {
   useCodexStore.setState({ workingDirectory: '', threads: {}, sendsInFlight: 0 })
   useGenerationStore.setState({ generating: {} })
-  useAgentLoopStore.setState({ loop: null })
+  useAgentLoopStore.setState({ loops: {} })
   useAgentModeStore.setState({ workspaces: {} })
   useSettingsStore.setState({ settings: { ...DEFAULT_SETTINGS } })
   useChatStore.setState({ conversations: [], activeConversationId: null })
@@ -164,7 +164,7 @@ describe('the header shows the folder, so it also gives it back', () => {
   it('is locked between two loop passes as well', async () => {
     act(() => useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH))
     useAgentLoopStore.setState({
-      loop: { conversationId: 'conv-1', pass: 2, cap: 0, task: 'go', intervalMs: 30000, nextAt: 0 },
+      loops: { 'conv-1': { conversationId: 'conv-1', pass: 2, cap: 0, task: 'go', intervalMs: 30000, nextAt: 0 } },
     })
     await show()
     expect((removeButton() as HTMLButtonElement).getAttribute('title')).toContain('loop')

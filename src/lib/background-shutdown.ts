@@ -58,19 +58,17 @@ export function stopAllBackgroundWork(): void {
   const ids = new Set<string>()
   for (const convId of Object.keys(useAgentTaskStore.getState().byConv)) ids.add(convId)
   for (const convId of Object.keys(useGenerationStore.getState().generating)) ids.add(convId)
-  const loopConvId = useAgentLoopStore.getState().loop?.conversationId
-  if (loopConvId) ids.add(loopConvId)
+  // Per Konversation seit B2 Commit 3 (davor war das ein einziger globaler
+  // Platz): jede Konversation mit einem wartenden /loop-Pass zaehlt, nicht
+  // nur eine.
+  for (const convId of Object.keys(useAgentLoopStore.getState().loops)) ids.add(convId)
 
   for (const convId of ids) {
     useAgentTaskStore.getState().cancelAll(convId)
     useGenerationStore.getState().abortConversation(convId)
     stopRun(convId)
+    useAgentLoopStore.getState().clear(convId)
   }
-  // Der Zeitgeber eines wartenden /loop-Passes haengt nicht an einer
-  // Konversation im Speicher, sondern am globalen Store (bis B2 Commit 3
-  // dieser Zweigarbeit ihn je Konversation fuehrt) - darum eigens geraeumt,
-  // nicht durch die Schleife oben erfasst.
-  if (loopConvId) useAgentLoopStore.getState().clear()
 }
 
 /**

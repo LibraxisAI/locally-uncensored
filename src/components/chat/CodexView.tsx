@@ -26,7 +26,7 @@ import { LuEngineSwitchBar } from './LuEngineSwitchBar'
 import { LoopBar } from './LoopBar'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useModelStore } from '../../stores/modelStore'
-import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useAnyAgentLoopActive } from '../../stores/agentLoopStore'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import {
   CODEX_WORKDIR_LOCK_TITLE,
@@ -127,7 +127,10 @@ export function CodexView() {
   // 'running' stehengeblieben ist, sperrt den Ordner nicht mehr allein.
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
-  const loop = useAgentLoopStore((s) => s.loop)
+  // The working directory is GLOBAL across every Codex conversation (A8): a
+  // loop in ANY of them must still keep the folder locked, not only the
+  // active one's.
+  const loop = useAnyAgentLoopActive()
   const lockReason = codexBusyReason({ sendsInFlight, threads, generating: generatingMap, loop })
 
   // Where the agent goes while no folder is picked: a per-chat workspace or

@@ -2467,7 +2467,7 @@ export function useCodex() {
         // Stop the loop where the refusal happened, and say so once. Silently
         // dropping it would leave the LoopBar promising a pass nobody is going
         // to run (audit A3).
-        useAgentLoopStore.getState().clear()
+        useAgentLoopStore.getState().clear(convId)
         useChatStore.getState().addMessage(convId, {
           id: uuid(), role: 'assistant', timestamp: Date.now(),
           content: `The loop stopped because the run was ${loopHalt}. Start it again once that is sorted.`,
@@ -2480,9 +2480,9 @@ export function useCodex() {
         if (saidDone) {
           // Nothing to do — the marker is stripped from the display by
           // cleanCodexText, so the user just sees the answer.
-          useAgentLoopStore.getState().clear()
+          useAgentLoopStore.getState().clear(convId)
         } else if (cap > 0 && nextPass > cap) {
-          useAgentLoopStore.getState().clear()
+          useAgentLoopStore.getState().clear(convId)
           useChatStore.getState().addMessage(convId, {
             id: uuid(), role: 'assistant', timestamp: Date.now(),
             content: `Stopped after ${cap} passes, which is the limit set in Settings. What is above is where it got to. Raise the limit or set it to unlimited to keep going.`,
@@ -2500,11 +2500,11 @@ export function useCodex() {
             // Clear the loop store too — leaving it standing painted a LoopBar
             // that promised a pass which was never coming (audit A3).
             if (runningRef.current) {
-              useAgentLoopStore.getState().clear()
+              useAgentLoopStore.getState().clear(convForLoop)
               return
             }
             if (useChatStore.getState().activeConversationId !== convForLoop) {
-              useAgentLoopStore.getState().clear()
+              useAgentLoopStore.getState().clear(convForLoop)
               return
             }
             // The Code view is not on screen (other chat mode, other view):
@@ -2574,7 +2574,7 @@ export function useCodex() {
       clearTimeout(codexLoopTimer)
       codexLoopTimer = null
     }
-    useAgentLoopStore.getState().clear()
+    useAgentLoopStore.getState().clear(stoppedConvId ?? '')
     // NUR wenn der Controller dieser Instanz auch zu DIESER Unterhaltung
     // gehoert. Gehoert er woanders hin, hat `abortConversation` oben schon den
     // richtigen Griff gezogen, und der Lauf in der anderen Unterhaltung laeuft

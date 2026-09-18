@@ -2547,7 +2547,7 @@ export function useAgentChat() {
       if (opts?.loop && convId && loopHalt) {
         // Same rule as the coding surface: no retry fixes an empty wallet, so
         // the loop ends here instead of refiring into the same refusal.
-        useAgentLoopStore.getState().clear()
+        useAgentLoopStore.getState().clear(convId)
         useChatStore.getState().addMessage(convId, {
           id: uuid(), role: 'assistant', timestamp: Date.now(),
           content: `The loop stopped because the run was ${loopHalt}. Start it again once that is sorted.`,
@@ -2559,9 +2559,9 @@ export function useAgentChat() {
         const nextPass = loopState.pass + 1
 
         if (saidDone) {
-          useAgentLoopStore.getState().clear()
+          useAgentLoopStore.getState().clear(convId)
         } else if (cap > 0 && nextPass > cap) {
-          useAgentLoopStore.getState().clear()
+          useAgentLoopStore.getState().clear(convId)
           useChatStore.getState().addMessage(convId, {
             id: uuid(), role: 'assistant', timestamp: Date.now(),
             content: `Stopped after ${cap} passes, which is the limit set in Settings. What is above is where it got to. Raise the limit or set it to unlimited to keep going.`,
@@ -2578,11 +2578,11 @@ export function useAgentChat() {
             // A skipped pass clears the loop store too (audit A3) — leaving
             // it standing painted a LoopBar promising a pass that never came.
             if (runningRef.current) {
-              useAgentLoopStore.getState().clear()
+              useAgentLoopStore.getState().clear(convForLoop)
               return
             }
             if (useChatStore.getState().activeConversationId !== convForLoop) {
-              useAgentLoopStore.getState().clear()
+              useAgentLoopStore.getState().clear(convForLoop)
               return
             }
             void sendRef.current?.(buildLoopRecheck(loopState.task, nextPass), undefined, {
@@ -2622,7 +2622,7 @@ export function useAgentChat() {
       clearTimeout(agentLoopTimer)
       agentLoopTimer = null
     }
-    useAgentLoopStore.getState().clear()
+    useAgentLoopStore.getState().clear(stoppedConvId ?? '')
     // NUR den eigenen Lauf. `runningRef`, `abortRef` und `isAgentRunning`
     // gehoeren der Hook-Instanz, nicht der Unterhaltung; ohne diese Bedingung
     // beendete Stop in einer zweiten Unterhaltung den Agentenlauf der ersten

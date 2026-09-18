@@ -141,7 +141,7 @@ beforeEach(() => {
   __resetRunStopsForTests()
   useChatStore.setState({ conversations: [], activeConversationId: null })
   useAgentTaskStore.setState({ byConv: {} })
-  useAgentLoopStore.setState({ loop: null })
+  useAgentLoopStore.setState({ loops: {} })
   useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
   useAgentModeStore.setState({ agentModeActive: {} })
   useTodoStore.setState({ byConversation: {}, updatedAt: {} })
@@ -247,14 +247,14 @@ describe('Stop, gemessen in Anfragen an die Wolke', () => {
     await act(async () => { await result.current.sendMessage('/loop 1s zaehle weiter') })
     // Pass 1 ist durch, Pass 2 haengt am Zeitgeber, die Leiste steht.
     expect(zaehler.n()).toBe(1)
-    expect(useAgentLoopStore.getState().loop?.conversationId).toBe(convId)
+    expect(useAgentLoopStore.getState().loops[convId]?.conversationId).toBe(convId)
 
     act(() => { result.current.stopGeneration() })
     await act(async () => { await warte(1500) })
 
     // Die Zahl zuerst, denn sie ist die Rechnung.
     expect(zaehler.n()).toBe(1)
-    expect(useAgentLoopStore.getState().loop).toBeNull()
+    expect(useAgentLoopStore.getState().loops[convId]).toBeUndefined()
     expect(isRunStopped(convId)).toBe(true)
   })
 

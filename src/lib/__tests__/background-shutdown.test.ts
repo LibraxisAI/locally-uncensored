@@ -79,7 +79,7 @@ function wartenderLoopPass(convId: string): void {
 beforeEach(() => {
   useAgentTaskStore.setState({ byConv: {} })
   useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
-  useAgentLoopStore.setState({ loop: null })
+  useAgentLoopStore.setState({ loops: {} })
   useBackgroundShutdownStore.setState({ notice: null })
   __resetRunStopsForTests()
   __resetBackgroundShutdownForTests()
@@ -138,7 +138,7 @@ describe('stopAllBackgroundWork: reach (Runde 2, Blocker 2)', () => {
 
     stopAllBackgroundWork()
 
-    expect(useAgentLoopStore.getState().loop).toBeNull()
+    expect(useAgentLoopStore.getState().loops).toEqual({})
     expect(isRunStopped('conv-loop')).toBe(true)
   })
 
@@ -151,7 +151,7 @@ describe('stopAllBackgroundWork: reach (Runde 2, Blocker 2)', () => {
 
     expect(task.signal.aborted).toBe(true)
     expect(strom.aborted()).toBe(true)
-    expect(useAgentLoopStore.getState().loop).toBeNull()
+    expect(useAgentLoopStore.getState().loops).toEqual({})
     expect(isRunStopped('conv-task')).toBe(true)
     expect(isRunStopped('conv-stream')).toBe(true)
     expect(isRunStopped('conv-loop')).toBe(true)
