@@ -2610,6 +2610,14 @@ export function useAgentChat() {
     // rest of the session.
     const stoppedConvId = useChatStore.getState().activeConversationId
     stopRun(stoppedConvId)
+    // B1 (3.0.1, Orchestrator-Entscheid): "Stop means stop" gilt auch fuer
+    // Hintergrundauftraege dieser Unterhaltung, die per delegate_task
+    // background gestartet wurden. Vorher endete Stop nur die Hauptantwort,
+    // ein laufender Unteragent kostete unbemerkt weiter Rechenzeit, bis er von
+    // selbst fertig wurde. cancelAll bricht jeden `running`-Eintrag dieser
+    // Unterhaltung ab (siehe agentTaskStore.ts), derselbe Griff wie der
+    // "Stop all"-Knopf im Aufgabenpanel.
+    useAgentTaskStore.getState().cancelAll(stoppedConvId ?? '')
     if (agentLoopTimer) {
       clearTimeout(agentLoopTimer)
       agentLoopTimer = null

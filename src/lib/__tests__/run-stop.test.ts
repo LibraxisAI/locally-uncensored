@@ -111,6 +111,15 @@ describe('run-stop — both loop surfaces are wired to it', () => {
     }
   })
 
+  it('B1 (3.0.1): both stop buttons also cancel background delegate_task agents of the conversation', () => {
+    // Before this fix, a `delegate_task background: true` run kept billing
+    // compute after Stop — the main answer ended, the sub-agent did not, and
+    // the Orchestrator's decision is that Stop means stop for both.
+    for (const src of [codex, agent]) {
+      expect(src).toContain('useAgentTaskStore.getState().cancelAll(stoppedConvId')
+    }
+  })
+
   it('Codex also refuses to auto-apply staged changes after a Stop', () => {
     // The auto-apply sits on the loop's NORMAL exit path (the for-loop condition
     // includes !abort.signal.aborted, so a Stop leaves through it), which meant a

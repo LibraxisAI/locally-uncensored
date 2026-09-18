@@ -89,9 +89,51 @@ function TaskRow({ task, now }: { task: AgentTask; now: number }) {
   )
 }
 
+/**
+ * B1 (3.0.1, Orchestrator-Entscheid): Unterhaltung wechseln beendet einen
+ * Hintergrundauftrag NICHT — der Kunde darf ihn bewusst weiterlaufen lassen.
+ * Aber wenn dieses Panel unten nur an `activeConversationId` haengt, zeigt es
+ * beim Wechsel in eine andere Unterhaltung GAR NICHTS mehr, obwohl anderswo
+ * noch etwas laeuft und Credits kostet. Diese Leiste ist die sichtbare
+ * Ausnahme: sie zaehlt laufende Aufgaben in JEDER ANDEREN Unterhaltung und
+ * bietet denselben Stop-all-Griff wie das Panel selbst.
+ */
+function ElsewhereBar({ byConv, activeConvId }: {
+  byConv: Record<string, AgentTask[]>
+  activeConvId: string | null
+}) {
+  const cancelAll = useAgentTaskStore((s) => s.cancelAll)
+  const elsewhere = Object.entries(byConv).filter(([id]) => id !== activeConvId)
+  const laufend = elsewhere.reduce(
+    (n, [, list]) => n + list.filter((t) => t.status === 'running').length,
+    0,
+  )
+  if (laufend === 0) return null
+  return (
+    <div
+      data-testid="agent-panel-elsewhere-bar"
+      className="flex items-center gap-1.5 px-2 py-1 border-b border-gray-200 dark:border-white/[0.04] bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400"
+    >
+      <Loader2 size={10} className="animate-spin shrink-0" />
+      <span className="t-micro flex-1">
+        {laufend} background {laufend === 1 ? 'agent' : 'agents'} running in {elsewhere.length === 1 ? 'another chat' : 'other chats'} · costs credits
+      </span>
+      <button
+        onClick={() => { for (const [id] of elsewhere) cancelAll(id) }}
+        title="Stop every running agent in other chats"
+        data-testid="agent-panel-elsewhere-stop-all"
+        className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors shrink-0"
+      >
+        <Square size={9} />
+      </button>
+    </div>
+  )
+}
+
 export function AgentPanel() {
   const convId = useChatStore((s) => s.activeConversationId)
-  const tasks = useAgentTaskStore((s) => (convId ? s.byConv[convId] : undefined))
+  const byConv = useAgentTaskStore((s) => s.byConv)
+  const tasks = convId ? byConv[convId] : undefined
   const cancelAll = useAgentTaskStore((s) => s.cancelAll)
   const width = useUIStore((s) => s.agentPanelWidth)
   const collapsed = useUIStore((s) => s.agentPanelCollapsed)
@@ -103,6 +145,13 @@ export function AgentPanel() {
   // Sekunde für eine Zahl, die sich nicht mehr ändert.
   const laufend = (tasks ?? []).filter((t) => t.status === 'running').length
   const gescheitert = (tasks ?? []).filter((t) => t.status === 'failed').length
+  // B1: laufende Aufgaben in JEDER ANDEREN Unterhaltung, unabhaengig davon,
+  // ob diese hier selbst welche hat. Entscheidet, ob das Panel ueberhaupt
+  // sichtbar bleibt, wenn die aktive Unterhaltung leer ist.
+  const anderswoLaufend = Object.entries(byConv).reduce(
+    (n, [id, list]) => (id === convId ? n : n + list.filter((t) => t.status === 'running').length),
+    0,
+  )
 
   // ── Eine NEUE Aufgabe klappt das Panel auf ─────────────────────────────
   //
@@ -135,7 +184,7 @@ export function AgentPanel() {
     return () => clearInterval(id)
   }, [laufend])
 
-  if (!convId || !tasks?.length) return null
+  if (!convId || (!tasks?.length && anderswoLaufend === 0)) return null
 
   if (collapsed) {
     return (
@@ -148,6 +197,20 @@ export function AgentPanel() {
         >
           <PanelRightOpen size={12} />
         </button>
+        {/* B1: auch zugeklappt und auch wenn die aktive Unterhaltung selbst
+            still ist, muss sichtbar bleiben, dass ANDERSWO noch Credits
+            verbrannt werden. */}
+        {anderswoLaufend > 0 && (
+          <button
+            onClick={() => setCollapsed(false)}
+            title={`${anderswoLaufend} running in other chats · costs credits`}
+            data-testid="agent-panel-elsewhere-badge"
+            className="mt-1 flex flex-col items-center text-amber-500"
+          >
+            <Loader2 size={10} className="animate-spin" />
+            <span className="t-mono">{anderswoLaufend}</span>
+          </button>
+        )}
         {/* Auch zugeklappt muss "es läuft etwas" sichtbar bleiben — sonst
             versteckt ein Klick die einzige Spur eines Agenten, der gerade
             Werkzeuge auf der Maschine des Nutzers fährt. */}
@@ -231,10 +294,12 @@ export function AgentPanel() {
         </button>
       </div>
 
+      <ElsewhereBar byConv={byConv} activeConvId={convId} />
+
       <div className="flex-1 overflow-y-auto scrollbar-thin min-h-0">
         {/* Neueste oben: das Panel beantwortet "was läuft gerade", nicht
             "was lief zuerst". */}
-        {[...tasks].reverse().map((t) => (
+        {[...(tasks ?? [])].reverse().map((t) => (
           <TaskRow key={t.id} task={t} now={now} />
         ))}
       </div>

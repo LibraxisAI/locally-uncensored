@@ -564,7 +564,14 @@ export async function defaultSubAgentRunner(
       const material = finalContent || gesammeltesMaterial(messages)
       return `${options.budget.haltMessage()} ${material || '(no partial answer)'}`
     }
-    const turn = await provider.chatWithTools(modelId, messages, llmTools, {})
+    // B1 (3.0.1): `gates.abortSignal` was only checked at the TOP of the next
+    // iteration, never handed to the provider call itself. A Stop pressed
+    // mid-request left the fetch running to completion on its own — T4
+    // measured a 25.2s cloud request finishing with status 200, 13.4s after
+    // the user stopped, and that is paid compute the product promised would
+    // not happen ("Stop means stop"). Threading the same signal the tool
+    // gates already use into the request makes the abort reach the wire.
+    const turn = await provider.chatWithTools(modelId, messages, llmTools, { signal: gates.abortSignal })
     // What a sub-agent returns becomes a TOOL RESULT in the parent's context,
     // so leaked reasoning floods the run it was supposed to shorten (2.6.7
     // Denk-Audit, Loch 11). Same settlement as every visible surface.
