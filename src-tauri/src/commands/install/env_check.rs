@@ -2469,7 +2469,7 @@ mod start_tests {
 
     #[test]
     fn r1_8_a_trimmed_traceback_still_skips_its_frames() {
-        // R1-8: this is the shape run_python_bounded actually stores — every
+        // R1-8: this is the shape run_python_bounded actually stores, every
         // line already `.trim()`ed, so a frame carries no leading whitespace
         // at all. The old filter (line.starts_with(' ')) was dead against
         // text like this, so a frame line as the LAST stored line (a kill

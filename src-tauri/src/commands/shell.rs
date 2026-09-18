@@ -306,7 +306,7 @@ struct RunningShell {
     /// R1-9: wann diese Karte entstand. `shell_mark_cancelled` legt ueber
     /// `or_default()` einen Eintrag an, auch wenn der zugehoerige Lauf nie
     /// startet (ein doppelter oder verspaeteter Abbruch, eine falsche
-    /// Kennung vom Aufrufer) — ohne `pid` faellt `ShellSlot::drop` nie fuer
+    /// Kennung vom Aufrufer), ohne `pid` faellt `ShellSlot::drop` nie fuer
     /// ihn, also blieb die Karte fuer den Rest der Sitzung liegen. `Instant`
     /// statt `SystemTime`: eine Uhrumstellung darf das Fegen nicht verzerren.
     created_at: Instant,

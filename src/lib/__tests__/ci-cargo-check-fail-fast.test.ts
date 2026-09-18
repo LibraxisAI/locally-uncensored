@@ -4,7 +4,7 @@
  * cancel the others over.
  *
  * Without `fail-fast: false`, a run broken on BOTH `ubuntu-22.04` and
- * `windows-latest` shows only whichever platform failed first — the other
+ * `windows-latest` shows only whichever platform failed first, the other
  * lane gets cancelled before it reports anything. That cost the 3.0.0
  * release night five rounds: fix the Ubuntu failure, push, wait for CI,
  * discover the Windows failure that was there the whole time. `tauri-build`
@@ -41,7 +41,7 @@ function jobBlock(yaml: string, job: string): string {
   return lines.slice(start, end).join('\n')
 }
 
-describe('ci.yml — cargo-check does not hide the second platform', () => {
+describe('ci.yml, cargo-check does not hide the second platform', () => {
   it('has a cargo-check job with both CI platforms', () => {
     const block = jobBlock(CI_YML, 'cargo-check')
     expect(block, 'cargo-check job is gone from ci.yml').not.toBe('')
@@ -52,7 +52,7 @@ describe('ci.yml — cargo-check does not hide the second platform', () => {
   it('sets fail-fast: false on the cargo-check matrix', () => {
     const block = jobBlock(CI_YML, 'cargo-check')
     // Must sit inside the `strategy:` block, not merely appear as a comment
-    // — the negative control below proves the difference matters.
+    //, the negative control below proves the difference matters.
     const strategyStart = block.indexOf('strategy:')
     expect(strategyStart, 'cargo-check has no strategy block at all').toBeGreaterThanOrEqual(0)
     const strategyBlock = block.slice(strategyStart)

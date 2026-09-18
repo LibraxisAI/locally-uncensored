@@ -595,7 +595,7 @@ pub async fn delete_comfy_model(
     //
     // R1-4: asked fresh via engine_folders (a running ComfyUI's own answer),
     // not the stale process-wide cache from before this ComfyUI ever
-    // started — a model the running engine had just remapped to a custom
+    // started, a model the running engine had just remapped to a custom
     // folder looked like a foreign file and refused to delete.
     let mut roots: Vec<PathBuf> = MODEL_SUBDIRS.iter().map(|d| models_root.join(d)).collect();
     if let Some(folders) = engine_folders(&state).await {
@@ -1697,7 +1697,7 @@ pub async fn check_download_space(
         (Some(sub), _) => {
             let comfy_path = state.comfy_path.lock().unwrap().clone();
             // R1-4: engine_folders asks the running ComfyUI fresh instead of
-            // reading a cache that can predate it — a cold cache pointed the
+            // reading a cache that can predate it, a cold cache pointed the
             // very first space check of a session at the wrong drive (K5's
             // customer-visible half of the same bug).
             models_dir_in(engine_folders(&state).await.as_ref(), &comfy_path, &sub)?

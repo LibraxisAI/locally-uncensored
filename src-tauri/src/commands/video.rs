@@ -193,7 +193,7 @@ fn model_dir(id: &str) -> PathBuf {
     models_root().join(id)
 }
 
-/// K5: `huggingface_hub`'s Xet chunk cache ignores `local_dir` — it only
+/// K5: `huggingface_hub`'s Xet chunk cache ignores `local_dir`: it only
 /// follows `HF_HOME` (and, since `hf_xet` split out of the main package,
 /// `HF_XET_CACHE`). Without either set, it falls back to
 /// `~/.cache/huggingface[/xet]`, on the SYSTEM drive, regardless of which
@@ -891,7 +891,7 @@ mod tests {
         // K5 (Discord x_guestieco_x, 13.09.: "everytime I try to force the
         // app to go to my E drive it always takes up space on my C
         // drive"). huggingface_hub's Xet chunk cache ignores `local_dir`
-        // and only follows HF_HOME/HF_XET_CACHE — without them it fills the
+        // and only follows HF_HOME/HF_XET_CACHE, without them it fills the
         // SYSTEM drive's default cache regardless of where models_root()
         // points. `commands::mlx.rs` already sets both on every
         // snapshot_download/hf_hub_download call; this proves this file's

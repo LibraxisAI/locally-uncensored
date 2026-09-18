@@ -224,7 +224,7 @@ const MIB: u64 = 1024 * 1024;
 /// left to hold back.
 const VRAM_OVERHEAD_BYTES: u64 = 512 * MIB;
 
-/// R1-3: the reserve for a reading that is NOT known to be free — the
+/// R1-3: the reserve for a reading that is NOT known to be free, the
 /// `detect_gpus` fallback (`VramReading.free == false`) reports the card's
 /// TOTAL size, not what is currently unused. A desktop compositor, a browser
 /// and whatever Create last rendered can all be sitting in that total already,
@@ -2088,7 +2088,7 @@ fn start_after_stop(
         SecondAttempt::SameOffload
     };
     // R1-10: bound once so both the argv AND the sanity-probe restart ladder
-    // below build against the SAME tuning the retry actually ran with — a
+    // below build against the SAME tuning the retry actually ran with, a
     // CPU-only retry must not have serve_or_heal_garbled think it still has
     // a card to give up.
     let retry_tuning = if offload_was_tried { on_the_processor(tuning) } else { tuning.clone() };
@@ -2224,7 +2224,7 @@ fn serve_or_heal_garbled(
     for _ in 0..3 {
         let Some(probe) = engine_sanity::probe_engine(port, engine_sanity::PROBE_TIMEOUT) else {
             // D3: `None` here means the probe itself never got an answer to
-            // judge (timed out, refused, or an unexpected body) — not that
+            // judge (timed out, refused, or an unexpected body), not that
             // the engine answered badly. On a run with no GPU layers this is
             // routine: a cold CPU-only load of `PROBE_TOKENS` can outrun the
             // probe's short budget on its own, with nothing wrong at all, and
@@ -3840,7 +3840,7 @@ mod tests {
     /// `nvidia-smi` reading) and once with `free: false` (`detect_gpus`'
     /// total-capacity fallback). The sentence must differ and the total-
     /// capacity run must never ask for MORE layers than the measured-free run
-    /// — a card that has not been shown to be empty is the case where asking
+    ///, a card that has not been shown to be empty is the case where asking
     /// for too much costs the start.
     #[test]
     fn r1_3_a_total_capacity_reading_never_outbids_a_measured_free_one() {
@@ -3866,7 +3866,7 @@ mod tests {
             assert!(
                 total_layers <= free_layers,
                 "an unmeasured total-capacity reading asked for MORE layers ({total_layers}) than \
-                 the measured-free reading ({free_layers}) on the same {vram} bytes — \
+                 the measured-free reading ({free_layers}) on the same {vram} bytes, \
                  free: {}\ntotal: {}",
                 free.why,
                 total.why
@@ -5107,7 +5107,7 @@ mod tests {
         // R1-10: `start_after_stop`'s FIRST attempt success path always ran
         // the sanity probe (bug a) through `serve_or_heal_garbled`, but the
         // SECOND attempt (the one clean retry) used to hand back a bare
-        // "started" object instead — a garbled answer on the retry was
+        // "started" object instead, a garbled answer on the retry was
         // never caught or healed. `serve_or_heal_garbled(` must now appear
         // twice in this function's body: once per attempt.
         let src = include_str!("engine.rs");

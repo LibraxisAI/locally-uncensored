@@ -28,7 +28,7 @@ pub fn python_command<S: AsRef<std::ffi::OsStr>>(python_bin: S) -> Command {
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     // K11/K14: the interpreter this runs is always the SYSTEM Python (or a
-    // venv built from it), never a Python LU bundles itself — so it is a
+    // venv built from it), never a Python LU bundles itself, so it is a
     // foreign program in exactly the sense `foreign_system_command` names,
     // and pip (always invoked as `<python> -m pip`, see install/pip.rs)
     // rides along for free. `sanitize_appimage_python_env` above cleans
@@ -76,7 +76,7 @@ pub fn is_appimage_python_env(value: &str) -> bool {
 /// child process we spawn sees the system Python the way a shell would.
 ///
 /// Called once at startup, before any command runs. `LD_LIBRARY_PATH` is NOT
-/// touched globally here on purpose — the AppImage needs it for our own
+/// touched globally here on purpose, the AppImage needs it for our own
 /// bundled libraries. That used to read "and it was never what broke Python
 /// here"; K14 (Reddit, 2026-09-17) is the counterexample: a ComfyUI venv's
 /// own `_ssl` extension failed to load under the inherited
@@ -84,7 +84,7 @@ pub fn is_appimage_python_env(value: &str) -> bool {
 /// and LU's own diagnosis misread that ImportError as "this Python was
 /// built without ssl" instead of an environment collision. The venv's
 /// interpreter is a foreign program in exactly `foreign_system_command`'s
-/// sense, so it does not go through a global unset — `python_command` (this
+/// sense, so it does not go through a global unset, `python_command` (this
 /// file) clears it per child instead, alongside every other variable
 /// `strip_appimage_env` knows about (see process_util.rs for the reasoning
 /// this function's old comment used to carry alone).

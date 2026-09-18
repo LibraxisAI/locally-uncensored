@@ -127,7 +127,7 @@ fn diagnose_pip_error_inner(stderr: &str, python_bin: Option<&str>) -> String {
     let snippet: String = stderr.chars().take(400).collect();
     let kind = pip_failure_kind(stderr);
     // K14: this is the one PipFailureKind whose hint text changes depending
-    // on something OTHER than the pip output already in hand — see
+    // on something OTHER than the pip output already in hand, see
     // diagnose_python_ssl for why the check has to happen here, not inside
     // the otherwise-pure pip_failure_hint.
     let hint = if kind == PipFailureKind::PythonWithoutSsl {
@@ -424,7 +424,7 @@ pub(crate) fn pip_failure_hint(kind: PipFailureKind, text: &str) -> String {
         // without the ssl module" unconditionally, but the SAME pip message
         // ("the ssl module in Python is not available") is what a perfectly
         // healthy Python prints when something ELSE stops its `_ssl`
-        // extension from loading — an AppImage's inherited LD_LIBRARY_PATH
+        // extension from loading, an AppImage's inherited LD_LIBRARY_PATH
         // pointing a bundled libssl/libcrypto at an unrelated interpreter,
         // in that report. Every caller that KNOWS which interpreter failed
         // goes through diagnose_pip_error_for / python_without_ssl_hint
@@ -438,7 +438,7 @@ pub(crate) fn pip_failure_hint(kind: PipFailureKind, text: &str) -> String {
              the Python was built without ssl support, or that something else (an \
              inherited library path from another program) is stopping its ssl \
              extension from loading. Check with  python3 -c \"import ssl\"  in a plain \
-             terminal, outside this app. If that succeeds, restart LU and retry — the \
+             terminal, outside this app. If that succeeds, restart LU and retry, the \
              environment the check just ran in was poisoned. If it fails there too, \
              reinstall python3 via your package manager (pyenv builds need the \
              OpenSSL headers installed first, e.g. libssl-dev / openssl-devel), \
@@ -519,7 +519,7 @@ pub(crate) enum SslDiagnosis {
     /// other foreign spawn uses. This was never a Python build problem.
     EnvironmentCollision,
     /// `import ssl` still failed after cleaning. This is what a Python
-    /// actually built without ssl looks like — the real ImportError is
+    /// actually built without ssl looks like, the real ImportError is
     /// worth quoting instead of a canned sentence.
     GenuinelyMissing(String),
     /// The interpreter could not even be run to check (deleted, no exec
@@ -530,7 +530,7 @@ pub(crate) enum SslDiagnosis {
 }
 
 /// Actually ask the interpreter, through the SAME sanitized spawn every
-/// other foreign program uses (`foreign_system_command` — a venv's own
+/// other foreign program uses (`foreign_system_command`: a venv's own
 /// Python, like the system Python it was built from, is never something LU
 /// bundles). A clean run here proves the interpreter itself is fine and the
 /// ORIGINAL pip failure's environment was the poisoned one, not the Python.
@@ -558,7 +558,7 @@ pub(crate) fn diagnose_python_ssl(python_bin: &str) -> SslDiagnosis {
 pub(crate) fn python_without_ssl_hint(diagnosis: &SslDiagnosis) -> String {
     match diagnosis {
         SslDiagnosis::EnvironmentCollision =>
-            "pip could not reach pypi.org because Python's ssl module failed to load — \
+            "pip could not reach pypi.org because Python's ssl module failed to load, \
              but re-checked in a cleaned environment, the SAME interpreter imports ssl \
              just fine. This was an environment problem, not a broken Python install. \
              Restart LU and press Repair environment again; if you still see this after \
@@ -1139,7 +1139,7 @@ mod tests {
         //
         // K14: without an interpreter path, LU cannot actually check, so the
         // message stays neutral between "built without ssl" and "environment
-        // problem" instead of asserting the one it never verified — see
+        // problem" instead of asserting the one it never verified, see
         // a_verified_ssl_collision_and_a_verified_genuine_gap_read_differently
         // for the two cases where LU DOES know which it is.
         let msg = diagnose_pip_error(
@@ -1173,7 +1173,7 @@ mod tests {
         assert!(missing.contains("No module named '_ssl'"), "the real ImportError must be quoted: {missing}");
 
         assert!(unknown.contains("could not re-run the interpreter"), "{unknown}");
-        // Negative control: Unknown must not lean either way — neither
+        // Negative control: Unknown must not lean either way, neither
         // claiming the environment is fine (like EnvironmentCollision) nor
         // that the build is broken (like GenuinelyMissing).
         assert!(!unknown.to_lowercase().contains("not a broken python install"), "{unknown}");
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn a_healthy_interpreter_is_read_as_an_environment_collision() {
         // The real system Python on the machine running this test suite has
-        // ssl — every CI platform and every developer box does. This proves
+        // ssl, every CI platform and every developer box does. This proves
         // diagnose_python_ssl calls through foreign_system_command (so an
         // AppImage-poisoned test environment would still get a clean child)
         // and reads a successful `import ssl` correctly.

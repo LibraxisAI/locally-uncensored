@@ -508,7 +508,7 @@ pub(crate) struct ProbeOutcome {
     /// visible `content`. A thinking model (GLM-5.3, ...) spends the probe's
     /// small `PROBE_TOKENS` budget on the `<think>` block, so the VISIBLE
     /// answer this probe judges is genuinely short or empty while the model
-    /// is not broken at all — the chat answers fine once the user's own,
+    /// is not broken at all, the chat answers fine once the user's own,
     /// much larger, budget lets the thinking finish. `judge()` alone cannot
     /// tell this apart from any other short answer, because it only ever
     /// sees `content`; this is decided one level up, in `probe_engine`,
@@ -570,7 +570,7 @@ pub(crate) fn answer_text(body: &serde_json::Value) -> Option<String> {
 /// a chat template that supports native reasoning parsing, e.g. GLM-5.3).
 /// `reasoning` is the older field name some backends still use;
 /// `reasoning_content` is tried first. `None` when neither is present or
-/// both are empty — the ordinary case for a model that does not think.
+/// both are empty, the ordinary case for a model that does not think.
 pub(crate) fn reasoning_text(body: &serde_json::Value) -> Option<String> {
     let message = body.get("choices")?.get(0)?.get("message")?;
     let raw = message
@@ -581,7 +581,7 @@ pub(crate) fn reasoning_text(body: &serde_json::Value) -> Option<String> {
 }
 
 /// D3: the word for the log line, refined for the one case `Sanity::label()`
-/// alone cannot tell apart — see [`ProbeOutcome::still_thinking`]. Every
+/// alone cannot tell apart, see [`ProbeOutcome::still_thinking`]. Every
 /// other verdict reads exactly as it did before.
 pub(crate) fn verdict_label(verdict: Sanity, still_thinking: bool) -> &'static str {
     if still_thinking && verdict == Sanity::Unjudgeable {
@@ -1062,7 +1062,7 @@ mod tests {
     fn a_thinking_model_that_used_up_its_budget_reasoning_is_marked_still_thinking() {
         // D3: the visible answer is empty (the probe's small PROBE_TOKENS
         // budget went entirely into the <think> block), so judge() correctly
-        // calls it Unjudgeable — but `still_thinking` is what turns the log
+        // calls it Unjudgeable, but `still_thinking` is what turns the log
         // line from a generic "too short to judge" into a sentence that
         // names the actual, harmless reason.
         let port = stub_engine(
@@ -1076,7 +1076,7 @@ mod tests {
             verdict_label(out.verdict, out.still_thinking),
             "too short to judge (still inside a <think> block)"
         );
-        // And decide() still serves it — D3 requires this stays true no
+        // And decide() still serves it, D3 requires this stays true no
         // matter how the log line is worded.
         assert_eq!(decide(out.verdict, &a_modern_card()), AfterProbe::Serve);
     }
