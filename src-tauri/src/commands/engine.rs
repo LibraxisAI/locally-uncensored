@@ -1135,6 +1135,60 @@ fn wait_for_health_or_exit(state: &AppState, port: u16, timeout: Duration) -> He
     HealthWait::TimedOut
 }
 
+/// Windows raises `STATUS_ILLEGAL_INSTRUCTION` (`0xC000001D`) when a process
+/// executes an opcode the CPU does not support. `ExitStatus::code()` hands
+/// that NTSTATUS back reinterpreted as a signed 32-bit number, which is this
+/// constant (K1, GH thread "LU Engine not running?", 2026-09-15: Win10, RTX
+/// 3050, exit -1073741795 on both the GPU and the CPU-only retry).
+///
+/// `scripts/build-llama.sh` pins `-DGGML_NATIVE=OFF`, but ggml's own
+/// CMakeLists still turns AVX/AVX2/FMA/F16C ON by default whenever
+/// `GGML_NATIVE` is off and the build is not cross-compiling (measured
+/// against the pinned llama.cpp checkout, `ggml/CMakeLists.txt` around
+/// `INS_ENB`). So every bundled Windows/Linux sidecar today requires AVX2 at
+/// the first opcode it runs, GPU or CPU path alike, and a CPU without it
+/// cannot even reach `main()` to print a reason. Retrying with the identical
+/// binary cannot change that outcome, which is why this exit code short-
+/// circuits the second attempt instead of spending it on a repeat crash.
+pub(crate) const ILLEGAL_INSTRUCTION_EXIT_CODE: i32 = -1073741795;
+
+/// True when a child's exit code is the Windows illegal-instruction fault.
+/// Unix has no exit-code equivalent (the same fault there is the `SIGILL`
+/// signal, which `ExitStatus::code()` cannot see at all, only `.signal()`),
+/// so this only ever matches on Windows, which matches every report K1 has.
+pub(crate) fn is_illegal_instruction_exit(code: Option<i32>) -> bool {
+    code == Some(ILLEGAL_INSTRUCTION_EXIT_CODE)
+}
+
+/// Logs the x86 instruction sets this machine's CPU offers, once per process.
+/// K1: without this line, a crash on the very first opcode left nothing in
+/// the log that named the cause, so a support conversation had to ask the
+/// user to run `wmic cpu get Name` by hand before anyone could even guess.
+/// AVX/AVX2/FMA/F16C are exactly the four flags `scripts/build-llama.sh`
+/// bakes into every bundled sidecar (see `ILLEGAL_INSTRUCTION_EXIT_CODE`
+/// above), so this line is what turns that crash into a diagnosis: whichever
+/// of the four reads `false` here is the one the CPU cannot run.
+fn log_cpu_features_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(target_arch = "x86_64")]
+        tracing::info!(
+            target: "engine",
+            avx = is_x86_feature_detected!("avx"),
+            avx2 = is_x86_feature_detected!("avx2"),
+            fma = is_x86_feature_detected!("fma"),
+            f16c = is_x86_feature_detected!("f16c"),
+            "CPU instruction sets the LU Engine sidecar was built to require"
+        );
+        #[cfg(not(target_arch = "x86_64"))]
+        tracing::info!(
+            target: "engine",
+            arch = std::env::consts::ARCH,
+            "CPU instruction-set log skipped: not x86_64, AVX/AVX2/FMA/F16C do not apply"
+        );
+    });
+}
+
 /// The shared object the dynamic loader could not find, if that is why the
 /// sidecar never got as far as its own logging.
 ///
@@ -1480,7 +1534,16 @@ pub(crate) fn start_failure_message(
     budget: Duration,
     second: SecondAttempt,
 ) -> String {
-    let head = if failure.port_taken {
+    let head = if is_illegal_instruction_exit(failure.exit_code) {
+        // K1: both the GPU and the CPU-only path run the SAME binary, so a
+        // retry cannot change the outcome and is not attempted (see
+        // start_after_stop). The cause and the next step both go in this one
+        // sentence, since the log line stderr would otherwise add is empty:
+        // the child never gets far enough to print anything.
+        format!(
+            "The LU Engine exited immediately with an illegal-instruction fault (Windows STATUS_ILLEGAL_INSTRUCTION, 0xC000001D). This CPU is missing an instruction set the bundled engine's build requires (for example AVX2); the app did not retry, since the same binary would fail the same way again. Open Settings, AI Backends and use a different backend (for example Ollama) on this machine, and check Settings, Troubleshoot for the CPU features line in the log."
+        )
+    } else if failure.port_taken {
         format!(
             "Port {port} answers health checks, but the engine this app just started exited immediately. Another llama-server (likely left over from a previous session or crash) is occupying the port. Quit that process or reboot, then try again."
         )
@@ -1945,6 +2008,22 @@ fn start_after_stop(
         return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
     }
 
+    if is_illegal_instruction_exit(failure.exit_code) {
+        // K1: the GPU-offload attempt and the CPU-only retry run the exact
+        // same binary, so a CPU that crashes on an opcode the first time
+        // crashes on it the second time too. The old code ran the retry
+        // anyway ("attempt=1/2" in the log, both dying identically) and cost
+        // the user the full settle-and-relaunch wait for a foregone
+        // conclusion; this short-circuits straight to the message instead.
+        tracing::error!(
+            target: "engine",
+            port,
+            exit_code = failure.exit_code.unwrap_or_default(),
+            "the LU Engine crashed with an illegal-instruction fault, skipping the pointless second attempt"
+        );
+        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
+    }
+
     tracing::warn!(target: "engine", port, "the first start attempt exited before it served, retrying once");
     std::thread::sleep(Duration::from_millis(1500));
     // A start that died ON THE PORT does not get better by using the same port
@@ -2256,6 +2335,12 @@ pub(crate) struct StartFailure {
     pub port_taken: bool,
     /// llama-server's own last words. Empty when it said nothing.
     pub stderr: String,
+    /// The child's raw process exit code, when the OS reported one. `None`
+    /// covers both "not this kind of failure" (timed out, port taken) and "a
+    /// signal killed it". K1: this is what lets `is_illegal_instruction_exit`
+    /// name the Windows 0xC000001D crash instead of it hiding in `stderr` as
+    /// an empty string, since llama-server never gets to print anything.
+    pub exit_code: Option<i32>,
 }
 
 /// The two marks an attempt leaves in `BundledEngine`: the restart paths and
@@ -2287,6 +2372,7 @@ fn spawn_engine_attempt(
     ctx: Option<u32>,
     flags: AttemptFlags,
 ) -> Result<String, StartFailure> {
+    log_cpu_features_once();
     // The one line a support log has to carry. Everything the start depends on
     // is in the argv: model path, context size, layer count, cache types,
     // thread count, mlock/mmap flags, the vision file and the port.
@@ -2325,6 +2411,7 @@ fn spawn_engine_attempt(
                 died: true,
                 port_taken: false,
                 stderr: format!("Failed to spawn bundled engine: {why}"),
+                exit_code: None,
             })
         }
     };
@@ -2393,18 +2480,18 @@ fn spawn_engine_attempt(
             .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
             .unwrap_or_default();
         stop_engine_locked(state);
-        return Err(StartFailure { died: true, port_taken: true, stderr: why });
+        return Err(StartFailure { died: true, port_taken: true, stderr: why, exit_code: None });
     }
 
     let why = diagnostics
         .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
         .unwrap_or_default();
+    let (died, exit_code) = match outcome {
+        HealthWait::ChildExited(code) => (true, code),
+        _ => (false, None),
+    };
     stop_engine_locked(state);
-    Err(StartFailure {
-        died: matches!(outcome, HealthWait::ChildExited(_)),
-        port_taken: false,
-        stderr: why,
-    })
+    Err(StartFailure { died, port_taken: false, stderr: why, exit_code })
 }
 
 /// Stop the managed engine, killing the child. Idempotent.
@@ -3838,6 +3925,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory".into(),
+            exit_code: None,
         };
         let same = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(same.contains("It was tried twice"), "{same}");
@@ -4217,6 +4305,17 @@ mod tests {
             let value: u32 = args[at + 1].parse().expect("batch size is a number");
             assert!(value > 512, "{flag} must clear the 512 default, got {value}");
         }
+    }
+
+    #[test]
+    fn cpu_features_are_logged_once_and_never_panic() {
+        // K1: the log line that names AVX/AVX2/FMA/F16C is what turns an
+        // illegal-instruction crash into a diagnosis instead of a guess, so
+        // it must run without panicking on every architecture this app
+        // ships for, and calling it twice (every engine start does) must
+        // stay a no-op the second time round (`std::sync::Once`).
+        log_cpu_features_once();
+        log_cpu_features_once();
     }
 
     #[test]
@@ -4904,6 +5003,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
+            exit_code: None,
         };
         let msg = with_note_on_top(
             &start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload),
@@ -5300,6 +5400,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "bind: Address already in use".into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not open port 8127"), "{msg}");
@@ -5312,6 +5413,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "something went wrong".into(),
+            exit_code: None,
         };
         assert!(start_failure_message(&other, 8127, Duration::from_secs(60), SecondAttempt::SameOffload).contains("Reinstall"));
     }
@@ -5325,7 +5427,7 @@ mod tests {
         let oom = "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 10048.00 MiB on device 0 failed\nCUDA error: out of memory";
         assert!(!stderr_blames_the_port(oom));
         assert!(stderr_blames_the_gpu(oom));
-        let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() };
+        let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() , exit_code: None };
         let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("GPU Layers to 0"), "the way out has to survive: {msg}");
         assert!(!msg.contains("could not open port"), "{msg}");
@@ -5360,7 +5462,7 @@ mod tests {
         // enough, and the branch order was the only thing keeping this case
         // out of the graphics-card answer.
         assert!(!stderr_blames_the_gpu(stderr), "a banner is not a defect");
-        let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() };
+        let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None };
         let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "a busy port is not freed by CPU mode: {msg}");
@@ -5402,7 +5504,7 @@ mod tests {
         // repeat a start that DIED. Repeating a start that merely ran out of
         // its budget spends the same budget again (up to 10 minutes on a big
         // GGUF) and re-runs the ComfyUI and Ollama evictions each time.
-        let slow = StartFailure { died: false, port_taken: false, stderr: String::new() };
+        let slow = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None };
         let msg = start_failure_message(&slow, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(
             msg.contains("did not become healthy"),
@@ -5416,7 +5518,7 @@ mod tests {
             "failed to load model",
             "something went wrong",
         ] {
-            let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() };
+            let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None };
             let m = start_failure_message(&died, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
             assert!(!m.contains("did not become healthy"), "{m}");
         }
@@ -5468,11 +5570,77 @@ mod tests {
     }
 
     #[test]
+    fn an_illegal_instruction_exit_code_is_recognised_and_nothing_else_is() {
+        // K1: -1073741795 is 0xC000001D (STATUS_ILLEGAL_INSTRUCTION)
+        // reinterpreted as a signed i32, which is exactly what
+        // `ExitStatus::code()` hands back on Windows.
+        assert!(is_illegal_instruction_exit(Some(-1073741795)));
+        assert_eq!(ILLEGAL_INSTRUCTION_EXIT_CODE, -1073741795);
+        // Negative control: neither "no code at all" (killed by a signal) nor
+        // an ordinary crash code reads as the CPU fault.
+        assert!(!is_illegal_instruction_exit(None));
+        assert!(!is_illegal_instruction_exit(Some(1)));
+        assert!(!is_illegal_instruction_exit(Some(-1073741819))); // 0xC0000005, access violation
+    }
+
+    #[test]
+    fn an_illegal_instruction_exit_names_the_cpu_and_skips_the_second_try() {
+        // K1: both the GPU attempt and the CPU-only retry run the identical
+        // binary, so the message must not promise a retry that never
+        // happens, and it must name the cause (an unsupported instruction
+        // set) instead of the generic "reinstall" advice.
+        let f = StartFailure {
+            died: true,
+            port_taken: false,
+            stderr: String::new(),
+            exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
+        };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        assert!(msg.contains("0xC000001D"), "{msg}");
+        assert!(msg.contains("AVX2"), "{msg}");
+        assert!(msg.contains("did not retry"), "{msg}");
+        assert!(!msg.contains("tried twice"), "no second try ran: {msg}");
+        assert!(!msg.contains("Reinstall"), "the cause is known, not generic: {msg}");
+
+        // Negative control: an ordinary death (no illegal-instruction exit
+        // code) is unaffected and keeps its own wording.
+        let ordinary = StartFailure { exit_code: None, ..f };
+        let ordinary_msg =
+            start_failure_message(&ordinary, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        assert!(!ordinary_msg.contains("0xC000001D"), "{ordinary_msg}");
+    }
+
+    #[test]
+    fn the_retry_is_skipped_before_it_would_run_for_an_illegal_instruction_exit() {
+        // Structural guard, mirroring `every_failed_switch_runs_through_the_
+        // fallback` above: `start_after_stop` must ask
+        // `is_illegal_instruction_exit` and return BEFORE the line that logs
+        // and starts the second attempt, so a CPU that cannot run the
+        // sidecar is never asked to try the exact same binary twice.
+        let src = include_str!("engine.rs");
+        let body = src
+            .split("fn start_after_stop(")
+            .nth(1)
+            .expect("start_after_stop is gone")
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        let guard = body
+            .find("is_illegal_instruction_exit(failure.exit_code)")
+            .expect("the illegal-instruction short-circuit is gone from start_after_stop");
+        let retry = body
+            .find("retrying once")
+            .expect("the retry log line is gone from start_after_stop");
+        assert!(guard < retry, "the illegal-instruction check no longer runs before the retry");
+    }
+
+    #[test]
     fn a_dead_start_names_the_graphics_card_when_the_engine_blamed_it() {
         let f = StartFailure {
             died: true,
             port_taken: false,
             stderr: "ggml_cuda_init: failed to initialize CUDA: no kernel image is available for execution on the device".into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("exited again"), "{msg}");
@@ -5488,6 +5656,7 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "llama_model_load: error loading model: unknown model architecture 'wanx'".into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not read the model file"), "{msg}");
@@ -5517,6 +5686,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: KAPUTTE_GGUF_STDERR.into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not read the model file"), "{msg}");
@@ -5735,6 +5905,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("could not read the model file"), "{msg}");
@@ -5752,6 +5923,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory\nllama_model_load: error loading model: unable to allocate CUDA0 buffer\nllama_model_load_from_file_impl: failed to load model".into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("GPU Layers"), "{msg}");
@@ -5760,7 +5932,7 @@ srv    llama_server: exiting due to model loading error";
 
     #[test]
     fn a_stranger_on_the_port_keeps_its_own_message() {
-        let f = StartFailure { died: true, port_taken: true, stderr: String::new() };
+        let f = StartFailure { died: true, port_taken: true, stderr: String::new() , exit_code: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("occupying the port"), "{msg}");
         assert!(!msg.contains("tried twice"), "{msg}");
@@ -5768,7 +5940,7 @@ srv    llama_server: exiting due to model loading error";
 
     #[test]
     fn a_slow_load_still_reports_the_budget_and_never_claims_a_crash() {
-        let f = StartFailure { died: false, port_taken: false, stderr: String::new() };
+        let f = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(220), SecondAttempt::SameOffload);
         assert!(msg.contains("did not become healthy on port 8127 within 220s"), "{msg}");
         assert!(!msg.contains("exited"), "{msg}");
@@ -5786,6 +5958,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "lu-llama-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file: No such file or directory".into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("libvulkan.so.1"), "{msg}");
@@ -5872,6 +6045,7 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "ggml_vulkan: no devices found".into(),
+            exit_code: None,
         };
         let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
         assert!(msg.contains("GPU Layers to 0"), "{msg}");
