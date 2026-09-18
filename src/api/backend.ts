@@ -151,24 +151,57 @@ export async function localFetch(
   const invoke = await getInvoke();
   const method = options?.method || "GET";
 
+  // Same callId/cancel mechanic as the chunked streaming path
+  // (proxyStreamChunked below): without it, Stop only settled the JS
+  // promise as "cancelled" while the Rust proxy sent the request to
+  // completion against the local engine: a non-streaming tool call (e.g.
+  // chatWithTools against the built-in engine or Ollama) kept computing
+  // after the user stopped it (review 2026-09-18, "Loch 3": the local
+  // engine ignores Stop). Already-aborted signals never open a call at all.
+  const signal = options?.signal;
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  const callId =
+    (globalThis.crypto as Crypto | undefined)?.randomUUID?.() ??
+    `c_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const cancelUpstream = () => { void invoke("cancel_proxy_call", { callId }).catch(() => { /* best-effort */ }); };
+  let onAbort: (() => void) | null = null;
+  if (signal) {
+    onAbort = () => cancelUpstream();
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  const detachAbort = () => { if (signal && onAbort) { signal.removeEventListener("abort", onAbort); onAbort = null; } };
+
   try {
     const text = await invoke("proxy_localhost", {
       url,
       method,
       body: options?.body || null,
-      // Snake-case to match the Rust parameter name. Tauri's invoke layer
-      // does NOT auto-convert camelCase here — the Rust command spec uses
-      // explicit field names.
-      timeout_ms: options?.timeoutMs ?? null,
+      // Camel-case, because Tauri's invoke layer DOES auto-convert the
+      // command's snake_case parameter names to camelCase for the JS side
+      // (tauri-macros, command/wrapper.rs: key.to_lower_camel_case(), unless
+      // the command opts out with rename_all). proxy_localhost declares
+      // timeout_ms; sending timeout_ms from here landed in nothing, so
+      // every probe silently ran with the 300 s default instead of its
+      // real timeout (review 2026-09-18, R3 Nachbesserung 4).
+      timeoutMs: options?.timeoutMs ?? null,
       // Forward caller headers (Authorization for keyed OpenAI-compat
       // backends). The proxy silently dropped them before, so a LAN vLLM/
       // TabbyAPI with an api key always got 401 through this path.
       headers: options?.headers ?? null,
+      callId,
     }) as string;
 
     return new Response(text, { status: 200, headers: { "Content-Type": "application/json" } });
   } catch (proxyErr) {
     const proxyErrMsg = String(proxyErr)
+
+    // The user aborted: Rust has already cancelled (or is cancelling) the
+    // upstream request via cancel_proxy_call. Surface the abort and stop
+    // here, since falling back to a direct fetch would fire a SECOND real
+    // request for work the caller no longer wants an answer to.
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
 
     // The Rust proxy DID reach the backend and the backend answered non-2xx
     // (Err("HTTP <status>: <body>")). That is a real HTTP response, not a
@@ -194,17 +227,16 @@ export async function localFetch(
     // Fallback: try direct fetch (works when ComfyUI has --enable-cors-header *)
     // Apply the same timeout to the fallback so a hanging probe doesn't sit
     // for minutes on this path either.
-    let signal = options?.signal;
+    let fallbackSignal = signal;
     let abortTimer: ReturnType<typeof setTimeout> | undefined;
     if (typeof options?.timeoutMs === "number" && options.timeoutMs > 0) {
       const controller = new AbortController();
       abortTimer = setTimeout(() => controller.abort(), options.timeoutMs);
-      if (options.signal) {
-        const userSig = options.signal;
-        if (userSig.aborted) controller.abort();
-        else userSig.addEventListener("abort", () => controller.abort(), { once: true });
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", () => controller.abort(), { once: true });
       }
-      signal = controller.signal;
+      fallbackSignal = controller.signal;
     }
     try {
       return await fetch(url, {
@@ -214,7 +246,7 @@ export async function localFetch(
           ...(options?.headers ?? {}),
         },
         body: options?.body,
-        signal,
+        signal: fallbackSignal,
       });
     } catch (fetchErr) {
       // Both failed — return the proxy error with details preserved
@@ -223,6 +255,8 @@ export async function localFetch(
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
     }
+  } finally {
+    detachAbort();
   }
 }
 
