@@ -217,10 +217,35 @@ fn active_comfy_dir(state: &AppState) -> Option<PathBuf> {
 ///
 /// It is NOT the whole fix. The launcher path (step 3 below) never asked
 /// torch's env store anything; see `training_command`.
+///
+/// The third fix carried here is K3, 2026-09-18: `892a7e21` dropped
+/// `accelerate launch` (see `training_command`) so nothing sets `LOCAL_RANK`
+/// / `RANK` / `WORLD_SIZE` any more, and without them accelerate's own
+/// `PartialState` never calls `init_process_group` regardless of card count
+/// (`accelerate/state.py`, `_prepare_backend`, gated on `LOCAL_RANK` alone —
+/// read from the real musubi-tuner v0.3.4 + accelerate 1.6.0 source, both
+/// cloned and inspected on 2026-09-18, not guessed). What IS card-count-gated
+/// is musubi's own `prepare_accelerator()`
+/// (`training/accelerator_setup.py`): it builds an `InitProcessGroupKwargs`
+/// handler "if `torch.cuda.device_count() > 1` else None" and hands it to
+/// `Accelerator()`. Both reports this run died on — sdrairsoft's single P100
+/// and Z0mbieK's two visible cards — are explained the same way once
+/// "visible" is read literally: a card the user is not using but that the
+/// driver still enumerates (a second Tesla in the same box, a card disabled
+/// only in Device Manager) makes `device_count() > 1` true and hands the
+/// script a distributed-training branch it was never launched to service.
+/// `CUDA_VISIBLE_DEVICES=0` makes every trainer child see exactly one card no
+/// matter how many are actually plugged in, so that branch never builds and
+/// the run stays what steps 1, 2 and 4 already are: a single process on one
+/// GPU. Every other trainer message already assumes device 0 alone
+/// (`TORCH_PREFLIGHT_PY`, the VRAM check) — this makes the training child
+/// agree with them instead of being the one place still open to the rest of
+/// the machine.
 fn trainer_child_env(cmd: &mut Command) {
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PYTHONUTF8", "1");
     cmd.env("USE_LIBUV", "0");
+    cmd.env("CUDA_VISIBLE_DEVICES", "0");
 }
 
 /// The Pythons the trainer can be built with. musubi-tuner v0.3.4 declares
@@ -2669,6 +2694,23 @@ mod tests {
         assert!(
             envs.contains(&("USE_LIBUV".into(), Some("0".into()))),
             "the libuv knob is gone from the trainer children",
+        );
+    }
+
+    /// K3, 2026-09-18: without `accelerate launch`, musubi's own
+    /// `prepare_accelerator()` still hands `Accelerator()` a distributed
+    /// process-group handler whenever `torch.cuda.device_count() > 1` (read
+    /// from the real musubi-tuner v0.3.4 source). Pinning every trainer child
+    /// to exactly one visible card, regardless of how many are plugged in,
+    /// keeps that branch from ever building.
+    #[test]
+    fn every_trainer_child_sees_exactly_one_gpu() {
+        let mut cmd = std::process::Command::new("python");
+        super::trainer_child_env(&mut cmd);
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&("CUDA_VISIBLE_DEVICES".into(), Some("0".into()))),
+            "a second card can still turn on musubi's distributed branch: {envs:?}",
         );
     }
 
