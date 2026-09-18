@@ -569,6 +569,31 @@ const MD_ITEM =
   /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
 
 /**
+ * R2-25 (Logikkontrolle, 3.0.1): a multi-line memory (several paragraphs, a
+ * pasted snippet with its own line breaks) went into `exportAsMarkdown` as
+ * literal newline CHARACTERS inside `entry.content`. Written straight into
+ * the file, that turned ONE list item into several physical lines: the first
+ * kept the `- **Title**,` prefix, the middle ones had no `- ` prefix at all,
+ * and the LAST one carried `*(source)*, date` but no leading dash. `importFromMarkdown`
+ * scans line by line with `MD_ITEM`'s `^...$` anchors, so only the first line
+ * matched anything \u2014 the rest of the content, the source and the date were
+ * silently dropped, not just truncated.
+ *
+ * The fix keeps every memory to exactly one physical line in the export,
+ * which is what the whole per-line importer assumes. A real line break in the
+ * content becomes the two-character escape `\n`; a literal backslash the
+ * content already contained is doubled first so it can never be misread as
+ * the start of that escape. `unescapeMdContent` reverses both in one pass.
+ */
+function escapeMdContent(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')
+}
+
+function unescapeMdContent(s: string): string {
+  return s.replace(/\\\\|\\n/g, (m) => (m === '\\n' ? '\n' : '\\'))
+}
+
+/**
  * The date the export writes: `YYYY-MM-DD`, not a locale string.
  *
  * `toLocaleDateString()` produced `9/5/2026` on one machine and `05.09.2026` on
@@ -988,7 +1013,12 @@ export const useMemoryStore = create<MemoryState>()(
           md += `## ${typeTitles[type]}\n\n`
           for (const entry of typeEntries) {
             const date = isoTag(entry.updatedAt)
-            md += `- **${entry.title}**, ${entry.content}`
+            // R2-25: escaped so a multi-line entry stays ONE physical line —
+            // see escapeMdContent. The bracket-ending check below still reads
+            // the RAW content: `\n`-escaping never adds or removes a
+            // trailing `]`, and checking the escaped form would be the same
+            // answer read through an extra step.
+            md += `- **${entry.title}**, ${escapeMdContent(entry.content)}`
             if (entry.tags.length > 0) md += ` [${entry.tags.join(', ')}]`
             // A content that ends in a bracket group would otherwise read back
             // as a tag list on import. The empty group occupies the tag slot,
@@ -1026,7 +1056,10 @@ export const useMemoryStore = create<MemoryState>()(
           const itemMatch = line.match(MD_ITEM)
           if (itemMatch) {
             const title = itemMatch[1] || itemMatch[2].substring(0, 60)
-            const content = itemMatch[2].trim()
+            // R2-25: undo escapeMdContent's `\n`/backslash escaping so a
+            // multi-line memory comes back with its real line breaks instead
+            // of the literal two-character escape.
+            const content = unescapeMdContent(itemMatch[2].trim())
             const tags = itemMatch[3] ? itemMatch[3].split(',').map(t => t.trim()).filter(Boolean) : []
             const source = itemMatch[4] || 'import'
             const stand = isoBack(itemMatch[5]) ?? Date.now()
