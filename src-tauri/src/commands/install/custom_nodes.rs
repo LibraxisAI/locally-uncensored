@@ -208,7 +208,11 @@ fn install_custom_node_blocking(
         }
     }
 
-    install_node_requirements(&comfy_dir, &target_dir, &node_name, fallback_python)?;
+    // No constraints file here: this is a fresh clone (or update) of ONE
+    // node against whatever the venv already has, not the post-repair
+    // restore path where a downgrade of a just-verified core package is the
+    // specific risk (Runde 6, Folgeposten a).
+    install_node_requirements(&comfy_dir, &target_dir, &node_name, fallback_python, None)?;
 
     Ok(serde_json::json!({
         "status": if fresh_clone { "installed" } else { "updated" },
@@ -256,6 +260,7 @@ pub(crate) fn install_node_requirements(
     target_dir: &std::path::Path,
     node_name: &str,
     fallback_python: &str,
+    constraints: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let reqs = target_dir.join("requirements.txt");
     if !reqs.exists() {
@@ -284,6 +289,16 @@ pub(crate) fn install_node_requirements(
     let run_pip = |extra: &[&str]| -> Result<std::process::Output, String> {
         let mut pip = python_command(&python_bin);
         pip.args(["-m", "pip", "install", "--no-input"]);
+        // Runde 6, Folgeposten (a) (review Runde 5, F2): a node's own
+        // requirements.txt must not be allowed to quietly downgrade the
+        // core packages a repair just verified (`numpy<2`, an unpinned old
+        // torch, ...). With `-c`, pip refuses to install anything that
+        // conflicts with a constraint instead of silently changing it, so
+        // THIS install fails, loudly, by name, through the ordinary
+        // per-node failure path below.
+        if let Some(c) = constraints {
+            pip.arg("-c").arg(c);
+        }
         pip.args(extra);
         pip.arg("-r").arg(&reqs);
         pip.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -328,6 +343,78 @@ pub(crate) fn install_node_requirements(
 }
 
 
+/// Runde 6, Folgeposten (a) (review Runde 5, F2): the core packages a
+/// repair just spent four steps building and verifying, as a `pip freeze`
+/// snapshot a caller can hand to [`install_node_requirements`] as a
+/// constraints file so pip REFUSES to let a node's own requirements.txt
+/// quietly change any of them.
+const CORE_PACKAGES: [&str; 4] = ["torch", "torchvision", "torchaudio", "numpy"];
+
+/// Write [`CORE_PACKAGES`]'s current, exact versions (from `pip freeze`
+/// against `python_bin`) to a fresh temp file in pip's constraints format
+/// (one `name==version` per line) and return its path. `None` when `pip
+/// freeze` itself fails to run, or when none of the core packages turn out
+/// to be installed. A ComfyUI venv should always have torch, but this must
+/// never invent a pin rather than silently skip constraining.
+///
+/// The caller owns the returned file and is responsible for deleting it once
+/// the node loop that uses it is done; this function only ever creates one.
+pub(crate) fn write_core_package_constraints(python_bin: &str) -> Option<PathBuf> {
+    let mut cmd = python_command(python_bin);
+    cmd.args(["-m", "pip", "freeze"]).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let freeze = String::from_utf8_lossy(&out.stdout);
+    let core_lines = core_constraint_lines(&freeze);
+    if core_lines.is_empty() {
+        return None;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "lu-node-constraints-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
+    fs::write(&path, core_lines.join("\n")).ok()?;
+    Some(path)
+}
+
+/// Pure: the subset of a `pip freeze` listing that names one of
+/// [`CORE_PACKAGES`], for exactly the reason every other network- or
+/// process-touching function in this codebase splits its parsing out:
+/// testable against a canned string, no pip and no venv required.
+fn core_constraint_lines(freeze: &str) -> Vec<&str> {
+    freeze
+        .lines()
+        .filter(|line| {
+            let name = line
+                .split(['=', '@', ' ', '<', '>', '~', '!'])
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            CORE_PACKAGES.contains(&name.as_str())
+        })
+        .collect()
+}
+
+/// What a custom-node dependency restore actually did, so the caller can
+/// tell a customer which nodes came back, which did not, and whether the
+/// user cancelled partway rather than every node simply having run.
+pub(crate) struct NodeReinstallOutcome {
+    /// Node folder names whose requirements installed cleanly.
+    pub(crate) reinstalled: Vec<String>,
+    /// Node folder name plus the reason, for every one that failed.
+    pub(crate) failures: Vec<(String, String)>,
+    /// True when the cancel flag was seen between nodes and the loop
+    /// stopped early; `reinstalled`/`failures` only cover what ran before
+    /// that point.
+    pub(crate) cancelled: bool,
+}
+
 /// Runde 5 (review-engine.md Runde 4, Folgeposten): after the repair
 /// rebuilds `ComfyUI/venv` from nothing, every EXISTING `custom_nodes/*`
 /// folder's own `requirements.txt` (RMBG, VHS, controlnet_aux, whatever the
@@ -346,12 +433,28 @@ pub(crate) fn install_node_requirements(
 /// one broken one should get four working nodes back, not zero, and the
 /// caller is told which one(s) failed so it can say so instead of silently
 /// claiming success.
-pub(crate) fn reinstall_all_node_requirements(comfy_dir: &std::path::Path, fallback_python: &str) -> Vec<(String, String)> {
+///
+/// Runde 6, Folgeposten (a) and (b) (review Runde 5, F2/F3): `constraints`
+/// (from [`write_core_package_constraints`]) is passed straight through to
+/// every node's own install so none of them can quietly downgrade torch or
+/// numpy; `cancel` is read BETWEEN nodes so a customer with twenty of them
+/// can actually stop the run instead of the Cancel button doing nothing
+/// (F3); and `on_progress` is called with each node's name before it starts,
+/// so the log carries one line per node instead of a single blanket
+/// sentence for the whole batch.
+pub(crate) fn reinstall_all_node_requirements(
+    comfy_dir: &std::path::Path,
+    fallback_python: &str,
+    constraints: Option<&std::path::Path>,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    mut on_progress: impl FnMut(&str),
+) -> NodeReinstallOutcome {
     let nodes_dir = comfy_dir.join("custom_nodes");
     let Ok(entries) = fs::read_dir(&nodes_dir) else {
-        return Vec::new();
+        return NodeReinstallOutcome { reinstalled: Vec::new(), failures: Vec::new(), cancelled: false };
     };
     let mut failures = Vec::new();
+    let mut reinstalled = Vec::new();
     let mut names: Vec<(String, PathBuf)> = entries
         .flatten()
         .filter(|e| e.path().is_dir())
@@ -373,12 +476,18 @@ pub(crate) fn reinstall_all_node_requirements(comfy_dir: &std::path::Path, fallb
     // stable.
     names.sort();
     for (name, target_dir) in names {
-        if let Err(e) = install_node_requirements(comfy_dir, &target_dir, &name, fallback_python) {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+            return NodeReinstallOutcome { reinstalled, failures, cancelled: true };
+        }
+        on_progress(&name);
+        if let Err(e) = install_node_requirements(comfy_dir, &target_dir, &name, fallback_python, constraints) {
             error!(node = %name, error = %e, "custom node requirements could not be restored after a repair");
             failures.push((name, e));
+        } else {
+            reinstalled.push(name);
         }
     }
-    failures
+    NodeReinstallOutcome { reinstalled, failures, cancelled: false }
 }
 
 #[cfg(test)]
@@ -430,7 +539,7 @@ mod tests {
 
         // No requirements.txt → must succeed without ever spawning pip
         // (an empty fallback python would otherwise be an instant Err).
-        assert!(install_node_requirements(&comfy, &node, "NoReqs", "").is_ok());
+        assert!(install_node_requirements(&comfy, &node, "NoReqs", "", None).is_ok());
     }
 
     #[test]
@@ -441,12 +550,90 @@ mod tests {
         std::fs::create_dir_all(&node).unwrap();
         std::fs::write(node.join("requirements.txt"), "imageio-ffmpeg").unwrap();
 
-        let err = install_node_requirements(&comfy, &node, "WithReqs", "").unwrap_err();
+        let err = install_node_requirements(&comfy, &node, "WithReqs", "", None).unwrap_err();
         assert!(err.contains("no Python available"), "got: {err}");
+    }
+
+    // ── Runde 6, Folgeposten (a): core-package constraints (review Runde 5,
+    // F2) ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn core_constraint_lines_keeps_only_the_core_packages() {
+        let freeze = "torch==2.7.0\n\
+                      torchvision==0.22.0\n\
+                      numpy==1.26.4\n\
+                      Pillow==11.0.0\n\
+                      comfyui-frontend-package==1.2.3\n\
+                      torchaudio==2.7.0\n";
+        let lines = core_constraint_lines(freeze);
+        assert_eq!(lines, vec!["torch==2.7.0", "torchvision==0.22.0", "numpy==1.26.4", "torchaudio==2.7.0"]);
+        // Negative control: neither Pillow nor comfyui-frontend-package,
+        // both real ComfyUI-venv packages, may leak into the constraints.
+        assert!(!lines.iter().any(|l| l.to_lowercase().starts_with("pillow")));
+        assert!(!lines.iter().any(|l| l.to_lowercase().starts_with("comfyui")));
+    }
+
+    #[test]
+    fn core_constraint_lines_is_empty_for_a_freeze_with_no_core_packages() {
+        // Negativkontrolle: a venv that somehow has no torch at all must not
+        // invent a pin; an empty result is what tells the caller not to
+        // write a constraints file.
+        assert!(core_constraint_lines("Pillow==11.0.0\nrequests==2.32.0\n").is_empty());
+        assert!(core_constraint_lines("").is_empty());
+    }
+
+    #[test]
+    fn core_constraint_lines_is_not_fooled_by_a_name_prefix() {
+        // "torch" must not match "torchsde" or "torchdiffeq", real
+        // dependencies in a ComfyUI venv that are not the core packages this
+        // constraints file exists to protect.
+        let freeze = "torchsde==0.2.6\ntorchdiffeq==0.2.4\ntorch==2.7.0\n";
+        let lines = core_constraint_lines(freeze);
+        assert_eq!(lines, vec!["torch==2.7.0"]);
     }
 
     // ── permission-denied → --user retry (Motion install card, 2026-07-19) ──
 
+    // ── Runde 6, Folgeposten (b): cancel + per-node progress ──────────────
 
+    #[test]
+    fn the_node_loop_stops_early_when_cancelled_and_reports_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("comfy");
+        for name in ["AlphaNode", "BetaNode"] {
+            std::fs::create_dir_all(comfy.join("custom_nodes").join(name)).unwrap();
+            // No requirements.txt: a node that WOULD succeed instantly if
+            // reached, so a green "cancelled" result here is only possible
+            // because the loop actually stopped before reaching it.
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut seen: Vec<String> = Vec::new();
+        let outcome = reinstall_all_node_requirements(&comfy, "", None, Some(&cancel), |name| seen.push(name.to_string()));
+
+        assert!(outcome.cancelled, "a pre-set cancel flag did not stop the loop");
+        assert!(seen.is_empty(), "a node was started after cancel was already set: {seen:?}");
+        assert!(outcome.reinstalled.is_empty());
+        assert!(outcome.failures.is_empty());
+    }
+
+    #[test]
+    fn a_negative_control_without_cancel_runs_every_node_and_reports_none_cancelled() {
+        // Negativkontrolle for the test above: without a raised flag, every
+        // node folder is visited and none is reported as cancelled.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("comfy");
+        for name in ["AlphaNode", "BetaNode", "__pycache__", "GammaNode.disabled"] {
+            std::fs::create_dir_all(comfy.join("custom_nodes").join(name)).unwrap();
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let outcome = reinstall_all_node_requirements(&comfy, "", None, None, |name| seen.push(name.to_string()));
+
+        assert!(!outcome.cancelled);
+        // Deterministic, sorted order; __pycache__ and the disabled node are
+        // never real nodes and must not be visited at all.
+        assert_eq!(seen, vec!["AlphaNode", "BetaNode"]);
+        assert_eq!(outcome.reinstalled, vec!["AlphaNode", "BetaNode"]);
+        assert!(outcome.failures.is_empty());
+    }
 
 }
