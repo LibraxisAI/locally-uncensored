@@ -111,12 +111,25 @@ import { buildChatSystemPrompt } from '../lib/system-prompt'
 // ── Hook ──────────────────────────────────────────────────────
 
 /**
- * The pending next /loop pass. MODULE scope, not a hook ref (audit A3): the
- * chat view unmounts on a view switch, and a timer parked in an unmounted
- * instance's ref was unreachable for the remounted hook — stopAgent cleared
- * its own (empty) ref while the old timer kept firing new passes.
+ * The pending next /loop pass, PER CONVERSATION. MODULE scope, not a hook
+ * ref (audit A3): the chat view unmounts on a view switch, and a timer
+ * parked in an unmounted instance's ref was unreachable for the remounted
+ * hook — stopAgent cleared its own (empty) ref while the old timer kept
+ * firing new passes.
+ *
+ * B2: was a single module VARIABLE, not a map, until this commit. Two
+ * conversations each waiting out a /loop interval shared the one handle —
+ * the second conversation's `setTimeout` result overwrote the first's, and
+ * `clearTimeout` on that overwritten handle canceled the WRONG conversation's
+ * pending pass, while the one it meant to cancel kept its real timer running
+ * untouched. Keyed by conversation now, the same shape as `agentLoopStore`.
  */
-let agentLoopTimer: ReturnType<typeof setTimeout> | null = null
+const agentLoopTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Test-only: which conversations currently have a pending /loop timer. */
+export function __pendingAgentLoopTimersForTests(): string[] {
+  return [...agentLoopTimers.keys()]
+}
 
 export function useAgentChat() {
   const [isAgentRunning, setIsAgentRunning] = useState(false)
@@ -2573,8 +2586,8 @@ export function useAgentChat() {
             task: loopState.task, intervalMs: loopState.intervalMs,
             nextAt: Date.now() + loopState.intervalMs,
           })
-          agentLoopTimer = setTimeout(() => {
-            agentLoopTimer = null
+          agentLoopTimers.set(convForLoop, setTimeout(() => {
+            agentLoopTimers.delete(convForLoop)
             // A skipped pass clears the loop store too (audit A3) — leaving
             // it standing painted a LoopBar promising a pass that never came.
             if (runningRef.current) {
@@ -2589,7 +2602,7 @@ export function useAgentChat() {
               displayContent: cap > 0 ? `pass ${nextPass} of ${cap}` : `pass ${nextPass}`,
               loop: { ...loopState, pass: nextPass },
             })
-          }, loopState.intervalMs)
+          }, loopState.intervalMs))
         }
       }
     }
@@ -2618,9 +2631,14 @@ export function useAgentChat() {
     // Unterhaltung ab (siehe agentTaskStore.ts), derselbe Griff wie der
     // "Stop all"-Knopf im Aufgabenpanel.
     useAgentTaskStore.getState().cancelAll(stoppedConvId ?? '')
-    if (agentLoopTimer) {
-      clearTimeout(agentLoopTimer)
-      agentLoopTimer = null
+    // Nur DIESER Unterhaltung Zeitgeber - ein Stop in B darf den wartenden
+    // Pass von A nicht treffen (B2 Commit 4, derselbe Fehler wie beim
+    // vorherigen einzelnen `agentLoopTimer`, nur beim Zeitgeber statt beim
+    // Store).
+    const pendingLoopTimer = agentLoopTimers.get(stoppedConvId ?? '')
+    if (pendingLoopTimer) {
+      clearTimeout(pendingLoopTimer)
+      agentLoopTimers.delete(stoppedConvId ?? '')
     }
     useAgentLoopStore.getState().clear(stoppedConvId ?? '')
     // NUR den eigenen Lauf. `runningRef`, `abortRef` und `isAgentRunning`

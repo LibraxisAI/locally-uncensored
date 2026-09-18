@@ -247,13 +247,25 @@ function codexEffort(model: string): { levels?: string[]; fallback?: string } {
 }
 
 /**
- * The pending next /loop pass. MODULE scope, not a hook ref (audit A3): the
- * Code view unmounts on every tab switch, and a timer parked in an unmounted
- * instance's ref was unreachable for the remounted hook — stopCodex cleared
- * its own (empty) ref while the old timer kept firing new passes. One shared
- * handle means whichever instance is alive can cancel the pending pass.
+ * The pending next /loop pass, PER CONVERSATION. MODULE scope, not a hook
+ * ref (audit A3): the Code view unmounts on every tab switch, and a timer
+ * parked in an unmounted instance's ref was unreachable for the remounted
+ * hook — stopCodex cleared its own (empty) ref while the old timer kept
+ * firing new passes.
+ *
+ * B2: was a single module variable until this commit, so two Code
+ * conversations each waiting out a /loop interval shared one handle — the
+ * second overwrote the first, and stopping either one cleared the wrong
+ * conversation's timer while the intended one kept running. Keyed by
+ * conversation now, same shape as `agentLoopStore` and the Chat-side
+ * `agentLoopTimers` (useAgentChat.ts).
  */
-let codexLoopTimer: ReturnType<typeof setTimeout> | null = null
+const codexLoopTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Test-only: which conversations currently have a pending /loop timer. */
+export function __pendingCodexLoopTimersForTests(): string[] {
+  return [...codexLoopTimers.keys()]
+}
 
 export function useCodex() {
   const [isRunning, setIsRunning] = useState(false)
@@ -2495,7 +2507,7 @@ export function useCodex() {
             nextAt: Date.now() + loopState.intervalMs,
           })
           const fireLoopPass = () => {
-            codexLoopTimer = null
+            codexLoopTimers.delete(convForLoop)
             // Bail if the user moved on or started something else meanwhile.
             // Clear the loop store too — leaving it standing painted a LoopBar
             // that promised a pass which was never coming (audit A3).
@@ -2513,7 +2525,7 @@ export function useCodex() {
             // cancel, so peeking at Create doesn't kill a standing loop; the
             // pass fires within 5 s of the view coming back.
             if (useCodexStore.getState().chatMode !== 'codex') {
-              codexLoopTimer = setTimeout(fireLoopPass, 5000)
+              codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, 5000))
               return
             }
             void sendRef.current?.(buildLoopRecheck(loopState.task, nextPass), {
@@ -2521,7 +2533,7 @@ export function useCodex() {
               loop: { ...loopState, pass: nextPass },
             })
           }
-          codexLoopTimer = setTimeout(fireLoopPass, loopState.intervalMs)
+          codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, loopState.intervalMs))
         }
       }
     }
@@ -2570,9 +2582,13 @@ export function useCodex() {
     // B1: cancels a delegate_task background agent too, see useAgentChat.ts.
     useAgentTaskStore.getState().cancelAll(stoppedConvId ?? '')
     useGenerationStore.getState().abortConversation(stoppedConvId)
-    if (codexLoopTimer) {
-      clearTimeout(codexLoopTimer)
-      codexLoopTimer = null
+    // Nur DIESER Unterhaltung Zeitgeber (B2 Commit 4): sonst trifft ein Stop
+    // in B den wartenden Pass von A, waehrend A's eigener Zeitgeber ungeruehrt
+    // weiterlaeuft.
+    const pendingLoopTimer = codexLoopTimers.get(stoppedConvId ?? '')
+    if (pendingLoopTimer) {
+      clearTimeout(pendingLoopTimer)
+      codexLoopTimers.delete(stoppedConvId ?? '')
     }
     useAgentLoopStore.getState().clear(stoppedConvId ?? '')
     // NUR wenn der Controller dieser Instanz auch zu DIESER Unterhaltung

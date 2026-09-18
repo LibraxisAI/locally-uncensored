@@ -155,9 +155,11 @@ describe('/loop actually loops', () => {
   it('starts the NEXT pass after the interval instead of killing the run', () => {
     const src = read('../../hooks/useCodex.ts')
     // The handle is module-scoped since audit A3 — a hook ref died with the
-    // unmounted Code view, so stopCodex could not reach a pending pass.
-    expect(src).toContain('let codexLoopTimer:')
-    expect(src).toContain('codexLoopTimer = setTimeout(fireLoopPass, loopState.intervalMs)')
+    // unmounted Code view, so stopCodex could not reach a pending pass. Per
+    // conversation since B2 Commit 4 — a single shared handle let one
+    // conversation's Stop cancel a DIFFERENT conversation's pending pass.
+    expect(src).toContain('const codexLoopTimers = new Map<string, ReturnType<typeof setTimeout>>()')
+    expect(src).toContain('codexLoopTimers.set(convForLoop, setTimeout(fireLoopPass, loopState.intervalMs))')
     expect(src).toContain('buildLoopRecheck(loopState.task, nextPass)')
   })
 
@@ -202,7 +204,11 @@ describe('/loop actually loops', () => {
     // the callback's actual end survives any reflow inside the body.
     const src = read('../../hooks/useCodex.ts')
     const stopBody = extractUseCallbackBody(src, 'const stopCodex = useCallback(')
-    expect(stopBody).toContain('clearTimeout(codexLoopTimer)')
+    // B2 Commit 4: the timer is per conversation, looked up by the id being
+    // stopped, not a bare module variable — this proves Stop cancels the
+    // handle that belongs to THIS conversation.
+    expect(stopBody).toContain('codexLoopTimers.get(stoppedConvId')
+    expect(stopBody).toMatch(/clearTimeout\(pendingLoopTimer\)/)
     // The stop is recorded MODULE-side, keyed by conversation (audit M1): a
     // hook-instance ref was invisible to the finally of a pass a previous
     // instance had started, so that finally re-armed the loop the user killed.
