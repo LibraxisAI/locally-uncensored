@@ -122,8 +122,15 @@ jobs:
           # unconditionally, even in a release/NDEBUG build, is
           # ggml-backend-reg.cpp's load_backend() success log line, so the
           # server's own stderr is captured here and checked for it.
+          #
+          # BLOCKER A2 (review-integ.md, Nachpruefung): that line is
+          # GGML_LOG_INFO, mapped to LOG_LEVEL_TRACE (4), while the default
+          # verbosity threshold is LOG_LEVEL_INFO (3), so a healthy server
+          # never prints it without -lv 4. Belongs on the server start
+          # itself here, not on a --version/--list-devices call, since the
+          # grep below reads the SERVER's own log.
           $serverLog = "$env:RUNNER_TEMP\boot-smoke.log"
-          $proc = Start-Process -FilePath $bin -ArgumentList "--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow -RedirectStandardOutput "$serverLog.out" -RedirectStandardError "$serverLog.err"
+          $proc = Start-Process -FilePath $bin -ArgumentList "-lv","4","--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow -RedirectStandardOutput "$serverLog.out" -RedirectStandardError "$serverLog.err"
           $ok = $false
           foreach ($i in 1..40) {
             Start-Sleep -Milliseconds 400

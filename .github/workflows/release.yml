@@ -313,7 +313,15 @@ jobs:
           # `if (!silent)` guard that only gates the FAILURE/skip messages.
           # Capture stderr (GGML_LOG goes there) and require that line, named
           # for CPU specifically.
-          ( cd "$moved/llama" && "$bin" --list-devices ) >/tmp/list-devices.log 2>&1 || {
+          #
+          # BLOCKER A2 (review-integ.md, Nachpruefung): that success line is
+          # GGML_LOG_INFO, which common/log.cpp maps to LOG_LEVEL_TRACE (4),
+          # while the default verbosity threshold is LOG_LEVEL_INFO (3); at
+          # the default threshold llama-server never prints it at all, on a
+          # perfectly healthy build. -lv 4 is what actually enables it, and
+          # --list-devices calls exit(0) itself, so the flag has to sit
+          # BEFORE it or it is parsed too late to matter.
+          ( cd "$moved/llama" && "$bin" -lv 4 --list-devices ) >/tmp/list-devices.log 2>&1 || {
             cat /tmp/list-devices.log
             echo "FAIL: --list-devices exited non-zero" >&2
             exit 1
@@ -373,7 +381,13 @@ jobs:
           $runDir = (Resolve-Path "src-tauri\resources\llama\${{ matrix.sidecar_triple }}").Path
           Push-Location $runDir
           $listLog = "$env:RUNNER_TEMP\list-devices.log"
-          & $bin --list-devices *> $listLog
+          # BLOCKER A2 (review-integ.md, Nachpruefung): the success line
+          # below is GGML_LOG_INFO, mapped to LOG_LEVEL_TRACE (4) while the
+          # default verbosity threshold is LOG_LEVEL_INFO (3), so a healthy
+          # build never prints it without -lv 4. --list-devices calls
+          # exit(0) itself, so the flag has to come first or it is parsed
+          # too late.
+          & $bin -lv 4 --list-devices *> $listLog
           $listExit = $LASTEXITCODE
           Get-Content $listLog
           if ($listExit -ne 0) { throw "llama-server --list-devices exited $listExit (run from $runDir)" }

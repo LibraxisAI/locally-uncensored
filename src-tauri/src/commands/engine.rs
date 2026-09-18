@@ -1819,6 +1819,60 @@ pub(crate) enum SecondAttempt {
 const LOG_FILE_NOTE: &str =
     " The log file under Settings, Troubleshoot carries the full command line of both attempts and the engine's own output.";
 
+/// The second sentence of the SIGILL/0xC000001D message: what to actually do
+/// about it. Pure and takes the platform as a plain flag instead of reading
+/// `cfg!()` inline, so both branches are testable on any host OS
+/// (BLOCKER C2, review-integ.md Nachpruefung).
+///
+/// `resolve_engine_backend_dir` returns `None` UNCONDITIONALLY on macOS (its
+/// very first line), because the Mac sidecar is a single static build with
+/// Metal embedded and no dynamic ISA variants at all (`is_dynamic_isa_triple`
+/// is false for both Darwin triples, `stage_dynamic_isa_companions` is a
+/// documented no-op there with its own test) and never will be. Before this
+/// split, that `None` fell into the exact same arm as a genuinely broken
+/// Windows/Linux install (`module_count` also `None` there when
+/// `resolve_engine_backend_dir` cannot find ANY candidate with the marker
+/// file), so a Mac customer whose CPU is simply too old for the one Metal
+/// build LU ships was told to reinstall or check antivirus quarantine for
+/// files that this platform never has and never will. This path is real on
+/// Mac: `is_sigill` is not Linux-only, it is every Unix, and
+/// `cmake_flags_for`'s `x86_64-apple-darwin` branch carries no CPU-specific
+/// flag either, so ggml's own `GGML_NATIVE=OFF` default turns on SSE4.2,
+/// AVX, AVX2, BMI2, FMA and F16C there exactly like it used to on Windows.
+///
+/// `module_count` still distinguishes an empty Windows/Linux backend folder
+/// from a partially populated one; the mac branch ignores it on purpose,
+/// since the concept does not apply there regardless of what it reads.
+fn illegal_instruction_repair_sentence(module_count: Option<usize>, is_macos: bool) -> String {
+    if is_macos {
+        return " The LU Engine on Mac is one single build for every Mac, and this processor does \
+                 not have the instruction sets that build needs. Reinstalling would not change \
+                 that."
+            .to_string();
+    }
+    match module_count {
+        // No backend folder at all, or the folder is empty of CPU
+        // modules: the installation is missing files outright.
+        Some(0) | None => " The engine's own folder has none of the separate CPU builds it ships for older \
+             processors, which usually means an incomplete install or a security scanner \
+             quarantining an unsigned file it does not recognise. Reinstall Locally \
+             Uncensored, or check your antivirus software's quarantine for a file named \
+             ggml-cpu, then try again."
+            .to_string(),
+        // Some modules are present, so the install is not simply empty:
+        // the one this CPU needs is missing or was skipped, which points
+        // more at antivirus removal of a single file than a wholesale
+        // failed install.
+        Some(n) => format!(
+            " The engine's own folder holds {n} of the separate CPU builds it ships for older \
+             processors, but not the one this CPU can run, which points at a security scanner \
+             having quarantined that one file rather than a failed install. Reinstall Locally \
+             Uncensored, or check your antivirus software's quarantine for a file named \
+             ggml-cpu, then try again."
+        ),
+    }
+}
+
 /// One English sentence a user can act on, plus llama-server's own last words
 /// so a bug report still carries them.
 ///
@@ -1871,29 +1925,8 @@ pub(crate) fn start_failure_message(
             )
         };
         let module_count = backend_dir.map(count_cpu_backend_modules);
-        let repair_sentence = match module_count {
-            // No backend folder at all, or the folder is empty of CPU
-            // modules: the installation is missing files outright.
-            Some(0) | None => {
-                " The engine's own folder has none of the separate CPU builds it ships for older \
-                 processors, which usually means an incomplete install or a security scanner \
-                 quarantining an unsigned file it does not recognise. Reinstall Locally \
-                 Uncensored, or check your antivirus software's quarantine for a file named \
-                 ggml-cpu, then try again."
-                    .to_string()
-            }
-            // Some modules are present, so the install is not simply empty:
-            // the one this CPU needs is missing or was skipped, which points
-            // more at antivirus removal of a single file than a wholesale
-            // failed install.
-            Some(n) => format!(
-                " The engine's own folder holds {n} of the separate CPU builds it ships for older \
-                 processors, but not the one this CPU can run, which points at a security scanner \
-                 having quarantined that one file rather than a failed install. Reinstall Locally \
-                 Uncensored, or check your antivirus software's quarantine for a file named \
-                 ggml-cpu, then try again."
-            ),
-        };
+        let repair_sentence =
+            illegal_instruction_repair_sentence(module_count, cfg!(target_os = "macos"));
         format!(
             "The LU Engine exited immediately with an illegal-instruction fault. {missing_sentence} \
              The app did not retry, since the same binary would fail the same way again.{repair_sentence} \
@@ -6295,20 +6328,23 @@ mod tests {
     }
 
     /// BLOCKER C1 (review-integ.md, Teil (c)): with no backend folder to
-    /// count at all (`None`, mirroring a fresh or broken install where
-    /// `resolve_engine_backend_dir` found nothing), the message must point at
-    /// an incomplete installation or antivirus quarantine and offer a
-    /// reinstall, not repeat the old "wait for a broader build" claim.
+    /// count at all (`None`, mirroring a fresh or broken Windows/Linux
+    /// install where `resolve_engine_backend_dir` found nothing), the
+    /// message must point at an incomplete installation or antivirus
+    /// quarantine and offer a reinstall, not repeat the old "wait for a
+    /// broader build" claim.
+    ///
+    /// BLOCKER C2 (review-integ.md, Nachpruefung): tests the PURE
+    /// `illegal_instruction_repair_sentence` with `is_macos` injected
+    /// explicitly, not `start_failure_message` with `cfg!(target_os = ...)`
+    /// baked in, precisely so this test's verdict does not depend on which
+    /// OS happens to run `cargo test`. On this repo's own dev machine
+    /// (macOS) `cfg!(target_os = "macos")` is always true at compile time,
+    /// so going through `start_failure_message` here would silently test the
+    /// mac branch instead of the Windows/Linux one it claims to cover.
     #[test]
     fn illegal_instruction_with_no_backend_dir_blames_the_installation() {
-        let f = StartFailure {
-            died: true,
-            port_taken: false,
-            stderr: String::new(),
-            exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
-            signal: None,
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
+        let msg = illegal_instruction_repair_sentence(None, false);
         assert!(msg.contains("Reinstall Locally Uncensored"), "{msg}");
         assert!(msg.to_lowercase().contains("antivirus"), "{msg}");
         assert!(msg.contains("none of the separate CPU builds"), "{msg}");
@@ -6319,7 +6355,8 @@ mod tests {
     /// so the wording must not claim the folder is empty (that would send a
     /// user with a genuinely complete install looking for files that are
     /// already there), while still pointing at antivirus/reinstall rather
-    /// than at "no build exists for this CPU".
+    /// than at "no build exists for this CPU". Same C2 note as the test
+    /// above: `is_macos` is passed explicitly as `false`.
     #[test]
     fn illegal_instruction_with_a_full_backend_dir_does_not_claim_it_is_empty() {
         let dir = tempfile::tempdir().unwrap();
@@ -6331,20 +6368,9 @@ mod tests {
         for name in names {
             std::fs::write(dir.path().join(name), b"stub").unwrap();
         }
-        let f = StartFailure {
-            died: true,
-            port_taken: false,
-            stderr: String::new(),
-            exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
-            signal: None,
-        };
-        let msg = start_failure_message(
-            &f,
-            8127,
-            Duration::from_secs(60),
-            SecondAttempt::SameOffload,
-            Some(dir.path()),
-        );
+        let count = count_cpu_backend_modules(dir.path());
+        assert_eq!(count, 3);
+        let msg = illegal_instruction_repair_sentence(Some(count), false);
         assert!(msg.contains("Reinstall Locally Uncensored"), "{msg}");
         assert!(msg.to_lowercase().contains("antivirus"), "{msg}");
         assert!(msg.contains("holds 3 of the separate CPU builds"), "{msg}");
@@ -6353,15 +6379,48 @@ mod tests {
         // Negative control: an EMPTY folder (created but never populated) is
         // reported as empty, not as "3 of the separate CPU builds".
         let empty_dir = tempfile::tempdir().unwrap();
-        let empty_msg = start_failure_message(
-            &f,
-            8127,
-            Duration::from_secs(60),
-            SecondAttempt::SameOffload,
-            Some(empty_dir.path()),
-        );
+        let empty_count = count_cpu_backend_modules(empty_dir.path());
+        let empty_msg = illegal_instruction_repair_sentence(Some(empty_count), false);
         assert!(empty_msg.contains("none of the separate CPU builds"), "{empty_msg}");
         assert!(!empty_msg.contains("holds 3"), "{empty_msg}");
+    }
+
+    /// BLOCKER C2 (review-integ.md, Nachpruefung): on macOS,
+    /// `resolve_engine_backend_dir` returns `None` unconditionally (the Mac
+    /// sidecar is one static build with Metal embedded, no dynamic ISA
+    /// variants, and `is_dynamic_isa_triple` is false for both Darwin
+    /// triples). The mac branch must say the true thing (this processor
+    /// lacks what the one Mac build needs) and must NEVER promise a
+    /// reinstall or mention antivirus, since neither can produce a file that
+    /// this platform does not ship in the first place.
+    #[test]
+    fn illegal_instruction_on_macos_never_blames_the_installation() {
+        let msg = illegal_instruction_repair_sentence(None, true);
+        // Reinstalling is mentioned, but only to rule it out as a fix (a
+        // true statement); it must not be OFFERED as the way out the way
+        // "Reinstall Locally Uncensored" is on Windows/Linux.
+        assert!(!msg.contains("Reinstall Locally Uncensored"), "{msg}");
+        assert!(!msg.to_lowercase().contains("antivirus"), "{msg}");
+        assert!(!msg.contains("separate CPU builds"), "{msg}");
+        assert!(msg.contains("single build for every Mac"), "{msg}");
+
+        // Negative control: this is NOT a quirk of `None` specifically. A
+        // real backend_dir with some or all modules present would be
+        // impossible on a real Mac (resolve_engine_backend_dir never
+        // returns Some there), but the pure function must still ignore
+        // module_count on the mac branch rather than reading it, so an
+        // injected Some(0) and Some(9) read exactly the same as None here.
+        let same_as_zero = illegal_instruction_repair_sentence(Some(0), true);
+        let same_as_nine = illegal_instruction_repair_sentence(Some(9), true);
+        assert_eq!(msg, same_as_zero, "the mac branch must not read module_count at all");
+        assert_eq!(msg, same_as_nine, "the mac branch must not read module_count at all");
+
+        // Negative control across the platform flag itself: the SAME
+        // module_count reads as two different, non-overlapping sentences
+        // depending only on is_macos.
+        let windows_or_linux_msg = illegal_instruction_repair_sentence(None, false);
+        assert_ne!(msg, windows_or_linux_msg);
+        assert!(windows_or_linux_msg.contains("Reinstall"), "{windows_or_linux_msg}");
     }
 
     /// `count_cpu_backend_modules` itself, isolated from the message
