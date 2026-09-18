@@ -1013,16 +1013,30 @@ fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
 ///
 /// On Windows the companions are bundled flattened into the exe's own
 /// directory (see `resolve_engine_backend_dir`), which Windows' own DLL
-/// search order already covers with no help from this function; `current_dir`
-/// is set anyway; one fewer thing that has to stay true forever for this to
-/// keep working, the same belt-and-suspenders reasoning
-/// `resolve_engine_binary` already uses for its own second lookup tier. On
-/// Linux the companions sit in a separate resources directory (deb/AppImage
-/// keep externalBin and `resources` apart), and nothing in the pinned
-/// llama.cpp build sets an `$ORIGIN` rpath, so `current_dir` alone would get
-/// ggml's own variant SCAN right but the winning file's OWN dependency on
-/// libggml-base.so would still fail to resolve. `LD_LIBRARY_PATH` closes
-/// that second half.
+/// search order normally covers with no help from this function. But
+/// `current_dir` here is NOT redundant (review-sidecar.md, Runde 2,
+/// Abschnitt 4): `get_executable_path()` (ggml-backend-reg.cpp:438-455)
+/// calls `GetModuleFileNameW` into a FIXED `MAX_PATH` (260 wchar_t) buffer
+/// with no retry on `ERROR_INSUFFICIENT_BUFFER`, so an install path longer
+/// than 259 characters comes back silently truncated and ggml's own
+/// "executable directory" search root stops existing. `current_dir` is the
+/// only search root `ggml_backend_load_best` falls back to
+/// (ggml-backend-reg.cpp:479-486, "the process's CURRENT directory") in
+/// that case, so this line is the recovery path for a long installation
+/// path, not a belt-and-suspenders extra: do not remove it as
+/// "unnecessary".
+///
+/// On Linux the companions sit in a separate resources directory (deb/
+/// AppImage keep externalBin and `resources` apart). `current_dir` alone
+/// gets ggml's own variant SCAN right (the pinned llama.cpp build now sets
+/// an `$ORIGIN`-relative RPATH on every staged companion, K1 BLOCKER B3/B4,
+/// scripts/build-llama.sh's `-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON` plus a
+/// `patchelf` second line of defense, so a found companion's OWN dependency
+/// on libggml-base.so.N resolves via $ORIGIN without any help from this
+/// function). What $ORIGIN does NOT cover is the EXE itself: it lives in a
+/// different directory from its companions on deb/AppImage, and $ORIGIN is
+/// relative to the file that carries it, not to some shared root. `LD_LIBRARY_PATH`
+/// closes exactly that remaining gap, for the exe's own DT_NEEDED entries.
 fn apply_engine_backend_dir(cmd: &mut Command, backend_dir: Option<&Path>) {
     let Some(dir) = backend_dir else { return };
     cmd.current_dir(dir);
