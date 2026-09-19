@@ -26,6 +26,11 @@ import { HINWEIS_TEXT } from '../../lib/hinweis'
  */
 
 function statusIcon(t: AgentTask) {
+  // 'queued' (Folgeauftrag, bau/review-w2lane.md Runde 4): ohne einen eigenen
+  // Zweig fiel diese Zeile durch bis zum letzten `return`, dem roten X fuer
+  // "gescheitert", eine wartende Aufgabe haette also wie eine fehlgeschlagene
+  // ausgesehen, obwohl noch gar nichts versucht wurde.
+  if (t.status === 'queued') return <Loader2 size={10} className="text-gray-400 shrink-0" />
   if (t.status === 'running') return <Loader2 size={10} className="animate-spin text-blue-400 shrink-0" />
   if (t.status === 'done') return <Check size={10} className="text-green-500 shrink-0" />
   if (t.status === 'cancelled') return <Square size={10} className="text-gray-500 shrink-0" />
@@ -65,7 +70,7 @@ function TaskRow({ task, now }: { task: AgentTask; now: number }) {
             </div>
           )}
         </button>
-        {task.status === 'running' ? (
+        {task.status === 'running' || task.status === 'queued' ? (
           <button
             onClick={() => cancel(task.id)}
             title="Stop this agent"
@@ -170,16 +175,28 @@ export function AgentPanel() {
   // Aufgaben eines Fächers wieder auf, nachdem der Nutzer es weggeklappt hat
   //, und eine Spalte, die gegen den Klick zurückkommt, ist schlimmer als
   // eine, die nie erscheint.
-  const gesehen = useRef<{ conv: string | null; ids: Set<string> }>({ conv: null, ids: new Set() })
+  //
+  // Gemerkt wird der letzte STATUS je Aufgabe, nicht nur ihre Kennung
+  // (Folgeauftrag, bau/review-w2lane.md Runde 4): ein Hintergrund-Sub-Agent
+  // entsteht seither als 'queued' und wird erst danach 'running' (siehe
+  // lib/agent-tasks.ts). Eine reine Ids-Menge hätte die Aufgabe schon beim
+  // Entstehen als "gesehen" verbucht, ohne dass sie lief, und der spätere
+  // Wechsel zu 'running' hätte das Panel nie mehr aufgeklappt.
+  const gesehen = useRef<{ conv: string | null; status: Map<string, AgentTask['status']> }>({
+    conv: null,
+    status: new Map(),
+  })
   useEffect(() => {
     if (!convId) return
     if (gesehen.current.conv !== convId) {
-      gesehen.current = { conv: convId, ids: new Set((tasks ?? []).map((t) => t.id)) }
+      gesehen.current = { conv: convId, status: new Map((tasks ?? []).map((t) => [t.id, t.status])) }
       return
     }
-    const neu = (tasks ?? []).filter((t) => !gesehen.current.ids.has(t.id))
-    neu.forEach((t) => gesehen.current.ids.add(t.id))
-    if (neu.some((t) => t.status === 'running')) setCollapsed(false)
+    const angelaufen = (tasks ?? []).some(
+      (t) => t.status === 'running' && gesehen.current.status.get(t.id) !== 'running',
+    )
+    for (const t of tasks ?? []) gesehen.current.status.set(t.id, t.status)
+    if (angelaufen) setCollapsed(false)
   }, [convId, tasks, setCollapsed])
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {

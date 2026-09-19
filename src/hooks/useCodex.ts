@@ -423,7 +423,7 @@ export function useCodex() {
     let queueAbort: AbortController | null = null
     const laneOutcome = await runInLane(
       { conversationId: convId, lane, abort: () => queueAbort?.abort() },
-      async () => {
+      async (heldLocalLane) => {
 
     const memoryScope = store.conversations.find(c => c.id === convId)?.memoryScope
     // A brand-new instruction clears a previous stop; a /loop pass inherits it,
@@ -933,6 +933,11 @@ export function useCodex() {
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
     run.abortSignal = abort.signal
+    // The proof `run-slot.ts`s `runsInHeldLane` checks (Opus-Review Runde 4,
+    // bau/review-w2lane.md): a nested run_workflow or a foreground
+    // delegate_task threads this straight back into runInLane instead of
+    // guessing it holds the lane.
+    run.heldLocalLane = heldLocalLane
     setIsRunning(true)
     codexStore.setThreadStatus(convId, 'running')
     // Bind the generating flag to THIS conversation so the typing indicator +

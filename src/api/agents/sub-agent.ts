@@ -670,6 +670,26 @@ export async function defaultSubAgentRunner(
 }
 
 /**
+ * Auf welcher Spur wuerde dieser Sub-Agent rechnen, aufgeloest genau wie in
+ * `defaultSubAgentRunner`: ein explizites `model`-Argument gewinnt, sonst
+ * das aktive Modell. Geteilt zwischen dem Vordergrund- und dem
+ * Hintergrundzweig von `buildDelegateExecutor`, damit beide dieselbe
+ * Antwort auf "welches Modell rechnet wirklich" geben, statt sie zweimal
+ * getrennt zu erraten.
+ */
+async function resolveSubAgentLane(model: string | undefined): Promise<RunLane> {
+  const { useModelStore } = await import('../../stores/modelStore')
+  const { resolveRequestedModel } = await import('../../lib/agent-fanout')
+  const modelStoreState = useModelStore.getState()
+  let subAgentModel = modelStoreState.activeModel
+  if (model) {
+    const treffer = resolveRequestedModel(model, modelStoreState.models)
+    if (treffer) subAgentModel = treffer.name
+  }
+  return subAgentModel ? laneOf(subAgentModel, currentLaneFacts()) : 'cloud'
+}
+
+/**
  * Build a tool executor suitable for toolRegistry.registerBuiltin. The
  * runner is injectable so tests can stub the whole LLM round-trip.
  */
@@ -710,17 +730,20 @@ export function buildDelegateExecutor(
 
     if (!background) {
       try {
-        // Explicit "runs in the parent's held lane" (run-slot.ts header,
-        // "DIE WEITERGABE DES ELTERNLAUF-TOKENS"): the parent turn already
-        // booked its lane and is AWAITING this call (`return await`). A
-        // fresh booking here for the same conversation would queue this
-        // sub-agent behind the very slot its own parent is waiting on it to
-        // release, a hang. `lane`/`conversationId` are unused on this path
-        // (runInLane skips admit/release entirely when the flag is set);
-        // they are here only so the call has one shape for both branches.
+        // "Runs in the parent's held lane" (run-slot.ts header, "DIE
+        // WEITERGABE DES ELTERNLAUF-TOKENS"), but the proof is checked now,
+        // not assumed (Opus-Review Runde 4, bau/review-w2lane.md): a bare
+        // `true` here used to ride along even when the parent turn held NO
+        // local lane at all (a cloud parent, or a parent whose lane had
+        // already been given up), so a sub-agent pinned to its OWN local
+        // `model` ran unbooked next to a foreign local run. `run.abortSignal`
+        // is Stop for a run that books normally here; a run that rides along
+        // instead reaches the parent's own abort handle (run-slot.ts wires
+        // that up when the proof checks out).
+        const lane = await resolveSubAgentLane(model)
         let output = ''
         await runInLane(
-          { conversationId: run?.conversationId ?? '', lane: 'cloud', runsInHeldLane: true },
+          { conversationId: run?.conversationId ?? '', lane, runsInHeldLane: run?.heldLocalLane ?? null },
           async () => { output = await runner(goal, context, { budget, run, model }) },
         )
         return output
@@ -752,19 +775,8 @@ export function buildDelegateExecutor(
     // der Elternlauf beim Fertigwerden seine Spur weg, waehrend dieser
     // Hintergrundagent noch unbebucht gegen denselben Motor rechnet: zwei
     // echte lokale Anfragen nebeneinander, dieselbe Klasse Fehler wie
-    // Blocker A. Welches Modell laeuft, wird genauso wie in
-    // `defaultSubAgentRunner` aufgeloest (ein explizites `model`-Argument
-    // gewinnt, sonst das aktive Modell), damit die Spur zum tatsaechlich
-    // rechnenden Slot passt.
-    const { useModelStore } = await import('../../stores/modelStore')
-    const { resolveRequestedModel } = await import('../../lib/agent-fanout')
-    const modelStoreState = useModelStore.getState()
-    let subAgentModel = modelStoreState.activeModel
-    if (model) {
-      const treffer = resolveRequestedModel(model, modelStoreState.models)
-      if (treffer) subAgentModel = treffer.name
-    }
-    const lane: RunLane = subAgentModel ? laneOf(subAgentModel, currentLaneFacts()) : 'cloud'
+    // Blocker A.
+    const lane = await resolveSubAgentLane(model)
     // ── Stopp auf die Hauptantwort laesst Hintergrundagenten LAUFEN ─────────
     //
     // Hier wurde das Abbruchsignal des Elternzugs durchgereicht. Fuer einen
@@ -795,6 +807,12 @@ export function buildDelegateExecutor(
       // gemeldet: `cancel` gibt bei fehlendem Griff still `false` zurueck.
       // Gefunden, weil der Store ihn seither als Pflicht fuehrt.
       id, convId, goal, context, background: true, startedAt: Date.now(), controller,
+      // 'queued' (Folgeauftrag, bau/review-w2lane.md Runde 4): diese Zeile
+      // entsteht VOR der Buchung bei `lib/run-slot.ts` weiter unten, also
+      // bevor irgendetwas rechnet. Ohne dieses Feld meldete `check_tasks`
+      // die Aufgabe sofort als laufend, mit einer Uhr, die schon seit hier
+      // zaehlte, waehrend sie in Wahrheit noch auf die lokale Spur wartet.
+      status: 'queued',
     })
 
     // B1 Nachbesserung 2 (Opus-Review): Wettlauf Stop gegen Start. Zwischen
@@ -829,6 +847,9 @@ export function buildDelegateExecutor(
     void runInLane(
       { conversationId: id, lane, abort: () => controller.abort() },
       async () => {
+        // Drangekommen: erst JETZT ist "laufend" wahr, und erst ab jetzt
+        // zaehlt `taskElapsedSeconds` (siehe `runStartedAt` in agent-tasks.ts).
+        useAgentTaskStore.getState().update(id, { status: 'running', runStartedAt: Date.now() })
         const output = await runner(goal, context, { budget, run: kindLauf, taskId: id, model })
         const abgebrochen = controller.signal.aborted
         useAgentTaskStore.getState().finish(id, {

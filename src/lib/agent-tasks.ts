@@ -47,7 +47,17 @@ export const AGENT_TASKS_MAX_PER_CONV = 40
  */
 export const TASK_RESULT_CHARS = 8000
 
-export type AgentTaskStatus = 'running' | 'done' | 'failed' | 'cancelled'
+/**
+ * `'queued'` (Folgeauftrag aus bau/review-w2lane.md Runde 4): die Aufgabe
+ * existiert (`start()` ist gelaufen, `check_tasks` kennt sie), rechnet aber
+ * noch nicht, weil sie beim lokalen Motor auf einen freien Platz wartet
+ * (`lib/run-slot.ts`). Vorher stand hier sofort `'running'`, seit dem
+ * ersten Eintrag, also lange bevor der Rumpf ueberhaupt anlief. `check_tasks`
+ * meldete eine wartende Aufgabe damit als laufend, mit einer Uhr, die schon
+ * seit der Anmeldung zaehlte, nicht seit dem echten Start. Ein Agent, der
+ * danach pollt, sah eine Aufgabe, die "schon lange laeuft" und nichts tut.
+ */
+export type AgentTaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
 /**
  * Was eine Aufgabe an Tokens gekostet hat.
@@ -213,6 +223,15 @@ export interface AgentTask {
    */
   background: boolean
   startedAt: number
+  /**
+   * Wann der Rumpf WIRKLICH anlief, erst gesetzt, sobald die lokale Spur
+   * ihn admittiert hat (oder sofort fuer eine Cloud-Aufgabe, die nie
+   * wartet). `undefined`, solange `status === 'queued'`. `taskElapsedSeconds`
+   * rechnet ab hier, nicht ab `startedAt`: sonst zaehlte die angezeigte
+   * Laufzeit schon waehrend des Wartens, fuer eine Aufgabe, die noch keinen
+   * einzigen Token gezogen hat.
+   */
+  runStartedAt?: number
   endedAt?: number
   /** Die Antwort, sobald es eine gibt. */
   output?: string
@@ -371,8 +390,12 @@ export function applyTaskRing(tasks: AgentTask[], max = AGENT_TASKS_MAX_PER_CONV
  * ist keins.
  */
 export function taskElapsedSeconds(t: AgentTask, now: number): number {
+  // Queued heisst: kein Token, kein Rumpf, keine verstrichene Zeit, egal wie
+  // lange `start()` schon her ist. Siehe `runStartedAt` im Typ oben.
+  if (t.status === 'queued') return 0
+  const start = t.runStartedAt ?? t.startedAt
   const ende = t.endedAt ?? now
-  return Math.max(0, Math.floor((ende - t.startedAt) / 1000))
+  return Math.max(0, Math.floor((ende - start) / 1000))
 }
 
 /**

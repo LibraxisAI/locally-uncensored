@@ -25,8 +25,9 @@ import { toolRegistry } from '../api/mcp/tool-registry'
 import { DEFAULT_PERMISSIONS } from '../api/mcp/types'
 import type { ToolArgs } from '../api/mcp/types'
 import { streamProviderTurn } from './provider-stream'
-import { runInLane } from './run-slot'
+import { runInLane, type HeldLocalLane } from './run-slot'
 import { laneOf, currentLaneFacts } from './run-lane-of-model'
+import type { AgentRunContext } from '../api/agent-context'
 import { settleThinking } from './thinking-stripper'
 import { buildHermesToolPrompt, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
 import { resolveToolCallingStrategy } from './agent-strategy'
@@ -83,7 +84,16 @@ export class WorkflowEngine {
   private abortController: AbortController
   private inputResolver: ((input: string) => void) | null = null
   private depth: number
-  private runsInHeldLane: boolean
+  private runsInHeldLane: HeldLocalLane | null
+  /**
+   * The proof this run itself hands to ITS OWN nested `run_workflow` tool
+   * step (second-degree nesting), set from `runInLane`'s `held` callback
+   * argument once this run's own lane admission resolves. `null` until
+   * then, and `null` forever on a cloud lane, which never holds anything to
+   * ride along in. See run-slot.ts's header, "DIE WEITERGABE DES
+   * ELTERNLAUF-TOKENS".
+   */
+  private heldLocalLane: HeldLocalLane | null = null
 
   constructor(
     workflow: AgentWorkflow,
@@ -94,15 +104,18 @@ export class WorkflowEngine {
     /**
      * This engine runs its steps INSIDE a parent run's already-booked lane
      * slot (the `run_workflow` tool, called from a tool step of an agent or
-     * chat turn that already holds the lane). See `run-slot.ts`'s header,
-     * section "DIE WEITERGABE DES ELTERNLAUF-TOKENS": passed through
-     * unchanged to `runInLane` so this run does not book its own place in a
-     * queue it would then have to wait behind itself for (a hang, not a
-     * slowdown). A top-level workflow (started from the workflow panel, or
-     * from the "run workflow <name>" chat trigger) is never nested, so it
-     * leaves this at the default `false` and books its own slot.
+     * chat turn that already holds the lane, or from another workflow's own
+     * tool step). See `run-slot.ts`'s header, section "DIE WEITERGABE DES
+     * ELTERNLAUF-TOKENS": passed through unchanged to `runInLane`, which
+     * checks it against the CURRENT lane holder at run time (Opus-Review
+     * Runde 4, bau/review-w2lane.md, a boolean here used to be blind trust).
+     * If the check fails, this run books its own place instead of hanging
+     * behind a stale or fake proof. A top-level workflow (started from the
+     * workflow panel, or from the "run workflow <name>" chat trigger) is
+     * never nested, so it leaves this at the default `null` and books its
+     * own slot from scratch.
      */
-    runsInHeldLane: boolean = false
+    runsInHeldLane: HeldLocalLane | null = null
   ) {
     this.workflow = workflow
     this.conversationId = conversationId
@@ -143,7 +156,14 @@ export class WorkflowEngine {
         abort: () => this.abortController.abort(),
         runsInHeldLane: this.runsInHeldLane,
       },
-      () => this.runSteps(results),
+      (held) => {
+        // Own proof for a SECOND-degree nested run_workflow (a step of THIS
+        // run calling run_workflow again): stored so executeToolStep can
+        // hand it on, instead of that nested engine booking its own place
+        // behind this one and hanging (see run-slot.ts's header).
+        this.heldLocalLane = held
+        return this.runSteps(results)
+      },
     )
 
     if (outcome === 'cancelled-while-queued') {
@@ -391,7 +411,27 @@ export class WorkflowEngine {
       }
     }
 
-    const result = await toolRegistry.execute(step.toolName, args)
+    // A tool step calling run_workflow is second-degree nesting: hand that
+    // nested engine THIS run's own held-lane proof (null on a cloud lane, or
+    // before this run's own admission resolved), so it can ride along
+    // instead of booking its own place behind this one and hanging. Every
+    // other tool keeps its long-standing `run: undefined` (unchanged scope,
+    // review-w2lane.md asked for the lane fix, not a wider AgentRunContext
+    // thread-through for tools that never read it).
+    const runForTool: AgentRunContext | undefined = step.toolName === 'run_workflow'
+      ? {
+          token: `workflow-${this.conversationId}`,
+          chatId: null,
+          conversationId: this.conversationId,
+          workspace: null,
+          artifactMode: false,
+          readOnlyShellTurn: false,
+          mode: null,
+          artifacts: [],
+          heldLocalLane: this.heldLocalLane,
+        }
+      : undefined
+    const result = await toolRegistry.execute(step.toolName, args, 1, runForTool)
     const isError = result.startsWith('Error:')
 
     return {

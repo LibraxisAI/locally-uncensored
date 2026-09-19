@@ -65,24 +65,43 @@
  * stellt sich damit hinter dem noch abwickelnden alten an, statt ihn zu
  * ersetzen.
  *
- * ── DIE WEITERGABE DES ELTERNLAUF-TOKENS, JETZT WIRKLICH GEBAUT ─────────────
+ * ── DIE WEITERGABE DES ELTERNLAUF-TOKENS, JETZT WIRKLICH GEPRUEFT ───────────
  *
- * (Nachbesserung 3, Runde 3 der 3.0.1-Pruefung) Ein echter verschachtelter
- * Aufrufer ist inzwischen da, gleich zwei: `workflow-engine.ts`s eigener
- * `run_workflow`-Aufruf (`api/mcp/builtin-tools.ts`, verschachtelt in einen
- * schon laufenden Werkzeugaufruf) und der VORDERGRUND-Sub-Agent
- * (`sub-agent.ts`, `return await runner(...)`, der Elternzug wartet auf ihn).
- * Beide reichen ihr Elternlauf-Token jetzt EXPLIZIT weiter, ueber
- * `runsInHeldLane` unten, statt es stillschweigend ueber die blosse
- * `conversationId` erschliessen zu lassen: wer es setzt, ruft `admit`/`release`
- * gar nicht auf, sondern fuehrt seinen Rumpf direkt im schon gebuchten Platz
- * des Elternlaufs aus. Kein zweites `admit` mit gleicher oder neuer Identitaet
- * fuer dieselbe `conversationId`, denn ein ABGEWARTETES `runInLane`
- * verschachtelt in einem anderen haengt hart: der innere Aufruf stellt sich
+ * (Nachbesserung 3, Runde 3 der 3.0.1-Pruefung; Nachbesserung Runde 4,
+ * bau/review-w2lane.md) Ein echter verschachtelter Aufrufer ist inzwischen
+ * da, gleich zwei: `workflow-engine.ts`s eigener `run_workflow`-Aufruf
+ * (`api/mcp/builtin-tools.ts`, verschachtelt in einen schon laufenden
+ * Werkzeugaufruf) und der VORDERGRUND-Sub-Agent (`sub-agent.ts`, `return
+ * await runner(...)`, der Elternzug wartet auf ihn). Beide reichen ihr
+ * Elternlauf-Token EXPLIZIT weiter, ueber `runsInHeldLane` unten, statt es
+ * stillschweigend ueber die blosse `conversationId` erschliessen zu lassen.
+ *
+ * Runde 4 hat gemessen, dass "explizit weitergereicht" allein nichts wert
+ * ist, wenn niemand es nachpruefft: `runsInHeldLane: true` war ein reiner
+ * Vertrauensbeweis, ein Aufrufer konnte den Marker setzen, OHNE dass
+ * irgendein Elternlauf die Spur wirklich haelt, und der Rumpf lief dann
+ * neben einem FREMDEN Halter, ohne Platz, ohne Buchung, ohne Abbruchgriff,
+ * unsichtbar fuer `stopAllBackgroundWork` (drei erreichbare Wege genannt:
+ * ein Vordergrund-Sub-Agent mit eigenem lokalem `model` unter einem
+ * Cloud-Elternzug, ein Modellwechsel mitten im Zug, ein Sprachkanal ohne
+ * Zug ueberhaupt). Deshalb ist `runsInHeldLane` jetzt kein Boolean mehr,
+ * sondern die `HeldLocalLane`-Identitaet, die `runInLane` seinem eigenen
+ * Rumpf mitgibt (zweiter Parameter von `body`), und die diese Funktion
+ * gegen `holdsLocalLane()` prueft, BEVOR sie `admit`/`release` uebergeht:
+ * nur wenn GENAU dieser Elternlauf die lokale Spur heute noch haelt, faehrt
+ * der innere Aufruf in dessen Platz mit UND haengt sich an dessen
+ * Abbruchgriff (Stop auf die Elternunterhaltung bricht dann beide ab).
+ * Stimmt der Beweis nicht (der Marker ist veraltet, falsch gesetzt, oder der
+ * Elternlauf ist gar keiner), bucht der Aufruf ganz normal wie ein
+ * eigenstaendiger Lauf, und das ist kein Haenger: haelt niemand aus derselben
+ * Kette die Spur, kann sich niemand aus derselben Kette selbst blockieren.
+ *
+ * Ein ABGEWARTETES `runInLane` verschachtelt in einem anderen, OHNE einen
+ * gueltigen Beweis, haengt weiterhin hart: der innere Aufruf stellt sich
  * hinter dem aeusseren an, der aeussere wartet auf den inneren, beide fuer
  * immer (gemessen, siehe `__tests__/run-slot-nested-in-held-lane.test.ts`).
- * `runsInHeldLane` ist der einzige Weg, das zu vermeiden, und er ist ein
- * bewusster Parameter, kein aus der `conversationId` erratener Zustand.
+ * `runsInHeldLane` mit einem echten Beweis ist der einzige Weg, das zu
+ * vermeiden.
  *
  * Der HINTERGRUND-Sub-Agent (`sub-agent.ts`, `void runner(...)`) ist die
  * Gegenprobe: er wird vom Elternzug NICHT abgewartet, ueberlebt dessen Ende
@@ -90,10 +109,12 @@
  * (die Aufgaben-Id, nicht die `conversationId` der sichtbaren Unterhaltung),
  * damit `stopAllBackgroundWork` ihn erreicht und er sich in dieselbe lokale
  * Spur einreiht wie jeder andere Lauf. `runsInHeldLane` bleibt fuer ihn
- * `false` (der Vorgabewert).
+ * `undefined` (der Vorgabewert).
  */
-import { admit, release, type RunLane } from './run-lanes'
+import { admit, release, holdsLocalLane, type RunLane, type HeldLocalLane } from './run-lanes'
 import { useGenerationStore } from '../stores/generationStore'
+
+export type { HeldLocalLane }
 
 export interface RunSlotOptions {
   /** Der sichtbare Lauf. Dieselbe Kennung, die der Stop-Knopf benennt. */
@@ -110,16 +131,18 @@ export interface RunSlotOptions {
    */
   abort?: () => void
   /**
-   * Dieser Rumpf laeuft bereits IM gebuchten Platz eines Elternlaufs
-   * (verschachteltes `run_workflow` oder ein vorgroundlicher Sub-Agent, den
-   * sein Elternzug abwartet). Siehe Dateikopf, Abschnitt "DIE WEITERGABE DES
-   * ELTERNLAUF-TOKENS". Gesetzt, ruft diese Funktion `admit`/`release`
-   * ueberhaupt nicht auf: sie fuehrt `body()` direkt aus. Ein zweites `admit`
-   * fuer dieselbe `conversationId` waere hier eine Verklemmung, kein
-   * Doppelbuchen, denn der aeussere Lauf wartet ja SELBST auf diesen inneren.
-   * Vorgabe `false`: ein eigenstaendiger Lauf bucht immer selbst.
+   * Der Beweis, dass ein Elternlauf die lokale Spur haelt und dieser Rumpf
+   * in dessen Platz mitfahren darf (der `held`-Wert, den `runInLane` seinem
+   * EIGENEN `body` als zweites Argument mitgibt). Siehe Dateikopf, Abschnitt
+   * "DIE WEITERGABE DES ELTERNLAUF-TOKENS". Wird zur Laufzeit gegen
+   * `holdsLocalLane()` geprueft: nur wenn GENAU dieser Elternlauf die Spur
+   * heute noch haelt, ruft diese Funktion `admit`/`release` gar nicht auf,
+   * sondern fuehrt `body()` direkt im Platz des Elternlaufs aus und haengt
+   * sich an dessen Abbruchgriff. Stimmt der Beweis nicht mehr (oder war er
+   * nie echt), bucht dieser Aufruf ganz normal, als eigenstaendiger Lauf.
+   * Vorgabe `undefined`: ein eigenstaendiger Lauf bucht immer selbst.
    */
-  runsInHeldLane?: boolean
+  runsInHeldLane?: HeldLocalLane | null
 }
 
 /**
@@ -147,18 +170,47 @@ type Weckgrund = 'drangekommen' | 'ausgereiht'
  */
 export async function runInLane(
   options: RunSlotOptions,
-  body: () => Promise<void>,
+  body: (held: HeldLocalLane | null) => Promise<void>,
 ): Promise<RunSlotOutcome> {
   const { conversationId, lane, abort, runsInHeldLane } = options
 
-  // Laeuft dieser Rumpf schon im Platz eines Elternlaufs, gibt es hier
-  // nichts anzustellen: kein `admit`, kein `release`, keine eigene
-  // Buchung. Ein zweites `admit` fuer dieselbe `conversationId` waere die
+  // Der Beweis wird nachgemessen, nicht geglaubt (Opus-Review Runde 4,
+  // bau/review-w2lane.md). Nur wenn GENAU der genannte Elternlauf die lokale
+  // Spur JETZT noch haelt, faehrt dieser Rumpf in dessen Platz mit. Ein
+  // zweites `admit` fuer dieselbe `conversationId` waere sonst die
   // Verklemmung aus dem Dateikopf, weil der aeussere Lauf auf genau diesen
   // Rumpf wartet. Fehler kommen unveraendert heraus, wie beim normalen Weg.
-  if (runsInHeldLane) {
-    await body()
-    return 'ran'
+  if (runsInHeldLane && holdsLocalLane(runsInHeldLane.conversationId, runsInHeldLane.identity)) {
+    const store = useGenerationStore.getState()
+    // An den Abbruchgriff des Elternlaufs anhaengen: Stop auf die
+    // Elternunterhaltung muss diesen inneren Rumpf mit erreichen, sonst
+    // waere ein Vordergrund-Sub-Agent oder ein verschachtelter Arbeitsablauf
+    // ueber den Stop-Knopf der Unterhaltung, die ihn gestartet hat, nicht
+    // mehr abbrechbar. Der alte Griff wird danach exakt wiederhergestellt,
+    // damit das `finally` des Elternlaufs (das seinen EIGENEN Griff per
+    // Referenz wiedererkennt) unveraendert weiterfunktioniert.
+    const elternGriff = store.aborters[runsInHeldLane.conversationId]
+    const griffFuerBeide = (): void => { elternGriff?.(); abort?.() }
+    if (abort) store.registerAborter(runsInHeldLane.conversationId, griffFuerBeide)
+    try {
+      await body(runsInHeldLane)
+      return 'ran'
+    } finally {
+      if (abort && useGenerationStore.getState().aborters[runsInHeldLane.conversationId] === griffFuerBeide) {
+        useGenerationStore.getState().registerAborter(runsInHeldLane.conversationId, elternGriff ?? (() => {}))
+      }
+    }
+  }
+  if (runsInHeldLane && lane === 'local') {
+    // Der Marker war gesetzt, aber der genannte Elternlauf haelt die Spur
+    // nicht (mehr): veraltet, falsch gesetzt, oder gar keiner. Normal buchen
+    // ist hier sicher, kein Haenger, denn haelt niemand aus derselben Kette
+    // die Spur, kann sich niemand aus derselben Kette selbst blockieren; nur
+    // geloggt, damit ein falsch gesetzter Marker nicht lautlos bleibt.
+    console.warn(
+      '[run-slot] runsInHeldLane was set, but the named parent run does not hold the local lane. ' +
+      'Booking normally instead.',
+    )
   }
 
   // Ein Lauf ohne Kennung nimmt keinen Platz, dieselbe Entscheidung wie in
@@ -166,7 +218,7 @@ export async function runInLane(
   // diese Kennung findet. Zwei lokale Laeufe nebeneinander sind langsam, eine
   // fuer immer besetzte Spur ist tot.
   if (!conversationId) {
-    await body()
+    await body(null)
     return 'ran'
   }
 
@@ -178,6 +230,11 @@ export async function runInLane(
   // heute; kommt so ein Aufrufer zurueck, ist das die einzige Stelle, die er
   // aendern muss.
   const identity = Symbol(conversationId)
+  // Der Beweis, den DIESER Lauf einem eigenen verschachtelten Aufruf mitgeben
+  // kann, siehe Dateikopf. Nur fuer `lane === 'local'`: die Wolke haelt gar
+  // keine exklusive Spur, ein Beweis dafuer waere nichts wert und
+  // `holdsLocalLane` liefert fuer ihn ohnehin immer `false`.
+  const held: HeldLocalLane | null = lane === 'local' ? { conversationId, identity } : null
 
   let zustand: 'wartend' | 'laeuft' | 'ausgereiht' = 'wartend'
   let wecken: ((grund: Weckgrund) => void) | null = null
@@ -245,7 +302,7 @@ export async function runInLane(
   }
 
   try {
-    await body()
+    await body(held)
     return 'ran'
   } finally {
     aufraeumen(conversationId, abbruchgriff, identity)

@@ -17,6 +17,7 @@ import { useAgentTaskStore } from '../../../stores/agentTaskStore'
 import { useModelStore } from '../../../stores/modelStore'
 import { useGenerationStore } from '../../../stores/generationStore'
 import { localLaneHolder, queuedRunIds, __resetRunLanesForTests } from '../../../lib/run-lanes'
+import { taskElapsedSeconds } from '../../../lib/agent-tasks'
 import type { AgentRunContext } from '../../agent-context'
 
 /** Ollama ohne Praefix, `isOllamaLocal()` zeigt in Tests auf diese Maschine
@@ -125,5 +126,52 @@ describe('eigene Buchung, eigene Identitaet', () => {
 
     a.aufloesen('fertig')
     await takte()
+  })
+})
+
+describe("'queued' bis die Spur admittiert (Folgeauftrag, bau/review-w2lane.md Runde 4)", () => {
+  it('ein wartender Hintergrundagent meldet status queued mit Laufzeit 0, egal wie lange das Warten scheinbar dauert, und zaehlt erst ab dem echten Start', async () => {
+    const a = steuerbar()
+    const execA = buildDelegateExecutor((async () => a.versprechen) as SubAgentRunner)
+    await execA({ goal: 'haelt-die-spur', background: true }, makeRun('conv-a'))
+
+    const b = steuerbar()
+    const execB = buildDelegateExecutor((async () => b.versprechen) as SubAgentRunner)
+    await execB({ goal: 'wartend', background: true }, makeRun('conv-b'))
+    const idB = useAgentTaskStore.getState().forConv('conv-b')[0].id
+    const vorAdmission = useAgentTaskStore.getState().get(idB)!
+
+    expect(vorAdmission.status).toBe('queued')
+    expect(vorAdmission.runStartedAt).toBeUndefined()
+    // Egal, wie weit "jetzt" in der Zukunft liegt: waehrend queued ist die
+    // angezeigte Laufzeit 0, kein Zaehler, der seit der Anmeldung waechst.
+    expect(taskElapsedSeconds(vorAdmission, vorAdmission.startedAt + 60_000)).toBe(0)
+
+    a.aufloesen('a fertig')
+    await takte()
+
+    const nachAdmission = useAgentTaskStore.getState().get(idB)!
+    expect(nachAdmission.status).toBe('running')
+    expect(nachAdmission.runStartedAt).toBeDefined()
+    expect(nachAdmission.runStartedAt as number).toBeGreaterThanOrEqual(nachAdmission.startedAt)
+    // Ab jetzt zaehlt die Laufzeit ab `runStartedAt`, nicht ab `startedAt`.
+    expect(taskElapsedSeconds(nachAdmission, (nachAdmission.runStartedAt as number) + 4000)).toBe(4)
+
+    b.aufloesen('b fertig')
+    await takte()
+    expect(useAgentTaskStore.getState().get(idB)?.status).toBe('done')
+  })
+
+  it('GEGENPROBE: bei freier Spur ist ein Hintergrundagent nie von aussen als queued zu beobachten', async () => {
+    const execA = buildDelegateExecutor((async () => 'sofort fertig') as SubAgentRunner)
+    await execA({ goal: 'frei', background: true }, makeRun('conv-frei'))
+    const id = useAgentTaskStore.getState().forConv('conv-frei')[0].id
+    // Freie Spur: `admit` entscheidet synchron auf 'started', der Rumpf setzt
+    // 'running' noch im selben Aufrufrahmen, bevor `execA` je zurueckkehrt.
+    // 'queued' existiert dann nur als Zwischenwert INNERHALB von `start()`,
+    // nie als Zustand, den ein Aufrufer von aussen sehen kann.
+    const task = useAgentTaskStore.getState().get(id)!
+    expect(task.status).not.toBe('queued')
+    expect(['running', 'done']).toContain(task.status)
   })
 })
