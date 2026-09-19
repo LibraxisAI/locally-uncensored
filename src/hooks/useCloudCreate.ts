@@ -91,11 +91,17 @@ export function throttleMessage(err: CloudJobError): string {
       // R5-52: the buy dialog had exactly one caller and it sat in the chat
       // path, so a render that ran the wallet dry left the customer with a red
       // line and no way to pay.
-      signalCreditsExhausted()
+      signalCreditsExhausted('credits')
       return "You're out of credits. Load up your credits or upgrade your plan."
     case 'video_budget_exhausted':
+      // R5-51: this cap and 'trainings_exhausted' below used to only print a
+      // line and never opened the dialog, so a Create render that hit either
+      // one left the customer with prose and no way to act on it, same gap
+      // R5-52 had already found and closed for 'credits_exhausted'.
+      signalCreditsExhausted('video_budget')
       return "This month's video budget is used up. Top-up credits keep video going, or upgrade your plan."
     case 'trainings_exhausted':
+      signalCreditsExhausted('trainings')
       return "Your plan's character trainings for this month are used up."
   }
   const secs = err.retryAfterMs && err.retryAfterMs > 0 ? Math.ceil(err.retryAfterMs / 1000) : null

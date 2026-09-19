@@ -9,6 +9,14 @@ import { CLOUD_BASE } from '../api/cloud/config'
 
 export const CREDITS_EXHAUSTED_EVENT = 'lu:credits-exhausted'
 
+/** Which cap said no — drives the dialog title and copy. 'credits' = the
+ *  shared pool, 'video_budget' = the monthly video sub-budget (top-ups
+ *  bypass it), 'trainings' = no included run remains and the top-up wallet
+ *  cannot cover the selected training. Matches apps/web/lib/credits-
+ *  exhausted.ts, so the same server code reads the same on both apps
+ *  (R5-51). */
+export type ExhaustedReason = 'credits' | 'video_budget' | 'trainings'
+
 /**
  * Wohin der Knopf fuehrt: auf die Preisseite, nicht in einen Kauf.
  *
@@ -24,9 +32,9 @@ export const CREDITS_EXHAUSTED_EVENT = 'lu:credits-exhausted'
  */
 export const PRICING_URL = `${CLOUD_BASE}/pricing`
 
-export function signalCreditsExhausted(): void {
+export function signalCreditsExhausted(reason: ExhaustedReason = 'credits'): void {
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event(CREDITS_EXHAUSTED_EVENT))
+    window.dispatchEvent(new CustomEvent(CREDITS_EXHAUSTED_EVENT, { detail: { reason } }))
   }
 }
 
