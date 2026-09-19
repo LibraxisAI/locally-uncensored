@@ -4,7 +4,7 @@
 //   node --test scripts/win-isa-guard.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -81,11 +81,32 @@ test('findOwner: largest symbol address <= target, function end is the next symb
   assert.equal(findOwner(symbols, 0x180000fff), null, 'address before every symbol has no owner');
 });
 
-test('isAllowlisted: msvcprt:vector_algorithms.obj, MSVCRT:*, and wmemcmp/memcmp are allowed; own code is not', () => {
+test('isAllowlisted: msvcprt:vector_algorithms.obj, MSVCRT:*, and wmemcmp/memcmp bound to a known host object are allowed; own code is not', () => {
   assert.equal(isAllowlisted({ obj: 'msvcprt:vector_algorithms.obj', name: 'x' }), true);
   assert.equal(isAllowlisted({ obj: 'MSVCRT:cpu_disp.obj', name: 'x' }), true);
-  assert.equal(isAllowlisted({ obj: 'ggml.obj', name: 'wmemcmp' }), true);
+  assert.equal(isAllowlisted({ obj: 'common.obj', name: 'wmemcmp' }), true);
+  assert.equal(isAllowlisted({ obj: 'unicode.obj', name: 'memcmp' }), true);
+  assert.equal(isAllowlisted({ obj: 'ggml-backend-reg.obj', name: 'wmemcmp' }), true);
+  assert.equal(isAllowlisted({ obj: 'server-context.obj', name: 'wmemcmp' }), true);
   assert.equal(isAllowlisted({ obj: 'ggml-quants.obj', name: 'iq2xs_init_impl$omp$1' }), false);
+});
+
+test('BL3 (review-waechter-windows.md): a mangled name containing "memcmp" as a mere substring is NOT allowlisted', () => {
+  // Opus's counter-example: a C++ namespace/function literally called
+  // "memcmp" inside an unrelated, unguarded own-code object. The old
+  // \bmemcmp\b regex matched this via the word boundaries around "@memcmp@"
+  // and waved it through as ALLOWED_CRT even though ggml-cpu.obj was never
+  // reviewed and never carries a self-guarding CRT dispatch.
+  assert.equal(isAllowlisted({ obj: 'ggml-cpu.obj', name: '?fast@memcmp@ggml@@YAXXZ' }), false);
+});
+
+test('BL3: exact name "memcmp"/"wmemcmp" in an object OUTSIDE the reviewed host list is NOT allowlisted', () => {
+  // Even an EXACT name match must still be bound to one of the specific
+  // objects review-k1-avx.md actually verified; a symbol named exactly
+  // "memcmp" turning up in some other object was never checked and must
+  // fall through to the ordinary dominance check like any other own code.
+  assert.equal(isAllowlisted({ obj: 'ggml-cpu.obj', name: 'memcmp' }), false);
+  assert.equal(isAllowlisted({ obj: 'ggml-cpu.obj', name: 'wmemcmp' }), false);
 });
 
 test('checkDominance: finds the isa-read-then-guarding-jump shape (Fundstelle 2a pattern)', () => {
@@ -107,6 +128,62 @@ test('checkDominance: an isa read with no bounding jump is NOT protected', () =>
   ].join('\n'));
   const dom = checkDominance(lines, [0x180099898], 0x180027e10, 0x180028010, 0x180027f83);
   assert.equal(dom.protected, false);
+});
+
+test('N1 (review-waechter-windows.md): an isa read followed by an UNRELATED conditional jump that happens to land past the hit is NOT protected', () => {
+  // Fake-green pattern A: the isa read is real, but the jump that reaches
+  // past the hit comes from a completely different comparison (here, on a
+  // different register) that never looked at the isa flag.
+  const lines = parseDisasmLines([
+    '  0000000180060000: 8B 0D BC 19 07 00  mov         ecx,dword ptr [0000000180099898h]',
+    '  0000000180060010: 48 85 C0           test        rax,rax',
+    '  0000000180060014: 74 1A              je          0000000180060030',
+    '  0000000180060020: C5 F9 6E D8        vmovd       xmm3,eax',
+  ].join('\n'));
+  const dom = checkDominance(lines, [0x180099898], 0x180060000, 0x180060100, 0x180060020);
+  assert.equal(dom.protected, false);
+});
+
+test('N1: the isa ADDRESS used only as a bare immediate (never dereferenced) does not count as a read', () => {
+  // Fake-green pattern F: the isa flag's address appears in the instruction
+  // text, but only as a constant loaded into a register, never dereferenced,
+  // so the flag's actual value is never inspected.
+  const lines = parseDisasmLines([
+    '  0000000180070000: 48 B8 98 98 09 80 01 00 00 00  mov  rax,0000000180099898h',
+    '  0000000180070010: 48 85 C0                       test rax,rax',
+    '  0000000180070014: 74 1A                          je   0000000180070030',
+    '  0000000180070020: C5 F9 6E D8                    vmovd xmm3,eax',
+  ].join('\n'));
+  const dom = checkDominance(lines, [0x180099898], 0x180070000, 0x180070100, 0x180070020);
+  assert.equal(dom.protected, false);
+});
+
+test('N1: the conditional jump must immediately follow the bound cmp/test, not merely appear somewhere after it', () => {
+  const lines = parseDisasmLines([
+    '  0000000180027ED6: 8B 0D BC 19 07 00  mov         ecx,dword ptr [0000000180099898h]',
+    '  0000000180027F7E: 83 F9 05           cmp         ecx,5',
+    '  0000000180027F80: 48 85 C0           test        rax,rax',
+    '  0000000180027F81: 7C 40              jl          0000000180027FC3',
+    '  0000000180027F83: C4 C2 71 46 C2     vpsravd     xmm0,xmm1,xmm10',
+  ].join('\n'));
+  const dom = checkDominance(lines, [0x180099898], 0x180027e10, 0x180028010, 0x180027f83);
+  assert.equal(dom.protected, false, 'an unrelated instruction between the cmp and the jump breaks the "immediately follows" requirement');
+});
+
+test('fixture: fake-unrelated-jump-own-code (Opus pattern A) MUST come out UNPROTECTED', () => {
+  const { disasmText, mapText } = loadFixture('fake-unrelated-jump-own-code');
+  const result = evaluateModule({ moduleName: 'fake-unrelated-jump-own-code', disasmText, mapText });
+  assert.equal(result.hitCount, 1);
+  assert.equal(result.unprotected.length, 1);
+  assert.equal(result.verdicts[0].verdict, 'UNPROTECTED');
+});
+
+test('fixture: fake-address-as-constant-own-code (Opus pattern F) MUST come out UNPROTECTED', () => {
+  const { disasmText, mapText } = loadFixture('fake-address-as-constant-own-code');
+  const result = evaluateModule({ moduleName: 'fake-address-as-constant-own-code', disasmText, mapText });
+  assert.equal(result.hitCount, 1);
+  assert.equal(result.unprotected.length, 1);
+  assert.equal(result.verdicts[0].verdict, 'UNPROTECTED');
 });
 
 test('checkDominance: no isa symbol in the map at all is NOT protected', () => {
@@ -158,11 +235,56 @@ test('CLI: the script actually runs main() as a real subprocess and exits 1 on t
     script,
     'check',
     '--module', 'red-probe',
+    // The fixture is deliberately a handful of lines (N2's own parse-count
+    // guard would otherwise trip on it too, for an unrelated reason); this
+    // test is specifically about the entry-point/exit-code regression, not
+    // about N2, so disable that guard explicitly rather than relying on it
+    // happening to fail for the right reason anyway.
+    '--min-lines', '0',
     '--disasm', join(FIXTURES, 'unprotected-own-code.disasm.txt'),
     '--map', join(FIXTURES, 'unprotected-own-code.map.txt'),
   ], { encoding: 'utf8' });
   assert.equal(result.status, 1, `expected exit 1 (unprotected hit), got ${result.status}. stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   assert.match(result.stdout, /UNPROTECTED/);
+});
+
+test('N2 (review-waechter-windows.md): evaluateModule reports lineCount so the CLI can fail closed on an unparsed disasm dump', () => {
+  const disasmText = [
+    '  0000000180000000: C5 F9 6E D8        vmovd       xmm3,eax',
+    '  0000000180000010: 48 89 5C 24 08     mov         qword ptr [rsp+8],rbx',
+  ].join('\n');
+  const result = evaluateModule({ moduleName: 'tiny', disasmText, mapText: '' });
+  assert.equal(result.lineCount, 2);
+});
+
+test('N2: the CLI FAILS a disasm dump with too few parsed lines by default, even with zero hits', () => {
+  const script = join(HERE, 'win-isa-guard.mjs');
+  const emptyDisasm = join(HERE, '__fixtures__', 'win-isa', '.tmp-empty.disasm.txt');
+  const emptyMap = join(HERE, '__fixtures__', 'win-isa', '.tmp-empty.map.txt');
+  writeFileSync(emptyDisasm, 'Dump of file: nothing the parser recognises, no address-anchored lines at all.\n');
+  writeFileSync(emptyMap, ' Static symbols\n\n 0001:00000000  x  0000000180000000 f  a.obj\n');
+  try {
+    const result = spawnSync(process.execPath, [
+      script, 'check', '--module', 'unparsed', '--disasm', emptyDisasm, '--map', emptyMap,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 1, `expected exit 1 (too few parsed lines), got ${result.status}. stdout:\n${result.stdout}`);
+    assert.match(result.stderr, /only 0 disassembled instruction line\(s\)/);
+  } finally {
+    rmSync(emptyDisasm, { force: true });
+    rmSync(emptyMap, { force: true });
+  }
+});
+
+test('N2: --min-lines 0 lets a deliberately tiny fixture (the red probe) skip the parse-count check', () => {
+  const script = join(HERE, 'win-isa-guard.mjs');
+  const result = spawnSync(process.execPath, [
+    script, 'check', '--module', 'red-probe', '--min-lines', '0',
+    '--disasm', join(FIXTURES, 'unprotected-own-code.disasm.txt'),
+    '--map', join(FIXTURES, 'unprotected-own-code.map.txt'),
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 1, 'still fails, but for the real reason (UNPROTECTED), not the line-count guard');
+  assert.match(result.stdout, /UNPROTECTED/);
+  assert.doesNotMatch(result.stderr, /disassembled instruction line/);
 });
 
 test('map-control: a module with VEX/EVEX hits but zero map symbols cannot resolve any owner', () => {

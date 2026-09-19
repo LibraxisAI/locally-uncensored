@@ -28,6 +28,30 @@
 # companions directory (a partial build, or a future cmake refactor that
 # drops a name this project still assumes).
 #
+# TOOLSET PIN (review-waechter-windows.md N7): the Windows branch below
+# trusts a specific, hand-disassembled CRT/STL allowlist
+# (msvcprt:vector_algorithms.obj and the wmemcmp/memcmp fast path, see
+# win-isa-guard.mjs isAllowlisted) rather than re-deriving it from source on
+# every run. That trust is pinned to a Major.Minor MSVC LINKER version
+# (WINDOWS_REVIEWED_LINKER_VERSIONS below, currently "14.44", i.e. MSVC
+# 19.44.35222.0 / VS 2022 17.14, lu-301/bau/review-k1-avx.md section 3) and
+# check_toolset_version turns the guard red the moment a build used a
+# different one, rather than silently keep trusting an allowlist nobody
+# re-checked. To clear a red toolset-pin failure: re-run the Opus-style
+# manual disassembly review (dumpbin /disasm against the new toolset's
+# msvcprt:vector_algorithms.obj and wmemcmp/common.obj, unicode.obj,
+# ggml-backend-reg.obj, server-context.obj — the exact objects
+# win-isa-guard.mjs's isAllowlisted trusts, see WMEMCMP_MEMCMP_HOST_OBJECTS
+# there) to confirm the new toolset's CRT/STL fast paths are still
+# self-guarded by __isa_enabled/_Avx2WmemEnabled the same way, then add the
+# new linker Major.Minor to WINDOWS_REVIEWED_LINKER_VERSIONS. Realistically
+# this is not a rare event: windows-latest pulls a new MSVC patch release on
+# roughly a one-to-two-month cadence, so expect this pin to need bumping on
+# that cadence, most visibly in a release run — it is a planned, periodic
+# cost of trusting a hand-reviewed allowlist rather than a rare emergency,
+# and the sidecar build cache (keyed on hashFiles('scripts/build-llama.sh'))
+# only defers it, it does not remove it.
+#
 # Usage: scripts/verify-sidecar-isa.sh <triple>
 set -euo pipefail
 
@@ -329,17 +353,56 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # checked. The higher CPU-tier variants (haswell and above) are explicitly
   # EXEMPT here: they are allowed, by design, to contain unconditional AVX,
   # that is the whole point of shipping more than one ggml-cpu-*.dll.
+  #
+  # N5 (review-waechter-windows.md): the exclusion list used to be a SECOND,
+  # independently hand-written copy of the high-tier variant names, free to
+  # drift away from EXPECTED_VARIANTS above (a future MSVC/llama.cpp adding
+  # e.g. a "zen4" or "sapphirerapids" MSVC variant would fall into neither
+  # list and get treated, wrongly, as a must-be-protected baseline module).
+  # Derived from EXPECTED_VARIANTS instead, so there is exactly one place
+  # that names the CPU-tier ladder.
+  windows_high_tier_variants() {
+    local v
+    for v in "${EXPECTED_VARIANTS[@]}"; do
+      case "$v" in
+        x64 | sse42) continue ;;
+        *) printf '%s\n' "$v" ;;
+      esac
+    done
+  }
+
+  # N4 (review-waechter-windows.md): every non-CPU-tier-variant module this
+  # pinned llama.cpp checkout is known to produce for
+  # x86_64-pc-windows-msvc, read off the real box build
+  # (lu-301/bau/waechter-windows.md's beweis run). This is deliberately NOT
+  # "whatever the glob happens to find today": the module-count check below
+  # fails RED, with a message asking a human to classify it, both when a
+  # module in this list goes missing and when the companions directory
+  # contains a Windows .dll that is neither in this list nor one of the
+  # excluded high-CPU-tier variants — an unclassified module could just as
+  # easily be a brand-new unconditional-AVX CPU tier (which MUST be
+  # excluded) as an ordinary new base module (which MUST be
+  # dominance-checked), and guessing either way defeats the point of this
+  # guard.
+  EXPECTED_BASE_WINDOWS_MODULES=(
+    ggml.dll ggml-base.dll ggml-cpu-sse42.dll ggml-cpu-x64.dll ggml-vulkan.dll
+    llama.dll llama-common.dll llama-server-impl.dll mtmd.dll
+  )
+
   list_windows_modules_to_check() {
-    local f base
+    local f base excluded v
     for f in "$COMPANIONS_DIR"/*.dll; do
       [ -e "$f" ] || continue
       base="$(basename "$f")"
-      case "$base" in
-        ggml-cpu-sandybridge.dll | ggml-cpu-haswell.dll | ggml-cpu-skylakex.dll | \
-        ggml-cpu-cannonlake.dll | ggml-cpu-cascadelake.dll | ggml-cpu-icelake.dll | \
-        ggml-cpu-alderlake.dll)
-          continue ;;
-      esac
+      excluded=""
+      while IFS= read -r v; do
+        [ -n "$v" ] || continue
+        if [ "$base" = "ggml-cpu-${v}.dll" ]; then
+          excluded=1
+          break
+        fi
+      done < <(windows_high_tier_variants)
+      [ -n "$excluded" ] && continue
       printf '%s\n' "$f"
     done
   }
@@ -358,13 +421,21 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # to) without needing a real $CACHE_DIR/build-<triple> tree alongside it.
   # A real invocation always uses the derived default.
   WIN_BUILD_DIR="${WIN_MAP_DIR_OVERRIDE:-$CACHE_DIR/build-$TRIPLE}"
+  # N3 (review-waechter-windows.md): this used to fall back to
+  # llama-server.map for ANY stem whose own exact map was missing, not just
+  # for the exe. That is not a harmless convenience: a module checked
+  # against the WRONG map either resolves every hit to garbage
+  # `fn=$R000000 obj=*` names (still red, but for an unrelated, confusing
+  # reason) or, worse, a module with genuinely NO VEX/EVEX hits of its own
+  # can pass vacuously against a map that was never its own. There is no
+  # legitimate case left for a fallback: the exe's own call site below
+  # already asks for stem "llama-server" directly, which this exact-match
+  # lookup already serves without any special-casing. A missing map for any
+  # module, exe included, must be a hard failure naming that exact module,
+  # not a silent substitution.
   find_map_for() {
-    local stem="$1" hit
-    hit="$(find "$WIN_BUILD_DIR" -type f -iname "${stem}.map" -print -quit 2>/dev/null)"
-    if [ -z "$hit" ] && [ "$stem" != "llama-server" ]; then
-      hit="$(find "$WIN_BUILD_DIR" -type f -iname "llama-server.map" -print -quit 2>/dev/null)"
-    fi
-    printf '%s\n' "$hit"
+    local stem="$1"
+    find "$WIN_BUILD_DIR" -type f -iname "${stem}.map" -print -quit 2>/dev/null
   }
 
   NODE_BIN="$(command -v node || true)"
@@ -373,6 +444,34 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   WIN_GUARD="$SCRIPT_DIR/win-isa-guard.mjs"
   [ -f "$WIN_GUARD" ] || vdie "$WIN_GUARD missing"
 
+  # N4: gather the set of base modules this run is ABOUT to check before
+  # running a single dumpbin invocation, so a drift between what is on disk
+  # and EXPECTED_BASE_WINDOWS_MODULES is reported as one clear message
+  # instead of an empty pass or a confusing per-file failure.
+  checked_base_modules=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    checked_base_modules+=("$(basename "$f")")
+  done < <(list_windows_modules_to_check)
+
+  for base in "${checked_base_modules[@]}"; do
+    known=""
+    for expected in "${EXPECTED_BASE_WINDOWS_MODULES[@]}"; do
+      if [ "$base" = "$expected" ]; then known=1; break; fi
+    done
+    [ -n "$known" ] || vdie "unexpected Windows module '$base' found in $COMPANIONS_DIR: it is neither a known base module (EXPECTED_BASE_WINDOWS_MODULES in verify-sidecar-isa.sh) nor one of the excluded high-CPU-tier variants (EXPECTED_VARIANTS minus x64/sse42, see windows_high_tier_variants). Classify it before this guard can trust it: add it to EXPECTED_BASE_WINDOWS_MODULES if it is a new base module that must be dominance-checked like the rest of own code, or to EXPECTED_VARIANTS if it is a new higher CPU tier that is allowed unconditional AVX by design"
+  done
+  for expected in "${EXPECTED_BASE_WINDOWS_MODULES[@]}"; do
+    found=""
+    for base in "${checked_base_modules[@]}"; do
+      if [ "$base" = "$expected" ]; then found=1; break; fi
+    done
+    [ -n "$found" ] || vdie "expected base Windows module '$expected' (EXPECTED_BASE_WINDOWS_MODULES) not found in $COMPANIONS_DIR, or it was wrongly excluded as a high-CPU-tier variant; build first, or fix windows_high_tier_variants/EXPECTED_VARIANTS if it now overlaps"
+  done
+  [ "${#checked_base_modules[@]}" -eq "${#EXPECTED_BASE_WINDOWS_MODULES[@]}" ] \
+    || vdie "checked ${#checked_base_modules[@]} Windows module(s) but expected exactly ${#EXPECTED_BASE_WINDOWS_MODULES[@]} (${EXPECTED_BASE_WINDOWS_MODULES[*]}); list_windows_modules_to_check's glob may have run empty or duplicated a name, which would otherwise pass this guard vacuously green"
+  vlog "module coverage: ${#checked_base_modules[@]} base module(s) match EXPECTED_BASE_WINDOWS_MODULES exactly"
+
   win_fail_count=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -380,7 +479,7 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
     stem="${base%.dll}"
     map_file="$(find_map_for "$stem")"
     if [ -z "$map_file" ]; then
-      vdie "no .map file found for $f under $WIN_BUILD_DIR (stem '$stem'), /MAP did not produce one, or the build cache is stale; rebuild with scripts/build-llama.sh $TRIPLE first"
+      vdie "no .map file found for $f under $WIN_BUILD_DIR (stem '$stem'), -MAP did not produce one, or the build cache is stale; rebuild with scripts/build-llama.sh $TRIPLE first"
     fi
     disasm_tmp="$(mktemp)"
     disassemble_windows "$f" > "$disasm_tmp"
@@ -391,7 +490,9 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   done < <(list_windows_modules_to_check)
 
   # exe itself, same treatment (out_name_for's stem never matches a .map
-  # basename, see find_map_for's llama-server fallback above).
+  # basename, hence the explicit stem "llama-server" below; N3 removed the
+  # fallback this comment used to point at, find_map_for is exact-match only
+  # now).
   exe_name="$(out_name_for "$TRIPLE")"
   exe_path="$BIN_DIR/$exe_name"
   if [ -f "$exe_path" ]; then
@@ -415,6 +516,14 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # not, dumpbin itself is not disassembling this file (wrong architecture,
   # truncated output, a silently swallowed error), and every "no unprotected
   # hit" result above is unproven, not passing.
+  #
+  # This control already satisfies B2's "exact code, not just any nonzero"
+  # principle by construction: `grep -qE` only ever exits 0 (a real match)
+  # or nonzero (no match, or a grep error), there is no third "crashed for
+  # an unrelated reason but still looks like the expected failure" case the
+  # way a node subprocess has, so a plain `if ! grep ...; then vdie; fi` is
+  # already as strict as B2 asks the negative and red-probe controls below
+  # to become explicitly.
   haswell_file="$(find_variant_file haswell)"
   [ -n "$haswell_file" ] || vdie "ggml-cpu-haswell.dll not found for the positive control"
   haswell_disasm="$(disassemble_windows "$haswell_file")"
@@ -430,16 +539,36 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # not, the allowlist or the dominance check has been loosened into "allow
   # everything", which a guard whose whole job is catching that must never
   # do quietly.
+  #
+  # B2 (review-waechter-windows.md): "any nonzero exit means the rule caught
+  # something" and "exit 0 means correctly caught" both silently accept
+  # OTHER failure modes for the wrong reason: a crash from a missing/renamed
+  # fixture, a bad CLI argument, or a future win-isa-guard.mjs change can
+  # exit 1 too (an uncaught readFileSync throw is exit code 1, same as a
+  # deliberate "FAIL (negative control)"), and would be reported here as
+  # "the rule went soft" while never having run the decision logic at all.
+  # Require the EXACT expected exit code (0 for this control: found at least
+  # one UNPROTECTED hit) AND the exact expected message in stdout, the same
+  # principle the red-probe check below already needs.
   haswell_map="$(find_map_for ggml-cpu-haswell)"
   [ -n "$haswell_map" ] || vdie "no ggml-cpu-haswell.map found under $WIN_BUILD_DIR for the negative control"
   haswell_disasm_tmp="$(mktemp)"
   disassemble_windows "$haswell_file" > "$haswell_disasm_tmp"
-  if ! "$NODE_BIN" "$WIN_GUARD" check --module ggml-cpu-haswell.dll --disasm "$haswell_disasm_tmp" --map "$haswell_map" --expect-unprotected; then
-    rm -f "$haswell_disasm_tmp"
-    vdie "negative control failed: ggml-cpu-haswell.dll's own-code AVX2 kernels came out fully protected/allowed, which means the Windows ISA rule no longer catches anything (review-k1-avx.md R4)"
-  fi
+  neg_out_tmp="$(mktemp)"
+  neg_err_tmp="$(mktemp)"
+  neg_status=0
+  "$NODE_BIN" "$WIN_GUARD" check --module ggml-cpu-haswell.dll --disasm "$haswell_disasm_tmp" --map "$haswell_map" --expect-unprotected \
+    >"$neg_out_tmp" 2>"$neg_err_tmp" || neg_status=$?
   rm -f "$haswell_disasm_tmp"
-  vlog "negative control: ggml-cpu-haswell.dll correctly shows at least one UNPROTECTED own-code hit (the rule still catches something)"
+  if [ "$neg_status" -eq 0 ] && grep -q 'OK (negative control):' "$neg_out_tmp"; then
+    vlog "negative control: ggml-cpu-haswell.dll correctly shows at least one UNPROTECTED own-code hit (the rule still catches something)"
+  else
+    vdie "negative control did NOT pass cleanly (exit=$neg_status, expected exit=0 with 'OK (negative control):' in stdout); this is either the allowlist/dominance rule having gone soft (review-k1-avx.md R4) or the check crashing for an unrelated reason (missing map, bad args, a win-isa-guard.mjs regression) — both must be treated as red rather than guessed apart. stdout:
+$(cat "$neg_out_tmp")
+stderr:
+$(cat "$neg_err_tmp")"
+  fi
+  rm -f "$neg_out_tmp" "$neg_err_tmp"
 
   # R4, control 3/3 (the artificial red probe): a checked-in fixture pair
   # (scripts/__fixtures__/win-isa/unprotected-own-code.*) that is an
@@ -449,14 +578,37 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # win-isa-guard.mjs that makes the rule pass vacuously even when no real
   # DLL is available to test against (a Mac dev box has none of the above
   # Windows files at all).
+  #
+  # BLOCKER B2 (review-waechter-windows.md): the old check accepted ANY
+  # nonzero exit code as "correctly came out RED", including exit 2 (bad
+  # CLI usage) or a crash from a missing/moved fixture file (an uncaught
+  # readFileSync throw exits 1, same code as a deliberate FAIL) — exactly
+  # the class of bug that let the entry-point regression this project
+  # already hit once (lu-301/bau/waechter-windows.md) go unnoticed. Require
+  # the EXACT expected exit code (1) AND grep stdout for the exact expected
+  # verdict text, the same way win-isa-guard.test.mjs's own spawnSync
+  # regression test already does.
   RED_PROBE_DIR="$SCRIPT_DIR/__fixtures__/win-isa"
-  if ! "$NODE_BIN" "$WIN_GUARD" check --module "red-probe" \
+  red_out_tmp="$(mktemp)"
+  red_err_tmp="$(mktemp)"
+  red_status=0
+  # --min-lines 0: this fixture is deliberately a handful of lines (it tests
+  # the decision LOGIC, not a real disassembly), so N2's parse-count guard
+  # (which exists to catch a real module silently failing to disassemble at
+  # all) must not fire on it for an unrelated reason.
+  "$NODE_BIN" "$WIN_GUARD" check --module "red-probe" --min-lines 0 \
       --disasm "$RED_PROBE_DIR/unprotected-own-code.disasm.txt" \
-      --map "$RED_PROBE_DIR/unprotected-own-code.map.txt"; then
+      --map "$RED_PROBE_DIR/unprotected-own-code.map.txt" \
+      >"$red_out_tmp" 2>"$red_err_tmp" || red_status=$?
+  if [ "$red_status" -eq 1 ] && grep -q 'UNPROTECTED' "$red_out_tmp"; then
     vlog "red probe: unprotected-own-code fixture correctly came out RED"
   else
-    vdie "red probe FAILED TO GO RED: scripts/__fixtures__/win-isa/unprotected-own-code.* (an own-code VEX hit with no preceding isa check at all) was accepted, the decision logic in win-isa-guard.mjs has a bug that lets an unprotected AVX instruction through"
+    vdie "red probe FAILED TO GO RED as expected (exit=$red_status, expected exit=1 with 'UNPROTECTED' in stdout): scripts/__fixtures__/win-isa/unprotected-own-code.* (an own-code VEX hit with no preceding isa check at all) either was accepted by the decision logic, or the check crashed for an unrelated reason (missing fixture, bad args) instead of actually running it — both are red. stdout:
+$(cat "$red_out_tmp")
+stderr:
+$(cat "$red_err_tmp")"
   fi
+  rm -f "$red_out_tmp" "$red_err_tmp"
 
   # Toolset pin, checked once against the exe (present after a real build).
   if [ -f "$exe_path" ]; then

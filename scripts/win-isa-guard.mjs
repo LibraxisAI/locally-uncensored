@@ -58,6 +58,31 @@
 // works on both dumpbin's Intel-syntax output (the box, and Windows CI once
 // a Developer Command Prompt is on PATH); see readTextFileAuto for the
 // encoding note.
+//
+// SCOPE, STATED HONESTLY (review-waechter-windows.md N6): this guard proves
+// "no unprotected VEX/EVEX instruction", i.e. AVX-and-above. It does NOT
+// prove "runs on every x86-64 CPU". A legacy-encoded instruction above the
+// x86-64 baseline (POPCNT, LZCNT, TZCNT, the SSE4.2 string/CRC32 ops) is not
+// VEX/EVEX-coded and would pass through unnoticed even if compiled in
+// unconditionally, and would fault with the identical 0xC000001D on the same
+// customer machine. For K1 as reported this residual gap is accepted, not
+// closed:
+//   - BMI1/BMI2 (ANDN, BEXTR, BZHI, PDEP, PEXT, ...) do NOT need separate
+//     handling: they are VEX-encoded instructions (VEX.LZ.0F38, per the
+//     Intel SDM), so the existing 0xC4/0xC5/0x62 first-byte check already
+//     covers them.
+//   - POPCNT/LZCNT/TZCNT were checked for cheap opcode-byte coverage and
+//     rejected: their real encoding is a mandatory 0xF3 prefix followed by a
+//     0F-map opcode (F3 0F B8 for POPCNT, F3 0F BD for LZCNT, F3 0F BC for
+//     TZCNT). Unlike 0xC4/0xC5/0x62, a leading 0xF3 byte is NOT unambiguous
+//     in 64-bit code: it is the ordinary REP/REPE prefix and the mandatory
+//     prefix for a large family of unrelated scalar SSE instructions
+//     (MOVSS, CVTSI2SS, ADDSS, ...), so a first-byte-only rule would flag
+//     huge numbers of ordinary SSE instructions as false positives, and a
+//     rule that also inspects the trailing 0F B8/BD/BC bytes stops being a
+//     one-byte structural check and starts being exactly the kind of
+//     multi-byte, easy-to-get-subtly-wrong decoder this rewrite was meant to
+//     avoid. Not implemented; flagged here rather than silently dropped.
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -183,11 +208,53 @@ export function findIsaSymbolVAs(symbols) {
 // gated on the separate _Avx2WmemEnabled flag instead (same file family).
 // Reviewed against MSVC 19.44.35222.0 / VS 2022 17.14, see
 // checkToolsetVersion below and lu-301/bau/review-k1-avx.md section 3.
+//
+// review-waechter-windows.md BL3: the wmemcmp/memcmp part of this allowlist
+// used to be a bare case-insensitive \b...\b REGEX against the owning
+// symbol's NAME ALONE, with no condition on the owning OBJECT at all. That is
+// both too loose (a substring match: a C++ namespace or class literally
+// called "memcmp" anywhere in a mangled name, e.g.
+// "?fast@memcmp@ggml@@YAXXZ" in an ENTIRELY UNRELATED, unguarded own-code
+// object such as ggml-cpu.obj, matched and was waved through as ALLOWED_CRT)
+// and not what R3.1 as reviewed actually verified: in the real Windows build
+// wmemcmp's CRT COMDAT gets attributed by the linker to whichever OWN object
+// first references it (that is *why* it shows up in "own" objects at all,
+// not because this project wrote it), and the objects that happened to do so
+// were hand-checked one by one, not "any object with this name in it
+// somewhere". So the rule now requires BOTH an EXACT (not substring, not
+// regex) match on the symbol name AND that the owning object is one of the
+// specific objects that match was verified against
+// (WMEMCMP_MEMCMP_HOST_OBJECTS below). A symbol named exactly "memcmp"
+// sitting in some other object is not covered by that verification and must
+// fall through to the ordinary own-code dominance check like everything
+// else.
+const WMEMCMP_MEMCMP_HOST_OBJECTS = new Set([
+  'common.obj',
+  'unicode.obj',
+  'ggml-backend-reg.obj',
+  'server-context.obj',
+]);
+
+// A .map Lib:Object field can carry a "Lib:Object" form (e.g.
+// "msvcprt:vector_algorithms.obj") or a bare "Object" form (the common case
+// for this project's own objects, e.g. "common.obj"). Only the part after
+// the last colon is ever a plain filename; strip a library prefix if present
+// so the allowlist compares against the same shape in either case.
+function objectBaseName(obj) {
+  const idx = obj.lastIndexOf(':');
+  return idx === -1 ? obj : obj.slice(idx + 1);
+}
+
 export function isAllowlisted(owner) {
   if (!owner) return false;
   if (owner.obj === 'msvcprt:vector_algorithms.obj') return true;
   if (owner.obj.startsWith('MSVCRT:')) return true;
-  if (/\bwmemcmp\b/i.test(owner.name) || /\bmemcmp\b/i.test(owner.name)) return true;
+  if (
+    (owner.name === 'wmemcmp' || owner.name === 'memcmp') &&
+    WMEMCMP_MEMCMP_HOST_OBJECTS.has(objectBaseName(owner.obj))
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -195,43 +262,118 @@ function hexVA(n) {
   return n.toString(16).padStart(16, '0');
 }
 
-// R3.2: the dominance approximation for "own code". Looks for an isa-flag
-// read before the hit in the owning function, then a conditional jump
-// (mnemonic starts with j, is not jmp) between that read and the hit whose
-// target lands strictly after the hit and still inside the function, the
-// exact shape both Fundstelle 1a/1b (STL) and 2a-2d (ggml auto-vectorizer)
-// showed in review-k1-avx.md.
+// A genuine isa-flag READ dereferences the address in memory (dumpbin prints
+// that as "... [<hex>h]", the bracket is the actual load); a line that merely
+// mentions the same hex digits as an immediate constant (e.g. "mov
+// rax,0000000180099898h", no brackets — Opus's fake-green pattern F in
+// review-waechter-windows.md N1) never touches the flag's value at all and
+// must not count.
+function isaBracketMatch(text, isaHexes) {
+  for (const hex of isaHexes) {
+    const re = new RegExp(`\\[\\s*0*${hex}h?\\s*\\]`, 'i');
+    if (re.test(text)) return true;
+  }
+  return false;
+}
+
+// If this line LOADS the isa flag into a register ("mov ecx,dword ptr
+// [<isa>h]" / "movzx eax,byte ptr [<isa>h]"), return that register's name so
+// the next step can require the guarding compare to use the SAME register,
+// not an unrelated one. Returns null for a line that reads the flag directly
+// into a comparison (e.g. "cmp dword ptr [<isa>h],5"): there is no
+// intermediate register to track there.
+function movLoadDestRegister(text) {
+  const m = /^\s*mov(?:zx)?\s+(\w+)\s*,\s*(?:byte|word|dword|qword)\s+ptr/i.exec(text);
+  return m ? m[1].toLowerCase() : null;
+}
+
+function isCompareMnemonic(mnemonic) {
+  return mnemonic === 'cmp' || mnemonic === 'test';
+}
+
+// True when `text`'s FIRST operand is exactly `reg` (word-bounded, so "cl"
+// does not accidentally match inside "rcl" and "eax" does not match "reax").
+function firstOperandIsRegister(text, reg) {
+  const re = new RegExp(`^\\s*\\S+\\s+${reg}\\b`, 'i');
+  return re.test(text);
+}
+
+// R3.2: the dominance approximation for "own code". review-waechter-windows.md
+// N1: the original version only checked "an isa-flag read happened somewhere
+// before the hit" and "SOME conditional jump between that read and the hit
+// lands past it", with no requirement that the jump actually evaluate the
+// flag it read. Two fake-green shapes exploited exactly that gap:
+//   A) an isa-flag read (left over from an earlier, unrelated loop),
+//      followed by an unrelated null-pointer test whose jump also happens to
+//      land past the hit, followed by an unconditional AVX block;
+//   F) the isa flag's ADDRESS used only as a bare immediate constant (never
+//      dereferenced), with an unrelated jump and then the hit.
+// Closed by requiring the conditional jump to sit IMMEDIATELY after a
+// cmp/test instruction (no other instruction between them) that is itself
+// bound to the isa-flag read: either the read line directly compares the
+// flag's memory location (no intermediate register), or the read loads the
+// flag into a register and that SAME register is the compare's first
+// operand. Verified against the real Fundstelle 2a shape (mov ecx,dword ptr
+// [isa] / cmp ecx,5 / jl) in the fixtures and the unit tests below; the two
+// fake-green shapes are checked-in fixtures that must come out UNPROTECTED
+// (scripts/__fixtures__/win-isa/fake-*-own-code.*).
 export function checkDominance(linesSortedByAddr, isaVAs, functionStart, functionEnd, hitAddr) {
   if (isaVAs.length === 0) {
     return { protected: false, reason: 'no __isa_available/__isa_enabled/_Avx2WmemEnabled symbol found in this map at all' };
   }
   const isaHexes = isaVAs.map(hexVA);
-  let checkLine = null;
+
+  // Collect every REAL (bracket-dereferenced) isa-flag read before the hit,
+  // in order; try each as a candidate, closest-to-the-hit first, since that
+  // is the one most likely to actually guard this specific hit.
+  const reads = [];
   for (const line of linesSortedByAddr) {
     if (line.addr < functionStart) continue;
     if (line.addr >= hitAddr) break;
-    const upper = line.text.toUpperCase();
-    if (isaHexes.some((h) => upper.includes(h.toUpperCase()))) {
-      checkLine = line; // keep scanning: the closest-before check is fine, any is fine
-    }
+    if (isaBracketMatch(line.text, isaHexes)) reads.push(line);
   }
-  if (!checkLine) {
+  if (reads.length === 0) {
     return { protected: false, reason: 'no isa-flag read found before the hit in the owning function' };
   }
-  for (const line of linesSortedByAddr) {
-    if (line.addr <= checkLine.addr) continue;
-    if (line.addr >= hitAddr) break;
-    if (!/^j/.test(line.mnemonic) || line.mnemonic === 'jmp') continue;
-    const m = /([0-9A-Fa-f]{6,16})h?\s*$/.exec(line.text.trim());
+
+  for (let i = reads.length - 1; i >= 0; i -= 1) {
+    const readLine = reads[i];
+    const readIdx = linesSortedByAddr.indexOf(readLine);
+    const destReg = movLoadDestRegister(readLine.text);
+
+    let compareLine = null;
+    if (destReg === null && isCompareMnemonic(readLine.mnemonic)) {
+      // The read line itself is the compare (e.g. "cmp dword ptr [isa],5").
+      compareLine = readLine;
+    } else if (destReg !== null) {
+      // Find the first cmp/test AFTER the load, before the hit, whose first
+      // operand is the register the load just wrote.
+      for (let j = readIdx + 1; j < linesSortedByAddr.length; j += 1) {
+        const cand = linesSortedByAddr[j];
+        if (cand.addr >= hitAddr) break;
+        if (isCompareMnemonic(cand.mnemonic) && firstOperandIsRegister(cand.text, destReg)) {
+          compareLine = cand;
+          break;
+        }
+      }
+    }
+    if (!compareLine) continue;
+
+    const compareIdx = linesSortedByAddr.indexOf(compareLine);
+    const jumpLine = linesSortedByAddr[compareIdx + 1];
+    if (!jumpLine || jumpLine.addr >= hitAddr) continue;
+    if (!/^j/.test(jumpLine.mnemonic) || jumpLine.mnemonic === 'jmp') continue;
+    const m = /([0-9A-Fa-f]{6,16})h?\s*$/.exec(jumpLine.text.trim());
     if (!m) continue;
     const target = parseInt(m[1], 16);
     if (target > hitAddr && target <= functionEnd) {
-      return { protected: true, checkLine, jumpLine: line };
+      return { protected: true, checkLine: readLine, compareLine, jumpLine };
     }
   }
+
   return {
     protected: false,
-    reason: `isa-flag read found at ${hexVA(checkLine.addr)} but no conditional jump between it and the hit lands past the hit inside the function`,
+    reason: `an isa-flag read exists before the hit, but no conditional jump immediately following a cmp/test bound to that same read lands past the hit inside the function (review-waechter-windows.md N1)`,
   };
 }
 
@@ -268,6 +410,7 @@ export function evaluateModule({ moduleName, disasmText, mapText }) {
 
   return {
     moduleName,
+    lineCount: lines.length,
     symbolCount: symbols.length,
     hitCount: hits.length,
     ownedHitCount: ownedHits,
@@ -288,7 +431,7 @@ function formatVerdict(v) {
 function main(argv) {
   const mode = argv[0];
   if (mode !== 'check') {
-    process.stderr.write('usage: win-isa-guard.mjs check --module <name> --disasm <file> --map <file> [--expect-unprotected] [--min-symbols N]\n');
+    process.stderr.write('usage: win-isa-guard.mjs check --module <name> --disasm <file> --map <file> [--expect-unprotected] [--min-symbols N] [--min-lines N]\n');
     process.exit(2);
   }
   const args = {};
@@ -314,11 +457,29 @@ function main(argv) {
   const result = evaluateModule({ moduleName: args.module, disasmText, mapText });
 
   const minSymbols = args['min-symbols'] ? parseInt(args['min-symbols'], 10) : 1;
-  process.stdout.write(`[win-isa-guard] ${result.moduleName}: ${result.symbolCount} map symbols, ${result.hitCount} VEX/EVEX hit(s), ${result.ownedHitCount} resolved to an owner\n`);
+  // N2 (review-waechter-windows.md): a disasm dump the parser cannot make
+  // sense of at all (wrong dumpbin flags, an encoding surprise, a future
+  // dumpbin/objdump output-format change, a parser regression) yields ZERO
+  // parsed instruction lines and therefore zero VEX/EVEX hits, which the
+  // pre-existing checks read as "OK, no unprotected VEX/EVEX in own code" —
+  // a clean pass for exactly the wrong reason. A real module's dumpbin
+  // /disasm dump is thousands of lines at minimum (the smallest real module
+  // measured on the box, the exe itself, still produced far more than this);
+  // 40 is deliberately far below any real module and only meant to catch
+  // "the parser understood nothing", not to be a tight bound. Fixtures for
+  // the decision logic itself (crt-allowed, protected-own-code, the red
+  // probe) are deliberately tiny and pass --min-lines 0 explicitly, see
+  // verify-sidecar-isa.sh.
+  const minLines = args['min-lines'] !== undefined ? parseInt(args['min-lines'], 10) : 40;
+  process.stdout.write(`[win-isa-guard] ${result.moduleName}: ${result.lineCount} disasm line(s) parsed, ${result.symbolCount} map symbols, ${result.hitCount} VEX/EVEX hit(s), ${result.ownedHitCount} resolved to an owner\n`);
   for (const v of result.verdicts) {
     process.stdout.write(`[win-isa-guard]   ${formatVerdict(v)}\n`);
   }
 
+  if (result.lineCount < minLines) {
+    process.stderr.write(`[win-isa-guard] FAIL: ${result.moduleName}: only ${result.lineCount} disassembled instruction line(s) were parsed out of the dumpbin/objdump output (need >= ${minLines}); this almost always means the parser did not recognise the disassembler's output format at all (wrong flags, an encoding surprise, a tool/output-format change) rather than a genuinely tiny binary, and a hitCount of 0 from a parser this broken is not proof of anything (review-waechter-windows.md N2)\n`);
+    process.exit(1);
+  }
   if (result.symbolCount < minSymbols) {
     process.stderr.write(`[win-isa-guard] FAIL: ${result.moduleName}'s map yielded only ${result.symbolCount} symbol(s) (need >= ${minSymbols}); a map this empty means ownership resolution is silently useless (review-k1-avx.md R4 map-control)\n`);
     process.exit(1);
