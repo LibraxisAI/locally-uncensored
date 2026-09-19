@@ -30,7 +30,9 @@ test('cloud render: submit → poll → gallery, meter + utility intents present
   await bootIntoCloudCreate(page, { license: 'active', access: true, mediaLive: true })
 
   // Cloud-only utility intents are offered on the cloud backend.
-  await expect(page.getByRole('radio', { name: /Upscale/i })).toBeVisible({ timeout: 15_000 })
+  // R5-67 renamed the upscale label to "Enhance Image" (parity with web);
+  // the id stays 'upscale', only the visible text changed.
+  await expect(page.getByRole('radio', { name: /Enhance Image/i })).toBeVisible({ timeout: 15_000 })
   await expect(page.getByRole('radio', { name: /Erase Object/i })).toBeVisible()
 
   // Credits meter reflects the mocked quota (remaining = 2,550,000 − 12,345).
@@ -116,10 +118,10 @@ test('local mode: local lanes usable, cloud-only ops shown as locked teasers', a
   // cloudOnly WITHOUT a local lane (upscale / eraser) renders locked:
   // aria-label gains ", runs on LU Cloud" and a click opens the teaser
   // instead of switching the lane.
-  await expect(page.getByRole('radio', { name: 'Upscale, runs on LU Cloud' })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Enhance Image, runs on LU Cloud' })).toBeVisible()
   await expect(page.getByRole('radio', { name: 'Erase Object, runs on LU Cloud' })).toBeVisible()
 
-  await page.getByRole('radio', { name: 'Upscale, runs on LU Cloud' }).click()
+  await page.getByRole('radio', { name: 'Enhance Image, runs on LU Cloud' }).click()
   await expect(page.getByRole('radio', { name: 'Image', exact: true })).toBeChecked()
 })
 
