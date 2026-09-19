@@ -82,7 +82,7 @@ export const CLOUD_MODEL_SEED: CloudModel[] = [
   // false. Server truth is /api/jobs/catalog; keep in sync with uselu.
   { id: 'wan-2.2-720p', label: 'Wan 2.2 720p', kind: 'video', t2v: true, i2v: true, negative_prompt: true, clip: CLIP },
   { id: 'wan-2.2-fast', label: 'Wan 2.2 Fast', kind: 'video', t2v: true, i2v: true, negative_prompt: true, clip: CLIP },
-  { id: 'ltx-2', label: 'LTX-2 (with audio)', kind: 'video', t2v: true, i2v: true, clip: CLIP },
+  { id: 'ltx-2', label: 'LTX-2 (with audio)', kind: 'video', t2v: true, i2v: true, clip: CLIP, credits: { base: 8000, lora: 10000 } },
   { id: 'hunyuan-video', label: 'HunyuanVideo 1.5', kind: 'video', t2v: true, i2v: true, negative_prompt: true, clip: CLIP },
   { id: 'ltx-2.3', label: 'LTX 2.3', kind: 'video', t2v: true, i2v: true, clip: CLIP },
 
