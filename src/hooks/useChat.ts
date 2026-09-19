@@ -737,6 +737,21 @@ export function useChat() {
     const myRunToken = Symbol(convId)
     activeChatRuns.set(convId, myRunToken)
 
+    // Auflage 1 (Review Teil 13, 19.09.2026): the claim above and this `try`
+    // must lie back to back, same discipline as the outer `try`/`finally` in
+    // `runGroupRound` and in the `/compact` branch above. Roughly 89 lines
+    // used to sit unprotected between the claim and the body's own inner
+    // `try` (the RAG load at `ragState.loadChunksFromDB(convId)` among them,
+    // plain IndexedDB, outside its own nested `try`): a throw anywhere in
+    // there left the entry in `activeChatRuns` standing forever, and the
+    // conversation was locked (`chat.duplicate_send_blocked`) with "Stop
+    // generation" stuck on screen, no second send ever able to start. This
+    // outer `finally` is a no-op on every path that already cleans up by
+    // identity below (the inner `finally` further down, the early return
+    // right after this comment, and the `cancelled-while-queued` follow-up
+    // at the end all check `activeChatRuns.get(convId) === myRunToken`
+    // first); it only fires on a path the body never reaches.
+    try {
     const memoryScope = store.conversations.find(c => c.id === convId)?.memoryScope
     const userMessage = {
       id: uuid(),
@@ -1483,6 +1498,18 @@ export function useChat() {
       // instead. Nothing else needs undoing beyond that: the body never
       // started, so it never registered an aborter or set `generating`.
       activeChatRuns.delete(convId)
+    }
+    } finally {
+      // Same identity check as everywhere else in this file: a no-op when a
+      // path above already released the claim (the normal send, the early
+      // "conversation vanished" return, or the cancelled-while-queued
+      // follow-up just above), and the only thing that actually fires when a
+      // throw between the claim and the first inner `try` skipped all of
+      // them.
+      if (activeChatRuns.get(convId) === myRunToken) {
+        activeChatRuns.delete(convId)
+        setIsGenerating(activeChatRuns.size > 0)
+      }
     }
     // Alle drei Referenzen sind konstant: `extractAndSave` kommt aus dem
     // Modul-Singleton MEMORY_API, `runGroupRound` ist ein useCallback mit
