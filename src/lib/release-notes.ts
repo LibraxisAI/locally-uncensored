@@ -107,15 +107,13 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  // Runde 4 (review-engine.md Runde 3, Abschnitt 6): der Kommentar hier war
-  // veraltet. 3.0.0 IST getaggt (v3.0.0 auf 10df943e, 14.09.2026) und auf
-  // origin, also veroeffentlicht; der 3.0.0-Eintrag unten darf keine Zusage
-  // mehr tragen, die 3.0.0 selbst nicht enthielt. Ein 3.0.1-Entwurf steht
-  // jetzt davor, genau wie releaseNotesStore.test.ts es ausdruecklich
-  // erlaubt (ein einziger Entwurf ueber der laufenden Version, package.json
-  // bleibt auf 3.0.0). Package.json wird erst beim Release hochgezogen; bis
-  // dahin liest der Waechter den 3.0.0-Eintrag weiter als den der laufenden
-  // Version, unveraendert.
+  // Auflage 2 (review-gesamt.md): package.json, src-tauri/Cargo.toml (plus
+  // Cargo.lock) und src-tauri/tauri.conf.json stehen jetzt alle auf 3.0.1, in
+  // einem Zug mit diesem Eintrag, damit kein Release still bleibt (Gedaechtnis
+  // lu-265-plan-2026-08-10, "release-notes.ts vergessen = stummes Release").
+  // Der 3.0.0-Eintrag darunter bleibt der VEROEFFENTLICHTE Notizzettel (v3.0.0
+  // auf 10df943e, 14.09.2026, auf origin) und traegt keine Zusage mehr, die
+  // 3.0.0 selbst nicht enthielt.
   {
     version: '3.0.1',
     headline: 'A GPU without a measured free reading gets a safer plan, and Linux/AppImage installs stop losing environment variables to it',

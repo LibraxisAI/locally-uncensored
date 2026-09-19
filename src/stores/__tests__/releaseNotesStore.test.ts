@@ -191,10 +191,10 @@ describe('the notes table', () => {
     // field, custom backend context and its running window, download
     // progress) gets an anchor, plus the one report that stays open because
     // nobody here owns the card.
-    const shipping = JSON.parse(
-      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
-    ).version as string
-    expect(shipping).toBe('3.0.0')
+    // 3.0.1 shipped on top of it (package.json), so this pins the 3.0.0 entry
+    // by its own version like the 2.6.8 and 2.6.9 blocks above do, and the
+    // 3.0.1 entry gets its own anchors below.
+    const shipping = '3.0.0'
     const prose = proseOf(shipping)
     for (const anchor of [
       'without refusing', 'we asked them', 'carries no mark yet',
@@ -243,6 +243,35 @@ describe('the notes table', () => {
     // Die Ablehnung bleibt, und die zweite Haelfte des Satzes steht wortgleich.
     expect(prose).toContain('refused on every request')
     expect(prose).toContain('photograph of a real, identifiable person without their consent')
+  })
+
+  it('the 3.0.1 entry names its own fixes, now that it is the shipping version', () => {
+    // Auflage 2 (review-gesamt.md): package.json, Cargo.toml/.lock and
+    // tauri.conf.json all moved to 3.0.1 in one commit, so THIS is now the
+    // shipping entry the earlier existence guard checks. Same blind spot as
+    // 2.6.8/2.6.9/3.0.0 above: an anchor per fix, so a later edit that drops
+    // one fails here instead of shipping quietly incomplete.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    expect(shipping).toBe('3.0.1')
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      'avx2', 'total capacity, not free memory', 'ld_library_path',
+      'pythonhome', 'refuses to write into the system python', 'pip call',
+      'searches the interpreters already on your machine',
+      // Auflage 1 Nachtrag: die Zeilen dieses Berichts.
+      'parks the api key it displaces', 'redirects pip, hugging face and torch',
+      'animate this image button', 'qwen-image-edit', 'enhance image',
+      'krea 2 checkpoints', 'stays disabled instead of failing on the server',
+      'failed to fetch', 'distinct title for each of its three reasons',
+      'crashes when grouping models', 'top k',
+      'survives export and import again', 'blocks the whole sync',
+      'composer lock during a send', 'a third remembered agent folder',
+      'asks the running engine directly',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
   })
 
   it('the Flash allowance on the sheet hangs on a RUNNING plan, not on money that once arrived', () => {
