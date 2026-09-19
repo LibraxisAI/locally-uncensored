@@ -43,8 +43,8 @@ const TOMBSTONE_TTL: Duration = Duration::from_secs(30);
 /// Hard cap on total entries, the backstop the TTL sweep alone did not
 /// provide (review 2026-09-18 Runde 2, "Rest, kein Blocker: keine
 /// Obergrenze"): the sweep only ran inside `register`, so a caller that
-/// fires `cancel(id)` for many ids that never register at all — a bogus or
-/// adversarial webview script, or just a flood of stray ids — grew the map
+/// fires `cancel(id)` for many ids that never register at all (a bogus or
+/// adversarial webview script, or just a flood of stray ids) grew the map
 /// for up to the whole `TOMBSTONE_TTL` window with no ceiling. 4096 is
 /// generous for any real chat session (each real call registers and
 /// unregisters within seconds, so the steady-state size is the number of

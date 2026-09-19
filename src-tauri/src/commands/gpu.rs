@@ -167,7 +167,7 @@ struct NvidiaUuidInfo {
 /// directly without a real card or a real driver.
 ///
 /// Tolerant of both the modern three-column form and an older driver's
-/// two-column one (no `mig.mode.current` support at all — `mig_enabled`
+/// two-column one (no `mig.mode.current` support at all, so `mig_enabled`
 /// then defaults to `false`), and treats `N/A` / an empty uuid field the
 /// same as a missing one: skip that index rather than storing a value that
 /// is not a real `GPU-<uuid>`.
