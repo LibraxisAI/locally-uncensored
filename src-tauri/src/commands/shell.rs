@@ -183,6 +183,16 @@ pub(crate) fn descendants(root: u32, sys: &sysinfo::System) -> Vec<u32> {
 /// says nothing about the `pnpm install` underneath, and counting it as a
 /// survivor would make every cancel wait out its full settle window. The name
 /// matches nothing on Unix, so the filter is inert there.
+///
+/// The production path only reaches this from the non-Windows `kill_tree`
+/// below (Windows' own `kill_tree_with` walks `late_descendants` instead); a
+/// plain Windows build with no `#[cfg(test)]` therefore has no caller left
+/// for it, which `cargo clippy --all-targets -- -D warnings` flags as dead
+/// code in that one compilation unit even though the test build (via
+/// `test_support::worker_descendants_of`, used on every platform) keeps
+/// calling it. The gate below covers exactly the compilations that actually
+/// use it: every non-Windows build, and every build with tests enabled.
+#[cfg(any(not(windows), test))]
 pub(crate) fn worker_descendants_in(sys: &sysinfo::System, root: u32) -> Vec<u32> {
     use sysinfo::Pid;
     descendants(root, sys)
