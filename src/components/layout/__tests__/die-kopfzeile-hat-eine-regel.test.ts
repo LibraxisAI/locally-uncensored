@@ -218,3 +218,22 @@ describe('D-A9: die Marke in der Kopfzeile', () => {
     expect(CODE).toMatch(/src=\{MONOGRAM\} alt="" width=\{20\} height=\{20\}/)
   })
 })
+
+describe('D-T-Mitte: die Reitergruppe sitzt auf der Fenstermitte, nicht im Rest', () => {
+  // Runde 2 (Auflage 2, review-ui-whatsnew-topnav.md Teil B): bis hierhin war
+  // die einzige Absicherung dieser Spalten eine Playwright-Spec
+  // (e2e/topnav-centering.spec.ts), die nur laeuft, wenn jemand den Browser
+  // fahren laesst. Ein billiger Quelltext-Waechter nagelt die Spaltenaufteilung
+  // fest, nach demselben Muster wie die Vektorfassung oben.
+  it('drei Spalten, Mitte auto zwischen zwei gleich grossen Restspalten', () => {
+    expect(SRC).toContain('grid-cols-[1fr_auto_1fr]')
+  })
+
+  it('und nicht mehr die alte Aufteilung, deren Mittelspalte nur ihr Rest war', () => {
+    // D-T-Mitte (18.09.2026): mit `auto_1fr_auto` zentrierte `justify-center`
+    // nur innerhalb des Rests zwischen zwei ungleich breiten Aussenspalten,
+    // nachgemessen 59,7px neben der Fenster- und VS-Achse. Eine Ruecknahme
+    // dieser einen Aenderung darf hier nicht gruen bleiben.
+    expect(SRC).not.toContain('grid-cols-[auto_1fr_auto]')
+  })
+})
