@@ -26,6 +26,7 @@ import { runInLane } from '../lib/run-slot'
 import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
 import { useModelStore } from '../stores/modelStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { buildSamplingRequest, effectiveSampling } from '../lib/sampling'
 import { useRAGStore } from '../stores/ragStore'
 import { retrieveContext } from '../api/rag'
 import { buildRagSuffix, RETRIEVAL_FAILED_MESSAGE } from '../lib/rag-prompt'
@@ -1056,15 +1057,25 @@ export function useAgentChat() {
         const agentCtx: number = await resolveAgentNumCtx(
           modelId, providerId, settings.contextWindowOverride, activeModel,
         )
-        const chatOptions = {
+        // R5-10/R5-11: this chat's own sampling, falling back to the Settings
+        // page for whatever field it never touched. buildSamplingRequest
+        // omits a field left at the app default; Small-Model Mode below
+        // overrides temperature regardless, so it is not subject to that
+        // omission (it never was: David's clamp is a correctness measure,
+        // not a preference the user can leave untouched).
+        const convSampling = store.conversations.find((c) => c.id === convId)?.sampling
+        const sampling = buildSamplingRequest(settings, convSampling)
+        if (settings.smallModelMode) {
           // Small-Model Mode (Knob 6): gently clamp temperature for tool turns.
           // FOLKLORE, not measured — research found NO temperature finding for
           // tool-calling. A low, low-entropy setting is *plausible* for valid
           // tool-call JSON, so we cap downward (never raise) rather than force.
-          temperature: settings.smallModelMode ? Math.min(settings.temperature, 0.3) : settings.temperature,
-          topP: settings.topP,
+          const effectiveTemp = effectiveSampling(settings, convSampling).temperature
+          sampling.temperature = Math.min(effectiveTemp, 0.3)
+        }
+        const chatOptions = {
+          ...sampling,
           topK: settings.topK,
-          maxTokens: settings.maxTokens || undefined,
           contextWindow: agentCtx,
           thinking: thinkOpt as unknown as boolean,
           reasoningEffort: settings.reasoningEffort,

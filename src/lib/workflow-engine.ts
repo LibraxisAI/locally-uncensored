@@ -8,7 +8,9 @@
 import { useModelStore } from '../stores/modelStore'
 import { errorText } from '../types/json-guards'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useChatStore } from '../stores/chatStore'
 import { useMemoryStore } from '../stores/memoryStore'
+import { buildSamplingRequest } from './sampling'
 // Audit W-T2: hier stand `from '../api/tool-registry'` — der als @deprecated
 // markierte Kompatibilitäts-Shim. Der zieht das ganze MCP-Barrel herein
 // (api/mcp/index.ts, das registerBuiltinTools ausführt), und weil
@@ -235,6 +237,12 @@ export class WorkflowEngine {
     ]
 
     const { settings } = useSettingsStore.getState()
+    // R5-10/R5-11: this run's own conversation may have its own sampling; a
+    // field neither it nor the Settings page ever moved stays off the wire.
+    const convSampling = useChatStore.getState().conversations.find(
+      (c) => c.id === this.conversationId,
+    )?.sampling
+    const sampling = buildSamplingRequest(settings, convSampling)
     let output = ''
 
     if (step.allowedTools && step.allowedTools.length === 0) {
@@ -244,7 +252,7 @@ export class WorkflowEngine {
       // hermes branch here posted to Ollama unconditionally (G32b), which
       // 404s the moment the model lives on LM Studio.
       const stream = provider.chatStream(modelToUse, messages, {
-        temperature: settings.temperature,
+        temperature: sampling.temperature,
         // Bug AA v2.5.0 — keep num_ctx override for workflow steps too.
         contextWindow: settings.contextWindowOverride || undefined,
         signal: this.abortController.signal,
@@ -262,7 +270,7 @@ export class WorkflowEngine {
 
       if (strategy === 'native') {
         const turn = await provider.chatWithTools(modelToUse, messages, allowedTools, {
-          temperature: settings.temperature,
+          temperature: sampling.temperature,
           // Bug AA v2.5.0 — same num_ctx override on tool calls.
           contextWindow: settings.contextWindowOverride || undefined,
           signal: this.abortController.signal,
@@ -294,7 +302,7 @@ export class WorkflowEngine {
           modelToUse,
           hermesMessages.map(m => ({ role: m.role, content: m.content })),
           {
-            temperature: settings.temperature,
+            temperature: sampling.temperature,
             contextWindow: settings.contextWindowOverride || undefined,
             signal: this.abortController.signal,
           },

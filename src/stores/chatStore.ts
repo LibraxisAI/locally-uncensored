@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
 import type { Conversation, Message, ChatArtifact, CompactionRecord } from '../types/chat'
 import type { AgentBlock } from '../types/agent-mode'
+import { clampSampling, type SamplingOverrides } from '../lib/sampling'
 import { idbStorage } from '../lib/idbStorage'
 import { coalescedJSONStorage } from '../lib/coalescedStorage'
 import { migrateBlockInPlace } from '../api/agents/block-helpers'
@@ -109,6 +110,15 @@ interface ChatState {
    *  persona's systemPrompt without changing the global Settings
    *  selection. */
   setConversationPersonaEnabled: (id: string, enabled: boolean) => void
+  /** R5-10/R5-11 (3.0.1-Liste): merge sampling values into ONE chat. Only the
+   *  keys in the patch move, the rest keep whatever the chat already had,
+   *  which is how "send only what THIS chat changed" survives a second visit
+   *  to the popup. */
+  setConversationSampling: (id: string, patch: SamplingOverrides) => void
+  /** Delete this chat's own sampling values entirely (the popup's Reset),
+   *  so it goes back to following the Settings page instead of pinning
+   *  today's defaults into the conversation forever. */
+  resetConversationSampling: (id: string) => void
   /** Group chat v1: the models that answer in turn (capped at 4). */
   setGroupModels: (id: string, models: string[]) => void
   /** Write the model the open chat is actually running on.
@@ -323,6 +333,25 @@ export const useChatStore = create<ChatState>()(
           conversations: state.conversations.map((c) =>
             c.id === id ? { ...c, personaEnabled: enabled } : c
           ),
+        })),
+
+      setConversationSampling: (id, patch) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === id
+              ? { ...c, sampling: { ...c.sampling, ...clampSampling(patch) }, updatedAt: Date.now() }
+              : c
+          ),
+        })),
+
+      resetConversationSampling: (id) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) => {
+            if (c.id !== id) return c
+            const next = { ...c, updatedAt: Date.now() }
+            delete next.sampling
+            return next
+          }),
         })),
 
       setGroupModels: (id, models) =>

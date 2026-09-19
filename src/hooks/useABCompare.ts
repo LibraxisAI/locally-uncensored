@@ -16,6 +16,7 @@ import type { Message } from '../types/chat'
 import { createThinkStreamSplitter } from '../lib/hermes-stream'
 import { settleThinking } from '../lib/thinking-stripper'
 import { isThinkingCompatible } from '../lib/model-compatibility'
+import { buildSamplingRequest } from '../lib/sampling'
 import { runInLane } from '../lib/run-slot'
 import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
 import { useGenerationStore } from '../stores/generationStore'
@@ -107,11 +108,12 @@ export function useABCompare() {
     )
     const sendMessages = applySendBudget(chatMessages, budget).messages
 
+    // R5-10/R5-11: Compare has no conversation of its own (compareStore, not
+    // chatStore), so there is no per-chat override to read; only the "omit a
+    // field still at the app default" half of the rule applies here.
     const opts = {
-      temperature: settings.temperature,
-      topP: settings.topP,
+      ...buildSamplingRequest(settings),
       topK: settings.topK,
-      maxTokens: settings.maxTokens || undefined,
       // Bug AA v2.5.0: forward num_ctx override to both A/B sides.
       contextWindow: settings.contextWindowOverride || undefined,
     }

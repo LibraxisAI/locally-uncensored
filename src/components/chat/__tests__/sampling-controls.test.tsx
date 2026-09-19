@@ -1,16 +1,39 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+/**
+ * R5-10/R5-11 (3.0.1-Liste), David's Entscheid vom 18.09.2026.
+ *
+ * Until this change the popup read and wrote the GLOBAL settings, so two
+ * chats open one after another shared one temperature: moving the slider in
+ * chat A silently changed what chat B would send on its next turn. The test
+ * that matters most here is the one that watches a SECOND, untouched chat
+ * stay exactly where it was.
+ */
+import { beforeEach, afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useChatStore } from '../../../stores/chatStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { DEFAULT_SETTINGS } from '../../../lib/constants'
 import { SAMPLING_CLOSE_LABEL, SAMPLING_DIALOG_LABEL, SamplingControls } from '../SamplingControls'
 
-const settings = () => useSettingsStore.getState().settings
+const conversation = (id: string) => ({
+  id,
+  title: id,
+  messages: [],
+  model: 'm',
+  systemPrompt: '',
+  createdAt: 0,
+  updatedAt: 0,
+})
+
+const chat = (id = 'c1') => useChatStore.getState().conversations.find((c) => c.id === id)
 const trigger = () => screen.getByTestId('sampling-trigger')
 const open = () => fireEvent.click(trigger())
 
 beforeEach(() => {
-  cleanup()
+  useChatStore.setState({
+    conversations: [conversation('c1'), conversation('c2')] as never,
+    activeConversationId: 'c1',
+  })
   useSettingsStore.getState().updateSettings({
     temperature: DEFAULT_SETTINGS.temperature,
     topP: DEFAULT_SETTINGS.topP,
@@ -18,6 +41,8 @@ beforeEach(() => {
     maxTokens: DEFAULT_SETTINGS.maxTokens,
   })
 })
+
+afterEach(() => cleanup())
 
 describe('SamplingControls', () => {
   it('stays collapsed until asked, so the composer stays quiet', () => {
@@ -27,19 +52,42 @@ describe('SamplingControls', () => {
     expect(screen.getByTestId('sampling-panel')).toBeTruthy()
   })
 
-  it('shows the live temperature on the closed control', () => {
-    useSettingsStore.getState().updateSettings({ temperature: 1.15 })
+  it('shows nothing while no chat is open, nothing to write to means nothing to show', () => {
+    useChatStore.setState({ activeConversationId: null })
+    const { container } = render(<SamplingControls />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('shows the temperature THIS chat will use while it is closed', () => {
+    useChatStore.getState().setConversationSampling('c1', { temperature: 1.15 })
     render(<SamplingControls />)
     expect(screen.getByRole('button', { name: /1\.15/ })).toBeTruthy()
   })
 
-  it('writes each value into the settings the request already reads', () => {
+  it('writes the CONVERSATION and never the global settings', () => {
     render(<SamplingControls />)
     open()
     fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.3' } })
     fireEvent.change(screen.getByLabelText('Top P'), { target: { value: '0.5' } })
-    expect(settings().temperature).toBe(1.3)
-    expect(settings().topP).toBe(0.5)
+    expect(chat()?.sampling).toEqual({ temperature: 1.3, topP: 0.5 })
+    // The whole reason this control moved out of the settings page.
+    expect(useSettingsStore.getState().settings.temperature).toBe(DEFAULT_SETTINGS.temperature)
+    expect(useSettingsStore.getState().settings.topP).toBe(DEFAULT_SETTINGS.topP)
+  })
+
+  it('leaves the OTHER chat exactly as it was', () => {
+    render(<SamplingControls />)
+    open()
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.8' } })
+    expect(chat('c1')?.sampling).toEqual({ temperature: 1.8 })
+    expect(chat('c2')?.sampling).toBeUndefined()
+  })
+
+  it('a chat with no override of its own follows the Settings page', () => {
+    useSettingsStore.getState().updateSettings({ temperature: 1.4 })
+    render(<SamplingControls />)
+    expect(screen.getByRole('button', { name: /1\.4\b/ })).toBeTruthy()
+    expect(chat()?.sampling).toBeUndefined()
   })
 
   /**
@@ -57,12 +105,10 @@ describe('SamplingControls', () => {
   })
 
   it('R5-13 NEGATIVKONTROLLE: Top K keeps its stored value, this popup only stops showing it', () => {
-    // The value is not deleted and the settings page keeps offering it. What
-    // falls away is a control that wrote a number nobody could see again.
     useSettingsStore.getState().updateSettings({ topK: 55 })
     render(<SamplingControls />)
     open()
-    expect(settings().topK).toBe(55)
+    expect(useSettingsStore.getState().settings.topK).toBe(55)
     expect(screen.getByLabelText('Temperature')).toBeTruthy()
   })
 
@@ -72,7 +118,6 @@ describe('SamplingControls', () => {
    * (apps/web/components/chat/SamplingControls.tsx:82-83).
    */
   it('R5-14: the trigger has the same name and title as the web app', () => {
-    useSettingsStore.getState().updateSettings({ temperature: 0.7 })
     render(<SamplingControls />)
     expect(trigger().getAttribute('title')).toBe('Sampling for this chat')
     expect(trigger().getAttribute('aria-label')).toBe('Sampling: temperature 0.7')
@@ -83,18 +128,9 @@ describe('SamplingControls', () => {
     render(<SamplingControls />)
     open()
     fireEvent.change(screen.getByLabelText('Max tokens'), { target: { value: '-500' } })
-    expect(settings().maxTokens).toBe(0)
+    expect(chat()?.sampling?.maxTokens).toBe(0)
   })
 
-  /**
-   * Max tokens used to APPEND what you typed instead of replacing it: the box
-   * showed 0, you typed 512, and `0512` stayed on screen (measured on the box,
-   * T1 nebenfund 5). React keeps a controlled number input in step with a
-   * loose comparison, so "0512" and the number 512 counted as equal and the
-   * DOM was never corrected. Typed here one keystroke at a time, each one
-   * appended to whatever the field really shows, because that is the gesture
-   * that produced the wrong number.
-   */
   const maxTokens = () => screen.getByLabelText('Max tokens') as HTMLInputElement
   const typeInto = (field: HTMLInputElement, chars: string) => {
     for (const c of chars) fireEvent.change(field, { target: { value: field.value + c } })
@@ -107,16 +143,16 @@ describe('SamplingControls', () => {
     expect(field.value).toBe('0')
     typeInto(field, '512')
     expect(field.value).toBe('512')
-    expect(settings().maxTokens).toBe(512)
+    expect(chat()?.sampling?.maxTokens).toBe(512)
   })
 
-  it('falls back to the default when max tokens is cleared, and shows it again on blur', () => {
-    useSettingsStore.getState().updateSettings({ maxTokens: 512 })
+  it('falls back to the app default when max tokens is cleared, and shows it again on blur', () => {
+    useChatStore.getState().setConversationSampling('c1', { maxTokens: 512 })
     render(<SamplingControls />)
     open()
     const field = maxTokens()
     fireEvent.change(field, { target: { value: '' } })
-    expect(settings().maxTokens).toBe(DEFAULT_SETTINGS.maxTokens)
+    expect(chat()?.sampling?.maxTokens).toBe(DEFAULT_SETTINGS.maxTokens)
     expect(field.value).toBe('')
     fireEvent.blur(field)
     expect(field.value).toBe(String(DEFAULT_SETTINGS.maxTokens))
@@ -126,37 +162,62 @@ describe('SamplingControls', () => {
     render(<SamplingControls />)
     open()
     fireEvent.change(maxTokens(), { target: { value: '512.7' } })
-    expect(settings().maxTokens).toBe(512)
-    expect(Number.isInteger(settings().maxTokens)).toBe(true)
+    expect(chat()?.sampling?.maxTokens).toBe(512)
+    expect(Number.isInteger(chat()?.sampling?.maxTokens)).toBe(true)
   })
 
-  it('marks a changed setup and resets every field at once', () => {
-    useSettingsStore.getState().updateSettings({ temperature: 1.9, topP: 0.3, maxTokens: 512 })
+  it('marks a changed chat, and deletes ALL of its own values on Reset', () => {
+    useChatStore.getState().setConversationSampling('c1', { temperature: 1.9, topP: 0.3, maxTokens: 512 })
     render(<SamplingControls />)
     expect(screen.getByTitle(/Changed from the defaults/)).toBeTruthy()
     open()
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
-    expect(settings().temperature).toBe(DEFAULT_SETTINGS.temperature)
-    expect(settings().topP).toBe(DEFAULT_SETTINGS.topP)
-    expect(settings().maxTokens).toBe(DEFAULT_SETTINGS.maxTokens)
+    // David's Entscheid: Reset DELETES the chat's own values instead of
+    // writing today's defaults into it (see SamplingControls.tsx). Deleted,
+    // not "set to defaults": the negative control right below is the whole
+    // point of that distinction.
+    expect(chat()?.sampling).toBeUndefined()
     expect(screen.queryByTitle(/Changed from the defaults/)).toBeNull()
   })
 
-  it('R5-13: Reset stays inside this popup and leaves Top K alone', () => {
-    // Top K is not on this panel any more, so a Reset here must not reach over
-    // to the settings page and undo a value the user set there.
-    useSettingsStore.getState().updateSettings({ temperature: 1.9, topK: 55 })
+  it('NEGATIVKONTROLLE: after Reset the chat follows LATER Settings page changes, unlike a chat pinned to the old defaults', () => {
+    useChatStore.getState().setConversationSampling('c1', { temperature: 1.9 })
     render(<SamplingControls />)
     open()
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
-    expect(settings().temperature).toBe(DEFAULT_SETTINGS.temperature)
-    expect(settings().topK).toBe(55)
+    cleanup()
+    // The Settings page moves AFTER the reset, and a chat truly following it
+    // again must pick the new number up, not stay pinned to the moment Reset
+    // was pressed.
+    useSettingsStore.getState().updateSettings({ temperature: 1.1 })
+    render(<SamplingControls />)
+    expect(screen.getByRole('button', { name: /1\.1\b/ })).toBeTruthy()
+    expect(chat()?.sampling).toBeUndefined()
+  })
+
+  it('R5-13: Reset stays inside this popup and leaves Top K alone', () => {
+    useChatStore.getState().setConversationSampling('c1', { temperature: 1.9 })
+    useSettingsStore.getState().updateSettings({ topK: 55 })
+    render(<SamplingControls />)
+    open()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(useSettingsStore.getState().settings.topK).toBe(55)
   })
 
   it('offers no reset while everything is at its default', () => {
     render(<SamplingControls />)
     open()
     expect((screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('offers no reset for a chat that only follows an already-moved Settings page', () => {
+    // "Changed" has to mean something is really on the wire, not "this chat
+    // has its own record": a chat with no override that merely inherits a
+    // moved Settings slider is exactly that case.
+    useSettingsStore.getState().updateSettings({ temperature: 1.9 })
+    render(<SamplingControls />)
+    open()
+    expect((screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('says plainly that reasoning models react less, instead of hiding the control', () => {
@@ -172,22 +233,15 @@ describe('SamplingControls', () => {
  * wegklicken und nicht einfach wieder auf den text klicken zum entfernen, soll
  * windows mac und webapp ueberall gleich sein."
  *
- * The old panel was a sibling in the composer's flow, so opening it grew the
- * prompt window and pushed the text field down. jsdom has no layout at all
- * (every box measures 0), so a height comparison here would pass whatever the
- * component did. What jsdom CAN answer is the fact the layout follows from:
- * whether the panel is in the flow. The pixels are measured for real in
- * e2e/sampling-popup.spec.ts, against the bounding box of the composer row.
+ * This form is untouched by the R5-10/R5-11 rewrite. HAUSREGEL: a sampling
+ * popup with an X, Escape closes it too, unchanged everywhere.
  */
 describe('the sampling popup', () => {
   it('is a popup over the row, not a panel inside it', () => {
     render(<SamplingControls />)
     open()
     const panel = screen.getByTestId('sampling-panel')
-    // Out of the flow: nothing around it can be moved by its height.
     expect(panel.style.position).toBe('absolute')
-    // Anchored to the top edge of the trigger, so it opens upward over the
-    // transcript and never downward into the send row.
     expect(panel.style.bottom).toBe('100%')
     expect(panel.getAttribute('role')).toBe('dialog')
     expect(panel.getAttribute('aria-label')).toBe(SAMPLING_DIALOG_LABEL)
@@ -229,8 +283,6 @@ describe('the sampling popup', () => {
     expect(screen.queryByTestId('sampling-panel')).not.toBeNull()
   })
 
-  // The half of David's sentence that is easiest to lose again: a trigger that
-  // toggles makes the popup vanish under the pointer on the second press.
   it('does NOT close when the trigger is pressed a second time', () => {
     render(<SamplingControls />)
     open()
@@ -248,8 +300,7 @@ describe('the sampling popup', () => {
     open()
     expect((screen.getByLabelText('Temperature') as HTMLInputElement).value).toBe('1.45')
     expect((screen.getByLabelText('Max tokens') as HTMLInputElement).value).toBe('2048')
-    expect(settings().temperature).toBe(1.45)
-    expect(settings().maxTokens).toBe(2048)
+    expect(chat()?.sampling).toEqual({ temperature: 1.45, maxTokens: 2048 })
   })
 
   it('takes the keyboard into the popup and hands it back to the trigger', () => {
@@ -269,29 +320,8 @@ describe('the sampling popup', () => {
   })
 })
 
-/**
- * Closing the popup drops the Max tokens draft, and it does so on purpose.
- *
- * The draft is a display string: every keystroke has already been written to
- * the settings, so there is no unsaved value to lose. What CAN be left behind
- * is an emptied box. Cleared, the field shows "" while the store already holds
- * the default, and until 2026-09-11 the only thing that ever cleared that
- * string again was the field's own onBlur.
- *
- * Which means the popup was correct by luck. A real user has the keyboard in
- * the field while typing, close() moves that keyboard to the trigger before the
- * panel unmounts, the blur fires, the draft goes. Take the focus out of the
- * picture and the empty box came back on the next open, over a store holding 0.
- * Measured that way before the fix: three of these five red.
- *
- * So the cases below drive the field WITHOUT focusing it, which is exactly what
- * the old version got away with. They are not modelling a user; they are
- * holding the line that close() clears the draft itself instead of hoping the
- * focus rule keeps doing it.
- */
 describe('the Max tokens draft does not outlive the popup', () => {
   const feld = () => screen.getByLabelText('Max tokens') as HTMLInputElement
-  /** Deliberately no focus() first: that is the whole point of these cases. */
   const leeren = () => {
     fireEvent.change(feld(), { target: { value: '512' } })
     fireEvent.change(feld(), { target: { value: '' } })
@@ -325,8 +355,6 @@ describe('the Max tokens draft does not outlive the popup', () => {
     expect(feld().value).toBe(String(DEFAULT_SETTINGS.maxTokens))
   })
 
-  // The counterpart, so the fix cannot be "throw the number away as well":
-  // a value the user really typed is in the settings and comes back.
   it('but a number that was typed comes back, because it was never a draft', () => {
     render(<SamplingControls />)
     open()
@@ -334,11 +362,9 @@ describe('the Max tokens draft does not outlive the popup', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     open()
     expect(feld().value).toBe('2048')
-    expect(settings().maxTokens).toBe(2048)
+    expect(chat()?.sampling?.maxTokens).toBe(2048)
   })
 
-  // And the half onBlur still owns: leaving the field while the popup stays
-  // open. Losing this would make the onBlur line dead, which it is not.
   it('leaving the field with the popup still open normalises it too', () => {
     render(<SamplingControls />)
     open()

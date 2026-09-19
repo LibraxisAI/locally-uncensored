@@ -19,6 +19,7 @@ import { isTooManyMessagesError, halveHistory, TOO_MANY_MESSAGES_MAX_HALVINGS } 
 import { getModelContextCached } from "../api/ollama"
 import { requestGenerationCancel } from "../api/vram-handoff"
 import { effectiveContextWindow } from "../lib/context-window"
+import { buildSamplingRequest } from "../lib/sampling"
 import { useAgentChat } from "./useAgentChat"
 import { parseAgentCommand, parseLoopSpec } from '../lib/agent-commands'
 import { runCompactForConversation, compactOutcomeMessage, maybeAutoCompact } from '../lib/run-compact-command'
@@ -179,10 +180,8 @@ async function runGroupTurn(convId: string, model: string, allModels: string[], 
     }
 
     const stream = provider.chatStream(modelId, messages, {
-      temperature: settings.temperature,
-      topP: settings.topP,
+      ...buildSamplingRequest(settings, conv?.sampling),
       topK: settings.topK,
-      maxTokens: settings.maxTokens || undefined,
       contextWindow: effectiveCtx,
       thinking: useThinking,
       signal: abort.signal,
@@ -995,10 +994,8 @@ export function useChat() {
         } catch { /* keep override-or-undefined on failure */ }
       }
       const chatOpts = {
-        temperature: settings.temperature,
-        topP: settings.topP,
+        ...buildSamplingRequest(settings, conv.sampling),
         topK: settings.topK,
-        maxTokens: settings.maxTokens || undefined,
         // num_ctx: real model context (capped) for Ollama, else override-or-none.
         contextWindow: effectiveCtx,
         thinking: useThinking,
