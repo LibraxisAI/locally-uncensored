@@ -519,7 +519,18 @@ export function ChatView() {
                             {landing.note}
                           </p>
                         )}
-                        {!sidebarOpen && (
+                        {/* home-recent-chats.test.ts, "COUNTER-TEST: a remote
+                            session keeps its own screen": Remote traegt schon
+                            eigene Baender und einen eigenen Zustand unter dem
+                            Transkript, eine Liste letzter Chats darueber waere
+                            dort Rauschen, kein Sprungbrett. Deshalb hier
+                            zusaetzlich zu `!sidebarOpen` auch `mode !== 'remote'`
+                            (Auflage A3, review-leer2-offload.md): der Landing-
+                            Block selbst (Zeichen, Ueberschrift, Modellname)
+                            gilt fuer Remote genauso, nur die Recents-Liste
+                            bleibt seine Ausnahme, unveraendert zum bisherigen
+                            Verhalten vor A3. */}
+                        {!sidebarOpen && activeConvMode !== 'remote' && (
                           <div className="w-full pt-3 flex flex-col items-center text-left">
                             <RecentChats />
                           </div>
