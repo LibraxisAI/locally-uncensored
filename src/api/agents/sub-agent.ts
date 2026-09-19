@@ -14,6 +14,8 @@
 import { settleThinking } from '../../lib/thinking-stripper'
 import { toolResultIsFailure } from '../../lib/tool-result-failure'
 import { isRunStopped } from '../../lib/run-stop'
+import { runInLane } from '../../lib/run-slot'
+import { laneOf, currentLaneFacts, type RunLane } from '../../lib/run-lane-of-model'
 // M7 / Audit W-T2: hier stand zweimal `await import('../mcp')`. Gesplittet hat
 // das nie, die Tonne mcp/index.ts hängt über useAgentChat, useCodex und
 // api/tool-registry.ts ohnehin statisch im Graph, also meldete Rolldown
@@ -708,7 +710,20 @@ export function buildDelegateExecutor(
 
     if (!background) {
       try {
-        return await runner(goal, context, { budget, run, model })
+        // Explicit "runs in the parent's held lane" (run-slot.ts header,
+        // "DIE WEITERGABE DES ELTERNLAUF-TOKENS"): the parent turn already
+        // booked its lane and is AWAITING this call (`return await`). A
+        // fresh booking here for the same conversation would queue this
+        // sub-agent behind the very slot its own parent is waiting on it to
+        // release, a hang. `lane`/`conversationId` are unused on this path
+        // (runInLane skips admit/release entirely when the flag is set);
+        // they are here only so the call has one shape for both branches.
+        let output = ''
+        await runInLane(
+          { conversationId: run?.conversationId ?? '', lane: 'cloud', runsInHeldLane: true },
+          async () => { output = await runner(goal, context, { budget, run, model }) },
+        )
+        return output
       } catch (err) {
         return `Error: ${err instanceof Error ? err.message : String(err)}`
       } finally {
@@ -729,6 +744,27 @@ export function buildDelegateExecutor(
     const { useAgentTaskStore } = await import('../../stores/agentTaskStore')
     const id = makeTaskId(_taskSeq++)
     const controller = new AbortController()
+
+    // Eigene Buchung unter der Aufgaben-Id, nicht der `conversationId` der
+    // sichtbaren Unterhaltung (run-slot.ts header, "DIE WEITERGABE DES
+    // ELTERNLAUF-TOKENS"): dieser Lauf ueberlebt seinen Elternzug, also
+    // kann er nicht in dessen Platz mitfahren. Ohne eigene Buchung raeumt
+    // der Elternlauf beim Fertigwerden seine Spur weg, waehrend dieser
+    // Hintergrundagent noch unbebucht gegen denselben Motor rechnet: zwei
+    // echte lokale Anfragen nebeneinander, dieselbe Klasse Fehler wie
+    // Blocker A. Welches Modell laeuft, wird genauso wie in
+    // `defaultSubAgentRunner` aufgeloest (ein explizites `model`-Argument
+    // gewinnt, sonst das aktive Modell), damit die Spur zum tatsaechlich
+    // rechnenden Slot passt.
+    const { useModelStore } = await import('../../stores/modelStore')
+    const { resolveRequestedModel } = await import('../../lib/agent-fanout')
+    const modelStoreState = useModelStore.getState()
+    let subAgentModel = modelStoreState.activeModel
+    if (model) {
+      const treffer = resolveRequestedModel(model, modelStoreState.models)
+      if (treffer) subAgentModel = treffer.name
+    }
+    const lane: RunLane = subAgentModel ? laneOf(subAgentModel, currentLaneFacts()) : 'cloud'
     // ── Stopp auf die Hauptantwort laesst Hintergrundagenten LAUFEN ─────────
     //
     // Hier wurde das Abbruchsignal des Elternzugs durchgereicht. Fuer einen
@@ -790,8 +826,10 @@ export function buildDelegateExecutor(
       ? { ...run, abortSignal: controller.signal }
       : undefined
 
-    void runner(goal, context, { budget, run: kindLauf, taskId: id, model })
-      .then((output) => {
+    void runInLane(
+      { conversationId: id, lane, abort: () => controller.abort() },
+      async () => {
+        const output = await runner(goal, context, { budget, run: kindLauf, taskId: id, model })
         const abgebrochen = controller.signal.aborted
         useAgentTaskStore.getState().finish(id, {
           status: abgebrochen ? 'cancelled' : 'done',
@@ -799,6 +837,16 @@ export function buildDelegateExecutor(
           endedAt: Date.now(),
         })
         void meldeInDenVerlauf(convId, id, goal, abgebrochen ? 'cancelled' : 'done', output)
+      },
+    )
+      .then((outcome) => {
+        if (outcome !== 'cancelled-while-queued') return
+        // Stop zog die Aufgabe aus der lokalen Schlange, bevor sie je
+        // anlief: kein Token, keine Ausgabe, nichts aufzuraeumen, dieselbe
+        // Lesart wie `run-slot.ts`s `'cancelled-while-queued'`.
+        const grund = 'Cancelled before it could start: Stop was pressed while it was waiting for the local lane.'
+        useAgentTaskStore.getState().finish(id, { status: 'cancelled', output: grund, endedAt: Date.now() })
+        void meldeInDenVerlauf(convId, id, goal, 'cancelled', grund)
       })
       .catch((err) => {
         const grund = err instanceof Error ? err.message : String(err)
@@ -813,7 +861,8 @@ export function buildDelegateExecutor(
       // genau darin lag die zweite Falle, die eine Entwurfskritik am
       // 02.09.2026 aufgedeckt hat. Das urspruengliche try/finally umschloss
       // `await runner(...)`. Eine Hintergrundaufgabe kehrt sofort zurueck,
-      // also waere der Platz freigegeben, waehrend der Agent noch rechnet,       // SUB_AGENT_MAX_PARALLEL waere fuer genau den Pfad tot gewesen, der ihn
+      // also waere der Platz freigegeben, waehrend der Agent noch rechnet,
+      // SUB_AGENT_MAX_PARALLEL waere fuer genau den Pfad tot gewesen, der ihn
       // am noetigsten braucht. Der Zaehler gehoert an das Leben der AUFGABE.
       .finally(() => { _inFlight-- })
 
