@@ -25,6 +25,8 @@ import { toolRegistry } from '../api/mcp/tool-registry'
 import { DEFAULT_PERMISSIONS } from '../api/mcp/types'
 import type { ToolArgs } from '../api/mcp/types'
 import { streamProviderTurn } from './provider-stream'
+import { runInLane } from './run-slot'
+import { laneOf, currentLaneFacts } from './run-lane-of-model'
 import { settleThinking } from './thinking-stripper'
 import { buildHermesToolPrompt, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
 import { resolveToolCallingStrategy } from './agent-strategy'
@@ -81,13 +83,26 @@ export class WorkflowEngine {
   private abortController: AbortController
   private inputResolver: ((input: string) => void) | null = null
   private depth: number
+  private runsInHeldLane: boolean
 
   constructor(
     workflow: AgentWorkflow,
     conversationId: string,
     callbacks: WorkflowEngineCallbacks,
     initialVariables?: Record<string, string>,
-    depth: number = 0
+    depth: number = 0,
+    /**
+     * This engine runs its steps INSIDE a parent run's already-booked lane
+     * slot (the `run_workflow` tool, called from a tool step of an agent or
+     * chat turn that already holds the lane). See `run-slot.ts`'s header,
+     * section "DIE WEITERGABE DES ELTERNLAUF-TOKENS": passed through
+     * unchanged to `runInLane` so this run does not book its own place in a
+     * queue it would then have to wait behind itself for (a hang, not a
+     * slowdown). A top-level workflow (started from the workflow panel, or
+     * from the "run workflow <name>" chat trigger) is never nested, so it
+     * leaves this at the default `false` and books its own slot.
+     */
+    runsInHeldLane: boolean = false
   ) {
     this.workflow = workflow
     this.conversationId = conversationId
@@ -95,10 +110,22 @@ export class WorkflowEngine {
     this.variables = { ...workflow.variables, ...(initialVariables || {}) }
     this.abortController = new AbortController()
     this.depth = depth
+    this.runsInHeldLane = runsInHeldLane
   }
 
   /**
    * Run the workflow from start to finish.
+   *
+   * Lane admission (Folgeauftrag 1, review-lanes.md Runde 5): a prompt step
+   * can run real inference against a local model (`executePromptStep` below),
+   * same as any chat send, so an unbooked workflow used to run right next to
+   * a local chat on the same one-slot engine. Booked ONCE for the whole run,
+   * not per step: booking per step would have a workflow's own second step
+   * queue behind its own first step's still-unreleased slot and lock the
+   * workflow out of itself. Stop reaches both a WAITING and a RUNNING
+   * workflow the same way `useChat`/`useAgentChat` do: `runInLane` registers
+   * the abort handle before the body ever starts, so the queued case is
+   * covered too, not just the running one.
    */
   async run(): Promise<StepResult[]> {
     if (this.depth >= MAX_WORKFLOW_DEPTH) {
@@ -106,6 +133,28 @@ export class WorkflowEngine {
     }
 
     const results: StepResult[] = []
+    const { activeModel } = useModelStore.getState()
+    const lane = activeModel ? laneOf(activeModel, currentLaneFacts()) : 'cloud'
+
+    const outcome = await runInLane(
+      {
+        conversationId: this.conversationId,
+        lane,
+        abort: () => this.abortController.abort(),
+        runsInHeldLane: this.runsInHeldLane,
+      },
+      () => this.runSteps(results),
+    )
+
+    if (outcome === 'cancelled-while-queued') {
+      // The run never started: no step, no token, nothing to unwind.
+      this.callbacks.onError('Cancelled before it could start: Stop was pressed while it was waiting for the local lane.')
+    }
+
+    return results
+  }
+
+  private async runSteps(results: StepResult[]): Promise<void> {
     let stepIndex = 0
     let executed = 0
 
@@ -113,7 +162,7 @@ export class WorkflowEngine {
       while (stepIndex < this.workflow.steps.length) {
         if (this.abortController.signal.aborted) break
         if (++executed > MAX_STEPS_EXECUTED) {
-          this.callbacks.onError(`Workflow exceeded ${MAX_STEPS_EXECUTED} steps — check for a condition that branches back on itself`)
+          this.callbacks.onError(`Workflow exceeded ${MAX_STEPS_EXECUTED} steps, check for a condition that branches back on itself`)
           break
         }
 
@@ -138,7 +187,7 @@ export class WorkflowEngine {
           this.variables['last_output'] = result.output
         }
 
-        // Handle branching — on the decision the step already made. Evaluating
+        // Handle branching, on the decision the step already made. Evaluating
         // the condition a second time here used to happen AFTER last_output had
         // been overwritten with that marker, so a condition reading last_output
         // (the default, and the only source the builder writes) compared
@@ -160,8 +209,6 @@ export class WorkflowEngine {
       const errorMsg = errorText(err) || 'Workflow execution failed'
       this.callbacks.onError(errorMsg)
     }
-
-    return results
   }
 
   /**

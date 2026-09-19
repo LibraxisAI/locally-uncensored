@@ -63,9 +63,34 @@
  * `admit`/`release` weitergereicht wird (siehe deren Kopf in `run-lanes.ts`).
  * Ein neuer Lauf derselben Unterhaltung bekommt eine NEUE Identitaet und
  * stellt sich damit hinter dem noch abwickelnden alten an, statt ihn zu
- * ersetzen. Taucht eines Tages ein echter verschachtelter Aufrufer wieder
- * auf, muss er sein Elternlauf-Token EXPLIZIT weiterreichen, nie stillschweigend
- * ueber die blosse `conversationId` erschliessen lassen.
+ * ersetzen.
+ *
+ * ── DIE WEITERGABE DES ELTERNLAUF-TOKENS, JETZT WIRKLICH GEBAUT ─────────────
+ *
+ * (Nachbesserung 3, Runde 3 der 3.0.1-Pruefung) Ein echter verschachtelter
+ * Aufrufer ist inzwischen da, gleich zwei: `workflow-engine.ts`s eigener
+ * `run_workflow`-Aufruf (`api/mcp/builtin-tools.ts`, verschachtelt in einen
+ * schon laufenden Werkzeugaufruf) und der VORDERGRUND-Sub-Agent
+ * (`sub-agent.ts`, `return await runner(...)`, der Elternzug wartet auf ihn).
+ * Beide reichen ihr Elternlauf-Token jetzt EXPLIZIT weiter, ueber
+ * `runsInHeldLane` unten, statt es stillschweigend ueber die blosse
+ * `conversationId` erschliessen zu lassen: wer es setzt, ruft `admit`/`release`
+ * gar nicht auf, sondern fuehrt seinen Rumpf direkt im schon gebuchten Platz
+ * des Elternlaufs aus. Kein zweites `admit` mit gleicher oder neuer Identitaet
+ * fuer dieselbe `conversationId`, denn ein ABGEWARTETES `runInLane`
+ * verschachtelt in einem anderen haengt hart: der innere Aufruf stellt sich
+ * hinter dem aeusseren an, der aeussere wartet auf den inneren, beide fuer
+ * immer (gemessen, siehe `__tests__/run-slot-nested-in-held-lane.test.ts`).
+ * `runsInHeldLane` ist der einzige Weg, das zu vermeiden, und er ist ein
+ * bewusster Parameter, kein aus der `conversationId` erratener Zustand.
+ *
+ * Der HINTERGRUND-Sub-Agent (`sub-agent.ts`, `void runner(...)`) ist die
+ * Gegenprobe: er wird vom Elternzug NICHT abgewartet, ueberlebt dessen Ende
+ * und braucht deshalb seine EIGENE Buchung unter einer eigenen Identitaet
+ * (die Aufgaben-Id, nicht die `conversationId` der sichtbaren Unterhaltung),
+ * damit `stopAllBackgroundWork` ihn erreicht und er sich in dieselbe lokale
+ * Spur einreiht wie jeder andere Lauf. `runsInHeldLane` bleibt fuer ihn
+ * `false` (der Vorgabewert).
  */
 import { admit, release, type RunLane } from './run-lanes'
 import { useGenerationStore } from '../stores/generationStore'
@@ -84,6 +109,17 @@ export interface RunSlotOptions {
    * selbst: dort wird nichts abgebrochen, sondern ausgereiht.
    */
   abort?: () => void
+  /**
+   * Dieser Rumpf laeuft bereits IM gebuchten Platz eines Elternlaufs
+   * (verschachteltes `run_workflow` oder ein vorgroundlicher Sub-Agent, den
+   * sein Elternzug abwartet). Siehe Dateikopf, Abschnitt "DIE WEITERGABE DES
+   * ELTERNLAUF-TOKENS". Gesetzt, ruft diese Funktion `admit`/`release`
+   * ueberhaupt nicht auf: sie fuehrt `body()` direkt aus. Ein zweites `admit`
+   * fuer dieselbe `conversationId` waere hier eine Verklemmung, kein
+   * Doppelbuchen, denn der aeussere Lauf wartet ja SELBST auf diesen inneren.
+   * Vorgabe `false`: ein eigenstaendiger Lauf bucht immer selbst.
+   */
+  runsInHeldLane?: boolean
 }
 
 /**
@@ -113,7 +149,17 @@ export async function runInLane(
   options: RunSlotOptions,
   body: () => Promise<void>,
 ): Promise<RunSlotOutcome> {
-  const { conversationId, lane, abort } = options
+  const { conversationId, lane, abort, runsInHeldLane } = options
+
+  // Laeuft dieser Rumpf schon im Platz eines Elternlaufs, gibt es hier
+  // nichts anzustellen: kein `admit`, kein `release`, keine eigene
+  // Buchung. Ein zweites `admit` fuer dieselbe `conversationId` waere die
+  // Verklemmung aus dem Dateikopf, weil der aeussere Lauf auf genau diesen
+  // Rumpf wartet. Fehler kommen unveraendert heraus, wie beim normalen Weg.
+  if (runsInHeldLane) {
+    await body()
+    return 'ran'
+  }
 
   // Ein Lauf ohne Kennung nimmt keinen Platz, dieselbe Entscheidung wie in
   // `admit`: er koennte ihn nie zurueckgeben, weil `release` ihn ueber genau

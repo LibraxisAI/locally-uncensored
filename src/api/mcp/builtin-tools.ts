@@ -1564,7 +1564,14 @@ async function executeRunWorkflow(args: ToolArgs): Promise<string> {
     : {}
   _workflowDepth++
   try {
-    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth)
+    // `runsInHeldLane: true` (run-slot.ts header, "DIE WEITERGABE DES
+    // ELTERNLAUF-TOKENS"): this call is always reached from inside a tool
+    // step of a turn that already booked the local lane (chat, agent or
+    // another workflow's own tool step), and it is AWAITED here. Letting
+    // this engine book its own place in the queue for the same conversation
+    // would queue it behind the very slot the outer turn is waiting on it to
+    // finish, a hang, not a slowdown.
+    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth, true)
     await engine.run()
   } finally {
     _workflowDepth--
