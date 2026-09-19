@@ -248,6 +248,15 @@ jobs:
           esac
           ls -la src-tauri/bin/
 
+      # review-k1-avx.md R1-R6: dumpbin.exe (the Windows half of the guard
+      # below) is not on PATH on a plain runner shell. Same reasoning as
+      # sidecar-windows.yml's identical step; keep the two in sync.
+      - name: Set up MSVC dev tools (dumpbin, for the K1 ISA guard)
+        if: matrix.platform == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
       # K1 (3.0.1): the guard against shipping a fixed x86-64-v3 binary again.
       # Runs on the real build this lane just produced, on the real runner
       # architecture (not emulated), so a regression here is the same failure

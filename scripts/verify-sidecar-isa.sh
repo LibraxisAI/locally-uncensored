@@ -228,7 +228,248 @@ if [[ "$TRIPLE" == *-linux-* ]]; then
   [ -f "$exe_check_path" ] && check_no_absolute_build_rpath "$exe_check_path"
 fi
 
-# --- The disassembler ------------------------------------------------------
+# --- Windows: opcode-byte VEX/EVEX guard (review-k1-avx.md, Opus final review) --
+#
+# The mnemonic-based rule below ("no mnemonic starting with v") is unusable
+# under MSVC: the MSVC-STL and CRT ship their own runtime-switched AVX2 fast
+# paths (msvcprt:vector_algorithms.obj, wmemcmp's _Avx2WmemEnabled path)
+# inside EVERY module they are statically linked into, and a plain mnemonic
+# grep also flags verr/verw/vmread instructions dumpbin/objdump disassembles
+# out of plain data bytes (review-k1-avx.md section "Zusatzbefund", the
+# vom Orchestrator vermutete Regelfehler). Neither is the K1 bug. The
+# Windows-only replacement (R1-R6 in review-k1-avx.md) lives in
+# scripts/win-isa-guard.mjs: it detects VEX/EVEX by opcode byte (exact, not
+# heuristic, in 64-bit code), resolves each hit's owning function from the
+# linker .map (hence /MAP in cmake_flags_for, R2), and only allows a hit
+# either through a named CRT/STL allowlist or through a same-function
+# isa-check-then-guarding-jump dominance check (R3). The Linux path below
+# this block is UNCHANGED: nm's symbol table plus objdump's mnemonic text is
+# sufficient there because Linux never links this project's own gcc-built
+# ggml/llama.cpp code against a runtime-dispatched CRT algorithm library the
+# way MSVC does.
+if [[ "$TRIPLE" == *-windows-* ]]; then
+
+  # R5: MSYS2_ARG_CONV_EXCL fixed in the disassembler function, not left to
+  # whatever the caller's environment happens to have. Without it MSYS bash
+  # rewrites "/disasm" etc. into a bogus Windows path before dumpbin ever
+  # sees it (review-k1-avx.md footnote; 04-BOX-SIDECAR-AVX-BEFUND.md hit the
+  # sibling case with an env VALUE, this is the same class of bug for an
+  # argv entry).
+  DUMPBIN_ARG_EXCL='/disasm;/nologo;/headers;/imports;/exports;/MAP'
+
+  # dumpbin is not on PATH on a plain shell (neither this repo's CI runner
+  # nor an un-elevated box shell): it lives under a versioned VC\Tools\MSVC
+  # directory that only a Developer Command Prompt (vcvars) or an explicit
+  # path adds. Locate it directly with vswhere (shipped with every VS
+  # Installer, including on GitHub's windows-latest image) rather than
+  # requiring every caller to have already run vcvars.
+  find_dumpbin() {
+    if command -v dumpbin >/dev/null 2>&1; then
+      command -v dumpbin
+      return 0
+    fi
+    local vswhere=""
+    if [ -x "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" ]; then
+      vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+    elif command -v vswhere.exe >/dev/null 2>&1; then
+      vswhere="$(command -v vswhere.exe)"
+    fi
+    [ -n "$vswhere" ] || return 1
+    local vsroot
+    vsroot="$("$vswhere" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r')"
+    [ -n "$vsroot" ] || return 1
+    # vswhere prints a native Windows path (backslashes, "C:\..."); bash's
+    # own path operations (find, globs) need the MSYS form.
+    local vsroot_unix
+    vsroot_unix="$(printf '%s' "$vsroot" | sed -E 's#\\#/#g; s#^([A-Za-z]):#/\L\1#')"
+    # Real depth below .../VC/Tools/MSVC is 5 (<version>/bin/Hostx64/x64/
+    # dumpbin.exe), measured on the box, not guessed; -maxdepth 4 silently
+    # found nothing there and made this whole helper return empty.
+    find "$vsroot_unix/VC/Tools/MSVC" -maxdepth 6 -type f -iname 'dumpbin.exe' -path '*Hostx64*x64*' 2>/dev/null | sort -V | tail -1
+  }
+
+  DUMPBIN="$(find_dumpbin || true)"
+  [ -n "$DUMPBIN" ] && [ -x "$DUMPBIN" ] \
+    || vdie "dumpbin.exe not found (checked PATH and vswhere's VC.Tools.x86.x64 workload); the Windows ISA guard needs the exact MSVC toolset dumpbin from review-k1-avx.md, install the VS Build Tools C++ workload, or run this from a Developer Command Prompt"
+  vlog "using dumpbin at $DUMPBIN"
+
+  dumpbin_run() {
+    MSYS2_ARG_CONV_EXCL="$DUMPBIN_ARG_EXCL" "$DUMPBIN" "$@"
+  }
+
+  # R5 continued: no `2>/dev/null` here, a dumpbin invocation that fails
+  # must turn the guard red with the real error, not silently hand the rest
+  # of the script an empty string that then vacuously "passes".
+  disassemble_windows() {
+    local file="$1"
+    dumpbin_run /nologo /disasm "$file"
+  }
+
+  # Toolset/linker version pin (R3, "Bewertung der Regel, ehrlich"): the
+  # CRT/STL allowlist trusts specific, hand-verified object files
+  # (msvcprt:vector_algorithms.obj, wmemcmp). A future MSVC toolset could in
+  # principle ship an unguarded fast path in the same object and this guard
+  # would not notice, so pin the toolset that was actually reviewed and go
+  # red, with a concrete next step, the moment the build uses a different one.
+  WINDOWS_REVIEWED_LINKER_VERSIONS="14.44"
+  check_toolset_version() {
+    local file="$1" hdr ver
+    hdr="$(dumpbin_run /nologo /headers "$file")" || vdie "dumpbin /headers failed on $file"
+    ver="$(grep -m1 -i 'linker version' <<<"$hdr" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+    [ -n "$ver" ] || vdie "could not read a linker version out of dumpbin /headers on $file"
+    case " $WINDOWS_REVIEWED_LINKER_VERSIONS " in
+      *" $ver "*)
+        vlog "$file: linker version $ver matches the reviewed MSVC toolset (19.44.35222.0, VS 2022 17.14, lu-301/bau/review-k1-avx.md)" ;;
+      *)
+        vdie "$file: linker version is $ver, not one of the reviewed toolsets ($WINDOWS_REVIEWED_LINKER_VERSIONS, MSVC 19.44.35222.0 / VS 2022 17.14, lu-301/bau/review-k1-avx.md section 3). A new toolset can change whether vector_algorithms.obj/wmemcmp still self-guard the way the CRT/STL allowlist assumes: re-run the Opus-style disassembly review against the new toolset before trusting it, then add its linker version to WINDOWS_REVIEWED_LINKER_VERSIONS here" ;;
+    esac
+  }
+
+  # R6: every module every CPU tier loads, not just the four the old rule
+  # checked. The higher CPU-tier variants (haswell and above) are explicitly
+  # EXEMPT here: they are allowed, by design, to contain unconditional AVX,
+  # that is the whole point of shipping more than one ggml-cpu-*.dll.
+  list_windows_modules_to_check() {
+    local f base
+    for f in "$COMPANIONS_DIR"/*.dll; do
+      [ -e "$f" ] || continue
+      base="$(basename "$f")"
+      case "$base" in
+        ggml-cpu-sandybridge.dll | ggml-cpu-haswell.dll | ggml-cpu-skylakex.dll | \
+        ggml-cpu-cannonlake.dll | ggml-cpu-cascadelake.dll | ggml-cpu-icelake.dll | \
+        ggml-cpu-alderlake.dll)
+          continue ;;
+      esac
+      printf '%s\n' "$f"
+    done
+  }
+
+  # R2: the .map CMAKE_*_LINKER_FLAGS=/MAP wrote lands in the build tree next
+  # to the DLL/exe cmake actually produced, not in the staged
+  # resources/companions directory (that directory only gets the files
+  # build-llama.sh's staging step copies out). The map's own basename always
+  # matches the module's basename without its extension; the exe is the one
+  # exception, its cmake TARGET is "llama-server" (build_triple's
+  # `--target llama-server`), not the renamed lu-llama-server-<triple> this
+  # script ships.
+  # Overridable only so this guard can be run against maps that were already
+  # copied out somewhere else (a proof run against a build this script did
+  # not itself produce, verifying a companions dir it only has read access
+  # to) without needing a real $CACHE_DIR/build-<triple> tree alongside it.
+  # A real invocation always uses the derived default.
+  WIN_BUILD_DIR="${WIN_MAP_DIR_OVERRIDE:-$CACHE_DIR/build-$TRIPLE}"
+  find_map_for() {
+    local stem="$1" hit
+    hit="$(find "$WIN_BUILD_DIR" -type f -iname "${stem}.map" -print -quit 2>/dev/null)"
+    if [ -z "$hit" ] && [ "$stem" != "llama-server" ]; then
+      hit="$(find "$WIN_BUILD_DIR" -type f -iname "llama-server.map" -print -quit 2>/dev/null)"
+    fi
+    printf '%s\n' "$hit"
+  }
+
+  NODE_BIN="$(command -v node || true)"
+  [ -n "$NODE_BIN" ] || vdie "node not found; scripts/win-isa-guard.mjs (the Windows VEX/EVEX-by-opcode-byte + .map ownership check, review-k1-avx.md R1-R3) needs it, and both this project's CI runners and the box already have it"
+
+  WIN_GUARD="$SCRIPT_DIR/win-isa-guard.mjs"
+  [ -f "$WIN_GUARD" ] || vdie "$WIN_GUARD missing"
+
+  win_fail_count=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    base="$(basename "$f")"
+    stem="${base%.dll}"
+    map_file="$(find_map_for "$stem")"
+    if [ -z "$map_file" ]; then
+      vdie "no .map file found for $f under $WIN_BUILD_DIR (stem '$stem'), /MAP did not produce one, or the build cache is stale; rebuild with scripts/build-llama.sh $TRIPLE first"
+    fi
+    disasm_tmp="$(mktemp)"
+    disassemble_windows "$f" > "$disasm_tmp"
+    if ! "$NODE_BIN" "$WIN_GUARD" check --module "$base" --disasm "$disasm_tmp" --map "$map_file"; then
+      win_fail_count=$((win_fail_count + 1))
+    fi
+    rm -f "$disasm_tmp"
+  done < <(list_windows_modules_to_check)
+
+  # exe itself, same treatment (out_name_for's stem never matches a .map
+  # basename, see find_map_for's llama-server fallback above).
+  exe_name="$(out_name_for "$TRIPLE")"
+  exe_path="$BIN_DIR/$exe_name"
+  if [ -f "$exe_path" ]; then
+    map_file="$(find_map_for "llama-server")"
+    if [ -z "$map_file" ]; then
+      vdie "no llama-server.map found under $WIN_BUILD_DIR for $exe_path"
+    fi
+    disasm_tmp="$(mktemp)"
+    disassemble_windows "$exe_path" > "$disasm_tmp"
+    if ! "$NODE_BIN" "$WIN_GUARD" check --module "$exe_name" --disasm "$disasm_tmp" --map "$map_file"; then
+      win_fail_count=$((win_fail_count + 1))
+    fi
+    rm -f "$disasm_tmp"
+  else
+    vlog "no exe found at $exe_path, skipping the exe-itself check (build first for the full check)"
+  fi
+
+  # R4, control 1/3 (positive control): independent of win-isa-guard.mjs, a
+  # raw opcode-byte grep straight on dumpbin's own output. haswell is the
+  # first AVX2 tier, so SOME VEX/EVEX byte pattern must show up, if it does
+  # not, dumpbin itself is not disassembling this file (wrong architecture,
+  # truncated output, a silently swallowed error), and every "no unprotected
+  # hit" result above is unproven, not passing.
+  haswell_file="$(find_variant_file haswell)"
+  [ -n "$haswell_file" ] || vdie "ggml-cpu-haswell.dll not found for the positive control"
+  haswell_disasm="$(disassemble_windows "$haswell_file")"
+  if ! grep -qE '^[[:space:]]*[0-9A-Fa-f]{6,16}:[[:space:]]+(C4|C5|62)[[:space:]]' <<<"$haswell_disasm"; then
+    vdie "$haswell_file (the haswell variant, which IS supposed to use AVX2) shows no VEX/EVEX opcode byte at all: dumpbin is not disassembling real code here, every result above is unproven"
+  fi
+  vlog "positive control: haswell ($haswell_file) shows VEX/EVEX opcode bytes, dumpbin is disassembling real code"
+
+  # R4, control 2/3 (negative control): haswell's OWN ggml compute kernels
+  # are unconditionally AVX2 by construction (that is the entire reason a
+  # haswell-tier DLL exists), win-isa-guard.mjs's full decision logic MUST
+  # therefore find at least one UNPROTECTED own-code hit in it. If it does
+  # not, the allowlist or the dominance check has been loosened into "allow
+  # everything", which a guard whose whole job is catching that must never
+  # do quietly.
+  haswell_map="$(find_map_for ggml-cpu-haswell)"
+  [ -n "$haswell_map" ] || vdie "no ggml-cpu-haswell.map found under $WIN_BUILD_DIR for the negative control"
+  haswell_disasm_tmp="$(mktemp)"
+  disassemble_windows "$haswell_file" > "$haswell_disasm_tmp"
+  if ! "$NODE_BIN" "$WIN_GUARD" check --module ggml-cpu-haswell.dll --disasm "$haswell_disasm_tmp" --map "$haswell_map" --expect-unprotected; then
+    rm -f "$haswell_disasm_tmp"
+    vdie "negative control failed: ggml-cpu-haswell.dll's own-code AVX2 kernels came out fully protected/allowed, which means the Windows ISA rule no longer catches anything (review-k1-avx.md R4)"
+  fi
+  rm -f "$haswell_disasm_tmp"
+  vlog "negative control: ggml-cpu-haswell.dll correctly shows at least one UNPROTECTED own-code hit (the rule still catches something)"
+
+  # R4, control 3/3 (the artificial red probe): a checked-in fixture pair
+  # (scripts/__fixtures__/win-isa/unprotected-own-code.*) that is an
+  # own-code VEX hit with NO preceding isa-availability check anywhere in
+  # its function, the shape the K1 bug actually was. This runs the
+  # decision LOGIC itself, not a real file, so it catches a future change to
+  # win-isa-guard.mjs that makes the rule pass vacuously even when no real
+  # DLL is available to test against (a Mac dev box has none of the above
+  # Windows files at all).
+  RED_PROBE_DIR="$SCRIPT_DIR/__fixtures__/win-isa"
+  if ! "$NODE_BIN" "$WIN_GUARD" check --module "red-probe" \
+      --disasm "$RED_PROBE_DIR/unprotected-own-code.disasm.txt" \
+      --map "$RED_PROBE_DIR/unprotected-own-code.map.txt"; then
+    vlog "red probe: unprotected-own-code fixture correctly came out RED"
+  else
+    vdie "red probe FAILED TO GO RED: scripts/__fixtures__/win-isa/unprotected-own-code.* (an own-code VEX hit with no preceding isa check at all) was accepted, the decision logic in win-isa-guard.mjs has a bug that lets an unprotected AVX instruction through"
+  fi
+
+  # Toolset pin, checked once against the exe (present after a real build).
+  if [ -f "$exe_path" ]; then
+    check_toolset_version "$exe_path"
+  fi
+
+  [ "$win_fail_count" -eq 0 ] || vdie "$win_fail_count Windows module(s) failed the VEX/EVEX ownership check"
+
+  vlog "OK: $TRIPLE sidecar, Windows opcode-byte VEX/EVEX guard passed on every loaded module, positive/negative/red-probe controls all correct"
+  exit 0
+fi
+
+# --- The disassembler (Linux only from here on) -----------------------------
 
 # Every call site captures this function's stdout via `$(disassemble ...)`
 # to get the disassembly text, so a diagnostic printed with plain vlog (which

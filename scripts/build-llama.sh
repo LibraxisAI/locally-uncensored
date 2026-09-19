@@ -127,7 +127,19 @@ cmake_flags_for() {
     x86_64-apple-darwin)
       echo "$common -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_ARCHITECTURES=x86_64" ;;
     x86_64-pc-windows-msvc)
-      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON" ;;
+      # /MAP (review-k1-avx.md R2): verify-sidecar-isa.sh's Windows ISA guard
+      # needs a linker map to turn a VEX/EVEX hit's address into an owning
+      # function and Lib:Object (the CRT/STL allowlist and the own-code
+      # dominance check both key off that). Set here, as a real linker flag,
+      # not via the LDFLAGS/MSYS2_ENV_CONV_EXCL environment-variable
+      # workaround the box bauer used to prove this out (e2e/k1-avx,
+      # 04-BOX-SIDECAR-AVX-BEFUND.md Schritt 1): that workaround only exists
+      # because MSYS bash rewrites an env VALUE that looks like a Unix path
+      # ("/MAP") before handing it to a native process, a trap this repo's
+      # own CI invocation (bash scripts/build-llama.sh ...) would hit again
+      # on every run if the flag lived in an env var instead of the cmake
+      # command line, where MSYS's argv rewriting does not apply the same way.
+      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DCMAKE_SHARED_LINKER_FLAGS=/MAP -DCMAKE_EXE_LINKER_FLAGS=/MAP" ;;
     x86_64-unknown-linux-gnu)
       # CMAKE_BUILD_RPATH_USE_ORIGIN=ON (BLOCKER B3): without it,
       # CMAKE_BUILD_WITH_INSTALL_RPATH's OFF default still makes CMake write

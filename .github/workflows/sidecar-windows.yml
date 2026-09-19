@@ -73,6 +73,21 @@ jobs:
         shell: bash
         run: bash scripts/build-llama.sh x86_64-pc-windows-msvc
 
+      # review-k1-avx.md R1-R6: the Windows half of verify-sidecar-isa.sh
+      # needs dumpbin.exe, which is not on PATH on a plain runner shell (it
+      # lives under a versioned VC\Tools\MSVC directory that only a
+      # Developer Command Prompt adds). The guard's own find_dumpbin()
+      # locates it via vswhere as a fallback, but setting up the dev
+      # environment here is the same thing every other MSVC-toolchain step
+      # in this repo would need, so do it once, explicitly, rather than
+      # depend on that fallback matching whatever this runner image ships
+      # next. msvc-dev-cmd writes to GITHUB_PATH/GITHUB_ENV, which later
+      # `shell: bash` steps pick up the same as `shell: pwsh` ones.
+      - name: Set up MSVC dev tools (dumpbin, for the K1 ISA guard)
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
       - name: Verify sidecar ISA layout (K1)
         shell: bash
         run: bash scripts/verify-sidecar-isa.sh x86_64-pc-windows-msvc
