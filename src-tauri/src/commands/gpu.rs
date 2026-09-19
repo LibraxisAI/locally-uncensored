@@ -191,8 +191,8 @@ fn parse_nvidia_uuid_csv(raw: &str) -> HashMap<u32, NvidiaUuidInfo> {
 }
 
 /// Build a `CUDA_VISIBLE_DEVICES` value for a set of vendor-scoped NVIDIA
-/// indices, preferring each card's `GPU-<uuid>` form over its bare index
-/// wherever `nvidia` names that index with a known, non-MIG UUID (GPU-UUID
+/// indices, preferring the `GPU-<uuid>` form over bare indices for the WHOLE
+/// list at once when every chosen card has a known, non-MIG UUID (GPU-UUID
 /// Nachzug, review 2026-09-18 Runde 2 "UUID statt Index").
 ///
 /// NVIDIA's own CUDA Programming Guide, section "CUDA Environment
@@ -206,35 +206,38 @@ fn parse_nvidia_uuid_csv(raw: &str) -> HashMap<u32, NvidiaUuidInfo> {
 /// is a CUDA runtime setting the driver parses identically everywhere, so
 /// torch/CUDA under native Windows, WSL, or Linux all accept the same
 /// `GPU-xxxxxxxx-...` string. The UUID form identifies one physical card
-/// independent of enumeration order -- exactly the property an index only
+/// independent of enumeration order, exactly the property an index only
 /// has together with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and even then only for
 /// as long as nothing reorders or hotplugs a card between detection and
 /// launch.
 ///
 /// The same page documents MIG instances as a DIFFERENT id shape,
 /// `MIG-<GPU-UUID>/<GPU instance ID>/<compute instance ID>`, not the plain
-/// `GPU-<uuid>` this function builds -- confirming why `parse_nvidia_
+/// `GPU-<uuid>` this function builds, confirming why `parse_nvidia_
 /// uuid_csv` deliberately excludes MIG-enabled cards from `uuid` rather
 /// than sending a physical-GPU UUID a MIG-mode setup would not accept as a
 /// single-instance selector.
 ///
-/// Falls back to the bare index per-card when that card's UUID is unknown
-/// (an old driver, or a MIG-enabled card, see `parse_nvidia_uuid_csv`) --
-/// `CUDA_DEVICE_ORDER=PCI_BUS_ID` stays set unconditionally alongside this
-/// by every caller as the fallback net for exactly that case.
+/// BLOCKER fix (review-w2rust.md B1): a MIXED list, some entries UUIDs and
+/// some bare indices, is nowhere documented as accepted, and the two forms
+/// name different enumerations the moment they are mixed: `CUDA_DEVICE_
+/// ORDER=PCI_BUS_ID` only fixes up the meaning of a nearby bare index, not
+/// one sitting next to a UUID token. So this is all-or-nothing across the
+/// WHOLE list: only when every requested index resolves to a known,
+/// non-MIG uuid does the function emit UUIDs at all; if even one is
+/// missing, the entire list falls back to plain indices (the pre-UUID
+/// behaviour), never a mix of the two. `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+/// stays set unconditionally by every caller as the fallback net for
+/// exactly that all-indices case.
 fn cuda_visible_devices_value(indices: &[u32], nvidia: &[DetectedGpu]) -> String {
-    indices
+    let uuids: Option<Vec<&str>> = indices
         .iter()
-        .map(|i| {
-            nvidia
-                .iter()
-                .find(|g| g.index == *i)
-                .and_then(|g| g.uuid.as_deref())
-                .map(|u| u.to_string())
-                .unwrap_or_else(|| i.to_string())
-        })
-        .collect::<Vec<_>>()
-        .join(",")
+        .map(|i| nvidia.iter().find(|g| g.index == *i).and_then(|g| g.uuid.as_deref()))
+        .collect();
+    match uuids {
+        Some(uuids) => uuids.join(","),
+        None => indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
+    }
 }
 
 fn detect_amd() -> Vec<DetectedGpu> {
@@ -1640,12 +1643,17 @@ pub fn apply_gpu_env(cmd: &mut Command, selection: &GpuSelection) {
         // fallback net for whichever index this could not resolve to a UUID
         // (no NVIDIA card detected here at all -- e.g. AMD/Intel-only box,
         // an old driver, or a MIG-enabled card falls back to its index).
+        //
+        // BLOCKER fix (review-w2rust.md B2): this used to call `detect_gpus()`,
+        // the FULL cross-vendor sweep (nvidia-smi twice, rocm-smi, lspci, on
+        // Windows a registry walk plus wmic, plus hipinfo), every single
+        // Ollama/ComfyUI/engine start on a box with an NVIDIA card pinned,
+        // each probe individually bounded at 5s. `detect_nvidia()` alone is
+        // the only probe this branch can ever use (the filter right below
+        // discarded every other vendor anyway), so calling it directly skips
+        // four probes this branch never needed engaging in the first place.
         "nvidia" => {
-            let nvidia: Vec<DetectedGpu> = detect_gpus()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|g| g.vendor == "nvidia")
-                .collect();
+            let nvidia: Vec<DetectedGpu> = detect_nvidia();
             let value = cuda_visible_devices_value(&selection.indices, &nvidia);
             cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
             cmd.env("CUDA_VISIBLE_DEVICES", &value);
@@ -1908,6 +1916,35 @@ End of search: 3 match(es) found.
         assert!(has_order, "CUDA_DEVICE_ORDER should be set to PCI_BUS_ID");
     }
 
+    /// BLOCKER fix B2 (review-w2rust.md): `apply_gpu_env`'s nvidia arm can now
+    /// shell out to nvidia-smi, so every one of its four call sites
+    /// (process.rs::start_ollama/set_ollama_gpu... , engine.rs) must clone
+    /// the selection out of `state.gpu_selection` and drop that mutex BEFORE
+    /// calling it, never hold the guard across the call -- holding it would
+    /// freeze `set_gpu_selection`/`get_gpu_selection` (same mutex, the
+    /// Hardware tab) for however long the subprocess I/O takes. Read as
+    /// source, the same structural-guard style `os_error::drift_guard`
+    /// already uses in this crate, because the property under test is "what
+    /// shape is the call site", not a return value.
+    #[test]
+    fn gpu_selection_lock_is_never_held_across_apply_gpu_env() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for rel in ["src/commands/process.rs", "src/commands/engine.rs"] {
+            let path = manifest.join(rel);
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            assert!(
+                !src.contains("if let Ok(sel) = state.gpu_selection.lock() {"),
+                "{rel} still has the old lock-wraps-apply_gpu_env shape (the MutexGuard \
+                 was alive for the whole call, including any nvidia-smi I/O inside it)"
+            );
+            let safe_pattern = "state.gpu_selection.lock().ok().map(|sel| sel.clone())";
+            assert!(
+                src.contains(safe_pattern),
+                "{rel} has no clone-then-drop call site at all -- did the B2 fix move or get reverted?"
+            );
+        }
+    }
+
     #[test]
     fn apply_gpu_env_sets_hip_and_rocr_for_amd() {
         let sel = GpuSelection { vendor: "amd".into(), indices: vec![0] };
@@ -2002,12 +2039,36 @@ End of search: 3 match(es) found.
         );
     }
 
+    /// BLOCKER fix B1 (review-w2rust.md): a MIXED list ("GPU-aaaa,1") is
+    /// nowhere documented as accepted and can defeat the MIG safeguard, so
+    /// one card missing its uuid must fall the WHOLE list back to plain
+    /// indices, not just that one card's entry. This replaces the earlier
+    /// version of this test, which asserted the mixed output as correct.
     #[test]
-    fn cuda_value_falls_back_to_index_when_uuid_is_unknown() {
+    fn cuda_value_falls_back_the_whole_list_to_indices_when_any_uuid_is_unknown() {
         // Card 1 has no uuid (old driver, or excluded as MIG-enabled) --
-        // only that one card falls back, card 0 still gets its uuid.
+        // card 0 does NOT get to keep its uuid either.
         let nvidia = vec![nvidia_card(0, Some("GPU-aaaa")), nvidia_card(1, None)];
-        assert_eq!(cuda_visible_devices_value(&[0, 1], &nvidia), "GPU-aaaa,1");
+        assert_eq!(cuda_visible_devices_value(&[0, 1], &nvidia), "0,1");
+    }
+
+    /// Negative control for B1: even with three requested cards where only
+    /// the middle one lacks a uuid, no partial-uuid list is ever produced.
+    #[test]
+    fn cuda_value_never_mixes_uuids_and_indices_in_one_list() {
+        let nvidia = vec![
+            nvidia_card(0, Some("GPU-aaaa")),
+            nvidia_card(1, None),
+            nvidia_card(2, Some("GPU-cccc")),
+        ];
+        let value = cuda_visible_devices_value(&[0, 1, 2], &nvidia);
+        assert_eq!(value, "0,1,2", "one missing uuid must drop the OTHERS too, not just its own entry");
+        let has_uuid_token = value.split(',').any(|tok| tok.starts_with("GPU-"));
+        let has_bare_index = value.split(',').any(|tok| tok.parse::<u32>().is_ok());
+        assert!(
+            !(has_uuid_token && has_bare_index),
+            "a CUDA_VISIBLE_DEVICES value must never mix uuid and index tokens: {value:?}"
+        );
     }
 
     #[test]
