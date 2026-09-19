@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, type ReactNode } from 'react'
 import { SamplingControls } from './SamplingControls'
 import { Send, Square, Paperclip, X, Brain, Gauge, Terminal } from 'lucide-react'
 import { matchAgentCommands, type AgentCommand, type CommandScope } from '../../lib/agent-commands'
@@ -15,6 +15,7 @@ import { clampEffort, effortChoices, effortLabel, nextEffort, DEFAULT_EFFORT } f
 import type { AgentToolCall } from '../../types/agent-mode'
 import type { ImageAttachment } from '../../types/chat'
 import { COMPOSER_MAX_W } from './composer-width'
+import { consumeComposerFocusPending } from '../../hooks/useKeyboardShortcuts'
 import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT, HINWEIS_ZEILE } from '../../lib/hinweis'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -246,12 +247,37 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, l
   const serverVision = declaredVision(activeModelMeta)
   const canSeeImages = serverVision !== undefined ? serverVision : isVisionCompatible(activeModel)
 
+  /**
+   * Auflage 1 (Review composer, 19.09.2026): `key={conversationId}` weiter
+   * unten montiert das Feld beim Gespraechswechsel neu, ein frischer Knoten
+   * hat aber nie von selbst Fokus. `useKeyboardShortcuts.ts` setzt die Fahne
+   * NUR, wenn der Tastendruck ("new-conversation", Ctrl/Cmd+N) selbst aus
+   * diesem Feld kam; ein Wechsel per Sidebar-Klick oder waehrend der Nutzer
+   * in einem Suchfeld/Modal tippt, setzt sie nie und stiehlt hier folglich
+   * nichts. `consumeComposerFocusPending()` liest und loescht sie in einem
+   * Schritt, und das geschieht bewusst HIER im Effekt (nach dem Commit, der
+   * Knoten `textareaRef.current` also schon der neue ist), nicht im
+   * Renderkoerper oben: ein Verbrauch dort waere ein Seiteneffekt waehrend
+   * des Renderns.
+   */
+  useLayoutEffect(() => {
+    if (consumeComposerFocusPending()) {
+      textareaRef.current?.focus()
+    }
+  }, [conversationId])
+
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px'
     }
-  }, [input])
+    // conversationId mit in der Abhaengigkeit: `key={conversationId}` unten
+    // montiert das Textfeld beim Wechsel neu, der frische Knoten startet aber
+    // auf `rows={1}`. Ist der uebernommene Entwurf identisch mit dem der
+    // vorigen Unterhaltung (gleicher mehrzeiliger Text), aendert sich `input`
+    // nicht, der Effekt liefe ohne diese Zeile also nicht, und die Hoehe
+    // bliebe auf einer Zeile stehen statt den Entwurf zu zeigen.
+  }, [input, conversationId])
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const all = Array.from(files)
@@ -573,7 +599,7 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, l
               Knoten in der Warteschlange hat (eine reale Maus- oder
               CDP-Eingabe, die kurz vor dem Wechsel begann), landet dann an der
               alten Cursorposition MITTEN im gerade abgelegten Entwurf, bevor
-              Reacts Leerung überhaupt sichtbar wird - genau das Muster aus der
+              Reacts Leerung ueberhaupt sichtbar wird - genau das Muster aus der
               Box-Messung (BERICHT.md Z2: neuer Text mitten im alten,
               Endstueck haengt hinten dran). Ein neuer Schluessel zwingt einen
               WIRKLICH neuen DOM-Knoten pro Unterhaltung: es gibt dann keinen

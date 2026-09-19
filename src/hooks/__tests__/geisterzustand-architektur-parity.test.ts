@@ -75,9 +75,11 @@ describe('Chat (Einzelmodell + Gruppenrunde): isGenerating haengt jetzt auch an 
     expect(davor).not.toMatch(/if \(stillOwnsSlot\)\s*{\s*(\/\/[^\n]*\n\s*)*$/)
   })
 
-  it('beide Fundstellen sind vorhanden: der einzelne Chat UND die Gruppenrunde bekamen den Fix, nicht nur einer', () => {
+  it('alle drei Fundstellen sind vorhanden: einzelner Chat, Gruppenrunde UND /compact bekamen den Fix, nicht nur einer', () => {
+    // Auflage 2 (Review composer, 19.09.2026): `/compact` reihte sich in
+    // dieselbe Invariante ein, seitdem sind es drei statt zwei Fundstellen.
     const treffer = useChatSrc.split('setIsGenerating(activeChatRuns.size > 0)').length - 1
-    expect(treffer).toBe(2)
+    expect(treffer).toBe(3)
   })
 
   it('generationStore.aborters bleibt der Massstab fuer die STORE-eigene Fahne (review-lanes.md Punkt 1) - der Fix aendert daran nichts', () => {

@@ -382,6 +382,21 @@ export function useChat() {
    * same time, silently, because `localLaneHolder()` never heard about the
    * group round at all. */
   const runGroupRound = useCallback(async (convId: string, content: string, images: ImageAttachment[] | undefined, models: string[]) => {
+    // Auflage 3 (Review composer, 19.09.2026): derselbe Wiedereintritts-Riegel
+    // wie sendMessage oben ("Re-entry guard"). Ohne ihn ueberschrieb ein
+    // doppeltes Enter auf einem Gruppenchat den Token der ersten Runde weiter
+    // unten in `activeChatRuns`, ohne einen Haenger zu erzeugen (die erste
+    // Runde loescht wegen der Identitaetspruefung im `finally` unten nichts,
+    // die zweite raeumt am Ende auf) - aber der Doppelklick-Schutz griff fuer
+    // Gruppenrunden bisher nicht, und ein doppelter Nutzerzug landete im
+    // Verlauf. Claim synchron, vor der ersten Nachricht, exakt wie dort.
+    if (activeChatRuns.has(convId)) {
+      log.info('chat.duplicate_group_round_blocked', { convId })
+      return
+    }
+    const myRunToken = Symbol(convId)
+    activeChatRuns.set(convId, myRunToken)
+
     useChatStore.getState().addMessage(convId, {
       id: uuid(),
       role: 'user',
@@ -403,9 +418,9 @@ export function useChat() {
     const abort = new AbortController()
     // Runs this hook-global `isGenerating` boolean unconditionally down to
     // (see Ghost-Stop-Fix note above `activeChatRuns`): registered/removed by
-    // its OWN identity, independent of `generationStore.aborters`.
-    const myRunToken = Symbol(convId)
-    await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
+    // its OWN identity, independent of `generationStore.aborters`. Der Token
+    // selbst ist jetzt oben entstanden (Auflage 3), zusammen mit dem Claim.
+    const laneOutcome = await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
       // The generationStore aborter map IS the run register, keyed by convId,
       // see the ChatRun doc comment above sendMessage. Nothing else needs to
       // remember this controller: Stop looks it up there, by conversation, not
@@ -413,7 +428,6 @@ export function useChat() {
       // overwrite.
       const myAborter = () => abort.abort()
       useGenerationStore.getState().registerAborter(convId, myAborter)
-      activeChatRuns.set(convId, myRunToken)
       setIsGenerating(true)
       useGenerationStore.getState().setGenerating(convId, true)
       try {
@@ -459,6 +473,13 @@ export function useChat() {
         })
       }
     })
+    if (laneOutcome === 'cancelled-while-queued' && activeChatRuns.get(convId) === myRunToken) {
+      // Wie bei sendMessage weiter unten: Stop hat die Runde aus der
+      // Warteschlange der lokalen Spur geholt, bevor ihr eigenes `finally`
+      // je lief (das lebt im Rumpf oben) - der oben synchron beanspruchte
+      // Eintrag muss deshalb hier freigegeben werden.
+      activeChatRuns.delete(convId)
+    }
   }, [])
 
   const sendMessage = useCallback(async (content: string, images?: ImageAttachment[]) => {
@@ -533,6 +554,15 @@ export function useChat() {
         // outcome is reported the same way an aborted summary call itself
         // would report it) or while it is actually running.
         const compactAbort = new AbortController()
+        // Auflage 2 (Review composer, 19.09.2026): dieselbe Invariante wie
+        // sendMessage und runGroupRound. Ohne Eintrag in `activeChatRuns`
+        // haette ein `/compact` in Unterhaltung B das hook-globale
+        // `isGenerating` unbedingt geloescht, waehrend A noch streamt (der
+        // Schaden blieb bisher klein, weil `composerBusy` die Store-Fahne je
+        // Unterhaltung ohnehin mitliest, aber diese Stelle war die einzige,
+        // die aus der Reihe fiel).
+        const myRunToken = Symbol(convId)
+        activeChatRuns.set(convId, myRunToken)
         setIsGenerating(true)
         useGenerationStore.getState().setGenerating(convId, true)
         try {
@@ -560,13 +590,19 @@ export function useChat() {
             )
           }
         } finally {
+          if (activeChatRuns.get(convId) === myRunToken) {
+            activeChatRuns.delete(convId)
+          }
           // The summary (or the "Stopped" notice) is already in the store by
           // this point; only the announcement that flips Stop back to Send
           // waits for the write, same contract as the send path below and
           // runGroupRound above (stores/durability.ts has the measurement
           // that made the order matter).
           await endTurnDurably(() => {
-            setIsGenerating(false)
+            // Auflage 2: wie in runGroupRound/sendMessage errechnet aus der
+            // Laufregistry, nicht unbedingt auf false gesetzt, sonst reisst
+            // ein `/compact` in B die Fahne unter einem noch streamenden A weg.
+            setIsGenerating(activeChatRuns.size > 0)
             useGenerationStore.getState().setGenerating(convId, false)
           })
         }

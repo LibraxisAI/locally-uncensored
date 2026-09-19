@@ -51,11 +51,19 @@ describe('der Wechsel wird im Render entschieden, nicht in einem Effekt', () => 
     expect(quelle).toContain('const [entwuerfe, setEntwuerfe] = useState<')
   })
 
-  it('kein Effekt haengt mehr am Gespraechswechsel', () => {
-    // Der Rueckweg in einen `useEffect(..., [conversationId])` wuerde
-    // set-state-in-effect zurueckholen. Hier steht er als Zusicherung, damit
-    // der Grund am Ort steht und nicht nur in einer Regelmeldung.
-    expect(quelle).not.toContain('}, [conversationId])')
+  it('kein Effekt verschiebt den Entwurf mehr', () => {
+    // Der Rueckweg in einen `useEffect(..., [conversationId])`, der
+    // `setEntwuerfe`/`setInput` fuer den Wechsel selbst aufruft, wuerde
+    // set-state-in-effect zurueckholen. Die Zusicherung prueft genau DAS
+    // Muster (ein Effekt, dessen Rumpf `setEntwuerfe(` erreicht), nicht jeden
+    // Text mit der Abhaengigkeit `[conversationId]`: Auflage 1 (Review
+    // composer, 19.09.2026) hat seitdem einen ZWEITEN, unabhaengigen
+    // `useLayoutEffect` mit genau dieser Abhaengigkeit bekommen
+    // (Fokus-Wiederherstellung nach Ctrl/Cmd+N), der mit dem Entwurfswechsel
+    // nichts zu tun hat und diesen Waechter sonst faelschlich rot faerben
+    // wuerde.
+    const effektVerschiebtEntwurf = /use(?:Layout)?Effect\(\(\) => \{[^]*?setEntwuerfe\(/.test(quelle)
+    expect(effektVerschiebtEntwurf).toBe(false)
   })
 })
 

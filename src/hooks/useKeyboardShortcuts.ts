@@ -168,6 +168,37 @@ export const SHORTCUT_ACTIONS: Readonly<Record<ShortcutId, () => void>> = {
   },
 }
 
+/**
+ * Auflage 1 (Review composer, 19.09.2026): "new-conversation" wechselt ohne
+ * Mausklick, der Cursor lag also mit hoher Wahrscheinlichkeit noch im
+ * Composer-Feld. `key={conversationId}` (ChatInput.tsx) montiert das Feld
+ * beim Wechsel neu, und ein frischer DOM-Knoten hat nie von selbst Fokus —
+ * der naechste Tastendruck ginge sonst gegen `body` ins Leere.
+ *
+ * Dieses Modul haelt dafuer EINE einschuessige Fahne, kein React-State und
+ * kein Ref: sie wird hier, in einem Ereignis-Handler, gesetzt (erlaubt, siehe
+ * `passSendLock` in ChatInput.tsx fuer dasselbe Muster bei einer anderen
+ * Sperre) und von ChatInput in einem `useLayoutEffect` gelesen und sofort
+ * verbraucht. Ein Verbrauch ausserhalb eines Effekts wuerde waehrend des
+ * Renderns einen Seiteneffekt ausloesen, genau das Muster, das dieses Projekt
+ * schon einmal aus `passSendLock` herausgezogen hat.
+ */
+let composerFocusPending = false
+
+/** Wird nur gesetzt, wenn der Tastendruck selbst aus dem Composer-Feld kam. */
+function markComposerFocusPending() {
+  composerFocusPending = true
+}
+
+/** Liest die Fahne UND loescht sie in einem Schritt, damit ein spaeterer,
+ *  fokuslos ausgeloester Wechsel (Sidebar-Klick, Kommandopalette) nichts
+ *  stiehlt. */
+export function consumeComposerFocusPending(): boolean {
+  const pending = composerFocusPending
+  composerFocusPending = false
+  return pending
+}
+
 export function useKeyboardShortcuts() {
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement | null
@@ -181,6 +212,12 @@ export function useKeyboardShortcuts() {
     const id = shortcutCommandFor(e, inInput, IS_MAC)
     if (!id) return
     e.preventDefault()
+    // `data-lu-quiet-focus` ist der stabile Erkennungspunkt des
+    // Composer-Feldes (siehe ChatInput.tsx); ein Suchfeld oder ein Modal
+    // traegt das Attribut nicht und setzt die Fahne folglich nicht.
+    if (id === 'new-conversation' && tag === 'TEXTAREA' && target?.hasAttribute('data-lu-quiet-focus')) {
+      markComposerFocusPending()
+    }
     SHORTCUT_ACTIONS[id]()
   }, [])
 
