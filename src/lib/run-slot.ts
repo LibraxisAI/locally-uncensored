@@ -93,15 +93,36 @@
  * Abbruchgriff (Stop auf die Elternunterhaltung bricht dann beide ab).
  * Stimmt der Beweis nicht (der Marker ist veraltet, falsch gesetzt, oder der
  * Elternlauf ist gar keiner), bucht der Aufruf ganz normal wie ein
- * eigenstaendiger Lauf, und das ist kein Haenger: haelt niemand aus derselben
- * Kette die Spur, kann sich niemand aus derselben Kette selbst blockieren.
+ * eigenstaendiger Lauf.
+ *
+ * DAS IST NUR DANN KEIN HAENGER, WENN DER AUFRUFER SEINEN EIGENEN, ECHTEN
+ * BEWEIS WEITERGIBT, NIE EINEN GEERBTEN.
+ *
+ * (Nachpruefung, bau/review-w2lane.md, Blocker 1 der Runde nach `1c9d8043`)
+ * Der Satz stand hier vorher ohne diese Bedingung, unbedingt: "haelt niemand
+ * aus derselben Kette die Spur, kann sich niemand aus derselben Kette selbst
+ * blockieren". Das gilt nur, wenn wirklich niemand aus der Kette haelt. Ein
+ * HALTENDER Lauf, der einen ZWEITEN abwartet (Werkzeugausfuehrung,
+ * `run_workflow`, ein weiterer verschachtelter Agent), MUSS diesem zweiten
+ * seinen EIGENEN, aktuellen Beweis mitgeben. Gemessen wurde das Gegenteil:
+ * ein Hintergrund-Sub-Agent bucht die Spur unter seiner eigenen Aufgaben-Id,
+ * sein `run_workflow`-Schritt bekam aber per `{ ...run }` den laengst
+ * freigegebenen Beweis des ELTERNZUGS durchgereicht (nicht den eigenen), der
+ * Beweis war damit garantiert ungueltig, der Werkzeugschritt fiel auf
+ * normales Buchen unter `'tool-execution'` zurueck und wartete dort auf
+ * einen Platz, den der Sub-Agent selbst haelt: derselbe Halter wartet auf
+ * sich selbst, fuer immer, bis zum naechsten Appstart. `sub-agent.ts` reicht
+ * seither `held` (den zweiten Parameter des eigenen `body`) weiter statt des
+ * geerbten Werts.
  *
  * Ein ABGEWARTETES `runInLane` verschachtelt in einem anderen, OHNE einen
- * gueltigen Beweis, haengt weiterhin hart: der innere Aufruf stellt sich
- * hinter dem aeusseren an, der aeussere wartet auf den inneren, beide fuer
- * immer (gemessen, siehe `__tests__/run-slot-nested-in-held-lane.test.ts`).
- * `runsInHeldLane` mit einem echten Beweis ist der einzige Weg, das zu
- * vermeiden.
+ * gueltigen Beweis fuer GENAU den Lauf, der wirklich haelt, haengt weiterhin
+ * hart: der innere Aufruf stellt sich hinter dem aeusseren an, der aeussere
+ * wartet auf den inneren, beide fuer immer (gemessen, siehe
+ * `__tests__/run-slot-nested-in-held-lane.test.ts` und
+ * `__tests__/heldLocalLane-wird-immer-weitergereicht.test.ts`).
+ * `runsInHeldLane` mit dem echten, EIGENEN Beweis jedes wartenden Laufs ist
+ * der einzige Weg, das zu vermeiden.
  *
  * Der HINTERGRUND-Sub-Agent (`sub-agent.ts`, `void runner(...)`) ist die
  * Gegenprobe: er wird vom Elternzug NICHT abgewartet, ueberlebt dessen Ende

@@ -742,9 +742,34 @@ export function buildDelegateExecutor(
         // that up when the proof checks out).
         const lane = await resolveSubAgentLane(model)
         let output = ''
+        // NIE `run?.conversationId` fuer die eigene Buchung (Blocker 2,
+        // Nachpruefung von review-w2lane.md, gemessen): wenn der Beweis oben
+        // nicht sticht, faellt `runInLane` auf normales Buchen zurueck, und
+        // das registriert `generationStore.aborters[conversationId]`
+        // rueckhaltlos neu und LOESCHT ihn am Ende ersatzlos, ohne
+        // wiederherzustellen, was vorher da war. Unter der Kennung des
+        // ELTERNZUGS gebucht heisst das: dieser Sub-Agent nimmt dem
+        // Elternzug seinen Abbruchgriff weg, und `stopAllBackgroundWork`
+        // (Abmelden, Fenster schliessen, App beenden) erreicht ihn danach
+        // nicht mehr. Der gehaltene Weg oben braucht diesen Wert ohnehin
+        // nicht (er schlaegt unter `runsInHeldLane.conversationId` nach,
+        // nicht unter der hier uebergebenen Kennung), eine eigene, private
+        // Kennung aendert an ihm also nichts und behebt nur den Rueckfall.
         await runInLane(
-          { conversationId: run?.conversationId ?? '', lane, runsInHeldLane: run?.heldLocalLane ?? null },
-          async () => { output = await runner(goal, context, { budget, run, model }) },
+          { conversationId: makeTaskId(_taskSeq++), lane, runsInHeldLane: run?.heldLocalLane ?? null },
+          async (held) => {
+            // `held` ist der EIGENE, gerade gueltige Beweis DIESES Sub-
+            // Agenten (mitgeritten oder frisch selbst gebucht), nicht der
+            // geerbte des Elternzugs (Blocker 1, Nachpruefung von
+            // review-w2lane.md): ein Werkzeugschritt dieses Sub-Agenten, der
+            // seinerseits `run_workflow` ruft, braucht GENAU diesen Wert,
+            // sonst legt er den laengst ungueltigen Beweis des Elternzugs
+            // vor und verklemmt sich hinter der eigenen Buchung dieses
+            // Sub-Agenten (dieselbe Fehlerform wie im Hintergrundzweig
+            // unten, nur eine Ebene hoeher).
+            const kindLauf: AgentRunContext | undefined = run ? { ...run, heldLocalLane: held } : undefined
+            output = await runner(goal, context, { budget, run: kindLauf, model })
+          },
         )
         return output
       } catch (err) {
@@ -837,19 +862,31 @@ export function buildDelegateExecutor(
       return `Task ${id} was cancelled before it started (Stop was pressed).`
     }
 
-    // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des Elternzugs:
-    // sonst liesse sich eine einzelne Aufgabe nicht abbrechen, ohne den
-    // ganzen Zug mitzunehmen.
-    const kindLauf: AgentRunContext | undefined = run
-      ? { ...run, abortSignal: controller.signal }
-      : undefined
-
     void runInLane(
       { conversationId: id, lane, abort: () => controller.abort() },
-      async () => {
+      async (held) => {
         // Drangekommen: erst JETZT ist "laufend" wahr, und erst ab jetzt
         // zaehlt `taskElapsedSeconds` (siehe `runStartedAt` in agent-tasks.ts).
         useAgentTaskStore.getState().update(id, { status: 'running', runStartedAt: Date.now() })
+        // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des
+        // Elternzugs: sonst liesse sich eine einzelne Aufgabe nicht
+        // abbrechen, ohne den ganzen Zug mitzunehmen. Und `heldLocalLane`
+        // ist der EIGENE Beweis DIESES Laufs (`held`, oben von `runInLane`
+        // an den eigenen Rumpf gereicht), nicht der geerbte des Elternzugs
+        // (Blocker 1, Nachpruefung von review-w2lane.md, gemessen): ein
+        // `{ ...run }` liesse den Beweis des Elternzugs stehen, der zu
+        // diesem Zeitpunkt laengst freigegeben ist (der Elternzug ist ein
+        // abgeschlossener Werkzeugaufruf, dieser Lauf hier ueberlebt ihn).
+        // Ein Werkzeugschritt dieses Agenten, der `run_workflow` ruft,
+        // reichte dann einen garantiert ungueltigen Beweis weiter, fiel auf
+        // normales Buchen unter 'tool-execution' zurueck und wartete dort
+        // auf einen Platz, den DIESER Lauf selbst haelt (unter `id`): eine
+        // Verklemmung, die erst der App-Neustart aufloest. Mit dem eigenen
+        // `held` faehrt ein solcher verschachtelter Ablauf stattdessen im
+        // Platz DIESES Hintergrundagenten mit, genau wie im Vordergrundfall.
+        const kindLauf: AgentRunContext | undefined = run
+          ? { ...run, abortSignal: controller.signal, heldLocalLane: held }
+          : undefined
         const output = await runner(goal, context, { budget, run: kindLauf, taskId: id, model })
         const abgebrochen = controller.signal.aborted
         useAgentTaskStore.getState().finish(id, {

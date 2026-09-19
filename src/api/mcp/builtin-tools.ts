@@ -1568,7 +1568,7 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
     // ELTERNLAUF-TOKENS"): this call is AWAITED here, from inside a tool
     // step of a turn that may or may not hold the local lane. It used to be
     // a bare `true`, on the claim that the calling turn "already booked the
-    // local lane" — false in general, a cloud turn never books one (Opus
+    // local lane", false in general, a cloud turn never books one (Opus
     // review, bau/review-w2lane.md Runde 4). What actually made the old
     // code safe was a narrower fact: a workflow step reads the same
     // `activeModel` as its caller, so a cloud caller's nested run is cloud

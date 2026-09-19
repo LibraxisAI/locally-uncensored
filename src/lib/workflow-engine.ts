@@ -86,12 +86,12 @@ export class WorkflowEngine {
   private depth: number
   private runsInHeldLane: HeldLocalLane | null
   /**
-   * The proof this run itself hands to ITS OWN nested `run_workflow` tool
-   * step (second-degree nesting), set from `runInLane`'s `held` callback
-   * argument once this run's own lane admission resolves. `null` until
-   * then, and `null` forever on a cloud lane, which never holds anything to
-   * ride along in. See run-slot.ts's header, "DIE WEITERGABE DES
-   * ELTERNLAUF-TOKENS".
+   * The proof this run itself hands to ITS OWN nested `run_workflow` or
+   * (foreground) `delegate_task` tool step (second-degree nesting), set from
+   * `runInLane`'s `held` callback argument once this run's own lane
+   * admission resolves. `null` until then, and `null` forever on a cloud
+   * lane, which never holds anything to ride along in. See run-slot.ts's
+   * header, "DIE WEITERGABE DES ELTERNLAUF-TOKENS".
    */
   private heldLocalLane: HeldLocalLane | null = null
 
@@ -411,14 +411,21 @@ export class WorkflowEngine {
       }
     }
 
-    // A tool step calling run_workflow is second-degree nesting: hand that
-    // nested engine THIS run's own held-lane proof (null on a cloud lane, or
-    // before this run's own admission resolved), so it can ride along
-    // instead of booking its own place behind this one and hanging. Every
-    // other tool keeps its long-standing `run: undefined` (unchanged scope,
-    // review-w2lane.md asked for the lane fix, not a wider AgentRunContext
-    // thread-through for tools that never read it).
-    const runForTool: AgentRunContext | undefined = step.toolName === 'run_workflow'
+    // A tool step calling run_workflow OR delegate_task is second-degree
+    // nesting: hand it THIS run's own held-lane proof (null on a cloud lane,
+    // or before this run's own admission resolved), so a FOREGROUND nested
+    // run rides along instead of booking its own place behind this one and
+    // hanging (Nachpruefung, bau/review-w2lane.md, "Sub-Agent im Workflow":
+    // a workflow tool step calling a foreground `delegate_task` with its own
+    // local `model` got `run: undefined` here, so it always booked normally
+    // under a fresh identity while this engine's own step awaited it,
+    // deadlocking whenever this engine already held the one local slot).
+    // `delegate_task`'s BACKGROUND branch is `void`-fired and never awaited
+    // by this step, so it cannot deadlock this loop either way; giving it
+    // `this.conversationId` as well is a minor, harmless side effect, not a
+    // second bug. Every other tool keeps its long-standing `run: undefined`
+    // (unchanged scope: only these two recursive tools read `heldLocalLane`).
+    const runForTool: AgentRunContext | undefined = step.toolName === 'run_workflow' || step.toolName === 'delegate_task'
       ? {
           token: `workflow-${this.conversationId}`,
           chatId: null,
