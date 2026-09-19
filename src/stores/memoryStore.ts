@@ -548,6 +548,16 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  * two are written as code points on purpose: the house rule bans the characters
  * themselves from this tree, and a character class is no exception.
  *
+ * R5-23 (3.0.1): apps/web/stores/memoryStore.ts writes a different pair of
+ * separators again (`**title**: content ... *(source)* · date`, a colon and a
+ * middle dot, plus the same two dashes as an accepted read variant). A memory
+ * exported by one app and imported into the other silently dropped tags,
+ * source and date exactly the way the 2.5.9 regression above did, just with a
+ * different separator pair. Desktop's own EXPORT keeps writing comma and the
+ * `isoTag` date format (that half of R5-23 is Desktop's to set), but the READ
+ * side now accepts every separator either app has ever written, so a file
+ * that crossed apps is never the one that gets silently truncated.
+ *
  * The trailing date is only stripped when it follows the `*(source)*` group. A
  * bare `content, with a comma` keeps its comma, because there is no source to
  * anchor a date to.
@@ -566,7 +576,7 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  * group accepts an EMPTY body.
  */
 const MD_ITEM =
-  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
+  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|:|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|\u00b7|[\u2013\u2014])\s*(.+?))?)?$/
 
 /**
  * R2-25 (Logikkontrolle, 3.0.1): a multi-line memory (several paragraphs, a
@@ -794,7 +804,9 @@ export const useMemoryStore = create<MemoryState>()(
           .filter(({ score }) => score > 0)
           .sort((a, b) => b.score - a.score)
 
-        const limit = options?.limit || 20
+        // R2-39: `|| 20` turned an explicit limit of 0 into 20, since 0 is
+        // falsy. `??` only falls back when the caller left it unset.
+        const limit = options?.limit ?? 20
         return scored.slice(0, limit).map(({ entry }) => entry)
       },
 
@@ -950,7 +962,11 @@ export const useMemoryStore = create<MemoryState>()(
         const target = get().entries.find((e) => e.id === targetId)
         if (!target || target.sensitive) return
         const candidate = ctx?.newId ? get().entries.find(e => e.id === ctx.newId) : undefined
-        if (target.scope !== candidate?.scope) return
+        // R2-36: `target.scope !== candidate?.scope` returned true whenever
+        // there was no candidate at all (candidate?.scope undefined, target.scope
+        // set), so an UPDATE without ctx.newId never applied. The scope check
+        // only makes sense when there IS a candidate to compare against.
+        if (candidate && target.scope !== candidate.scope) return
 
         const merged = mergedContent.trim()
         if (!merged) return

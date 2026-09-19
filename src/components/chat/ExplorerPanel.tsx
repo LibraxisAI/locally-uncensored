@@ -50,6 +50,7 @@ import {
   codexFallbackLabel,
 } from '../../lib/codex-workdir'
 import { resolveWorkspacePath } from '../../api/agents/workspace-resolve'
+import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import { backendCall, isTauri, isMacOS } from '../../api/backend'
 import {
   EMPTY_LISTING,
@@ -130,6 +131,11 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   const [expanded, setExpanded] = useState<string[]>([])
   const [busy, setBusy] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  // R2-43: a folder-pick REFUSAL used to share `error` with the root-load
+  // failure. A later, unrelated load of the (still valid) current root
+  // succeeding cleared `error` on its way, wiping a refusal message the user
+  // had not read yet. Its own state survives any load that isn't about it.
+  const [pickError, setPickError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ExplorerNode | null>(null)
 
   const planWaiting = useCodexStore((s) =>
@@ -155,12 +161,32 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   }
 
   // A new root is a new tree: nothing expanded, nothing previewed.
+  //
+  // R2-20: `root` (codexStore.workingDirectory) is a THIRD path that sets a
+  // remembered folder without a dialog, next to "Use last folder" and
+  // settings.defaultWorkspace (see api/agents/workspace-validate.ts). It
+  // survives an app restart in the browser's own storage, so a fresh install,
+  // cleared data, or a moved allowlist file can leave it pointing at a folder
+  // Rust no longer accepts, the very same "pick it again to allow it" dead end
+  // Fehler D closed for the picker itself. `rememberedFolderRefusal` asks
+  // BEFORE the first `fs_list` of a session, so the header shows the real
+  // reason instead of a bare "Failed to read directory".
   useEffect(() => {
     setListings({})
     setExpanded([])
     setSelected(null)
     setError(null)
-    if (root) load(root)
+    setPickError(null)
+    if (root) {
+      void (async () => {
+        const refusal = await rememberedFolderRefusal(root)
+        if (refusal) {
+          setError(refusal)
+          return
+        }
+        load(root)
+      })()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root])
 
@@ -211,7 +237,7 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   // steht in lib/dev-fs-jail.ts), der getippte Pfad ist der vorgesehene Weg
   // und er funktioniert. Deshalb steht er dort und nur dort.
   const pickFolder = async () => {
-    setError(null)
+    setPickError(null)
     if (!isTauri()) {
       const typed = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
       if (typed) setWorkingDirectory(typed)
@@ -224,7 +250,7 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
       })
       if (picked) setWorkingDirectory(picked)
     } catch (e) {
-      setError(workspacePickRefusedMessage(e))
+      setPickError(workspacePickRefusedMessage(e))
     }
   }
 
@@ -366,12 +392,12 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
             der Grund verschwand ungelesen. Der Nutzer sah einen Klick, der
             nichts tat, und den einzigen Satz, der ihm haette sagen koennen,
             warum, bekam er nie. Der Fehler steht deshalb zuerst. */}
-        {error ? (
+        {pickError || error ? (
           <p
             data-testid="explorer-error"
             className="text-[0.5rem] text-red-500/80 px-1 py-2 break-words"
           >
-            {error}
+            {pickError || error}
           </p>
         ) : !root ? (
           <p

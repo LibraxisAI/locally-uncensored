@@ -16,7 +16,7 @@ let cached: ContentPolicy | null = null
 let inflight: Promise<ContentPolicy> | null = null
 const listeners = new Set<(p: ContentPolicy) => void>()
 
-async function loadContentPolicy(): Promise<ContentPolicy> {
+export async function loadContentPolicy(): Promise<ContentPolicy> {
   if (cached) return cached
   if (!inflight) {
     inflight = getContentPolicy()
@@ -33,6 +33,16 @@ async function loadContentPolicy(): Promise<ContentPolicy> {
       .finally(() => { inflight = null })
   }
   return inflight
+}
+
+/**
+ * The policy as currently known, without triggering a fetch. `null` means
+ * "not loaded yet"; a caller that needs to act on it (B3: the client-side
+ * cloud adult gate in useCloudCreate) must treat that as "unknown", not as
+ * a guessed rule, mirroring uselu's contentPolicySnapshot().
+ */
+export function contentPolicySnapshot(): ContentPolicy | null {
+  return cached
 }
 
 /** Push a freshly saved policy into the shared cache (call after a

@@ -507,6 +507,7 @@ fn main() {
             commands::tts::installed_piper_voices,
             // Agent tools (legacy)
             commands::agent::execute_code,
+            commands::agent::execute_code_cancel,
             commands::agent::file_read,
             commands::agent::file_write,
             commands::agent::set_chat_workspace_override,

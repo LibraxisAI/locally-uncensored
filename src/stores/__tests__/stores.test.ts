@@ -574,6 +574,11 @@ describe('memoryStore', () => {
       // fact → user, so the two facts should be user type
       expect(results.every(e => e.type === 'user')).toBe(true)
     })
+
+    it('R2-39: an explicit limit of 0 returns nothing, not the 20-entry default', () => {
+      const results = useMemoryStore.getState().searchMemories('TypeScript JavaScript', { limit: 0 })
+      expect(results).toHaveLength(0)
+    })
   })
 
   describe('getMemoriesForPrompt', () => {

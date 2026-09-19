@@ -53,7 +53,7 @@ export async function reviewPreviousMemories(owner: string, signal?: AbortSignal
   guard(captured)
   return withMemorySyncSession(owner, async session => {
     const current = () => { session.assertCurrent(); guard(captured) }
-    await flushMemoryPersist(() => { try { current(); return true } catch { return false } })
+    await flushMemoryPersist(current)
     const previous = await session.pullLegacy()
     current()
     const ids = previous.map(item => {

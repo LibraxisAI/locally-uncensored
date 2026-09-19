@@ -42,16 +42,34 @@ export const memoryPersistence: StateStorage = {
 
 /** Confirm the snapshot offered before this call, never a later queued write.
  * A successful result proves an IndexedDB commit, not merely fallback success.
- * Sync callers must keep entries and their baselines in the same store value. */
-export function flushMemoryPersist(isCurrent: () => boolean = () => true): Promise<string> {
+ * Sync callers must keep entries and their baselines in the same store value.
+ *
+ * `isCurrent` may throw instead of returning false (every caller in this repo
+ * does: it is a guard that either passes silently or throws a specific
+ * cancellation/account-changed error). R2-38: that error used to be lost, a
+ * caller-side `catch { return false }` turned it into a plain boolean, and
+ * this function then always threw its own generic "Memories changed" message
+ * regardless of the real reason. The catch now lives here, and the original
+ * error is what comes out. */
+export function flushMemoryPersist(isCurrent: () => boolean | void = () => true): Promise<string> {
   const expected = latestValue
   return enqueue(async () => {
     const raw = await idbStorage.getItem(KEY)
     if (typeof raw !== 'string' || (expected !== undefined && raw !== expected)) {
       throw new Error('Could not confirm saved memories')
     }
-    if (!await compareAndSetIdbItem(KEY, raw, raw, isCurrent)) {
-      throw new Error('Memories changed while saving. Try again.')
+    let abortReason: unknown
+    const guarded = (): boolean => {
+      try {
+        const result = isCurrent()
+        return result === false ? false : true
+      } catch (e) {
+        abortReason = e
+        return false
+      }
+    }
+    if (!await compareAndSetIdbItem(KEY, raw, raw, guarded)) {
+      throw abortReason ?? new Error('Memories changed while saving. Try again.')
     }
     return raw
   })

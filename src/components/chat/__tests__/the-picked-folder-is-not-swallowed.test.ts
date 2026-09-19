@@ -186,4 +186,43 @@ describe('die Ablehnung im leeren Zustand', () => {
     cleanup()
     vi.restoreAllMocks()
   })
+
+  it('R2-43: survives a later, unrelated successful load of the still-valid root', async () => {
+    const { render, screen, fireEvent, act, cleanup } = await import('@testing-library/react')
+    const { createElement } = await import('react')
+    const { useCodexStore } = await import('../../../stores/codexStore')
+    const backend = await import('../../../api/backend')
+    const { ExplorerPanel } = await import('../ExplorerPanel')
+
+    vi.spyOn(backend, 'isTauri').mockReturnValue(true)
+    vi.spyOn(backend, 'backendCall').mockImplementation(async (cmd: string) => {
+      if (cmd === 'pick_folder') throw new Error('a home or mount container is not a workspace')
+      if (cmd === 'fs_list') return { entries: [], truncated: false } as never
+      return null as never
+    })
+    // A root that keeps loading fine on its own, unrelated to the refused pick.
+    useCodexStore.setState({ workingDirectory: '/Users/x/existing-project' })
+
+    render(createElement(ExplorerPanel, { onApprovePlan: () => {} }))
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)) })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('explorer-pick-folder'))
+      await new Promise((r) => setTimeout(r, 30))
+    })
+    expect(screen.queryByTestId('explorer-error')!.textContent)
+      .toContain('a home or mount container is not a workspace')
+
+    // The agent writes a file: fileTreeVersion bumps, the (unchanged, valid)
+    // root reloads and succeeds. The refusal must still be on screen.
+    await act(async () => {
+      useCodexStore.getState().bumpFileTreeVersion()
+      await new Promise((r) => setTimeout(r, 30))
+    })
+    const fehler = screen.queryByTestId('explorer-error')
+    expect(fehler, 'a harmless reload of the root wiped the refusal').not.toBeNull()
+    expect(fehler!.textContent).toContain('a home or mount container is not a workspace')
+    cleanup()
+    vi.restoreAllMocks()
+  })
 })

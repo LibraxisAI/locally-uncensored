@@ -153,7 +153,10 @@ function MemorySettingsPanel() {
       const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution, controller.signal)
       if (syncController.current !== controller) return
       setSyncConflicts(result.conflicts)
-      setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
+      const omittedNote = result.omittedSensitive > 0
+        ? ` ${result.omittedSensitive} sensitive ${result.omittedSensitive === 1 ? 'memory was' : 'memories were'} left out (not uploaded).`
+        : ''
+      setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.${omittedNote}`)
     } catch (error) {
       if (syncController.current !== controller) return
       if (quelle === 'finalize') { setLegacyReview(null); setConfirmLegacyRemoval(false) }

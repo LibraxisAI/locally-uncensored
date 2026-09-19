@@ -1,5 +1,5 @@
 import { useCreateStore } from '../../../stores/createStore'
-import { useCloudCatalogStore, defaultCloudModel, opPickerModels, modelCostHint } from '../../../stores/cloudCatalogStore'
+import { useCloudCatalogStore, defaultCloudModel, opPickerModels, modelCostHint, isEditModel } from '../../../stores/cloudCatalogStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { useUIStore } from '../../../stores/uiStore'
 import { useContentPolicy } from '../../../hooks/useContentPolicy'
@@ -62,7 +62,10 @@ function CloudModelChip() {
   // i2v; Video needs t2v (absent flag = capable, so today's dual-capable fleet
   // lists in full, and a future t2v-only model that sets i2v:false is excluded).
   const list =
-    intent === 'edit' ? models.filter((m) => m.kind === 'image' && m.edit)
+    // R5-58: `m.edit` alone missed the 2.5.8 op-specialized edit endpoints
+    // (qwen-image-edit carries `ops: ['edit']`, not `edit: true`), so the
+    // picker never offered a model the catalog genuinely served.
+    intent === 'edit' ? models.filter((m) => m.kind === 'image' && isEditModel(m))
     : intent === 'animate' ? models.filter((m) => m.kind === 'video' && m.i2v !== false)
     : intent === 'video' ? models.filter((m) => m.kind === 'video' && m.t2v !== false)
     : intent === 'character' ? opPickerModels('lora-train')

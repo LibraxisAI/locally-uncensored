@@ -12,7 +12,7 @@ import type {
   ComfyApiGraph, ComfyApiNode, ComfyInputValue, ComfyNodeInputs,
 } from '../types/comfy-graph'
 import {
-  apiNodes, isComfyApiGraph, isComfyWebGraph,
+  apiNodes, isComfyApiGraph,
   inputNumber, linkTarget,
 } from '../types/comfy-graph'
 
@@ -23,22 +23,20 @@ import {
 // types/comfy-graph.ts; nothing below reads a field it has not narrowed first.
 
 /**
- * Accepts either ComfyUI graph format. Kept as a predicate over the API shape
- * because that is what every caller goes on to build.
+ * Accepts ONLY the ComfyUI API graph format ({ "1": { class_type, inputs }, ... }).
  *
- * A web-format file passes here and is stored as it came: the converter that
- * used to stand beside this went with the CivitAI workflow fetcher it was the
- * only caller of (3.0.0). Nothing in the app ever called it, because the Import
- * button in WorkflowsModal hands this JSON straight to `parseImportedWorkflow`,
- * so removing it changed no behaviour, and the modal already says what to do:
- * "Export it from ComfyUI using Save (API Format)".
+ * R2-32: this used to accept the Web/UI export format too ({ nodes: [...],
+ * links: [...] }), but every caller downstream (parameterMap detection,
+ * parameter injection, apiNodes) reads `class_type`/`inputs`, fields the
+ * Web/UI format does not carry. A Web/UI export therefore passed validation
+ * and then failed silently later, with the modal's own advice ("Export it
+ * from ComfyUI using Save (API Format)") never shown because validation had
+ * already said yes. Narrowed to the one shape every caller actually needs.
  */
 export function validateWorkflowJson(json: unknown): json is ComfyApiGraph {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return false
   // API format: { "1": { class_type: "...", inputs: {...} }, ... }
-  if (isComfyApiGraph(json)) return true
-  // Web/UI format: { nodes: [...], links: [...] }
-  return isComfyWebGraph(json)
+  return isComfyApiGraph(json)
 }
 
 // ─── Smart Search Terms ───

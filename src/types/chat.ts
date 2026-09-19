@@ -1,4 +1,5 @@
 import type { AgentBlock } from './agent-mode'
+import type { SamplingOverrides } from '../lib/sampling'
 
 export type Role = 'user' | 'assistant' | 'system' | 'tool'
 
@@ -153,6 +154,14 @@ export interface Conversation {
    * been compacted. Both read as "no compaction", which is what they are.
    */
   compactions?: CompactionRecord[]
+  /** R5-10/R5-11 (3.0.1-Liste): sampling this chat has chosen for itself.
+   *  Additive and optional, so a chat persisted before this field existed
+   *  loads unchanged and needs no store migration. Absent means "follow the
+   *  Settings page", not "use the app default"; src/lib/sampling.ts has the
+   *  full rule. Reset in the popup deletes this field rather than writing the
+   *  defaults into it, so a reset chat keeps following the Settings page even
+   *  if its sliders move again afterwards. */
+  sampling?: SamplingOverrides
   createdAt: number
   updatedAt: number
 }

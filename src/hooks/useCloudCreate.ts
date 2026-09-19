@@ -29,9 +29,26 @@ import {
   cloudModelById,
   cloudMediaLive,
 } from '../stores/cloudCatalogStore'
-import { checkPromptSafety, SAFETY_BLOCK_MESSAGE } from '../lib/render/safety'
+import { checkPromptSafety, blockMessageFor, type SafetyVerdict } from '../lib/render/safety'
+import { contentPolicySnapshot, loadContentPolicy } from './useContentPolicy'
 import { signalCreditsExhausted } from '../lib/credits-exhausted'
 import { resolveRunSeed } from '../lib/run-seed'
+
+// B3 (review-w2ui.md, 18.09.2026): the CSAM floor above runs regardless of
+// tier, but the adult half of safety.ts (ADULT_SOFT_TERMS/ADULT_HARD_TERMS)
+// only ever fires on tier: 'cloud', which no caller passed until now, making
+// half the module unreachable. R5-9 exists precisely so "the rejection comes
+// before the upload" for the cloud path too, matching uselu's own
+// useCloudCreate (apps/web/hooks/useCloudCreate.ts, clientSafety()).
+//
+// If the account policy has not loaded yet, this checks CSAM only ('off'):
+// never block on a guessed rule, the server is the authority for the rest,
+// same reasoning as uselu's own comment on clientSafety().
+function clientSafety(text: string): SafetyVerdict {
+  const policy = contentPolicySnapshot()
+  if (!policy) void loadContentPolicy() // for the next run
+  return checkPromptSafety(text, { tier: 'cloud', policy: policy ?? 'off' })
+}
 
 // Character-Studio generation endpoint per trained-LoRA family (fast default;
 // mirrors uselu's LORA_GEN_FAMILY — ltx-2 video characters have no image-gen
@@ -91,11 +108,17 @@ export function throttleMessage(err: CloudJobError): string {
       // R5-52: the buy dialog had exactly one caller and it sat in the chat
       // path, so a render that ran the wallet dry left the customer with a red
       // line and no way to pay.
-      signalCreditsExhausted()
+      signalCreditsExhausted('credits')
       return "You're out of credits. Load up your credits or upgrade your plan."
     case 'video_budget_exhausted':
+      // R5-51: this cap and 'trainings_exhausted' below used to only print a
+      // line and never opened the dialog, so a Create render that hit either
+      // one left the customer with prose and no way to act on it, same gap
+      // R5-52 had already found and closed for 'credits_exhausted'.
+      signalCreditsExhausted('video_budget')
       return "This month's video budget is used up. Top-up credits keep video going, or upgrade your plan."
     case 'trainings_exhausted':
+      signalCreditsExhausted('trainings')
       return "Your plan's character trainings for this month are used up."
   }
   const secs = err.retryAfterMs && err.retryAfterMs > 0 ? Math.ceil(err.retryAfterMs / 1000) : null
@@ -187,12 +210,17 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       s.setError('Please enter a prompt.')
       return
     }
-    // Client-side CSAM gate (UX) over every free-text field this run sends.
-    // The server additionally enforces its SFW-cloud policy — its 422 message
-    // lands in setError below.
-    if (checkPromptSafety(`${s.prompt} ${s.negativePrompt} ${s.musicLyrics} ${s.triggerWord}`).blocked) {
-      s.setError(SAFETY_BLOCK_MESSAGE)
-      return
+    // Client-side CSAM + account-adult-policy gate (UX) over every free-text
+    // field this run sends. The server additionally enforces its own policy
+    // read fresh from the account row, its 422 message lands in setError
+    // below either way; this only saves the round trip when the client
+    // already knows the verdict (B3).
+    {
+      const verdict = clientSafety(`${s.prompt} ${s.negativePrompt} ${s.musicLyrics} ${s.triggerWord}`)
+      if (verdict.blocked) {
+        s.setError(blockMessageFor(verdict.reason))
+        return
+      }
     }
     // Per-intent input contracts (client UX; the server re-checks all of it).
     if (characterUse && !s.selectedCharacter) {
@@ -463,8 +491,9 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
         s.setError('Type what the character should say.')
         return
       }
-      if (checkPromptSafety(`${text} ${opts.description ?? ''}`).blocked) {
-        s.setError(SAFETY_BLOCK_MESSAGE)
+      const voiceVerdict = clientSafety(`${text} ${opts.description ?? ''}`)
+      if (voiceVerdict.blocked) {
+        s.setError(blockMessageFor(voiceVerdict.reason))
         return
       }
       s.setError(null)

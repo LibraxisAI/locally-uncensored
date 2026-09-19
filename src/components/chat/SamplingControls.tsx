@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { DEFAULT_SETTINGS } from '../../lib/constants'
+import { useChatStore } from '../../stores/chatStore'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
+import { SAMPLING_DEFAULTS, effectiveSampling, samplingIsChanged, hasOwnSampling } from '../../lib/sampling'
+import type { SamplingOverrides } from '../../lib/sampling'
 
 /**
- * Sampling controls next to the composer.
+ * Sampling controls next to the composer, scoped to ONE conversation.
  *
- * The values already existed in settings and already reached the request; they
- * were just buried in the settings page, where nobody adjusts them per
- * conversation. Closed by default so the composer stays quiet.
+ * R5-10/R5-11 (3.0.1-Liste): until 18.09.2026 this panel read and wrote the
+ * global Settings page, so every open chat shared one temperature and a
+ * slider moved in chat A also moved chat B's next request. Two earlier
+ * bauers left the rewrite as "braucht Entscheid" (bau/w2ui.md); the values
+ * now live on the CONVERSATION (`Conversation.sampling`, src/lib/sampling.ts):
+ * a moved slider applies to this chat only, and a chat that never moved a
+ * given slider keeps following the Settings page for that field, exactly as
+ * every chat did before this change.
  *
  * Every catalogue model accepts these parameters (measured 2026-09-10, no
  * request was rejected for one). Reasoning models accept them and react less,
@@ -75,7 +82,7 @@ const FIELDS = [
  * a new number.
  */
 export function normalizeMaxTokens(raw: string): number {
-  if (raw.trim() === '') return DEFAULT_SETTINGS.maxTokens
+  if (raw.trim() === '') return SAMPLING_DEFAULTS.maxTokens
   return Math.max(0, Math.trunc(Number(raw)) || 0)
 }
 
@@ -99,9 +106,28 @@ export function SamplingControls() {
   const panelRef = useRef<HTMLDivElement>(null)
   const panelId = useId()
   const settings = useSettingsStore((s) => s.settings)
-  const update = useSettingsStore((s) => s.updateSettings)
-  const changed = FIELDS.some((f) => settings[f.key] !== DEFAULT_SETTINGS[f.key])
-    || settings.maxTokens !== DEFAULT_SETTINGS.maxTokens
+  const activeId = useChatStore((s) => s.activeConversationId)
+  // Only re-renders when THIS chat's own sampling changes, not on every
+  // message or on a different chat's edit.
+  const overrides = useChatStore((s) =>
+    s.activeConversationId
+      ? s.conversations.find((c) => c.id === s.activeConversationId)?.sampling
+      : undefined
+  )
+  const setSampling = useChatStore((s) => s.setConversationSampling)
+  const resetSampling = useChatStore((s) => s.resetConversationSampling)
+
+  const value = effectiveSampling(settings, overrides)
+  const changed = samplingIsChanged(settings, overrides)
+  // F1 (review-w2ui.md, 18.09.2026): Reset only deletes THIS chat's own
+  // override, so it must go by whether one exists, not by whether the
+  // EFFECTIVE value differs from the shipped default (`changed` above): that
+  // is also true when only the Settings page moved and this chat never
+  // touched its own slider, and Reset then has nothing to delete.
+  const ownSampling = hasOwnSampling(overrides)
+  const write = (patch: SamplingOverrides) => {
+    if (activeId) setSampling(activeId, patch)
+  }
 
   /** Give the keyboard back to the trigger, but only while it is still in the
    *  popup: on an outside press the browser is already moving it somewhere the
@@ -154,6 +180,11 @@ export function SamplingControls() {
     panelRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus()
   }, [open])
 
+  // ChatInput only mounts the composer once a conversation exists (the
+  // launcher shows instead), so this is "mounted without a chat", not a state
+  // a user can actually reach. Nothing to write to means nothing to show.
+  if (!activeId) return null
+
   return (
     <div className="relative text-xs" ref={wrapRef} data-testid="sampling-controls">
       <button
@@ -166,12 +197,12 @@ export function SamplingControls() {
         // SamplingControls.tsx:82-83), so the button has one name on Windows,
         // Mac and the web app instead of being read out as a bare number.
         title="Sampling for this chat"
-        aria-label={`Sampling: temperature ${settings.temperature}`}
+        aria-label={`Sampling: temperature ${value.temperature}`}
         // Opens, never closes. A trigger that also closed made the panel
         // disappear under the pointer on the second click.
         onClick={() => setOpen(true)}
       >
-        Sampling: {settings.temperature.toFixed(2)}
+        Sampling: {value.temperature.toFixed(2)}
         {/* Ein geaenderter Regler ist kein Zwischenfall, also traegt der
             Stern den ruhigen Ton und keine eigene Warnfarbe. */}
         {changed && <span className={`ml-1 ${HINWEIS_TEXT.ruhig}`} title="Changed from the defaults">*</span>}
@@ -218,11 +249,11 @@ export function SamplingControls() {
                 min={f.min}
                 max={f.max}
                 step={f.step}
-                value={settings[f.key]}
+                value={value[f.key]}
                 aria-label={f.label}
-                onChange={(e) => update({ [f.key]: Number(e.target.value) })}
+                onChange={(e) => write({ [f.key]: Number(e.target.value) })}
               />
-              <span className="w-10 shrink-0 text-right tabular-nums text-gray-300">{settings[f.key]}</span>
+              <span className="w-10 shrink-0 text-right tabular-nums text-gray-300">{value[f.key]}</span>
             </label>
           ))}
 
@@ -233,17 +264,17 @@ export function SamplingControls() {
               className="min-w-0 flex-1 rounded border border-gray-700 bg-transparent px-1 py-0.5"
               min={0}
               step={128}
-              value={draft ?? String(settings.maxTokens)}
+              value={draft ?? String(value.maxTokens)}
               aria-label="Max tokens"
               onChange={(e) => {
                 const raw = e.target.value
                 const next = normalizeMaxTokens(raw)
                 setDraft(raw.trim() === '' ? raw : String(next))
-                update({ maxTokens: next })
+                write({ maxTokens: next })
               }}
               onBlur={() => setDraft(null)}
             />
-            <span className="w-10 shrink-0 text-right text-gray-500">{settings.maxTokens === 0 ? 'auto' : ''}</span>
+            <span className="w-10 shrink-0 text-right text-gray-500">{value.maxTokens === 0 ? 'auto' : ''}</span>
           </label>
 
           <div className="flex items-center justify-between pt-1">
@@ -251,16 +282,20 @@ export function SamplingControls() {
             <button
               type="button"
               className="text-gray-400 underline disabled:opacity-40"
-              disabled={!changed}
+              disabled={!ownSampling}
+              title={
+                ownSampling
+                  ? undefined
+                  : 'This chat has no values of its own yet, it already follows the Settings page.'
+              }
               onClick={() => {
                 setDraft(null)
-                // Resets what this popup shows. Top K is not on it, so this
-                // button does not silently reach over to the settings page.
-                update({
-                  temperature: DEFAULT_SETTINGS.temperature,
-                  topP: DEFAULT_SETTINGS.topP,
-                  maxTokens: DEFAULT_SETTINGS.maxTokens,
-                })
+                // Deletes this chat's own values (the orchestrator's
+                // decision, R5-10/R5-11, F2): the chat goes back to following
+                // the Settings page, rather than pinning today's defaults
+                // into it forever the way a plain "write the defaults" reset
+                // would.
+                if (activeId) resetSampling(activeId)
               }}
             >
               Reset

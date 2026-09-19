@@ -143,6 +143,25 @@ describe('the header shows the folder, so it also gives it back', () => {
     expect(useCodexStore.getState().workingDirectory).toBe(WINDOWS_PATH)
   })
 
+  it('R2-21: the lock reason is visible, not just a title on a disabled button', async () => {
+    // The `title` on a disabled button never shows: disabled elements take no
+    // pointer events in Chromium, so the reason was invisible before this fix
+    // (same bug as the ExplorerPanel's `explorer-workdir-lock`, review R2-21).
+    act(() => {
+      useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
+      useCodexStore.getState().beginSend()
+    })
+    await show()
+    const lock = screen.getByTestId('codex-workdir-lock')
+    expect(lock.textContent).toContain('Wait for it to finish or press Stop')
+  })
+
+  it('and shows no lock line while nothing holds the folder (negative control)', async () => {
+    act(() => useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH))
+    await show()
+    expect(screen.queryByTestId('codex-workdir-lock')).toBeNull()
+  })
+
   it('and lets go again once the run is no longer alive', async () => {
     // Ein Faden bleibt auf 'running' stehen, bis der Lauf sich abgewickelt
     // hat. Haengt der Schwanz des Laufs, sperrte er diesen Knopf bis zum

@@ -1,24 +1,29 @@
 /**
- * Which of the four sampling values really reach an LU Cloud request.
+ * Which of the sampling values really reach an LU Cloud request.
  *
  * A project note said "the temperature slider writes to settings.n and has no
  * effect in the cloud". Both halves are wrong, and the note is what sent this
  * check out: there is no `n` anywhere in the app (not in the `Settings`
  * interface in types/settings.ts:49-52, not in DEFAULT_SETTINGS in
  * lib/constants.ts:12-15, and `OpenAIChatRequest` in openai-provider.ts:86-100
- * has no member it could be assigned to), and temperature goes on the wire.
- * SamplingControls writes three keys, all through one setter (the FIELDS table
- * for the two sliders, the Max tokens box for the third), and useChat.ts hands
- * four to the provider: those three plus Top K from the settings page.
+ * has no member it could be assigned to), and temperature goes on the wire,
+ * when it differs from the app default.
  *
- * The value that really has no effect in the cloud is TOP K. The OpenAI
- * compatible body has no field for it: it is read by ollama-provider.ts:150 and
- * anthropic-provider.ts:320 and dropped by openai-provider, which never looks at
- * `options.topK` at all, so it works on Ollama and Anthropic and is inert on
- * every OpenAI-protocol backend, LU Cloud and this app's own engine included.
- * Since R5-13 it is therefore no longer a slider in the per-chat popup, only a
- * control on the settings page. Documented on the wire here rather than argued
- * about again.
+ * R5-10/R5-11 (3.0.1-Liste), David's Entscheid vom 18.09.2026: since then a
+ * field NEITHER this chat NOR the Settings page ever moved away from the app
+ * default is left off the request entirely (src/lib/sampling.ts,
+ * `buildSamplingRequest`), so the model gets the upstream's own default
+ * instead of a number LU picked for every model at once. This file used to
+ * assert the opposite (defaults always sent); that assertion is what changed,
+ * not the fact that a moved slider reaches the wire.
+ *
+ * The value that has no effect in the cloud regardless is TOP K. The OpenAI
+ * compatible body has no field for it: it is read by ollama-provider.ts:150
+ * and anthropic-provider.ts:320 and dropped by openai-provider, which never
+ * looks at `options.topK` at all, so it works on Ollama and Anthropic and is
+ * inert on every OpenAI-protocol backend, LU Cloud and this app's own engine
+ * included. Since R5-13 it is not in the per-chat popup at all, only a
+ * Settings-page control that useChat.ts still forwards unconditionally.
  *
  * Asserted on the JSON body of a real request, because a note about a slider
  * is exactly the kind of claim that source-reading gets wrong twice.
@@ -35,6 +40,7 @@ import type { ProviderConfig } from '../providers/types'
 import { sentJson } from './provider-test-support'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { normalizeMaxTokens } from '../../components/chat/SamplingControls'
+import { buildSamplingRequest, type SamplingOverrides } from '../../lib/sampling'
 import { DEFAULT_SETTINGS } from '../../lib/constants'
 
 vi.mock('../cloud/supabase', () => ({ getAccessToken: async () => 'session-token-abc' }))
@@ -51,33 +57,33 @@ const src = (rel: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), rel), 'utf8')
 
 /**
- * The option object useChat.ts:824-838 builds, read out of the live settings
- * store exactly as it reads them. Not a copy of four numbers: if a slider ever
- * stopped writing the key the send reads, this stops carrying the value.
+ * The option object useChat.ts builds for ONE conversation, read out of the
+ * live settings store plus that conversation's own overrides, the same
+ * `buildSamplingRequest(...)` spread useChat.ts uses, with `topK` forwarded
+ * unconditionally alongside it (F3/R5-13: it never was subject to the
+ * untouched-omission rule, only the popup that used to show it).
  */
-function chatOptsFromSettings() {
+function chatOptsFromSettings(overrides?: SamplingOverrides) {
   const s = useSettingsStore.getState().settings
   return {
-    temperature: s.temperature,
-    topP: s.topP,
+    ...buildSamplingRequest(s, overrides),
     topK: s.topK,
-    maxTokens: s.maxTokens || undefined,
   }
 }
 
 /** One cloud turn, and the JSON body it put on the wire. */
-async function cloudBody(): Promise<OpenAIChatRequest> {
+async function cloudBody(overrides?: SamplingOverrides): Promise<OpenAIChatRequest> {
   const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okStream())
   const gen = new LuCloudProvider(config).chatStream(
     'zai-org/GLM-5.3',
     [{ role: 'user' as const, content: 'hello' }],
-    chatOptsFromSettings(),
+    chatOptsFromSettings(overrides),
   )
   for await (const _ of gen) { /* the fetch only fires on the first next() */ }
   return sentJson<OpenAIChatRequest>(spy.mock.calls)
 }
 
-/** Move the sliders, the way SamplingControls does. */
+/** Move the SETTINGS PAGE sliders. */
 function sliders(patch: Partial<typeof DEFAULT_SETTINGS>) {
   useSettingsStore.getState().updateSettings(patch)
 }
@@ -87,8 +93,8 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-describe('what the sliders put on the wire', () => {
-  it('carries temperature, top_p and max_tokens under the OpenAI names', async () => {
+describe('what a moved slider puts on the wire', () => {
+  it('carries temperature, top_p and max_tokens under the OpenAI names, moved on the Settings page', async () => {
     sliders({ temperature: 1.35, topP: 0.42, topK: 7, maxTokens: 512 })
     const body = await cloudBody()
     expect(body.temperature).toBe(1.35)
@@ -96,9 +102,18 @@ describe('what the sliders put on the wire', () => {
     expect(body.max_tokens).toBe(512)
   })
 
+  it('carries the same three when it is THIS CHAT that moved them, not the Settings page', async () => {
+    // The Settings page stays at the shipped default the whole time.
+    const body = await cloudBody({ temperature: 1.35, topP: 0.42, maxTokens: 512 })
+    expect(body.temperature).toBe(1.35)
+    expect(body.top_p).toBe(0.42)
+    expect(body.max_tokens).toBe(512)
+    expect(useSettingsStore.getState().settings.temperature).toBe(DEFAULT_SETTINGS.temperature)
+  })
+
   it('carries a temperature of zero, which a truthiness test would eat', async () => {
-    // The guard is `!== undefined`, and 0 is the one setting on this panel a
-    // user picks on purpose: it is the whole point of the left end of the slider.
+    // The guard is `!== undefined`, and 0 is a value a user picks on purpose:
+    // it is the whole point of the left end of the slider.
     sliders({ temperature: 0 })
     expect((await cloudBody()).temperature).toBe(0)
   })
@@ -119,14 +134,28 @@ describe('what the sliders put on the wire', () => {
     expect(Object.keys(useSettingsStore.getState().settings)).not.toContain('n')
   })
 
-  it('COUNTER-CHECK: the defaults are not what was asserted above', async () => {
-    // Without this, a body that ignored the settings entirely and sent its own
-    // numbers could pass the first case by coincidence.
+  it('puts the NUMBER on the wire for the text the box used to keep', async () => {
+    // The field kept `0512` on screen while the store already held 512 (T1
+    // nebenfund 5), so the one thing worth proving on a real body is that what
+    // leaves the app is a number and not the text somebody typed. `0512` is
+    // the exact string the old field produced.
+    const body = await cloudBody({ maxTokens: normalizeMaxTokens('0512') })
+    expect(body.max_tokens).toBe(512)
+    expect(typeof body.max_tokens).toBe('number')
+  })
+})
+
+/**
+ * R5-10/R5-11: the rule the fixliste and David's Entscheid ask for. Nothing
+ * NEITHER the chat NOR the Settings page ever moved reaches the wire.
+ */
+describe('what an UNTOUCHED value does NOT put on the wire', () => {
+  it('sends no temperature or top_p at all while both are still at the shipped default', async () => {
     const body = await cloudBody()
-    expect(body.temperature).toBe(DEFAULT_SETTINGS.temperature)
-    expect(body.top_p).toBe(DEFAULT_SETTINGS.topP)
-    expect(DEFAULT_SETTINGS.temperature).not.toBe(1.35)
-    expect(DEFAULT_SETTINGS.topP).not.toBe(0.42)
+    expect(body.temperature).toBeUndefined()
+    expect(body.top_p).toBeUndefined()
+    expect('temperature' in body).toBe(false)
+    expect('top_p' in body).toBe(false)
   })
 
   it('sends no max_tokens at all on the auto default of 0', async () => {
@@ -136,27 +165,31 @@ describe('what the sliders put on the wire', () => {
     expect((await cloudBody()).max_tokens).toBeUndefined()
   })
 
-  it('puts the NUMBER on the wire for the text the box used to keep', async () => {
-    // The field kept `0512` on screen while the store already held 512 (T1
-    // nebenfund 5), so the one thing worth proving on a real body is that what
-    // leaves the app is a number and not the text somebody typed. `0512` is
-    // the exact string the old field produced.
-    sliders({ maxTokens: normalizeMaxTokens('0512') })
+  it('NEGATIVKONTROLLE: a chat with its OWN override still sends it, only the untouched fields are omitted', async () => {
+    // Counter-check for the two cases above: a body that dropped every
+    // sampling field unconditionally would pass them by coincidence.
+    const body = await cloudBody({ temperature: 1.9 })
+    expect(body.temperature).toBe(1.9)
+    expect(body.top_p).toBeUndefined() // still untouched
+  })
+
+  it('NEGATIVKONTROLLE: a Settings-page value that really moved is not mistaken for untouched', async () => {
+    sliders({ topP: 0.42 })
     const body = await cloudBody()
-    expect(body.max_tokens).toBe(512)
-    expect(typeof body.max_tokens).toBe('number')
+    expect(body.top_p).toBe(0.42)
+    expect(DEFAULT_SETTINGS.topP).not.toBe(0.42)
   })
 })
 
-describe('the panel writes the keys the send reads', () => {
-  it('the two sliders and the number field write those three settings', () => {
+describe('the panel writes to the conversation the send reads', () => {
+  it('the two sliders and the number field write through one setter, keyed off the FIELDS table', () => {
     const panel = src('../../components/chat/SamplingControls.tsx')
     expect(panel).toMatch(/key: 'temperature'/)
     expect(panel).toMatch(/key: 'topP'/)
-    expect(panel).toMatch(/update\(\{ maxTokens:/)
+    expect(panel).toMatch(/write\(\{ maxTokens:/)
     // The slider setter is keyed off the FIELDS table, so it cannot write a
     // name that is not in it.
-    expect(panel).toMatch(/update\(\{ \[f\.key\]: Number\(e\.target\.value\) \}\)/)
+    expect(panel).toMatch(/write\(\{ \[f\.key\]: Number\(e\.target\.value\) \}\)/)
   })
 
   /**
@@ -168,7 +201,6 @@ describe('the panel writes the keys the send reads', () => {
   it('R5-13: the popup offers no Top K, and names itself the way the web app does', () => {
     const panel = src('../../components/chat/SamplingControls.tsx')
     expect(panel).not.toContain("key: 'topK'")
-    expect(panel).not.toContain('topK: DEFAULT_SETTINGS.topK')
     expect(panel).toContain('title="Sampling for this chat"')
   })
 
@@ -180,11 +212,9 @@ describe('the panel writes the keys the send reads', () => {
     expect(src('../providers/ollama-provider.ts')).toContain('top_k')
   })
 
-  it('and the send reads exactly those four', () => {
+  it('and the send reads sampling through buildSamplingRequest, topK straight from settings', () => {
     const chat = src('../../hooks/useChat.ts')
-    expect(chat).toMatch(/temperature: settings\.temperature/)
-    expect(chat).toMatch(/topP: settings\.topP/)
+    expect(chat).toMatch(/buildSamplingRequest\(settings, conv\??\.sampling\)/)
     expect(chat).toMatch(/topK: settings\.topK/)
-    expect(chat).toMatch(/maxTokens: settings\.maxTokens \|\| undefined/)
   })
 })

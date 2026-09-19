@@ -102,12 +102,27 @@ export function lexicalNormalize(path: string): string {
   return rooted ? `/${joined}` : joined
 }
 
-/** Case-insensitive comparison on Windows-shaped paths, exact elsewhere. */
-function compareKey(normalized: string): string {
+/**
+ * Case-insensitive comparison on Windows-shaped paths, exact elsewhere.
+ * Exported (R2-41) so every path deduplication in the app uses the same
+ * normalization instead of a raw string compare, which treated `D:\code`,
+ * `d:/CODE/` and `D:\code\` as three different paths.
+ */
+export function compareKey(normalized: string): string {
   const trimmed = normalized.replace(/\/+$/, '')
   return /^[a-z]:/i.test(trimmed) || trimmed.startsWith('//')
     ? trimmed.toLowerCase()
     : trimmed
+}
+
+/**
+ * One raw, unnormalized path in, one comparable key out: `lexicalNormalize`
+ * then `compareKey`. For callers that only want to know whether two paths
+ * from different sources (a picked folder, a stored draft, a saved setting)
+ * are the SAME path, not whether one contains the other.
+ */
+export function pathKey(raw: string): string {
+  return compareKey(lexicalNormalize(raw))
 }
 
 /**

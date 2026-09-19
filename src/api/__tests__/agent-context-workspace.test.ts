@@ -84,6 +84,30 @@ describe('agent-context — active workspace pointer', () => {
     setActiveWorkspace({ kind: 'folder', path: '/a', extraPaths: ['', '/a'] })
     expect(getActiveWorkspace()).toEqual({ kind: 'folder', path: '/a' })
   })
+
+  it('R2-41: dedupes extras on a case/slash-normalized key, not the raw string', () => {
+    // Windows: the same folder picked twice with different case/trailing
+    // slash, plus the primary itself spelled differently, must all collapse.
+    setActiveWorkspace({
+      kind: 'folder',
+      path: 'D:\\code',
+      extraPaths: ['d:/CODE/', 'D:\\code\\'],
+    })
+    expect(getActiveWorkspace()).toEqual({ kind: 'folder', path: 'D:\\code' })
+  })
+
+  it('and keeps two genuinely different paths apart (negative control)', () => {
+    setActiveWorkspace({
+      kind: 'folder',
+      path: 'D:\\code',
+      extraPaths: ['D:\\other'],
+    })
+    expect(getActiveWorkspace()).toEqual({
+      kind: 'folder',
+      path: 'D:\\code',
+      extraPaths: ['D:\\other'],
+    })
+  })
 })
 
 describe('renderWorkspaceSection', () => {

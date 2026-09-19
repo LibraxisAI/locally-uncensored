@@ -77,7 +77,7 @@ const ASSISTENT = [
 ]
 
 /** Liegt im selben Ordner, ist aber kein Schritt des Assistenten. */
-const NICHT_DER_ASSISTENT = ['BackendSelector.tsx']
+const NICHT_DER_ASSISTENT = ['BackendSelector.tsx', 'comfyPortProbe.ts']
 
 /** Der ganze Assistent als ein Text — die Sperrklinke zaehlt darauf. */
 const SRC = ASSISTENT.map(lies).join('\n')

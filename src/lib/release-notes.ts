@@ -136,6 +136,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'Sending in one conversation while another is still streaming no longer mixes their text together, and a second agent run no longer gets silently dropped while the first one is still going, both now finish on their own.',
           'The local model runs one conversation at a time, and a chat that has to wait its turn now says so, with a line showing how many chats are ahead of it. Stop works while it is still waiting, and takes it out of the line.',
           'Stop, signing out and quitting the app now reach every conversation, including one that has not started running yet and is only waiting its turn, not just the one open on screen.',
+          'Moving the Temperature, Top P or Max tokens slider now changes that one conversation only, instead of every open chat sharing one value from the Settings page. A chat with no slider of its own still follows Settings, and a field nobody moved anywhere is left out of the request so the model applies its own default.',
         ],
       },
     ],

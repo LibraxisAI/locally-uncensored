@@ -36,6 +36,36 @@ describe('the always-blocked terms survive any separator', () => {
   })
 })
 
+// B1 (review-w2ui.md, 18.09.2026): with a word prepended, the spaced-out
+// letters glue to e.g. "achildporn", where \b in the bounded ALWAYS_BLOCKED
+// list no longer anchors before "child". Before the fix this fell all the
+// way through to "minor+sexual" (still blocked, but without the reason the
+// header names as the operator's NCMEC escalation trigger) or, for jailbait
+// and csam (which have no minor+sexual fallback at all), through to
+// completely unblocked. Covers all four terms of ALWAYS_BLOCKED_COMPACT.
+describe('a prepended word does not cost the csam reason (B1)', () => {
+  const reasonFor = (t: string) => checkPromptSafety(t).reason
+
+  it.each([
+    ['csam', 'a c*s*a*m image'],
+    ['jailbait', 'a j*a*i*l*b*a*i*t image'],
+    ['childporn', 'a c*h*i*l*d*p*o*r*n image'],
+    ['childpornography', 'a c*h*i*l*d*p*o*r*n*o*g*r*a*p*h*y image'],
+    ['lolitanude', 'a l*o*l*i*t*a*n*u*d*e image'],
+  ])('%s stays reason "csam" with a word prepended', (_term, text) => {
+    expect(blocked(text)).toBe(true)
+    expect(reasonFor(text)).toBe('csam')
+  })
+
+  it.each([
+    ['csam', 'a c 5 a m image'],
+    ['jailbait', 'a j 4 i l b 4 i t image'],
+  ])('%s stays reason "csam" with digit-leet AND a word prepended', (_term, text) => {
+    expect(blocked(text)).toBe(true)
+    expect(reasonFor(text)).toBe('csam')
+  })
+})
+
 describe('letter spacing does not defeat the minor+sexual rule', () => {
   it.each([
     ['both terms spaced', 'a t e e n   g i r l ,  n u d e'],
@@ -95,10 +125,16 @@ describe('both render paths gate the same fields', () => {
     resolve(dirname(fileURLToPath(import.meta.url)), '../../hooks/useCloudCreate.ts'), 'utf8',
   )
 
-  /** The template literal handed to checkPromptSafety, as a set of field names. */
+  /** The template literal handed to the safety check, as a set of field
+   *  names. B3 (review-w2ui.md, 18.09.2026) wrapped the cloud call site in a
+   *  `clientSafety(...)` helper (so it can also pass tier/policy), so this
+   *  anchors on either name ending in "Safety(" followed directly by a
+   *  template literal, not a fixed `checkPromptSafety(` string, which would
+   *  now match the helper's OWN definition first (no `${...}` fields there)
+   *  instead of its call site. */
   const gatedFields = (src: string): string[] => {
-    const at = src.indexOf('checkPromptSafety(')
-    const lit = src.slice(at, src.indexOf('`', src.indexOf('`', at) + 1) + 1)
+    const call = /\w*Safety\(\s*`([^`]*)`/.exec(src)
+    const lit = call?.[1] ?? ''
     return [...lit.matchAll(/\$\{[a-zA-Z]+\.([a-zA-Z]+)\}/g)].map((m) => m[1]).sort()
   }
 

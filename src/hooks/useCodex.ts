@@ -7,6 +7,7 @@ import { runCompactForConversation, compactOutcomeMessage, maybeAutoCompact } fr
 import { applyStoredCompaction } from '../lib/compact-summary'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useChatStore, flushChatPersist } from '../stores/chatStore'
+import { buildSamplingRequest } from '../lib/sampling'
 import { endTurnDurably } from '../stores/durability'
 import { getProviderForModel, getProviderIdFromModel } from '../api/providers'
 import { markToolsUnsupported } from '../api/tool-capability'
@@ -1184,9 +1185,18 @@ export function useCodex() {
           : undefined
 
         const cxEffort = codexEffort(activeModel)
+        // R5-10/R5-11: max tokens follows this chat's own sampling override
+        // (or the Settings page, or "auto", buildSamplingRequest's usual
+        // rule). Temperature stays fixed at 0.1 regardless: that clamp is for
+        // coding precision, not a preference the sampling popup's slider
+        // controls, so it is deliberately outside buildSamplingRequest.
+        const cxSampling = buildSamplingRequest(
+          settings,
+          convId ? useChatStore.getState().conversations.find((c) => c.id === convId)?.sampling : undefined,
+        )
         const chatOptions = {
           temperature: 0.1, // Low temp for coding precision
-          maxTokens: settings.maxTokens || undefined,
+          maxTokens: cxSampling.maxTokens,
           thinking: thinkOptCx as unknown as boolean,
           // The Coding Agent is the third caller that builds its own options,
           // and the one where a forgotten field costs the most tokens.

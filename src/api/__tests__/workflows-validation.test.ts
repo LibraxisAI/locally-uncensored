@@ -14,7 +14,7 @@ describe('workflows — pure functions', () => {
       expect(validateWorkflowJson(wf)).toBe(true)
     })
 
-    it('accepts valid Web/UI format (nodes array with type)', () => {
+    it('R2-32: rejects Web/UI canvas format (nodes array with type), no caller reads that shape', () => {
       const wf = {
         nodes: [
           { id: 1, type: 'CheckpointLoaderSimple', widgets_values: [] },
@@ -22,7 +22,7 @@ describe('workflows — pure functions', () => {
         ],
         links: [],
       }
-      expect(validateWorkflowJson(wf)).toBe(true)
+      expect(validateWorkflowJson(wf)).toBe(false)
     })
 
     it('rejects object with no nodes (no class_type or nodes array)', () => {
@@ -49,11 +49,11 @@ describe('workflows — pure functions', () => {
       expect(validateWorkflowJson(undefined)).toBe(false)
     })
 
-    it('accepts web format even without links key', () => {
+    it('R2-32: rejects web format even without links key (still not API shape)', () => {
       const wf = {
         nodes: [{ id: 1, type: 'SaveImage' }],
       }
-      expect(validateWorkflowJson(wf)).toBe(true)
+      expect(validateWorkflowJson(wf)).toBe(false)
     })
 
     it('rejects nodes array with objects missing type field', () => {

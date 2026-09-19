@@ -116,14 +116,24 @@ export function cloudModelById(id: string): CloudModel | undefined {
   return useCloudCatalogStore.getState().models.find((m) => m.id === id)
 }
 
+// R5-58: a model serves 'edit' either the classic way (`edit: true`, e.g.
+// flux-dev) or the 2.5.8 op-specialized way (`ops: ['edit']`, e.g.
+// qwen-image-edit). `cloudModelSupportsOp` already branches on `m.ops` first
+// so it got this right; `isEditCapable` and `defaultEditModel` below checked
+// only `m.edit` and silently could not see an ops-based edit model at all.
+export function isEditModel(m: CloudModel): boolean {
+  return m.edit === true || m.ops?.includes('edit') === true
+}
+
 export function isEditCapable(id: string): boolean {
-  return cloudModelById(id)?.edit === true
+  const m = cloudModelById(id)
+  return m !== undefined && isEditModel(m)
 }
 
 /** First edit-capable image model in the catalog (flux-dev today) — the
  *  submit-time fallback when the picker holds a t2i-only model for an edit. */
 export function defaultEditModel(): CloudModel | undefined {
-  return useCloudCatalogStore.getState().models.find((m) => m.kind === 'image' && m.edit)
+  return useCloudCatalogStore.getState().models.find((m) => m.kind === 'image' && isEditModel(m))
 }
 
 // Video models that render text-to-video (the "Video" intent) / image-to-video

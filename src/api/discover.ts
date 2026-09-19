@@ -709,8 +709,10 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
     return left.length === 0
   }
 
-  // Which folders this engine can be asked about at all. Read once for the
-  // whole bundle, and lazily: a bundle whose files are all fresh never needs it.
+  // Which folders this engine can be asked about at all. Started once for the
+  // whole bundle; the call itself always fires here, only the AWAIT of its
+  // result is deferred to the per-file check below (R2-34: this used to claim
+  // it ran "lazily", which was not true, the request always goes out).
   const judgeable = judgeableFolders()
 
   // ONE space check for the whole bundle, before the first byte moves.
