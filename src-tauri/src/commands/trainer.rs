@@ -3896,13 +3896,49 @@ mod tests {
     /// injected form of the drive check (review-teil10.md M1) because this
     /// test asserts what happens when the drives DO differ, and a real
     /// second filesystem is not something a test runner can rely on having.
+    ///
+    /// The paths are the ones the platform reading this actually has. The
+    /// suggestion is built with `Path::join`, so it carries the separator of
+    /// the platform it was built on, and a Unix-shaped literal claimed a
+    /// mixed `E:/...\LU-Trainer` was wrong when Windows had written the only
+    /// correct answer it could.
     #[test]
     fn suggested_trainer_root_proposes_a_sibling_of_comfyui_when_the_drive_really_differs() {
-        let comfy = Path::new("/mnt/e/ComfyUI");
-        let default_root = Path::new("/mnt/c/AppData/musubi");
-        let suggestion = super::suggested_trainer_root_with(Some(comfy), default_root, |_, _| Some(false))
-            .expect("a known ComfyUI folder on a different drive must produce a suggestion");
-        assert_eq!(suggestion, "/mnt/e/LU-Trainer");
+        let (comfy, default_root, expected) = if cfg!(windows) {
+            ("E:\\ComfyUI", "C:\\AppData\\musubi", "E:\\LU-Trainer")
+        } else {
+            ("/mnt/e/ComfyUI", "/mnt/c/AppData/musubi", "/mnt/e/LU-Trainer")
+        };
+        let suggestion = super::suggested_trainer_root_with(
+            Some(Path::new(comfy)),
+            Path::new(default_root),
+            |_, _| Some(false),
+        )
+        .expect("a known ComfyUI folder on a different drive must produce a suggestion");
+        assert_eq!(suggestion, expected);
+    }
+
+    /// Negative control on the separator itself: whatever the suggestion is,
+    /// it must be a path this platform can open, not a mixture. A string built
+    /// by hand instead of by `Path::join` is what this catches.
+    #[test]
+    fn the_suggested_root_uses_only_this_platforms_separator() {
+        let (comfy, default_root) = if cfg!(windows) {
+            ("E:\\ComfyUI", "C:\\AppData\\musubi")
+        } else {
+            ("/mnt/e/ComfyUI", "/mnt/c/AppData/musubi")
+        };
+        let suggestion = super::suggested_trainer_root_with(
+            Some(Path::new(comfy)),
+            Path::new(default_root),
+            |_, _| Some(false),
+        )
+        .expect("a known ComfyUI folder on a different drive must produce a suggestion");
+        let foreign = if cfg!(windows) { '/' } else { '\\' };
+        assert!(
+            !suggestion.contains(foreign),
+            "the suggestion mixes separators and cannot be opened as typed: {suggestion}"
+        );
     }
 
     /// M1, the fix itself: a ComfyUI folder that is on the SAME drive as the

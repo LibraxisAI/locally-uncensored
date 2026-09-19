@@ -776,8 +776,10 @@ mod tests {
     async fn cancelling_during_shell_startup_drains_the_pipes() {
         let _isolation = super::sweep_isolation().await;
         // Exercise the startup window repeatedly, not just a settled tree.
-        // A missed ping child holds stdout open for30seconds with the old
-        // per-process snapshot kill, even after the shell itself is gone.
+        // A missed ping child holds stdout open for 30 seconds even after the
+        // shell itself is gone, which is what `kill_tree`'s settle window is
+        // there to prevent; measured on the box as a 30.4 s stall in two of
+        // five rounds before that window existed.
         for _ in 0..3 {
             let started = shell_task_start_impl(&json!({ "command": sleep_cmd_30s() })).await.unwrap();
             let id = started["id"].as_str().unwrap();

@@ -665,7 +665,9 @@ fn tree_snapshot(root: u32) -> Vec<(u32, u64)> {
 const KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// Recursive process-tree kill: SIGTERM the whole tree now, SIGKILL whatever
-/// is left after a grace. Windows delegates the walk to `taskkill /T /F`.
+/// is left after a grace. Windows hands the whole walk to
+/// `commands::shell::kill_tree`, the one sweep that also waits out a worker
+/// the tree starts while it is being felled.
 ///
 /// The Unix branch used to signal the process GROUP (`kill -- -PGID`). That
 /// only reaches a child that was made a group leader at spawn, and it is not
@@ -699,11 +701,11 @@ pub fn kill_tree(child: &mut Child) -> std::io::Result<()> {
     let pid = child.id();
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        // The same sweep the shell's cancel path uses, not a second copy of
+        // `taskkill /T`: a tunnel or a video job that is stopped while it is
+        // still starting up loses its worker to the identical race, and a
+        // second copy would have had to be found and fixed twice.
+        crate::commands::shell::kill_tree(pid);
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -760,11 +762,7 @@ pub fn kill_tree(child: &mut Child) -> std::io::Result<()> {
 pub fn kill_pid_tree(pid: u32) {
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        crate::commands::shell::kill_tree(pid);
     }
     #[cfg(unix)]
     {
@@ -865,6 +863,45 @@ mod libc {
     extern "C" {
         pub fn kill(pid: pid_t, sig: c_int) -> c_int;
         pub fn waitpid(pid: pid_t, status: *mut c_int, options: c_int) -> pid_t;
+    }
+}
+
+#[cfg(test)]
+mod one_windows_tree_kill_guard {
+    /// NB4: this module used to carry its OWN `taskkill /T /F`, a second
+    /// answer to a question `commands::shell::kill_tree` already answers, and
+    /// it had the identical gap: one enumeration, so a worker the tree starts
+    /// while the sweep runs survives. `remote::kill_tunnel_child` (cloudflared)
+    /// and `video::video_cancel` cancel through here, so the bug would have had
+    /// to be found twice and fixed twice.
+    ///
+    /// A behaviour test cannot stand guard over that from here: the sweep
+    /// itself is proven in `commands::shell`, and both branches would look the
+    /// same from outside on a tree with nothing left over. What has to stay
+    /// true is that there is only ONE of them, and that is what this reads.
+    /// Same shape as `command_new_coverage_guard` below.
+    #[test]
+    fn the_windows_tree_kill_is_not_written_a_second_time() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/process_util.rs");
+        let src = std::fs::read_to_string(path).expect("read this file");
+        // The two Windows branches that fell a tree: `kill_tree` and
+        // `kill_pid_tree`. Comment lines are skipped so the prose above them
+        // can name the call without standing in for it. The `taskkill /F` in
+        // `free_port` is a different job (one stranger holding a port, no
+        // tree) and is deliberately not counted here.
+        // Spelled in two halves so this line is not itself one of the hits.
+        let needle = format!("crate::commands::shell::{}(pid)", "kill_tree");
+        let delegations = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(&needle))
+            .count();
+        assert_eq!(
+            delegations, 2,
+            "both Windows tree kills here have to reach the one sweep in commands::shell; \
+             a copy of taskkill in their place would have to be found and fixed twice, \
+             and a cancelled tunnel or video job would keep the worker it started late"
+        );
     }
 }
 

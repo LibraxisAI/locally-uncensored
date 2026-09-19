@@ -174,6 +174,27 @@ pub(crate) fn descendants(root: u32, sys: &sysinfo::System) -> Vec<u32> {
     out
 }
 
+/// Everything below `root` in `sys` that is actually doing work, still alive,
+/// deepest last.
+///
+/// `conhost.exe` is left out because Windows attaches one to every process
+/// that gets a console, CREATE_NO_WINDOW included, and it shows up as a child
+/// of the shell before the shell has started anything of its own. Killing it
+/// says nothing about the `pnpm install` underneath, and counting it as a
+/// survivor would make every cancel wait out its full settle window. The name
+/// matches nothing on Unix, so the filter is inert there.
+pub(crate) fn worker_descendants_in(sys: &sysinfo::System, root: u32) -> Vec<u32> {
+    use sysinfo::Pid;
+    descendants(root, sys)
+        .into_iter()
+        .filter(|pid| {
+            sys.process(Pid::from_u32(*pid))
+                .map(|p| !p.name().to_string_lossy().eq_ignore_ascii_case("conhost.exe"))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 /// Kill the shell AND everything it started. `Child::kill()` signals only the
 /// shell itself, so a timed-out `npm run dev`, build script or spawned server
 /// kept running after the tool call gave up — still holding its port and CPU,
@@ -184,7 +205,7 @@ pub(crate) fn kill_tree(root: u32) {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     // Leaves first: a parent that is still alive can't respawn what we killed.
-    let mut order = descendants(root, &sys);
+    let mut order = worker_descendants_in(&sys, root);
     order.reverse();
     order.push(root);
     for pid in order {
@@ -194,13 +215,74 @@ pub(crate) fn kill_tree(root: u32) {
     }
 }
 
+/// How long the Windows sweep keeps looking for a worker that appeared while
+/// it was running, and how often it looks. A shell that is cancelled during
+/// its own startup is the case this exists for, so the window only has to
+/// cover a `CreateProcess` that was already under way.
+#[cfg(windows)]
+const TREE_KILL_SETTLE: Duration = Duration::from_millis(1500);
+#[cfg(windows)]
+const TREE_KILL_POLL: Duration = Duration::from_millis(50);
+
+/// The ONE Windows tree kill. `process_util::kill_tree` and
+/// `process_util::kill_pid_tree` hand their Windows branch to this function
+/// instead of calling `taskkill` themselves, so the cloudflared tunnel, the
+/// mlx_video job and an adopted ComfyUI get the same sweep the shell gets.
 #[cfg(windows)]
 pub(crate) fn kill_tree(root: u32) {
+    kill_tree_with(root, start_time_of(root));
+}
+
+/// Same as [`kill_tree`], with the root's start time injected.
+///
+/// The real code path always comes through [`kill_tree`], which reads the
+/// token itself while the root is still alive. It is separated so the sweep
+/// can be tested against the state it exists for, a live worker under a dead
+/// root, which cannot be reached any other way: producing that state means
+/// felling the root first, and after that its start time is unreadable.
+#[cfg(windows)]
+pub(crate) fn kill_tree_with(root: u32, root_start: Option<u64>) {
     if root == 0 { return; }
     // sysinfo0.33 kills each snapshot member with a separate taskkill /PID.
     // During shell startup a new child can appear between those calls and
     // retain the output pipe after its parent dies. Ask Windows to end the
     // owned tree in one operation, not a stale list of individual processes.
+    //
+    // But one operation is still ONE enumeration. A shell cancelled while it
+    // was starting up calls CreateProcess for its worker after taskkill has
+    // already walked the tree: the shell dies, the worker lives, it holds the
+    // inherited output pipes, and the task stays "running" until the worker
+    // finishes by itself. Proven on the Windows box (2026-09-19): cancelling
+    // `ping -n 31` 100 ms after the start left the task running for 30.4 s in
+    // two of five rounds, exactly the ping's own lifetime, and for a
+    // `cargo build` that is minutes of work that Stop claimed to have ended.
+    //
+    // So the tree is read once BEFORE the kill, for the root's start time, and
+    // looked at again afterwards. taskkill cannot walk a tree from a root that
+    // is already dead, which is why each leftover is felled as a root of its
+    // own. The loop ends as soon as nothing is left, and otherwise after
+    // TREE_KILL_SETTLE, for as long as taskkill itself returns.
+    taskkill_tree(root);
+    let deadline = Instant::now() + TREE_KILL_SETTLE;
+    loop {
+        let leftovers = late_descendants(root, root_start);
+        if leftovers.is_empty() {
+            return;
+        }
+        for pid in leftovers {
+            taskkill_tree(pid);
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(TREE_KILL_POLL);
+    }
+}
+
+/// End `root` and the tree Windows currently records below it, and wait for
+/// that to have happened.
+#[cfg(windows)]
+fn taskkill_tree(root: u32) {
     let mut command = Command::new("taskkill.exe");
     command.args(["/PID", &root.to_string(), "/T", "/F"])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -208,6 +290,79 @@ pub(crate) fn kill_tree(root: u32) {
     if let Ok(mut killer) = command.spawn() {
         finish_tree_kill(&mut killer);
     }
+}
+
+/// When `root` was created, read while it is still alive. `None` once it is
+/// gone, and `None` is what stops the sweep below from running at all.
+#[cfg(windows)]
+fn start_time_of(root: u32) -> Option<u64> {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.process(Pid::from_u32(root)).map(|p| p.start_time())
+}
+
+/// The processes still running under `root` that this sweep is allowed to
+/// fell: reachable from `root` through parent links, each one no older than
+/// the parent it hangs from, none of them older than `root` itself.
+///
+/// The age test is what keeps the sweep inside its own tree, and it is the
+/// same token `process_util::tree_snapshot` uses for the delayed SIGKILL on
+/// Unix ("same pid AND same start time is the same process"). Windows keeps
+/// the parent pid in a process entry after the parent is gone, which is what
+/// makes a leftover findable at all, but a stale entry is then
+/// indistinguishable from a fresh one: a stranger whose own long dead creator
+/// once held this number carries `root` as its parent too, and felling it with
+/// `/T` would take its children with it. A stranger like that was started
+/// before `root` was, so it is dropped here.
+///
+/// `start_time` counts whole seconds, so a worker started microseconds after
+/// its shell usually reports the SAME second: the test has to be "not older",
+/// not "strictly younger", and it therefore separates a process from a
+/// SECOND-old stranger, not from a millisecond-old one. That is exactly the
+/// distance the hazard has, since a stranger that inherits a recycled pid has
+/// been running since long before this sweep began.
+///
+/// Without a start time for `root` there is no token at all, and then nothing
+/// is swept: felling a process on a parent link alone is the thing this
+/// function exists to avoid.
+#[cfg(windows)]
+fn late_descendants(root: u32, root_start: Option<u64>) -> Vec<u32> {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let Some(root_start) = root_start else { return Vec::new() };
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for (pid, proc_) in sys.processes() {
+        if let Some(parent) = proc_.parent() {
+            children.entry(parent.as_u32()).or_default().push(pid.as_u32());
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(root);
+    // Level by level, so a child is only ever judged against a parent this
+    // sweep has already accepted.
+    let mut frontier = vec![(root, root_start)];
+    while let Some((parent, parent_start)) = frontier.pop() {
+        let Some(kids) = children.get(&parent) else { continue };
+        for pid in kids.clone() {
+            if !seen.insert(pid) {
+                continue; // PID reuse can't be allowed to make this loop forever
+            }
+            let Some(proc_) = sys.process(Pid::from_u32(pid)) else { continue };
+            if proc_.name().to_string_lossy().eq_ignore_ascii_case("conhost.exe") {
+                continue;
+            }
+            let start = proc_.start_time();
+            if start < parent_start {
+                continue; // older than the process it claims to hang from
+            }
+            out.push(pid);
+            frontier.push((pid, start));
+        }
+    }
+    out
 }
 
 #[cfg(windows)]
@@ -269,6 +424,122 @@ mod windows_stop_tests {
         for pid in &survivors { kill_tree(*pid); }
         assert!(survivors.is_empty(), "shell fallback orphaned children: {survivors:?}");
         assert!(drained, "cancelled tree retained an output pipe");
+    }
+
+    /// The startup race, held still. A shell cancelled while it is still
+    /// starting up calls CreateProcess for its worker after taskkill has
+    /// already walked the tree, and one instant later that worker is a live
+    /// process under a dead parent, holding the output pipes it inherited.
+    /// taskkill cannot walk a tree from a root that no longer exists, so the
+    /// single enumeration the sweep used to rely on left the worker running
+    /// and the cancelled task went on reporting "running" until the worker
+    /// finished by itself: measured on the box as 30.4 s stalls in two of
+    /// five cancels of a `ping -n 31` that Stop had supposedly killed, and
+    /// for the `cargo build` this module exists for, minutes.
+    ///
+    /// Reproduced here without waiting for the race to happen: fell the shell
+    /// alone, with `/F` and no `/T`, which leaves exactly that state behind.
+    #[test]
+    fn a_worker_left_under_a_dead_shell_is_still_felled() {
+        let mut shell = Command::new("powershell.exe");
+        shell.args(["-NoProfile", "-NonInteractive", "-Command", "ping -n 31 127.0.0.1"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        crate::process_util::suppress_window(&mut shell);
+        let mut shell = shell.spawn().expect("start test shell");
+        let (_, out_done) = drain(shell.stdout.take().unwrap());
+        let (_, err_done) = drain(shell.stderr.take().unwrap());
+        let ready = Instant::now();
+        let workers = loop {
+            let workers = worker_descendants_of(shell.id());
+            if !workers.is_empty() { break workers; }
+            if ready.elapsed() >= Duration::from_secs(30) {
+                kill_tree(shell.id());
+                let _ = shell.wait();
+                panic!("test shell did not start its child");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        // Read while the shell is alive, exactly as `kill_tree` reads it, and
+        // before the incomplete kill below makes it unreadable.
+        let root_start = start_time_of(shell.id());
+
+        // The shell only. Nothing walks the tree, so the worker stays: this
+        // is the sweep that missed a worker started one instant behind it.
+        let mut lonely = Command::new("taskkill.exe");
+        lonely.args(["/PID", &shell.id().to_string(), "/F"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        crate::process_util::suppress_window(&mut lonely);
+        if let Ok(mut lonely) = lonely.spawn() {
+            let _ = lonely.wait();
+        }
+        // `shell` is deliberately not waited on yet: the open handle keeps the
+        // number reserved, so the parent link the sweep follows still means
+        // this shell and cannot have been handed to a stranger.
+        assert!(
+            workers.iter().all(|pid| is_alive(*pid)),
+            "the worker was gone before the sweep was even asked: {workers:?}"
+        );
+
+        kill_tree_with(shell.id(), root_start);
+
+        let _ = shell.wait();
+        settle(&out_done, &err_done, Duration::from_millis(1500));
+        let survivors: Vec<_> = workers.into_iter().filter(|pid| is_alive(*pid)).collect();
+        let drained = out_done.load(Ordering::Acquire) && err_done.load(Ordering::Acquire);
+
+        for pid in &survivors { kill_tree(*pid); }
+        assert!(survivors.is_empty(), "a worker under a dead shell survived the sweep: {survivors:?}");
+        assert!(drained, "the cancelled tree kept an output pipe");
+    }
+
+    /// The age test that keeps the sweep inside its own tree. Windows leaves
+    /// the parent pid in a process entry after the parent is gone, so a
+    /// stranger whose own long dead creator once held our number carries our
+    /// root as its parent and would be felled with `/T`, children and all.
+    /// Such a stranger has been running since before the root started, which
+    /// is what the test below stands in for: with a root start time in the
+    /// future, every real child is "older than its parent" and none may be
+    /// touched. The other two cases pin the ends: the real start time finds
+    /// the child, and no start time at all sweeps nothing.
+    #[test]
+    fn only_a_worker_no_older_than_its_root_is_swept() {
+        let mut child = Command::new("ping.exe");
+        child.args(["-n", "31", "127.0.0.1"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        crate::process_util::suppress_window(&mut child);
+        let mut child = child.spawn().expect("start test worker");
+        let worker = child.id();
+        let me = std::process::id();
+        let ready = Instant::now();
+        while !worker_descendants_of(me).contains(&worker) {
+            assert!(ready.elapsed() < Duration::from_secs(30), "the test worker never showed up below this process");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let an_hour_ahead = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() + 3600)
+            .expect("a clock behind 1970");
+        let too_old = late_descendants(me, Some(an_hour_ahead));
+        let found = late_descendants(me, start_time_of(me));
+        let no_token = late_descendants(me, None);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            !too_old.contains(&worker),
+            "a worker older than the root it hangs from was swept anyway: {too_old:?}"
+        );
+        assert!(
+            found.contains(&worker),
+            "the real start time must still find this process's own worker: {found:?}"
+        );
+        assert!(
+            no_token.is_empty(),
+            "without a start time for the root there is nothing to judge against, so nothing may be swept: {no_token:?}"
+        );
     }
 }
 

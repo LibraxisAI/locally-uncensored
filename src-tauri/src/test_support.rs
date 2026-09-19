@@ -288,18 +288,14 @@ fn in_process_table(pid: u32) -> bool {
 /// its own. A test that grabbed it would end up asserting that Windows' own
 /// console host dies, which says nothing about the `pnpm install` underneath.
 /// The name matches nothing on Unix, so the filter is inert there.
+///
+/// This IS the production view, not a copy of it: `kill_tree` walks the same
+/// list, so there is one implementation and the tests borrow it.
 pub(crate) fn worker_descendants_of(root: u32) -> Vec<u32> {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+    use sysinfo::{ProcessesToUpdate, System};
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
-    crate::commands::shell::descendants(root, &sys)
-        .into_iter()
-        .filter(|pid| {
-            sys.process(Pid::from_u32(*pid))
-                .map(|p| !p.name().to_string_lossy().eq_ignore_ascii_case("conhost.exe"))
-                .unwrap_or(false)
-        })
-        .collect()
+    crate::commands::shell::worker_descendants_in(&sys, root)
 }
 
 // ── Tests for the helpers themselves ──────────────────────────────────────
