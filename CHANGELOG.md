@@ -137,9 +137,8 @@ installs stop losing environment variables to it.
 - **ltx-2 LoRA renders in the desktop app now carry a credit cost**, matching
   the web catalog, instead of pricing as free.
 - **Reinstall trainer in Character Studio now opens a confirmation dialog
-  first**, showing the current trainer folder and the same install-path field
-  as the first setup, instead of starting the reinstall the moment the button
-  is clicked.
+  first**, showing the current trainer folder, instead of starting the
+  reinstall the moment the button is clicked.
 
 ## [3.0.0] - 2026-09-13
 

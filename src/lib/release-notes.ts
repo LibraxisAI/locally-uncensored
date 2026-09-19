@@ -158,7 +158,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'Dismissing the stale model notice in the chat header now actually dismisses it, instead of it reappearing on the very next update.',
           'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
           'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
-          'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder and the same install-path field as the first setup, instead of starting the reinstall the moment the button is clicked.',
+          'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder, instead of starting the reinstall the moment the button is clicked.',
         ],
       },
     ],
