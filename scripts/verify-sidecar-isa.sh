@@ -9,20 +9,38 @@
 # build cache, or a future llama.cpp release changing its own defaults could
 # all make the command line lie):
 #
-#   1. The BASELINE files (the "x64" and "sse42" CPU variants, ggml-base,
-#      and the llama-server exe itself) must contain NO AVX-or-above
-#      instruction. These are the files every CPU loads no matter how old,
-#      so an AVX instruction inside one of them is exactly the K1 bug: a
-#      "dynamic" build that is secretly still a fixed x86-64-v3 (or higher)
-#      binary. Checked by disassembling and searching for ymm/zmm registers
-#      and VEX/EVEX-coded mnemonics (they are the ones objdump prints with a
-#      leading "v", e.g. vmovaps, vzeroupper, vfmadd231ps; no plain SSE
-#      mnemonic is spelled that way).
-#   2. The HASWELL variant (the first AVX2 tier) MUST contain at least one
-#      such instruction. Without this positive control, a disassembler that
-#      silently failed, or a grep pattern that never matches anything, would
-#      make check 1 pass on every input, including a build that produced no
-#      real code at all. Two files, two opposite expectations, in one script.
+#   1. The BASELINE modules (the "x64" and "sse42" CPU variants, every named
+#      base module -- ggml, ggml-base, ggml-vulkan, llama, llama-common,
+#      llama-server-impl, mtmd -- and the llama-server exe itself) must
+#      contain NO AVX-or-above instruction. These are the files every CPU
+#      loads no matter how old, so an AVX instruction inside one of them is
+#      exactly the K1 bug: a "dynamic" build that is secretly still a fixed
+#      x86-64-v3 (or higher) binary. Checked by disassembling and searching
+#      for ymm/zmm registers and VEX/EVEX-coded mnemonics (they are the ones
+#      objdump prints with a leading "v", e.g. vmovaps, vzeroupper,
+#      vfmadd231ps; no plain SSE mnemonic is spelled that way).
+#   2. Every CPU-tier VARIANT module must stay at or below the ISA ceiling
+#      its own tier is supposed to have (sandybridge/ivybridge/piledriver:
+#      AVX at most, no AVX2, no AVX-512; haswell/alderlake: AVX2 at most, no
+#      AVX-512; skylakex and above: AVX-512 is the top tier, nothing to
+#      cap). The rules and the tier table live in
+#      scripts/lib/isa-guard-linux-rules.sh (shared with
+#      scripts/verify-sidecar-isa.selftest.sh, which proves this logic
+#      against checked-in fixtures with no ELF file or objdump needed,
+#      runnable on any platform). SKEPTIKER-LINUX-WEB-K1.md found the
+#      earlier version of this script checked 4 of the staged modules
+#      (x64, sse42, ggml-base, exe) and skipped every other base module and
+#      every variant's own ceiling outright.
+#   3. Every file actually staged in the companions directory must be a
+#      recognised module (a known base module, a known CPU-tier variant, or
+#      a SONAME-versioned sibling of one of those) -- an unrecognised module
+#      turns this guard RED rather than being silently skipped (fail
+#      closed).
+#   4. The HASWELL variant (the first AVX2 tier) MUST contain at least one
+#      AVX-or-above instruction. Without this positive control, a
+#      disassembler that silently failed, or a grep pattern that never
+#      matches anything, would make check 1 pass on every input, including
+#      a build that produced no real code at all.
 #
 # Also fails RED when an expected CPU variant is simply missing from the
 # companions directory (a partial build, or a future cmake refactor that
@@ -650,52 +668,100 @@ disassemble() {
   fi
 }
 
-# True when the disassembly contains an AVX-or-above register or a
-# VEX/EVEX-coded mnemonic. ymm*/zmm* registers cover AVX and AVX-512 data;
-# the mnemonic pattern catches the handful of VEX instructions that touch no
-# wide register at all (vzeroupper is the standing example: it clears the
-# upper bits of every ymm register and takes no operand). A mnemonic is the
-# first word after the opcode-byte column, so anchoring on tab/space
-# boundaries avoids matching inside a byte string or a symbol name.
-has_avx_or_above() {
-  grep -qE '%[yz]mm[0-9]+|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)' <<<"$1"
-}
+# has_avx_or_above and the tier-ceiling rules live in one shared file
+# (scripts/lib/isa-guard-linux-rules.sh) so scripts/verify-sidecar-isa.selftest.sh
+# can prove the same decision logic against checked-in fixtures on any
+# platform, with no ELF file or objdump needed. See that file's own header
+# for the SCOPE of what a mnemonic/register-text classifier can and cannot
+# tell apart (exact for "any VEX/EVEX at all" and for AVX-512 specifically,
+# a documented heuristic for AVX-only-vs-AVX2).
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/isa-guard-linux-rules.sh"
 
-BASELINE_TARGETS=("x64" "sse42")
-POSITIVE_CONTROL="haswell"
+# Belt and suspenders (review-waechter-windows.md N5's lesson, applied to
+# this list too): the 14-name Linux CPU-variant pin exists in exactly two
+# places by necessity (EXPECTED_VARIANTS above decides what MUST exist on
+# disk; LINUX_CPU_VARIANTS in the sourced lib decides each name's ISA
+# ceiling) and the two must never silently drift apart -- a name added to
+# one and not the other would leave that variant either unchecked for its
+# ceiling or wrongly rejected as unrecognised. Compared as sets, not order.
+linux_pin_a="$(printf '%s\n' "${EXPECTED_VARIANTS[@]}" | sort)"
+linux_pin_b="$(printf '%s\n' "${LINUX_CPU_VARIANTS[@]}" | sort)"
+[ "$linux_pin_a" = "$linux_pin_b" ] \
+  || vdie "EXPECTED_VARIANTS (verify-sidecar-isa.sh) and LINUX_CPU_VARIANTS (scripts/lib/isa-guard-linux-rules.sh) have drifted apart. EXPECTED_VARIANTS: ${EXPECTED_VARIANTS[*]}. LINUX_CPU_VARIANTS: ${LINUX_CPU_VARIANTS[*]}. Update both together when the llama.cpp pin changes its variant list"
+
+# --- SKEPTIKER-LINUX-WEB-K1.md: every staged module checked, not 4 of them --
+#
+# Every file actually staged in COMPANIONS_DIR must be accounted for: a
+# known base module (EXPECTED_BASE_LINUX_MODULES), a known CPU-tier variant
+# (LINUX_CPU_VARIANTS, with its own tier's ceiling), or a SONAME-versioned
+# sibling of one of those (cp without -P/-d in stage_dynamic_isa_companions
+# turns every hop of a libFoo.so -> libFoo.so.N -> libFoo.so.N.n.n symlink
+# chain into its own real file with identical bytes, see the "extension .0"
+# comment above find_variant_file). Anything else is an unclassified module
+# and turns this guard RED instead of being silently skipped -- the exact
+# gap the skeptic found (4 of 16 modules checked, and the 12 unchecked ones
+# carried 24-98 VEX hits on the Windows side of this same regression).
+staged_files=()
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  staged_files+=("$(basename "$f")")
+done < <(find "$COMPANIONS_DIR" -maxdepth 1 -type f -iname '*.so*' | sort)
+
+declare -A module_role=()   # full path -> baseline|avx-only|avx2|avx512
+declare -A module_label=()  # full path -> human label for messages
+unclassified=()
+for base in "${staged_files[@]}"; do
+  cls="$(classify_linux_module "$base" "$LIB_PREFIX" "$LIB_EXT" || true)"
+  case "$cls" in
+    base:*)
+      name="${cls#base:}"
+      module_role["$COMPANIONS_DIR/$base"]="baseline"
+      module_label["$COMPANIONS_DIR/$base"]="$name"
+      ;;
+    variant:*)
+      rest="${cls#variant:}"
+      name="${rest%%:*}"
+      tier="${rest#*:}"
+      module_role["$COMPANIONS_DIR/$base"]="$tier"
+      module_label["$COMPANIONS_DIR/$base"]="ggml-cpu-$name"
+      ;;
+    sibling:*)
+      vlog "$base: SONAME sibling of ${cls#sibling:}, identical bytes already checked under that name, not disassembled again"
+      ;;
+    *)
+      unclassified+=("$base")
+      ;;
+  esac
+done
+if [ "${#unclassified[@]}" -gt 0 ]; then
+  vdie "unrecognised module(s) staged in $COMPANIONS_DIR: ${unclassified[*]}. Neither a known base module (EXPECTED_BASE_LINUX_MODULES in scripts/lib/isa-guard-linux-rules.sh) nor a known CPU-tier variant (EXPECTED_VARIANTS) nor a SONAME-versioned sibling of one. Classify it before this guard can trust it: add it to EXPECTED_BASE_LINUX_MODULES if it is a new base module that must stay ISA-neutral like the rest of own code, or to the appropriate tier array if it is a new CPU-tier variant"
+fi
 
 fail_count=0
-for variant in "${BASELINE_TARGETS[@]}"; do
-  f="$(find_variant_file "$variant")"
-  asm="$(disassemble "$f")"
-  if has_avx_or_above "$asm"; then
-    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s contains an AVX-or-above instruction, this is supposed to be the no-AVX baseline:\n' "$f" >&2
+for path in "${!module_role[@]}"; do
+  role="${module_role[$path]}"
+  label="${module_label[$path]} ($path)"
+  asm="$(disassemble "$path")"
+  if verdict="$(evaluate_module_asm "$role" "$asm" "$label")"; then
+    vlog "$verdict"
+  else
+    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$verdict" >&2
     grep -E '%[yz]mm[0-9]+|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
     fail_count=$((fail_count + 1))
-  else
-    vlog "$variant ($f): no AVX-or-above instruction found, as expected"
   fi
 done
-
-asm="$(disassemble "$GGML_BASE_FILE")"
-if has_avx_or_above "$asm"; then
-  printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s (ggml-base, loaded by every CPU variant) contains an AVX-or-above instruction, this is supposed to be ISA-neutral:\n' "$GGML_BASE_FILE" >&2
-  grep -E '%[yz]mm[0-9]+|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
-  fail_count=$((fail_count + 1))
-else
-  vlog "ggml-base ($GGML_BASE_FILE): no AVX-or-above instruction found, as expected"
-fi
 
 exe_name="$(out_name_for "$TRIPLE")"
 exe_path="$BIN_DIR/$exe_name"
 if [ -f "$exe_path" ]; then
   asm="$(disassemble "$exe_path")"
-  if has_avx_or_above "$asm"; then
-    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s (the exe itself) contains an AVX-or-above instruction, it must be ISA-neutral, all CPU-specific code belongs in the ggml-cpu-* variants:\n' "$exe_path" >&2
+  if verdict="$(evaluate_module_asm baseline "$asm" "$exe_name ($exe_path)")"; then
+    vlog "$verdict"
+  else
+    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$verdict" >&2
     grep -E '%[yz]mm[0-9]+|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
     fail_count=$((fail_count + 1))
-  else
-    vlog "$exe_name: no AVX-or-above instruction found, as expected"
   fi
 else
   vlog "no exe found at $exe_path, skipping the exe-itself check (build first for the full check)"
@@ -704,13 +770,13 @@ fi
 # Positive control: without this, a broken disassembler invocation (a typo'd
 # flag, a tool that silently prints nothing) would make every check above
 # pass vacuously. haswell is the first tier with AVX2, so it MUST show up.
-f="$(find_variant_file "$POSITIVE_CONTROL")"
+f="$(find_variant_file haswell)"
 asm="$(disassemble "$f")"
 if ! has_avx_or_above "$asm"; then
-  vdie "$f (the $POSITIVE_CONTROL variant, which IS supposed to use AVX2) shows no AVX instruction at all, the disassembler step itself is not working, every 'no AVX found' result above is unproven"
+  vdie "$f (the haswell variant, which IS supposed to use AVX2) shows no AVX instruction at all, the disassembler step itself is not working, every 'no AVX found'/'ceiling respected' result above is unproven"
 fi
-vlog "$POSITIVE_CONTROL ($f): AVX-or-above instruction found, confirming the disassembler actually sees the ISA it is looking for"
+vlog "haswell ($f): AVX-or-above instruction found, confirming the disassembler actually sees the ISA it is looking for"
 
-[ "$fail_count" -eq 0 ] || vdie "$fail_count file(s) failed the no-AVX-in-the-baseline check"
+[ "$fail_count" -eq 0 ] || vdie "$fail_count module(s) failed their ISA ceiling check"
 
 vlog "OK: $TRIPLE sidecar, dynamic ISA layout intact, baseline files carry no AVX, disassembler proven working"

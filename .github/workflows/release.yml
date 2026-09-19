@@ -544,6 +544,45 @@ jobs:
           [ "$missing" -eq 0 ] || exit 1
           echo "OK: every staged sidecar companion is present inside the built AppImage ($extracted_llama_dir)"
 
+      # SKEPTIKER-LINUX-WEB-K1.md: the AppImage check above proves nothing
+      # about the .deb, a completely different bundler (dpkg-deb, not
+      # linuxdeploy) with its own independent failure mode for the exact
+      # same reason K1-18 exists -- a bundler that packages the exe but
+      # silently drops (or never even looks at) the resources directory.
+      # bundle.targets is "all" (src-tauri/tauri.conf.json), so this
+      # workflow already builds and publishes a .deb every release; nothing
+      # before this step ever inspected what actually landed inside it.
+      - name: Verify built .deb carries every sidecar companion (K1-18)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          deb_rel="$(find src-tauri/target -type f -iname '*.deb' -print -quit)"
+          [ -n "$deb_rel" ] || { echo "FAIL: no .deb found under src-tauri/target after the build (K1-18)" >&2; exit 1; }
+          deb="$(realpath "$deb_rel")"
+          workdir="$RUNNER_TEMP/deb-extract"
+          rm -rf "$workdir"
+          mkdir -p "$workdir"
+          # dpkg-deb -x extracts only the data archive (no root needed, no
+          # install), ships on every Ubuntu image including bare runners.
+          dpkg-deb -x "$deb" "$workdir"
+          extracted_llama_dir="$(find "$workdir/usr/lib" -mindepth 1 -maxdepth 3 -type d -iname 'llama' -print -quit)"
+          if [ -z "$extracted_llama_dir" ]; then
+            echo "FAIL: no .../usr/lib/.../llama directory inside the extracted .deb at all; the deb bundler dropped the whole sidecar companions directory (K1-18)" >&2
+            exit 1
+          fi
+          missing=0
+          for f in "src-tauri/resources/llama/${{ matrix.sidecar_triple }}"/*; do
+            base="$(basename "$f")"
+            if [ ! -e "$extracted_llama_dir/$base" ]; then
+              echo "FAIL: $base is staged in src-tauri/resources/llama/${{ matrix.sidecar_triple }} but MISSING from the built .deb ($extracted_llama_dir); a bundler can drop a companion silently and still exit 0 (K1-18)" >&2
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "OK: every staged sidecar companion is present inside the built .deb ($extracted_llama_dir)"
+
   # The promise above, made real for every trigger. Runs after the binaries are
   # attached, so a release published as a full release is put back before
   # anyone is offered it, and never touches the release that is already Latest.
