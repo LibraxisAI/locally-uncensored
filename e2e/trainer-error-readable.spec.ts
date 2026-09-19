@@ -30,6 +30,9 @@ for (const ready of [false, true]) {
     await page.getByRole('button', { name: /^Create$/ }).click()
     await page.getByRole('radio', { name: 'Character Studio', exact: true }).click()
     await page.getByRole('button', { name: ready ? 'Reinstall trainer' : 'Set up trainer', exact: true }).click()
+    // Z5: "Reinstall trainer" oeffnet jetzt nur den Bestaetigungsdialog; der
+    // Install-Befehl feuert erst nach "Reinstall" darin, nicht beim ersten Klick.
+    if (ready) await page.getByRole('dialog').getByRole('button', { name: 'Reinstall', exact: true }).click()
     const note = page.getByRole('status').filter({ hasText: 'Diagnostic line 80' })
     await expect(note).toBeVisible()
     const result = await note.evaluate((el) => {

@@ -35,6 +35,7 @@ import { Segmented } from '../ui/Segmented'
 import { Slider } from '../ui/Slider'
 import { cn } from '../ui/cn'
 import { useClickAway } from '../ui/useClickAway'
+import { Modal } from '../../ui/Modal'
 
 export function SpecialControls({ intent }: { intent: CreateIntent }) {
   switch (intent) {
@@ -257,6 +258,93 @@ function CharacterPanel() {
   )
 }
 
+// Das Trainer-Installationspfad-Feld, gemeinsam genutzt vom Erstsetup-Gate
+// UND dem Reinstall-Bestaetigungsdialog (Z5-Fund, box-gruen/b): beide
+// brauchen genau dasselbe "Pfad eintippen wird zum Installationsziel"
+// Bedienelement mit derselben Rust-Validierung, also eine Komponente statt
+// zweier Kopien, die auseinanderlaufen koennten. `status` speist nur
+// `trainerRootHint`; Wert und Aenderungs-Handler gehoeren dem Aufrufer.
+function TrainerPathField({
+  value,
+  onChange,
+  status,
+}: {
+  value: string
+  onChange: (v: string) => void
+  status: Pick<TrainerStatus, 'root' | 'customized' | 'suggestedRoot'>
+}) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={`e.g. ${trainerPathPlaceholder(isWindows(), isMacOS())}`}
+        className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
+      />
+      <span className="t-label text-gray-600">{trainerRootHint(status, value, status.suggestedRoot)}</span>
+    </div>
+  )
+}
+
+// Z5 (box-gruen/b, e2e Windows, 18.09.2026): "Reinstall trainer" hat bisher
+// install_character_trainer im selben Moment ausgeloest, in dem der Knopf
+// geklickt wurde, ohne Bestaetigung, ohne Chance, den Installationsordner
+// vorher zu sehen oder zu aendern. Die Rust-Seite loescht `<root>` dabei
+// NICHT (siehe Doc-Kommentar von provision_trainer_env: `<root>/train` und
+// `<root>/models` werden nie angefasst), ersetzt aber die venv (Rebuild oder
+// Torch/musubi neu installieren, siehe `venv_action`), und genau das hat den
+// Tester auf box-gruen mitten im Klick ueberrascht. Dieser Dialog sagt das
+// ehrlich, zeigt DASSELBE Pfad-Feld wie das Erstsetup (dieselbe Komponente,
+// dieselbe Rust-Validierung) und ruft den Install-Befehl erst auf, wenn der
+// Kunde "Reinstall" drueckt.
+function TrainerReinstallModal({
+  open,
+  onClose,
+  status,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  status: TrainerStatus
+  onConfirm: (path: string) => void
+}) {
+  const [path, setPath] = useState(status.root)
+  // Bei jedem Oeffnen frisch aus dem echten aktuellen Root setzen, damit ein
+  // getippter und dann abgebrochener Pfad aus einem frueheren Oeffnen nie in
+  // das naechste durchsickert, und das Feld immer mit dem startet, was
+  // tatsaechlich gerade installiert ist.
+  useEffect(() => {
+    if (open) setPath(status.root)
+  }, [open, status.root])
+
+  return (
+    <Modal open={open} onClose={onClose} title="Reinstall the trainer?">
+      <div className="space-y-4 text-sm text-gray-200">
+        <p className="t-body leading-relaxed text-gray-300">
+          This replaces the trainer's Python environment: PyTorch and musubi-tuner get reinstalled from scratch. Your training photos and downloaded base models are not touched. Setup needs about 3 GB of downloads, same as the first install.
+        </p>
+        <TrainerPathField value={path} onChange={setPath} status={status} />
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            onClick={() => onConfirm(path)}
+            data-destructive
+            className="w-full px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-200 text-sm font-medium transition-colors"
+          >
+            Reinstall
+          </button>
+          <button
+            onClick={onClose}
+            data-autofocus
+            className="w-full px-4 py-1.5 rounded-lg hover:bg-white/5 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // Local training readiness + inputs (2.5.8 A5). Three gates render in order:
 // trainer env (one-time musubi setup) -> Z-Image base files -> the actual
 // trigger/steps inputs. The Rust side is the source of truth for readiness.
@@ -285,6 +373,8 @@ function LocalTrainControls() {
   // field was pre-filled and they clear it on purpose), stop overwriting
   // their edit with the backend's current root on every poll.
   const [pathTouched, setPathTouched] = useState(false)
+  // Z5 (box-gruen/b): der Bestaetigungsdialog vor "Reinstall trainer".
+  const [reinstallOpen, setReinstallOpen] = useState(false)
 
   const refresh = useCallback(() => {
     characterTrainerStatus().then(setStatus).catch(() => setStatus(null))
@@ -367,6 +457,19 @@ function LocalTrainControls() {
       setBusy(null)
     }
   }
+  // Z5 (box-gruen/b): der Reinstall-Dialog sammelt seinen EIGENEN Pfad
+  // (vorbelegt aus dem aktuellen Root, siehe `TrainerReinstallModal`), fasst
+  // also `installPath` nicht an -- das Feld gehoert dem Erstsetup-Gate oben,
+  // das nicht mehr rendert, sobald `envReady` wahr ist.
+  const confirmReinstall = async (path: string) => {
+    setReinstallOpen(false)
+    setBusy('install')
+    setNote('Setting up the trainer...')
+    try { await installCharacterTrainer(path.trim() || undefined) } catch (e) {
+      setNote(e instanceof Error ? e.message : 'Install could not start.')
+      setBusy(null)
+    }
+  }
   const startBases = async () => {
     if (!status) return
     setBusy('bases')
@@ -402,15 +505,11 @@ function LocalTrainControls() {
           </Button>
         </div>
         {busy !== 'install' && (
-          <div className="flex flex-col items-center gap-0.5">
-            <input
-              value={installPath}
-              onChange={(e) => { setInstallPath(e.target.value); setPathTouched(true) }}
-              placeholder={`e.g. ${trainerPathPlaceholder(isWindows(), isMacOS())}`}
-              className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
-            />
-            <span className="t-label text-gray-600">{trainerRootHint(status, installPath, status.suggestedRoot)}</span>
-          </div>
+          <TrainerPathField
+            value={installPath}
+            onChange={(v) => { setInstallPath(v); setPathTouched(true) }}
+            status={status}
+          />
         )}
         {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
@@ -469,7 +568,7 @@ function LocalTrainControls() {
               build could not reach it (bob80817, D#102). */}
           <button
             type="button"
-            onClick={startInstall}
+            onClick={() => setReinstallOpen(true)}
             disabled={busy === 'install'}
             className="underline underline-offset-2 text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors"
           >
@@ -478,6 +577,12 @@ function LocalTrainControls() {
         </div>
       )}
       {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
+      <TrainerReinstallModal
+        open={reinstallOpen}
+        onClose={() => setReinstallOpen(false)}
+        status={status}
+        onConfirm={confirmReinstall}
+      />
     </div>
   )
 }
