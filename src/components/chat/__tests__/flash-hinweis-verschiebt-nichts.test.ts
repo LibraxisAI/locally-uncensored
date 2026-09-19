@@ -5,11 +5,20 @@
  * neben `AgentModeToggle`, mit einem Popup ausserhalb des Layoutflusses, genau
  * wie `SamplingControls` (der Sampling-Regler).
  *
+ * Nachtrag, selber Tag: David wollte danach auch die zweite Zeile ueber dem
+ * Eingabefeld weg, `ModelMarks` ("No refusals" und, vor der ersten
+ * Nachbesserung, auch "No credits"). Die Komponente ist geloescht (toter Code,
+ * nicht nur entkoppelt), `ChatInput.tsx` kennt sie nicht mehr. Was sie zeigte,
+ * lebt an zwei Stellen weiter: "No credits"/"Using credits" im Etikett neben
+ * dem Agent-Schalter (`FlashChatNotice`), und BEIDE Marken unveraendert in der
+ * Modellauswahl (`ModelRowMarks` in `ModelSelector.tsx`) — dort informiert
+ * sich der Nutzer, nicht ueber dem Feld, in das er gerade tippt.
+ *
  * Dieser Test liest Quelltext, nicht das gerenderte DOM, aus demselben Grund
  * wie `zwei-baender-sind-eine-flaeche.test.ts`: die Behauptung ist eine
  * Platzierung im Baum, nicht ein Pixelwert, und der Quelltext sagt sie direkt.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 
@@ -21,10 +30,31 @@ const CHAT_VIEW = read('chat/ChatView.tsx')
 const CODEX_VIEW = read('chat/CodexView.tsx')
 const NOTICE = read('chat/FlashChatNotice.tsx')
 const SAMPLING = read('chat/SamplingControls.tsx')
+const MODEL_SELECTOR = read('models/ModelSelector.tsx')
 
 describe('kein Element des Flash-Hinweises oberhalb des Eingabefelds', () => {
   it('ChatInput kennt FlashChatNotice nicht mehr', () => {
     expect(CHAT_INPUT).not.toContain('FlashChatNotice')
+  })
+})
+
+// Nachtrag: ModelMarks (die "No refusals"/"No credits"-Zeile ueber dem
+// Eingabefeld) ist nicht nur entkoppelt, sondern geloescht. Dieser Block wird
+// rot, falls sie oder ein Nachfolger wieder auftaucht: das war der Fund, den
+// die 3.0.0-Waechter (marken-ein-bauteil.test.tsx im Web) bisher in die
+// GEGENRICHTUNG absicherten ("dieselben Marken auch ueber der Eingabezeile"),
+// bevor David das umgedreht hat.
+describe('keine Marke jeder Art oberhalb des Eingabefelds', () => {
+  it('die Komponente ist wirklich weg, nicht nur entkoppelt', () => {
+    expect(existsSync(resolve(COMPONENTS, 'chat/ModelMarks.tsx'))).toBe(false)
+  })
+
+  it('ChatInput kennt ModelMarks nicht mehr', () => {
+    expect(CHAT_INPUT).not.toContain('ModelMarks')
+  })
+
+  it('die Modellauswahl selbst traegt beide Marken weiterhin unveraendert', () => {
+    expect(MODEL_SELECTOR).toContain('<ModelRowMarks')
   })
 })
 

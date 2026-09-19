@@ -158,6 +158,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'Dismissing the stale model notice in the chat header now actually dismisses it, instead of it reappearing on the very next update.',
           'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
           'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
+          'The model marks now live in the model list only, the line above the message box is gone; the Flash notice sits next to the Agent toggle.',
         ],
       },
     ],

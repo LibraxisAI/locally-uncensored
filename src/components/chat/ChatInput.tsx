@@ -3,7 +3,6 @@ import { SamplingControls } from './SamplingControls'
 import { Send, Square, Paperclip, X, Brain, Gauge, Terminal } from 'lucide-react'
 import { matchAgentCommands, type AgentCommand, type CommandScope } from '../../lib/agent-commands'
 import { VoiceButton } from './VoiceButton'
-import { ModelMarks } from './ModelMarks'
 import { ApprovalDialog } from './ApprovalDialog'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -396,12 +395,14 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, l
 
   return (
     <div className={`px-3 pb-2 pt-1 w-full ${COMPOSER_MAX_W} mx-auto`}>
-      {/* Was dieses Modell kann, bevor die Frage getippt ist. */}
-      <ModelMarks />
-      {/* Was eine Runde auf diesem Modell kostet, steht seit 19.09.2026 nicht
-          mehr hier: dort war es ein stehendes Band, das den Agent-Schalter
-          und Nachbarn nach oben schob. Es lebt jetzt als kleines Etikett in
-          der Sitzungsleiste, direkt neben AgentModeToggle (ChatView.tsx). */}
+      {/* David, 19.09.2026, Runde 2 (Nachtrag): ueber dem Eingabefeld steht
+          seither GAR KEINE Marke mehr, weder "No credits" noch "No refusals".
+          Die Komponente, die sie hier zeigte, ist geloescht, nicht nur
+          entkoppelt (siehe flash-hinweis-verschiebt-nichts.test.ts). Das
+          Etikett neben dem Agent-Schalter (ChatView.tsx, der Flash-Hinweis)
+          und die Modellauswahl selbst (ModelRowMarks in ModelSelector.tsx,
+          unveraendert) sind die einzigen Stellen, die diese Aussagen noch
+          tragen. */}
       {/* Approval used to live here as a popup over the chat input.
           Per user feedback ("eventuell in den chat einarbeiten") it now
           renders INSIDE the pending tool-call block in MessageList, so

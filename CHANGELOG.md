@@ -136,6 +136,8 @@ installs stop losing environment variables to it.
   shows.
 - **ltx-2 LoRA renders in the desktop app now carry a credit cost**, matching
   the web catalog, instead of pricing as free.
+- **The model marks now live in the model list only**, the line above the
+  message box is gone; the Flash notice sits next to the Agent toggle.
 
 ## [3.0.0] - 2026-09-13
 

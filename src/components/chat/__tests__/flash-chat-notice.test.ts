@@ -3,6 +3,11 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
+  clampNoticeLeft,
+  FLASH_NOTICE_CLOSE_LABEL,
+  FLASH_NOTICE_HEADING_EXHAUSTED,
+  FLASH_NOTICE_HEADING_FREE,
+  FLASH_NOTICE_HEADING_UNPAID,
   FLASH_NOTICE_LABEL_CREDITS,
   FLASH_NOTICE_LABEL_FREE,
   FlashChatNotice,
@@ -39,6 +44,17 @@ describe('das Etikett neben dem Agent-Schalter', () => {
     const trigger = screen.getByTestId('flash-chat-notice-trigger')
     expect(trigger.textContent).toBe(FLASH_NOTICE_LABEL_FREE)
     expect(trigger.className).toMatch(/emerald/)
+  })
+
+  // Runde 2 (19.09.2026): derselbe Textstand wie "Agent" daneben
+  // (AgentModeToggle.tsx nutzt `text-[0.55rem]`), und die ueblichen
+  // Popup-Attribute, bevor irgendetwas geoeffnet ist.
+  it('traegt dieselbe Schriftgroesse wie "Agent" und kuendigt sich als Popup-Ausloeser an', () => {
+    render(createElement(FlashChatNotice))
+    const trigger = screen.getByTestId('flash-chat-notice-trigger')
+    expect(trigger.className).toContain('text-[0.55rem]')
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('faellt die Freimenge fuer diese Runde auf Credits zurueck, wird das Etikett neutral', () => {
@@ -79,22 +95,53 @@ describe('das Etikett neben dem Agent-Schalter', () => {
 })
 
 describe('das Popup, aus der Konstante, nicht getippt', () => {
-  it('nennt die Tagesmenge, die Rueckstellzeit und was danach passiert', () => {
+  // Runde 2 (19.09.2026): das Popup traegt jetzt eine Ueberschrift, ein
+  // sichtbares X und die Bedingungen als kurze Liste statt als Fliesstext.
+  // Keine Bedingung, die vorher genannt wurde, darf hier fehlen.
+  it('traegt eine Ueberschrift, die den gruenen Zustand benennt', () => {
+    render(createElement(FlashChatNotice))
+    openPopup()
+    expect(screen.getByRole('heading', { name: FLASH_NOTICE_HEADING_FREE })).toBeTruthy()
+  })
+
+  it('zeigt ein sichtbares X, unabhaengig von der Panel-Breite', () => {
+    render(createElement(FlashChatNotice))
+    openPopup()
+    const close = screen.getByTestId('flash-chat-notice-close')
+    expect(close.querySelector('svg')).toBeTruthy()
+    expect(close.getAttribute('aria-label')).toBe(FLASH_NOTICE_CLOSE_LABEL)
+  })
+
+  it('nennt jede heute gueltige Bedingung: Tagesmenge, Rueckstellzeit, eine Anfrage je Konto, API-Schluessel, Rueckfall auf Credits, Ausgabe- und Zeitgrenze, Reservierung', () => {
     render(createElement(FlashChatNotice))
     openPopup()
     const panel = screen.getByTestId('flash-chat-notice-panel')
     expect(panel.textContent).toContain('50,000')
     expect(panel.textContent).toContain('00:00 UTC')
+    expect(panel.textContent).toContain('One free request at a time per account')
+    expect(panel.textContent).toContain('API keys always use credits')
     expect(panel.textContent).toContain('uses credits instead')
     expect(panel.textContent).toContain('8,192')
     expect(panel.textContent).toContain('240 seconds')
+    expect(panel.textContent).toContain('reserved before generation')
+    expect(panel.textContent).toContain('keeps that reservation')
   })
 
-  it('liest fuer ein Konto ohne bezahlten Plan den ehrlichen Satz statt der Zusage', () => {
+  it('liest fuer ein Konto ohne bezahlten Plan den ehrlichen Satz statt der Zusage, mit passender Ueberschrift', () => {
     signIn(false)
     render(createElement(FlashChatNotice))
     openPopup()
-    expect(screen.getByTestId('flash-chat-notice-panel').textContent).toBe(FLASH_UNPAID_NOTICE)
+    expect(screen.getByRole('heading', { name: FLASH_NOTICE_HEADING_UNPAID })).toBeTruthy()
+    expect(screen.getByTestId('flash-chat-notice-panel').textContent).toContain(FLASH_UNPAID_NOTICE)
+  })
+
+  it('nennt die aufgebrauchte Freimenge in der Ueberschrift, wenn diese Runde auf Credits faellt', () => {
+    render(createElement(FlashChatNotice))
+    act(() => recordFlashResponse(policy.billingKey, new Response('', { headers: {
+      'x-lu-chat-billing': 'credits', 'x-lu-flash-remaining': '0',
+    } })))
+    openPopup()
+    expect(screen.getByRole('heading', { name: FLASH_NOTICE_HEADING_EXHAUSTED })).toBeTruthy()
   })
 
   it('schliesst per Escape', () => {
@@ -188,5 +235,34 @@ describe('Zeilen je Anfrage, aus den Antwortkoepfen', () => {
     expect(parseFlashPolicy(wire, 'anything', 'key')).toBeUndefined()
     recordFlashResponse(policy.billingKey, new Response('', { headers: { 'x-lu-chat-billing': 'credits' } }))
     expect(useFlashBillingStore.getState().entries).toEqual({})
+  })
+})
+
+// Runde 2 (19.09.2026): das Popup lief mit festem `left: 0` rechts aus dem
+// Fenster (Screenshot der ersten Runde). Pure Funktion, damit der Clamp ohne
+// DOM und ohne echtes Resize beweisbar ist.
+describe('clampNoticeLeft, der Viewport-Clamp des Panels', () => {
+  it('bleibt bei left: 0, wenn genug Platz rechts ist', () => {
+    expect(clampNoticeLeft(20, 1200, 280)).toEqual({ left: 0, width: 280 })
+  })
+
+  it('schiebt das Panel nach links, statt rechts aus dem Fenster zu laufen', () => {
+    // Trigger bei x=300, Fenster nur 360px breit, Panel 280px breit: bei
+    // left:0 raegte das Panel bis x=580, weit ueber den rechten Rand.
+    const { left, width } = clampNoticeLeft(300, 360, 280)
+    expect(width).toBe(280)
+    expect(300 + left + width).toBeLessThanOrEqual(360 - 8 + 0.001)
+    expect(left).toBeLessThan(0)
+  })
+
+  it('schrumpft die Breite, statt einen negativen Rand zu verlangen, wenn selbst 2 * Rand mehr ist als das Fenster', () => {
+    const { width } = clampNoticeLeft(10, 100, 280)
+    expect(width).toBe(100 - 8 * 2)
+  })
+
+  it('haelt mindestens den Rand zum linken Fensterrand ein', () => {
+    const { left, width } = clampNoticeLeft(-50, 360, 280)
+    expect(-50 + left).toBeGreaterThanOrEqual(8 - 0.001)
+    expect(width).toBe(280)
   })
 })
