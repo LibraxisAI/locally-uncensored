@@ -61,8 +61,10 @@ export function CreditsMeter() {
   const remaining = quota.remaining.credits
   const limit = quota.limits.credits
   const state = meterState(quota, cost, kind, op)
-  // A wallet-fixable shortfall (credits, video budget) lands on the credits
-  // tab; the training count is a plan property, so that one goes to the plans.
+  // Every shortfall this chip can show is wallet-fixable now, trainings
+  // included since a topup wallet can fund a run past the included count
+  // (server migration 0047), so all three send the customer to the credits
+  // tab, not to a plan change.
   //
   // Der Knopf traegt die Flaeche des Zaehlers daneben und den Fehlerton als
   // SCHRIFT. Vorher war er gelb gefuellt, also dieselbe Farbe, mit der ein
@@ -98,9 +100,16 @@ export function CreditsMeter() {
     state.showVideoBudget && quota.video
       ? ` (monthly video budget: ${quota.video.remaining} of ${quota.video.limit} credits left)`
       : ''
+  // B3 (review-a1.md): the chip beside this tooltip can already show more
+  // runs than the included count once a topup wallet covers the run
+  // (trainingPackRun in credits-meter.ts). Without this half-sentence the
+  // tooltip named only the included count and read as a contradiction next
+  // to the chip's own number.
+  const topup = quota.topup?.credits ?? 0
+  const trainingPackRun = op === 'lora-train' && cost > 0 && topup >= cost
   const trainingTail =
     op === 'lora-train' && quota.trainings
-      ? ` (${quota.trainings.remaining} of ${quota.trainings.limit} included trainings left)`
+      ? ` (${quota.trainings.remaining} of ${quota.trainings.limit} included trainings left${trainingPackRun ? '; paid credits unlock more' : ''})`
       : ''
 
   return (

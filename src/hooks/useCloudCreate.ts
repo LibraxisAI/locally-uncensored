@@ -119,7 +119,12 @@ export function throttleMessage(err: CloudJobError): string {
       return "This month's video budget is used up. Top-up credits keep video going, or upgrade your plan."
     case 'trainings_exhausted':
       signalCreditsExhausted('trainings')
-      return "Your plan's character trainings for this month are used up."
+      // B1 (review-a1.md): a pack buyer with topup credits can still start a
+      // training the moment this fires, the server race between quota read
+      // and submit is what triggers it. The old sentence only offered a plan
+      // change and hid that path, so it now matches the web word for word
+      // (89055415, apps/web/hooks/useCloudCreate.ts).
+      return 'Your included character trainings are used up. Top-up credits keep training going, or upgrade your plan.'
   }
   const secs = err.retryAfterMs && err.retryAfterMs > 0 ? Math.ceil(err.retryAfterMs / 1000) : null
   return secs

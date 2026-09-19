@@ -32,8 +32,8 @@ export interface CloudQuota {
   topup?: { credits: number }
   /** Monthly video sub-budget. `remaining` is the MONTHLY share only. */
   video?: { limit: number; used: number; remaining: number }
-  /** Character trainings this cycle. A count, not a budget: the wallet cannot
-   *  buy past it. */
+  /** Monthly included character-training count. A wallet with at least the
+   *  cost of the selected trainer unlocks an additional metered run. */
   trainings?: { limit: number; used: number; remaining: number }
 }
 

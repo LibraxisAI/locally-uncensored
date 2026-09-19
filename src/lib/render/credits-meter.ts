@@ -25,8 +25,10 @@ export type MeterState =
       showVideoBudget: boolean
     }
 
-/** Video renders draw the 0029 sub-budget. A character training never does; it
- *  draws the separate monthly COUNT instead. */
+/** Video renders draw the 0029 sub-budget. A character training draws the
+ *  separate monthly COUNT first; once that count is spent, a wallet holding
+ *  at least the full cost of the run unlocks one more (`trainingPackRun`
+ *  below, server migration 0047). */
 export function drawsVideoBudget(kind: RenderKind, op: RenderOp): boolean {
   return kind === 'video' && op !== 'lora-train'
 }

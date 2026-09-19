@@ -135,6 +135,94 @@ describe('character trainings use included runs or paid credits', () => {
   })
 })
 
+// B6 (review-a1.md): the two new trainingPackRun cases proved the branch
+// exists, but left three gaps the review named by name. These three close
+// them without touching meterState itself, which is why the two existing
+// cases above still pass unchanged.
+describe('B6: der gemischte Fall aus Monatsraum und Pack-Wallet', () => {
+  it('9 Trainings, wenn beide Quellen zusammen neun Laeufe decken', () => {
+    // Hosted-Pool 900k plus ein 450k-Pack, beide Trainings des Plans schon
+    // verbraucht, ein Training kostet 150k: (900k + 450k) / 150k = 9. Das ist
+    // genau die Zahl aus B4, die vor diesem Test nirgends festgenagelt war.
+    const q = hosted({
+      remaining: { credits: 1_350_000 },
+      topup: { credits: 450_000 },
+      trainings: { limit: 2, used: 2, remaining: 0 },
+    })
+    expect(meterState(q, 150_000, 'image', 'lora-train')).toMatchObject({
+      kind: 'ok', runsLeft: 9, unit: 'trainings',
+    })
+  })
+})
+
+describe('B6: die starter-Form der Quota (kein Plan, nur Wallet)', () => {
+  it('ein reiner Pack-Kaeufer ohne Plan-Trainings kann trotzdem trainieren', () => {
+    // starter traegt trainings.limit 0 und video.limit 0 (TIER_TRAININGS,
+    // TIER_VIDEO_CREDITS in apps/web/lib/billing/credits.ts): kein Monatsraum
+    // fuer eins von beiden, nur die Wallet. Der bestehende Test oben pruefte
+    // das nur an der hosted-Form, wo ein Monatsraum existiert.
+    const starter: CloudQuota = {
+      tier: 'starter',
+      period: '2026-09-01',
+      limits: { credits: 450_000 },
+      costs: { image: 300, video: 15_000 },
+      used: { credits_used: 0 },
+      remaining: { credits: 450_000 },
+      topup: { credits: 450_000 },
+      video: { limit: 0, used: 0, remaining: 0 },
+      trainings: { limit: 0, used: 0, remaining: 0 },
+    }
+    expect(meterState(starter, 100_000, 'image', 'lora-train')).toMatchObject({
+      kind: 'ok', runsLeft: 4, unit: 'trainings',
+    })
+  })
+
+  it('GEGENPROBE: eine leere Wallet lehnt trotz gekauftem Nullplan ab', () => {
+    const starter: CloudQuota = {
+      tier: 'starter',
+      period: '2026-09-01',
+      limits: { credits: 0 },
+      costs: { image: 300, video: 15_000 },
+      used: { credits_used: 0 },
+      remaining: { credits: 0 },
+      topup: { credits: 0 },
+      video: { limit: 0, used: 0, remaining: 0 },
+      trainings: { limit: 0, used: 0, remaining: 0 },
+    }
+    expect(meterState(starter, 100_000, 'image', 'lora-train')).toEqual({
+      kind: 'insufficient', remaining: 0, cost: 100_000,
+    })
+  })
+})
+
+describe('B6: Gegenprobe, der Video-Unterdeckel bleibt von trainingPackRun unberuehrt', () => {
+  it('ein Pack, gross genug fuer ein Training, oeffnet nicht den Video-Unterdeckel', () => {
+    // trainingPackRun greift nur bei isTraining (op === 'lora-train'). Die
+    // Wallet reicht fuer das 20k-Training, aber nicht fuer den 40k-Videoclip:
+    // ein Video-Render mit derselben Wallet muss weiterhin am eigenen
+    // Unterdeckel scheitern, sonst haette das Zusammenlegen beider Zweige in
+    // einer Funktion den Video-Deckel mit durchlaessig gemacht.
+    const q = hosted({
+      remaining: { credits: 50_000 },
+      topup: { credits: 30_000 },
+      video: { limit: 900_000, used: 900_000, remaining: 0 },
+    })
+    expect(meterState(q, 40_000, 'video', 'generate')).toEqual({ kind: 'no-video-budget' })
+  })
+
+  it('dieselbe Wallet, als guenstigeres Training statt Video, laesst den Lauf durch', () => {
+    // Gegenstueck zum Test daneben: derselbe Kontostand, nur der Zweig und die
+    // Kosten wechseln. Das zeigt, dass die beiden Deckel wirklich getrennt
+    // bleiben, nicht dass einer von beiden immer sperrt oder immer durchlaesst.
+    const q = hosted({
+      remaining: { credits: 50_000 },
+      topup: { credits: 30_000 },
+      trainings: { limit: 2, used: 2, remaining: 0 },
+    })
+    expect(meterState(q, 20_000, 'image', 'lora-train')).toMatchObject({ kind: 'ok' })
+  })
+})
+
 describe('an older server never gates', () => {
   it('treats absent video and training fields as uncapped', () => {
     // A pre-0029 server sends neither. Reading a missing field as zero would
