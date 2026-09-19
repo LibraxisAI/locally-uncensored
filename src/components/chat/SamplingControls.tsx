@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -6,6 +6,37 @@ import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import { SAMPLING_DEFAULTS, effectiveSampling, samplingIsChanged, hasOwnSampling } from '../../lib/sampling'
 import type { SamplingOverrides } from '../../lib/sampling'
+
+/**
+ * Alt-Fehler, gefunden waehrend der Flash-Popup-Arbeit (19.09.2026), am
+ * echten 360px-Fenster: `ChatInput.tsx`s Aktionszeile traegt seit demselben
+ * Fund `overflow-x-auto` (Begruendung dort), damit ihr eigener Ueberschuss
+ * nicht mehr den gemeinsamen `ChatView`-Vorfahren seitlich verschiebt. Das
+ * zwingt `overflow-y` derselben Zeile auf `auto` (CSS Overflow Module Level
+ * 3), was dieses Panel senkrecht abgeschnitten haette: es haengt mit
+ * `bottom: 100%` bewusst ueber den oberen Rand seiner Zeile hinaus.
+ * `position: fixed` statt `absolute` ist die Wurzelloesung, nicht ein
+ * `preventScroll`: ein `fixed` Element zaehlt zur scrollbaren Flaeche keines
+ * Vorfahren dazu, dessen Containing Block es nicht ist, und wird deshalb von
+ * keinem `overflow` beschnitten. `zoom: var(--ui-scale)` (index.css) zaehlt
+ * trotzdem weiter (anders als `transform` macht `zoom` keinen eigenen
+ * Containing Block auf), also dieselbe Skala-Rechnung wie in
+ * `ContextDropdown.tsx`/`ModelSelector.tsx`, siehe der volle Kommentar an
+ * `MenuBox` dort.
+ */
+const PANEL_MARGIN = 8
+
+/** The area that actually clips this panel's anchor, not the window. */
+function schneidendeFlaeche(el: Element): { links: number; rechts: number } {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const cs = getComputedStyle(p)
+    if (cs.overflowY !== 'visible' || cs.overflowX !== 'visible') {
+      const r = p.getBoundingClientRect()
+      return { links: r.left, rechts: r.right }
+    }
+  }
+  return { links: 0, rechts: window.innerWidth }
+}
 
 /**
  * Sampling controls next to the composer, scoped to ONE conversation.
@@ -105,6 +136,10 @@ export function SamplingControls() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const panelId = useId()
+  /** Wo das (jetzt `position: fixed`) Panel landet. `null` bis der erste
+   *  Effektlauf misst; solange bleibt es unsichtbar statt einen Frame lang
+   *  an der falschen Stelle aufzublitzen. */
+  const [panelBox, setPanelBox] = useState<{ left: number; bottom: number } | null>(null)
   const settings = useSettingsStore((s) => s.settings)
   const activeId = useChatStore((s) => s.activeConversationId)
   // Only re-renders when THIS chat's own sampling changes, not on every
@@ -177,7 +212,43 @@ export function SamplingControls() {
   // way out for someone who never reaches for Escape.
   useEffect(() => {
     if (!open) return
-    panelRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus()
+    // `preventScroll`: derselbe Fund wie an `FlashChatNotice.tsx` (siehe dort
+    // fuer die volle Begruendung). Die eigene Lage steht seit dem
+    // Alt-Fehler-Fund oben ohnehin schon auf `position: fixed`, aber ein
+    // Fokussprung ohne `preventScroll` waere trotzdem ein zweiter, unnoetiger
+    // Weg zum selben Symptom, falls je wieder ein Vorfahre dazwischentritt.
+    panelRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus({ preventScroll: true })
+  }, [open])
+
+  // Wo das Panel landet, gemessen bei jedem Oeffnen und bei jeder
+  // Groessenaenderung, solange es offen ist. Siehe der Kommentar oben
+  // (`schneidendeFlaeche`) fuer die volle Begruendung: `position: fixed`
+  // escaped jedes `overflow` im Baum, `zoom` zaehlt trotzdem weiter.
+  useLayoutEffect(() => {
+    if (!open) { setPanelBox(null); return }
+    const messen = () => {
+      const wrap = wrapRef.current
+      if (!wrap) return
+      const rRoh = wrap.getBoundingClientRect()
+      const skala = wrap.offsetWidth > 0 ? rRoh.width / wrap.offsetWidth : 1
+      const r = { left: rRoh.left / skala, right: rRoh.right / skala, top: rRoh.top / skala }
+      const grenzeRoh = schneidendeFlaeche(wrap)
+      const grenze = { links: grenzeRoh.links / skala, rechts: grenzeRoh.rechts / skala }
+      // `right: 0` vorher: rechte Kante des Panels = rechte Kante des
+      // Ausloesers. Als natuerlicher linker Rand, in der Einheit von
+      // `grenze` (deren linke Kante bei 0 liegt), dann geklemmt.
+      const naturalLeft = r.right - grenze.links - PANEL_WIDTH
+      const grenzeBreite = grenze.rechts - grenze.links
+      const left = Math.min(
+        Math.max(naturalLeft, PANEL_MARGIN),
+        Math.max(grenzeBreite - PANEL_WIDTH - PANEL_MARGIN, PANEL_MARGIN),
+      )
+      const fensterHoeheCss = window.innerHeight / skala
+      setPanelBox({ left: grenze.links + left, bottom: fensterHoeheCss - r.top + 6 })
+    }
+    messen()
+    window.addEventListener('resize', messen)
+    return () => window.removeEventListener('resize', messen)
   }, [open])
 
   // ChatInput only mounts the composer once a conversation exists (the
@@ -218,12 +289,15 @@ export function SamplingControls() {
           // Placed with an inline style rather than utility classes, for the
           // same reason the web app does: `position` is then a fact a test can
           // read, instead of a class name a test would have to believe.
+          // `fixed` statt `absolute`, `left`/`bottom` aus `panelBox`: siehe
+          // der Kommentar an `schneidendeFlaeche` oben fuer die volle
+          // Begruendung (Alt-Fehler-Fund 19.09.2026).
           style={{
-            position: 'absolute',
-            right: 0,
-            bottom: '100%',
-            marginBottom: 6,
+            position: 'fixed',
+            left: panelBox?.left,
+            bottom: panelBox?.bottom,
             width: PANEL_WIDTH,
+            visibility: panelBox ? 'visible' : 'hidden',
           }}
           className="z-50 space-y-2 rounded-lg p-2.5 lu-elevated"
         >

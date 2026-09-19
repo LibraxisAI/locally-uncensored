@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createElement } from 'react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
   clampNoticeLeft,
@@ -281,5 +281,47 @@ describe('clampNoticeMaxHeight, die Hoehenklemme des nach oben oeffnenden Panels
   it('wird nie negativ, wenn der Trigger fast am oberen Fensterrand klebt', () => {
     expect(clampNoticeMaxHeight(0)).toBe(0)
     expect(clampNoticeMaxHeight(5)).toBe(0)
+  })
+})
+
+// Runde 4 (19.09.2026): bisher wurde nur bei `resize` neu gemessen. Ein
+// Scroll auf einem Vorfahren (die 360px-Aktionszeile in `ChatInput.tsx` traegt
+// seit demselben Fund ihren eigenen `overflow-x-auto`) aendert die
+// Ausloeser-Position genauso, ohne dass `resize` feuert.
+describe('Scroll waehrend das Panel offen ist', () => {
+  it('lauscht bei offenem Panel auf scroll, in der Einfangphase und passiv', () => {
+    const add = vi.spyOn(window, 'addEventListener')
+    render(createElement(FlashChatNotice))
+    openPopup()
+    const scrollCalls = add.mock.calls.filter(([type]) => type === 'scroll')
+    expect(scrollCalls).toHaveLength(1)
+    const [, , options] = scrollCalls[0]
+    expect(options).toMatchObject({ capture: true, passive: true })
+    add.mockRestore()
+  })
+
+  it('misst neu, wenn ein Vorfahre scrollt, nicht nur bei resize', () => {
+    render(createElement(FlashChatNotice))
+    openPopup()
+    const panel = screen.getByTestId('flash-chat-notice-panel')
+    const vorher = panel.style.left
+    // `getBoundingClientRect` liefert in jsdom immer Nullen, die Messung
+    // selbst ist deshalb hier nicht pruefbar (kein Layout in `environment:
+    // 'node'`-Nachbarn, dieselbe Grenze wie bei `platzFuerPopover`). Geprueft
+    // wird, dass der Scroll ueberhaupt eine neue Messung ausloest und die
+    // Komponente dabei nicht abstuerzt oder das Panel schliesst.
+    act(() => window.dispatchEvent(new Event('scroll')))
+    // `getByTestId` wirft, wenn das Panel dabei verschwunden waere.
+    expect(screen.getByTestId('flash-chat-notice-panel').style.left).toBe(vorher)
+  })
+
+  it('lauscht nicht mehr, sobald das Panel zu ist', () => {
+    const remove = vi.spyOn(window, 'removeEventListener')
+    render(createElement(FlashChatNotice))
+    openPopup()
+    fireEvent.click(screen.getByTestId('flash-chat-notice-close'))
+    const scrollRemovals = remove.mock.calls.filter(([type]) => type === 'scroll')
+    expect(scrollRemovals.length).toBeGreaterThanOrEqual(1)
+    remove.mockRestore()
   })
 })

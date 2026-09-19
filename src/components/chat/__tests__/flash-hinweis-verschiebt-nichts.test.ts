@@ -83,22 +83,34 @@ describe('der Hinweis steht in der Sitzungsleiste, neben dem Agent-Schalter', ()
 })
 
 describe('das Popup liegt ausserhalb des Layoutflusses, wie der Sampling-Regler', () => {
-  it('FlashChatNotice setzt position: absolute fuers Panel, dieselbe Bauart', () => {
+  // Runde 4 (19.09.2026, Alt-Fehler-Fund): `SamplingControls` haengt sein
+  // Panel seither an `position: fixed`, nicht mehr `absolute` (Begruendung
+  // an `schneidendeFlaeche` dort: die Composer-Zeile traegt seit demselben
+  // Fund `overflow-x-auto` und wuerde ein `absolute`-Kind, das `bottom: 100%`
+  // ueber ihren eigenen Rand hinaus reicht, senkrecht abschneiden).
+  // `FlashChatNotice` bleibt `absolute`: sein Trigger sitzt nicht in dieser
+  // Zeile, ihn trifft der Alt-Fehler nicht.
+  it('FlashChatNotice setzt position: absolute, SamplingControls jetzt fixed', () => {
     expect(NOTICE).toMatch(/position:\s*'absolute'/)
-    expect(SAMPLING).toMatch(/position:\s*'absolute'/)
+    expect(SAMPLING).toMatch(/position:\s*'fixed'/)
+    expect(SAMPLING).not.toMatch(/position:\s*'absolute'/)
   })
 
   // Runde 3 (Abnahme 19.09.2026, Blocker A1): die Sitzungsleiste steht unter
   // dem Transkript, direkt ueber dem Composer, nicht oben. Ein Panel, das
   // nach UNTEN oeffnet (`top: '100%'`), liefe dort aus dem Fenster und wuerde
   // vom `overflow-hidden`-Vorfahren in ChatView.tsx abgeschnitten. Nur
-  // `position: absolute` zu pruefen (wie zuvor) faengt das nicht, deshalb
-  // steht hier zusaetzlich die Richtung selbst: `bottom: '100%'`, wie
-  // `SamplingControls`, und explizit NICHT `top: '100%'`.
+  // `position` zu pruefen (wie zuvor) faengt das nicht, deshalb steht hier
+  // zusaetzlich die Richtung selbst: `bottom`, wie `SamplingControls`, und
+  // explizit NICHT `top: '100%'`. `SamplingControls` rechnet seinen `bottom`
+  // seit Runde 4 aus `panelBox` (Fenstermessung fuer `position: fixed`)
+  // statt der literalen `'100%'`, aber die Richtung ist dieselbe: `bottom`,
+  // nie `top`.
   it('das Panel oeffnet nach OBEN, wie SamplingControls, nicht nach unten', () => {
     expect(NOTICE).toMatch(/bottom:\s*'100%'/)
     expect(NOTICE).not.toMatch(/top:\s*'100%'/)
-    expect(SAMPLING).toMatch(/bottom:\s*'100%'/)
+    expect(SAMPLING).toMatch(/bottom:\s*panelBox\?\.bottom/)
+    expect(SAMPLING).not.toMatch(/top:\s*panelBox/)
   })
 
   it('das Panel klemmt seine Hoehe auf den freien Platz ueber dem Trigger', () => {

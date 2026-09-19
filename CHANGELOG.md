@@ -36,6 +36,13 @@ installs stop losing environment variables to it.
   tells you what to install before starting the roughly 2 GB PyTorch download,
   instead of that download running for minutes and then failing with pip's own
   generic error.
+- **At a narrow window width, picking a model or opening the sampling or
+  plugins popups no longer shifts the whole chat sideways.** The composer
+  toolbar itself ran wider than the window, so a click on a control near its
+  edge made the browser scroll the shared chat area to bring it into view.
+  The toolbar now scrolls locally on its own when it does not fit, and the
+  three popups it hosts measure the window instead of relying on a fixed
+  spot, so the shared chat area itself never moves.
 - **The LU Engine crashing immediately on an old CPU now says which instruction
   set is missing**, measured from the CPU itself rather than guessed, and stops
   retrying the same binary a second time since it would only fail the same way
