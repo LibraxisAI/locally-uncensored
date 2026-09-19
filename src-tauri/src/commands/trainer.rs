@@ -149,6 +149,88 @@ fn write_config_value(key: &str, value: &str) {
     let _ = fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or_default());
 }
 
+/// Whether a candidate path starts with `~`. `~` is a SHELL expansion, and
+/// nothing on the Rust side of the trainer ever resolves it: the value goes
+/// straight into `PathBuf::from`. K5 Blocker 1 (Opus review of `4fda5a0a`):
+/// the old placeholder suggested `~/LU-Trainer` on Mac and Linux, so typing
+/// exactly what the field offered created a literal folder named `~` next to
+/// the app's working directory, not a folder in the user's home. Refusing
+/// beats silently expanding it ourselves: there is no shell context here to
+/// expand `~` FOR (a different user could run the app under a service
+/// account with a different home than the one the customer meant).
+fn starts_with_tilde(p: &str) -> bool {
+    p.starts_with('~')
+}
+
+/// The absolute example shown in the trainer's own install-path field and
+/// quoted back in its own rejection messages, one per platform family so the
+/// example is never impossible on the machine reading it (same reasoning as
+/// `comfy_path_placeholder.ts` on the frontend, kept in sync by
+/// `k5-trainer-root-validation.test.ts`/`k5-trainer-path-honesty.test.tsx`).
+fn example_trainer_path() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "D:\\LU-Trainer"
+    } else if cfg!(target_os = "macos") {
+        "/Users/you/LU-Trainer"
+    } else {
+        "/home/you/LU-Trainer"
+    }
+}
+
+/// Everything a customer-typed trainer folder has to clear before it is
+/// written to `config.json` and an install starts against it. K5 Blocker 2
+/// (Opus review of `4fda5a0a`): the old code wrote the value first and asked
+/// nothing afterward, so a relative path, a path with no write access or a
+/// drive with no room was persisted anyway, and stayed persisted even though
+/// the install that followed could never use it. `install_comfyui` is the
+/// pattern this mirrors, except the check happens before the value is
+/// remembered instead of after the whole install finishes -- checking a
+/// folder is fast, an install is not, and there is nothing here yet to lose
+/// on a failed check.
+///
+/// Order matters: the drive-space question is asked with the CANDIDATE path
+/// (no directory has to exist yet for a mount-point lookup), before anything
+/// is created, so a rejection on space leaves no empty folder behind.
+fn validate_trainer_root_candidate(p: &str) -> Result<PathBuf, String> {
+    if starts_with_tilde(p) {
+        return Err(format!(
+            "\"{p}\" starts with ~, and this field never expands it: the path is used exactly as typed, so ~ would become a literal folder named ~, not your home folder. Use a full path instead, for example {}.",
+            example_trainer_path()
+        ));
+    }
+    let path = PathBuf::from(p);
+    if !path.is_absolute() {
+        return Err(format!(
+            "\"{p}\" is not an absolute path. Use a full path starting from the drive or root, for example {}.",
+            example_trainer_path()
+        ));
+    }
+    if let Some(free) = crate::commands::download::available_space_for(&path) {
+        if let Some(msg) = disk_room_message(&path, free, TRAINER_SETUP_NEEDS_GIB) {
+            return Err(msg);
+        }
+    }
+    fs::create_dir_all(&path).map_err(|e| format!("Could not create \"{p}\": {}", os_error::english(&e)))?;
+    let probe = path.join(".lu-write-check");
+    fs::write(&probe, b"ok").map_err(|e| format!("\"{p}\" is not writable: {}", os_error::english(&e)))?;
+    let _ = fs::remove_file(&probe);
+    Ok(path)
+}
+
+/// A folder to suggest, not set, in the trainer's own install-path field: K5
+/// architecture point 5. A customer who already moved ComfyUI (and with it
+/// the model folder `download_model` writes into, see `models_dir_in` in
+/// `commands/download.rs`) off the system drive is not left to retype a
+/// matching drive letter for the trainer by hand. `None` once `trainer_root`
+/// is already customized (nothing left to suggest) or when no ComfyUI folder
+/// is known yet. Read only as far as the PLACEHOLDER: nothing here writes
+/// `config.json` or moves a single byte.
+fn suggested_trainer_root(comfy_dir: Option<&Path>) -> Option<String> {
+    let comfy = comfy_dir?;
+    let parent = comfy.parent()?;
+    Some(parent.join("LU-Trainer").to_string_lossy().to_string())
+}
+
 /// Trainer root: persisted override (config `trainer_root`) else
 /// `<app_data>/musubi`. Layout: `<root>/venv`, `<root>/musubi-tuner`,
 /// `<root>/models`, `<root>/train/<set_id>/...`.
@@ -1429,21 +1511,33 @@ pub fn install_character_trainer(
     installPath: Option<String>,
 ) -> Result<serde_json::Value, String> {
     {
-        let mut st = state.trainer_install.lock().unwrap();
+        let st = state.trainer_install.lock().unwrap();
         if st.status == "installing" {
             return Ok(serde_json::json!({"status": "already_installing"}));
         }
+    }
+
+    // K5 Blocker 2/3 (Opus review of `4fda5a0a`): validated and persisted
+    // BEFORE the install starts, not after, and an empty field is the way
+    // back to the default (point 3), not "leave whatever was there before".
+    // Nothing at a previous customized location is touched or deleted here;
+    // see `trainerRootHint` on the frontend for the sentence that says so.
+    let trimmed = installPath.as_deref().map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        write_config_value("trainer_root", "");
+    } else {
+        let validated = validate_trainer_root_candidate(trimmed)?;
+        write_config_value("trainer_root", &validated.to_string_lossy());
+    }
+
+    {
+        let mut st = state.trainer_install.lock().unwrap();
         st.status = "installing".to_string();
         st.logs.clear();
         st.logs.push("Setting up the local character trainer...".to_string());
     }
     info!("character trainer install start");
 
-    if let Some(p) = installPath.as_deref() {
-        if !p.trim().is_empty() {
-            write_config_value("trainer_root", p.trim());
-        }
-    }
     let root = trainer_root(&app);
     // An empty or unusable default Python is no longer a reason to stop here:
     // trainer_base_python surveys the machine and, on Windows, installs 3.12
@@ -2203,6 +2297,12 @@ pub fn character_trainer_status(
     let te = resolve_base_file(&root, comfy.as_deref(), TE_CANDIDATES, "text_encoders");
     let vae = resolve_base_file(&root, comfy.as_deref(), VAE_CANDIDATES, "vae");
     let install = state.trainer_install.lock().unwrap();
+    // K5 point 3/5: `customized` lets the frontend say the truth about where
+    // this install target actually is instead of assuming the default, and
+    // `suggestedRoot` is the sibling-of-ComfyUI suggestion from point 5,
+    // computed only while there is nothing customized yet to suggest over.
+    let customized = trainer_root_is_customized();
+    let suggested_root = if customized { None } else { suggested_trainer_root(comfy.as_deref()) };
     Ok(serde_json::json!({
         "envReady": env_ready,
         "basesReady": dit.is_some() && te.is_some() && vae.is_some(),
@@ -2210,6 +2310,8 @@ pub fn character_trainer_status(
         "textEncoder": te.map(|p| p.to_string_lossy().to_string()),
         "vae": vae.map(|p| p.to_string_lossy().to_string()),
         "root": root.to_string_lossy().to_string(),
+        "customized": customized,
+        "suggestedRoot": suggested_root,
         "install": { "status": install.status, "logs": install.logs },
     }))
 }
@@ -3601,6 +3703,124 @@ mod tests {
                 super::write_config_value("trainer_root", "");
             }
         }
+    }
+
+    // ── K5 Nachbesserung (Opus review of `4fda5a0a`, three blockers) ───────
+
+    #[test]
+    fn a_leading_tilde_is_never_accepted() {
+        assert!(super::starts_with_tilde("~/LU-Trainer"));
+        assert!(super::starts_with_tilde("~"));
+        assert!(!super::starts_with_tilde("/home/dave/LU-Trainer"), "an absolute path must not be flagged");
+        assert!(!super::starts_with_tilde("D:\\LU-Trainer"), "a drive path must not be flagged");
+    }
+
+    /// BLOCKER 1: the field's own example must be an absolute path on every
+    /// platform, never the tilde Rust does not resolve.
+    #[test]
+    fn the_example_path_is_absolute_on_every_platform() {
+        assert!(!super::example_trainer_path().starts_with('~'), "the example itself must not be the mistake it warns against");
+    }
+
+    /// BLOCKER 1, negative control: a leading tilde is refused before
+    /// anything is written or created, so the historic bug (a literal folder
+    /// named `~`) cannot happen any more.
+    #[test]
+    fn validate_trainer_root_candidate_rejects_a_leading_tilde() {
+        let err = super::validate_trainer_root_candidate("~/LU-Trainer").expect_err("a tilde must be refused");
+        assert!(err.contains('~'), "the message must name the actual problem: {err}");
+        assert!(!Path::new("~").exists(), "no literal ~ folder must have been created");
+    }
+
+    /// BLOCKER 2, negative control: a relative path is refused, not silently
+    /// resolved against the process's current directory.
+    #[test]
+    fn validate_trainer_root_candidate_rejects_a_relative_path() {
+        let err = super::validate_trainer_root_candidate("LU-Trainer").expect_err("a relative path must be refused");
+        assert!(err.contains("absolute"), "the message must say why: {err}");
+    }
+
+    /// BLOCKER 2, the fix itself: an absolute, creatable, writable path is
+    /// accepted, the directory exists afterward, and the write probe this
+    /// function used to prove writability is cleaned up again.
+    #[test]
+    fn validate_trainer_root_candidate_accepts_a_real_absolute_folder() {
+        let root = std::env::temp_dir().join(format!("lu-trainer-validate-ok-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let accepted = super::validate_trainer_root_candidate(&root.to_string_lossy()).expect("a real, writable folder must be accepted");
+        assert_eq!(accepted, root);
+        assert!(root.is_dir(), "the folder must exist after validation");
+        assert!(!root.join(".lu-write-check").exists(), "the write probe must be cleaned up, not left behind");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// BLOCKER 2, negative control on the write-then-check order: pointing
+    /// the candidate at a path that already exists as a plain FILE (not a
+    /// folder) cannot be created as a directory, so validation must fail
+    /// instead of silently writing the probe next to an unrelated file.
+    #[test]
+    fn validate_trainer_root_candidate_rejects_a_path_that_is_already_a_file() {
+        let file = std::env::temp_dir().join(format!("lu-trainer-validate-file-{}", std::process::id()));
+        fs::write(&file, b"not a folder").unwrap();
+        let err = super::validate_trainer_root_candidate(&file.to_string_lossy());
+        assert!(err.is_err(), "a path that is already a file must be refused, not treated as an installable folder");
+        fs::remove_file(&file).unwrap();
+    }
+
+    /// BLOCKER 3, honesty: the suggestion is a sibling of the ComfyUI folder,
+    /// never the ComfyUI folder's own subtree, and it is a plain string for a
+    /// placeholder, not a value this function ever persists.
+    #[test]
+    fn suggested_trainer_root_proposes_a_sibling_of_comfyui() {
+        let comfy = Path::new("/mnt/e/ComfyUI");
+        let suggestion = super::suggested_trainer_root(Some(comfy)).expect("a known ComfyUI folder must produce a suggestion");
+        assert_eq!(suggestion, "/mnt/e/LU-Trainer");
+    }
+
+    /// Negative control: no known ComfyUI folder means no suggestion, not a
+    /// guess.
+    #[test]
+    fn suggested_trainer_root_is_none_without_a_known_comfyui_folder() {
+        assert_eq!(super::suggested_trainer_root(None), None);
+    }
+
+    /// K5 point 3: an empty install path is the way back to the default, not
+    /// a no-op that keeps whatever `trainer_root` already held. Exercised
+    /// against the real config file like the other `trainer_root_is_customized`
+    /// test above, since `install_character_trainer` itself needs a live
+    /// `AppHandle` this module's tests do not build.
+    #[test]
+    fn an_empty_install_path_clears_a_previous_override_the_same_way_install_character_trainer_does() {
+        let _guard = config_json_test_guard();
+        let backup = super::read_config_value("trainer_root");
+        super::write_config_value("trainer_root", "/mnt/big-drive/musubi");
+        assert!(super::trainer_root_is_customized());
+        // This is the exact branch `install_character_trainer` takes for a
+        // None/empty `installPath`: reproduced here because that function
+        // needs a real `AppHandle`.
+        let trimmed = "";
+        if trimmed.is_empty() {
+            super::write_config_value("trainer_root", "");
+        }
+        assert!(!super::trainer_root_is_customized(), "an empty submission must reset to the default, not keep the old override");
+        match backup {
+            Some(value) => super::write_config_value("trainer_root", &value),
+            None => super::write_config_value("trainer_root", ""),
+        }
+    }
+
+    /// Source check that `install_character_trainer` actually validates
+    /// before it persists, in that order -- the one thing a behavioural test
+    /// against the real function cannot pin down without a live `AppHandle`
+    /// and a background thread.
+    #[test]
+    fn install_character_trainer_validates_before_it_persists() {
+        let src = include_str!("trainer.rs");
+        let body_start = src.find("pub fn install_character_trainer(").expect("install_character_trainer");
+        let body = &src[body_start..body_start + 1800];
+        let validate_at = body.find("validate_trainer_root_candidate(trimmed)?").expect("validation call");
+        let write_at = body.find("write_config_value(\"trainer_root\", &validated").expect("persist call");
+        assert!(validate_at < write_at, "the candidate must be validated before it is written to config.json");
     }
 
     /// The priority order the review asked for: the Hardware tab's own pick

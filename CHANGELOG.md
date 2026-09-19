@@ -2,6 +2,134 @@
 
 All notable changes to Locally Uncensored are documented here.
 
+## [3.0.1] - 2026-09-18
+
+A GPU without a measured free reading gets a safer plan, and Linux/AppImage
+installs stop losing environment variables to it.
+
+### Fixed
+
+- **The local engine now picks its CPU code path at startup**, so older
+  processors without AVX2 can run local models instead of the engine exiting
+  right after start.
+- **A GPU whose free VRAM could not actually be measured** (no nvidia-smi, for
+  instance) used to be planned as if the whole card were sitting empty, and the
+  log line said "N MiB are free" for a number that was really the total size,
+  other programs included. It now takes a bigger safety margin on that weaker
+  reading and logs it correctly as total capacity, not free memory, so a start
+  plans fewer layers rather than too many.
+- **Linux AppImage stops leaking its own runtime into every program LU
+  starts.** git, a system Python, pip, ffmpeg, nvidia-smi, the coding agent
+  shell and every program the Character Trainer starts no longer inherit the
+  AppImage runtime's own LD_LIBRARY_PATH, PYTHONHOME and related variables.
+  That inheritance made a perfectly healthy system Python fail to import ssl or
+  find its standard library, with a diagnosis that pointed at a broken Python
+  install rather than the real cause.
+- **A platform where pip refuses to write into the system Python** (Arch,
+  Debian 12+, Fedora 38+, Ubuntu 23.04+) no longer kills the isolated venv LU
+  already built there at the first pip call, and the same fix keeps the Coding
+  Agent's own terminal from picking up the same poisoned environment for every
+  git, pip or python command typed into it.
+- **Installing or repairing ComfyUI now searches the interpreters already on
+  your machine** for one PyTorch actually ships wheels for, and uses that one
+  automatically, with no picker in Settings. If none is found, it says so and
+  tells you what to install before starting the roughly 2 GB PyTorch download,
+  instead of that download running for minutes and then failing with pip's own
+  generic error.
+- **The LU Engine crashing immediately on an old CPU now says which instruction
+  set is missing**, measured from the CPU itself rather than guessed, and stops
+  retrying the same binary a second time since it would only fail the same way
+  again.
+- **The engine startup probe's log line no longer treats a model that is still
+  loading, one that is thinking and one that has genuinely failed as the same
+  thing.** The wording for each case is distinct now.
+- **The CI check that runs on every pull request now fails independently on
+  each platform** instead of one platform's failure hiding whatever the other
+  platform would have found.
+- **Sending in one conversation while another is still streaming no longer
+  mixes their text together**, and a second agent run no longer gets silently
+  dropped while the first one is still going; both now finish on their own.
+- **The local model runs one conversation at a time**, and a chat that has to
+  wait its turn now says so, with a line showing how many chats are ahead of
+  it. Stop works while it is still waiting, and takes it out of the line.
+- **Stop, signing out and quitting the app now reach every conversation**,
+  including one that has not started running yet and is only waiting its turn,
+  not just the one open on screen.
+- **Moving the Temperature, Top P or Max tokens slider now changes that one
+  conversation only**, instead of every open chat sharing one value from the
+  Settings page. A chat with no slider of its own still follows Settings, and a
+  field nobody moved anywhere is left out of the request so the model applies
+  its own default.
+- **Pressing Stop while the Coding Agent is running code now actually stops
+  that run**, the same way it already stopped a shell command.
+- **The Troubleshoot panel now tests the LM Studio address you actually
+  configured in Settings**, instead of always trying the default
+  127.0.0.1:1234.
+- **Picking a specific GPU for a local model or the Character Trainer now keeps
+  using that physical card** even if Windows or Linux renumber the cards
+  between detection and start.
+- **Opening the Hardware tab in Settings while a local model or the trainer was
+  starting up could freeze it for a moment**; it no longer waits on that GPU
+  detection.
+- **Replacing an OpenAI compatible backend now parks the API key it displaces
+  in the OS keychain instead of dropping it**, and gives it back if you switch
+  back to that backend or remove the one that replaced it. The warning that a
+  key will be lost only shows on a device with no keychain to park it in.
+- **Setting an install location for the Character Trainer now also redirects
+  pip, Hugging Face and torch's own caches there**, so moving the trainer off a
+  small system drive keeps those caches off it too. The field itself now
+  rejects a path it cannot actually use, always shows the folder it will
+  really install to, and an emptied field goes back to the default; the Z Image
+  base model downloads always follow your configured model folder in Settings,
+  ComfyUI, either way.
+- **A finished image in Create has an Animate this image button** that carries
+  it straight into a video render, the same as the browser studio, and the No
+  refusals mark now shows on cloud models in the desktop picker as well.
+- **qwen-image-edit is selectable from the seed and edit pickers again**, the
+  upscale tool is named Enhance Image to match the web, and Krea 2 checkpoints
+  load with the right UNET, CLIP and VAE nodes instead of falling back to an
+  unknown loader.
+- **The Create button now stays disabled instead of failing on the server**
+  when the chosen model needs a mask that was never supplied, and the local
+  character LoRA list refreshes itself right after a training finishes instead
+  of needing a restart.
+- **"Failed to fetch" is no longer shown as the whole explanation for a failed
+  cloud render**, and the out of credits dialog now has a distinct title for
+  each of its three reasons instead of one generic one.
+- **The model picker no longer crashes when grouping models by family**, a
+  custom OpenAI compatible endpoint now receives Top K, a model name is no
+  longer cut off at its first colon, and a newly added provider starts with no
+  value pre filled.
+- **A memory entry with more than one line survives export and import again**,
+  both separator styles the web writes are read back, and one sensitive memory
+  entry no longer blocks the whole sync.
+- **The composer lock during a send now only affects that one conversation**,
+  not every open chat, Stop in one chat no longer cancels an image or video
+  render running in another, and picking a third remembered agent folder now
+  asks for confirmation like the first two do.
+- **The first click into the Models folders tab is faster**, since it asks the
+  running engine directly instead of falling back to a stale cache, and the
+  onboarding VRAM hint asks LU's own probe first so it works before ComfyUI is
+  installed.
+- **Settings now says when Ollama is reachable but switched off**, instead of
+  just Reachable, which read as if it were actually being used.
+- **A Cloud chat request that hits its own four minute limit is now treated as
+  finished right away** instead of being retried up to three more times with
+  the same four minute wait on each try.
+- **The Local Media (Apple MLX) panel now mentions that a Hugging Face token
+  can help its downloads**, the same hint ComfyUI already gives for its own
+  model downloads.
+- **The No refusals mark in the desktop model picker now carries an icon and
+  bolder text** so it is actually noticeable, instead of blending into the
+  smallest text on the row.
+- **Dismissing the stale model notice in the chat header now actually
+  dismisses it**, instead of it reappearing on the very next update.
+- **The reason the Coding Agent will not let go of its current folder is now
+  shown as a visible line**, instead of only a tooltip a disabled button never
+  shows.
+- **ltx-2 LoRA renders in the desktop app now carry a credit cost**, matching
+  the web catalog, instead of pricing as free.
+
 ## [3.0.0] - 2026-09-13
 
 **Cloud: 24 chat models with no refusals, 10 open video models, 3 open image

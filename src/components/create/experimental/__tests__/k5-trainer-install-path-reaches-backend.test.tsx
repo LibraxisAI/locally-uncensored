@@ -44,6 +44,8 @@ vi.mock('../../../../api/trainer', async () => {
       textEncoder: null,
       vae: null,
       root: '',
+      customized: false,
+      suggestedRoot: null,
       install: { status: 'idle', logs: [] },
     })),
     installCharacterTrainer: (...a: unknown[]) => installCharacterTrainer(...(a as [])),
