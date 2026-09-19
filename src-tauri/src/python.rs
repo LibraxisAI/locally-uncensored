@@ -423,6 +423,12 @@ fn python_in_conda() -> Option<String> {
 /// during init. The version is asked from the interpreter itself, not read
 /// off a folder name or a pyvenv.cfg, because those describe what was
 /// installed once, not what starts today.
+///
+/// On Windows the only callers run behind `python_version_and_arch` instead
+/// (a 32-bit or ARM64 interpreter answers this check like a normal one, see
+/// its doc comment), so this is unused there outside the test that exercises
+/// it directly.
+#[cfg(any(not(windows), test))]
 pub fn python_version(exe: &str) -> Option<String> {
     let out = python_command(exe)
         .args(["-c", "import sys;print('%d.%d.%d'%sys.version_info[:3])"])
