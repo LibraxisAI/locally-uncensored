@@ -22,6 +22,38 @@ const LONG_RUNNING = new Set([
   'shell_execute',
 ])
 
+/**
+ * `setTimeout`'s own practical ceiling: a delay above roughly 24.8 days
+ * overflows the 32-bit int it uses internally and fires almost at once
+ * instead of never (the opposite of "no cap"). Used below for tools that
+ * must not race against a made-up deadline at all.
+ */
+export const NO_PRACTICAL_CAP_MS = 2_147_483_000
+
+/**
+ * `delegate_task` (foreground only) and `run_workflow`: a nested ReAct loop
+ * / step chain with its OWN termination, namely iteration and step caps
+ * (SUB_AGENT_BUDGET, MAX_STEPS_EXECUTED/MAX_LOOP_ITERATIONS) and Stop wired
+ * straight into the run, not a timer this file could ever see (klaerung-n5a,
+ * Frage 1). Before this, both fell through to the generic 60 s default,
+ * exactly the "actual working limit" this file's own header says the cap
+ * must never become, and the measured cause of two real 60,0 s aborts whose
+ * sub-agent then kept running, orphaned, holding the local lane. Making that
+ * orphaned run actually stop is Fix 2, a separate change to
+ * `raceWithToolTimeout` and to the two tools' own executors.
+ *
+ * `delegate_task`'s BACKGROUND branch is excluded on purpose: it books its
+ * own conversation slot under a task id and returns in milliseconds (it
+ * never runs inside this race at all in practice), so raising its cap would
+ * only hide a real hang instead of a false one.
+ *
+ * `check_tasks` and `message_agent` were checked too and do NOT belong here:
+ * both only read or write the in-memory agentTaskStore, no lane, no I/O, no
+ * network, so neither can legitimately run anywhere near 60 s, and the
+ * generic default stays their real backstop.
+ */
+const AGENT_LOOP_TOOLS = new Set(['delegate_task', 'run_workflow'])
+
 export interface ToolTimeoutSettings {
   imageGenTimeoutMinutes?: number
   videoGenTimeoutMinutes?: number
@@ -38,6 +70,9 @@ export function toolCallCapMs(
   }
   if (name === 'video_generate') {
     return Math.max(1, Number(settings.videoGenTimeoutMinutes) || 60) * 60_000 + 120_000
+  }
+  if (AGENT_LOOP_TOOLS.has(name) && args?.background !== true) {
+    return NO_PRACTICAL_CAP_MS
   }
   if (LONG_RUNNING.has(name)) {
     const own = Number(args?.timeout)
