@@ -1,5 +1,4 @@
 import { useCodex } from '../../hooks/useCodex'
-import { MemorySources } from './MemorySources'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
 import { useCodexStore } from '../../stores/codexStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -624,7 +623,6 @@ export function CodexView() {
                           </>
                         )
                       })()}
-                      {msg.role === 'assistant' && <MemorySources sources={msg.memorySources} />}
                     </div>
                   </div>
                 )

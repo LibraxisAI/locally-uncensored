@@ -7,7 +7,7 @@ import type { MemoryFile } from '../src/types/agent-mode'
 
 for (const mode of ['Chat', 'Agent', 'Code'] as const) {
  for (const collection of ['local', 'account'] as const) {
-  test(`${mode} ${collection} sends selected memory and records matching answer sources`, async ({ page }, testInfo) => {
+  test(`${mode} ${collection} sends selected memory without a per-answer sources chip`, async ({ page }, testInfo) => {
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(error.message))
     await page.route('**/*', route => {
@@ -63,13 +63,10 @@ for (const mode of ['Chat', 'Agent', 'Code'] as const) {
       const chatPath = '/src/stores/chatStore.ts'
       const chat = await import(/* @vite-ignore */ chatPath) as typeof import('../src/stores/chatStore')
       await chat.flushChatPersist()
-      const active = chat.useChatStore.getState().getActiveConversation()
-      const answer = active?.messages.find(message => message.role === 'assistant')
       const bodies: unknown = Reflect.get(window, '__E2E_CHAT_BODIES__')
       if (!Array.isArray(bodies) || !bodies.every(body => typeof body === 'string')) throw new Error('Missing transport bodies')
-      return { sources: answer?.memorySources, bodies: bodies as string[] }
+      return { bodies: bodies as string[] }
     })
-    expect(result.sources).toEqual({ ids: ['global', 'project'], scope: 'proof', ...(collection === 'account' ? { owner: 'proof-owner' } : {}) })
     const body = result.bodies.find(value => value.includes('sourceproof preferences please'))
     expect(body).toBeDefined()
     const payload: unknown = JSON.parse(body!)
@@ -79,29 +76,12 @@ for (const mode of ['Chat', 'Agent', 'Code'] as const) {
     expect(system).toContain('SOURCEPROOF_global')
     expect(system).toContain('SOURCEPROOF_project')
     for (const excluded of ['private', 'foreign', 'stale']) expect(body).not.toContain(`SOURCEPROOF_${excluded}`)
-    await page.getByText('Memory sources (2)', { exact: true }).click()
-    await expect(page.getByText('Sourceproof project', { exact: true })).toBeVisible()
+    // Regression guard: the "Memory sources" chip under an answer was removed
+    // (David 2026-09-19: the purple brain icon already shows memory is active,
+    // repeating it under every reply was noise). Retrieval above still runs in
+    // full; only the per-answer disclosure is gone.
+    await expect(page.getByText('Memory sources', { exact: false })).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('memory-hook-sources.png') })
-    await page.reload()
-    if (collection === 'account') {
-      await expect.poll(() => page.evaluate(async () => {
-        const authPath = '/src/stores/cloudAuthStore.ts'
-        const { useCloudAuthStore } = await import(authPath) as typeof import('../src/stores/cloudAuthStore')
-        return useCloudAuthStore.getState().status
-      })).not.toBe('probing')
-      await expect(page.getByText('Memory sources (2)', { exact: true })).toHaveCount(0)
-      await page.evaluate(async () => {
-        const authPath = '/src/stores/cloudAuthStore.ts'
-        const memoryPath = '/src/stores/memoryStore.ts'
-        const { useCloudAuthStore } = await import(authPath) as typeof import('../src/stores/cloudAuthStore')
-        const { useMemoryStore } = await import(memoryPath) as typeof import('../src/stores/memoryStore')
-        await useMemoryStore.persist.rehydrate()
-        useCloudAuthStore.getState().setSignedIn({ id: 'proof-owner' }, { licenseActive: false, tier: null, access: true, quota: null })
-        if (!useMemoryStore.getState().selectMemoryCollection('proof-owner')) throw new Error('Could not restore proof collection')
-      })
-    }
-    await page.getByText('Memory sources (2)', { exact: true }).click()
-    await expect(page.getByText('Sourceproof project', { exact: true })).toBeVisible()
     expect(pageErrors).toEqual([])
   })
  }

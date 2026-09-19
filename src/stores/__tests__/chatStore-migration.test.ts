@@ -158,4 +158,31 @@ describe('chatStore — migratePersistedChat', () => {
   it('tolerates non-array conversations gracefully', () => {
     expect(migratePersistedChat({ conversations: 'not-an-array' })).toEqual({ conversations: 'not-an-array' })
   })
+
+  // The per-answer "Memory sources" chip (and the field feeding it) was
+  // removed 2026-09-19: the purple brain icon in the session strip below
+  // the transcript still opens Memory, so repeating it under every reply
+  // was dropped.
+  // A conversation saved by an older build can still carry `memorySources`
+  // on its messages. There is no migration for it, it is simply ignored.
+  it('loads an old message carrying the retired memorySources field without breaking', () => {
+    const state = {
+      conversations: [
+        {
+          id: 'c1',
+          messages: [
+            {
+              id: 'm1',
+              role: 'assistant',
+              content: 'hi',
+              memorySources: { ids: ['old-1'], scope: 'legacy', owner: 'A' },
+            },
+          ],
+        },
+      ],
+    }
+    expect(() => migratePersistedChat(state)).not.toThrow()
+    const result = migrated(state)
+    expect(result.conversations[0].messages[0].content).toBe('hi')
+  })
 })
