@@ -71,6 +71,26 @@ export function adultPolicy(): AdultPolicy {
 // which lives in "torpedo").
 const ALWAYS_BLOCKED_COMPACT = /(csam|childporn(?:ography)?|jailbait|lolita(?:porn|nude|sex))/i
 
+// Shortest literal a whole-string compaction check (see LONG_COMPACT and
+// `compactAll`/`compactLeet` below) is allowed to carry. Below this length, an
+// ordinary sentence produces the term as an accidental substring once every
+// separator in the WHOLE prompt is stripped: "a classic samurai image" ->
+// "aclassicsamuraiimage" contains "csam". Measured against a list of 26
+// ordinary prompts (safety-strength-regression.test.ts), "csam" alone (4
+// letters) produced 11 false CSAM blocks that way; none of the terms below
+// (8+ letters) produced a single one on the same list, because a run that
+// long is too specific to occur by word-boundary accident. That is why
+// "csam" is NOT in LONG_COMPACT and stays on the run-only, word-boundary
+// checks (ALWAYS_BLOCKED against `readable`, ALWAYS_BLOCKED_COMPACT against
+// `runs`) below: any future addition here must clear this length, or belongs
+// in the run-only set instead.
+const MIN_WHOLE_STRING_TERM_LENGTH = 8
+const LONG_COMPACT_TERMS = ['childporn', 'childpornography', 'jailbait', 'lolitaporn', 'lolitanude', 'lolitasex']
+if (LONG_COMPACT_TERMS.some((t) => t.length < MIN_WHOLE_STRING_TERM_LENGTH)) {
+  throw new Error('safety.ts: a LONG_COMPACT_TERMS entry is below MIN_WHOLE_STRING_TERM_LENGTH')
+}
+const LONG_COMPACT = new RegExp(`(${LONG_COMPACT_TERMS.join('|')})`, 'i')
+
 // Cyrillic / Greek lookalikes -> latin. Fullwidth + many compatibility forms
 // are already folded by NFKC; these are the ones it leaves alone.
 const HOMOGLYPHS: Record<string, string> = {
@@ -182,15 +202,32 @@ export function checkPromptSafety(
   // `/[^a-z0-9]+/`, not just `[\s._-]+`), so `runs` above is where every
   // separator variant lands, letter by letter.
   //
-  // Tested only against `runs`, never against a single whole-string blob:
-  // joining the ENTIRE prompt before testing would glue two unrelated,
-  // ordinary words across a plain space too ("a classic samurai image" ->
-  // "aclassicsamuraiimage" contains "csam"), which is a false alarm, not an
-  // evasion. A run is by construction not prose (collapseSpacing only glues
-  // consecutive SINGLE-character tokens), so testing it boundary-free here is
-  // safe for the same reason it is safe for MINOR_TERMS_RUN/SEXUAL_TERMS_RUN
-  // below: real words never end up in `runs`.
-  if (readable.some((t) => ALWAYS_BLOCKED.test(t)) || runs.some((r) => ALWAYS_BLOCKED_COMPACT.test(r))) {
+  // `runs` only ever holds glued RUNS OF SINGLE CHARACTERS: two- or
+  // three-character blocks ("ch il dp or n", "jai lba it") never form a run
+  // and pass `runs` untouched, and neither does a term glued inside a longer
+  // token with no separator at all ("xxjailbaitxx", "achildporn"). NEVER
+  // "fix" this by narrowing this whole check back to `[\s._-]+` or by running
+  // it on `base` only instead of both `base` and `deleeted`, which is
+  // precisely the R5-9 regression (review-w2ui.md B1), measured at 275 of 927
+  // chunked probes. The fix is the whole-string compaction below, not a
+  // narrower run definition.
+  //
+  // `compactAll`/`compactLeet` strip every separator from the ENTIRE prompt
+  // (not just from single-character runs), which is what closes the chunked-
+  // and glued-token gap above. Tested only against LONG_COMPACT, never
+  // against ALWAYS_BLOCKED_COMPACT's full list: joining the ENTIRE prompt
+  // before testing glues unrelated, ordinary words across a plain space too
+  // ("a classic samurai image" -> "aclassicsamuraiimage" contains "csam"),
+  // which is a false alarm, not an evasion. See MIN_WHOLE_STRING_TERM_LENGTH
+  // above for why "csam" is excluded from this check and stays run-only.
+  const compactAll = base.replace(/[^a-z0-9]+/g, '')
+  const compactLeet = deleeted.replace(/[^a-z0-9]+/g, '')
+  if (
+    readable.some((t) => ALWAYS_BLOCKED.test(t)) ||
+    runs.some((r) => ALWAYS_BLOCKED_COMPACT.test(r)) ||
+    LONG_COMPACT.test(compactAll) ||
+    LONG_COMPACT.test(compactLeet)
+  ) {
     return { blocked: true, reason: 'csam' }
   }
   const minor = hits(MINOR_TERMS, MINOR_TERMS_RUN)
