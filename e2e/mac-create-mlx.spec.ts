@@ -63,7 +63,8 @@ test('mac local: MLX lanes run locally, cloud-only lanes stay visible as teasers
 
   // Everything hosted-only keeps its place in the bar as a locked teaser —
   // David's rule: what can't run locally is still shown, not deleted.
-  for (const label of ['Upscale', 'Erase Object', 'Character Studio', 'Talking Character', 'Music', 'Extend Video', 'Motion Control']) {
+  // R5-67 renamed the upscale label to "Enhance Image" (parity with web).
+  for (const label of ['Enhance Image', 'Erase Object', 'Character Studio', 'Talking Character', 'Music', 'Extend Video', 'Motion Control']) {
     await expect(page.getByRole('radio', { name: `${label}, runs on LU Cloud` })).toBeVisible()
   }
 
