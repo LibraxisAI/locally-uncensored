@@ -860,22 +860,52 @@ async function executeShellExecute(
   return output || (err ? `stderr: ${err}` : 'Done.')
 }
 
+/**
+ * `execute_code`, with the same abort griff as `invokeShell` (R2-44): a
+ * callId lets Stop reach a script that has already started, via
+ * `execute_code_cancel` (Rust `commands/agent.rs`). Without a signal, nothing
+ * changes: no callId, no listener, no cancel.
+ */
+async function invokeCode(
+  payload: Record<string, unknown>,
+  abort?: AbortSignal,
+): Promise<ShellExecResult> {
+  if (!abort) return backendCall<ShellExecResult>('execute_code', payload)
+  const callId = uuid()
+  const cancel = () => {
+    void backendCall('execute_code_cancel', { callId }).catch(() => {
+      // A failed cancel must not also fail the run with an error; the script
+      // then falls back to its own timeout, same as before this fix.
+    })
+  }
+  abort.addEventListener('abort', cancel, { once: true })
+  try {
+    return await backendCall<ShellExecResult>('execute_code', { ...payload, callId })
+  } finally {
+    abort.removeEventListener('abort', cancel)
+  }
+}
+
 async function executeCodeExecute(
   args: ToolArgs,
   run?: AgentRunContext,
   signal?: AbortSignal,
 ): Promise<string> {
+  const abort = signal ?? run?.abortSignal
   // Same contract as shell_execute: a stopped run does not START new code.
-  if ((signal ?? run?.abortSignal)?.aborted) {
+  if (abort?.aborted) {
     return 'Cancelled: the user stopped the run before this code ran.'
   }
   // Erreichbar nur noch über runRetiredTool, also OHNE die Prüfungen von
   // executeShellExecute — die eigene braucht es hier trotzdem.
   const bad = missingArgs('code_execute', args, 'code')
   if (bad) return bad
-  const data = await backendCall<ShellExecResult>('execute_code', { code: argString(args, 'code'), timeout: 30000, ...chatCtx(run) })
+  const data = await invokeCode({ code: argString(args, 'code'), timeout: 30000, ...chatCtx(run) }, abort)
   const output = data.stdout || ''
   const err = data.stderr || ''
+  // Vor `timedOut` geprueft, wie im Shell-Werkzeug: der Abbruch ist die
+  // genauere Auskunft.
+  if (data.cancelled) return 'Cancelled: the user stopped the run.'
   if (data.timedOut) return `Timed out.\n${err}`
   if (data.exitCode && data.exitCode !== 0) return `Error (${data.exitCode}):\n${err || output}`
   return output || (err ? `stderr: ${err}` : 'Done.')
@@ -1707,7 +1737,7 @@ const RETIRED_HINT: Record<string, string> = {
   shell_task_list: 'shell_execute with task: "list"',
 }
 
-const RETIRED_EXECUTORS: Record<string, (args: ToolArgs, run?: AgentRunContext) => Promise<string>> = {
+const RETIRED_EXECUTORS: Record<string, (args: ToolArgs, run?: AgentRunContext, signal?: AbortSignal) => Promise<string>> = {
   git_status: executeGitStatus,
   git_log: executeGitLog,
   git_diff: executeGitDiff,
@@ -1749,6 +1779,7 @@ export async function runRetiredTool(
   name: string,
   args: ToolArgs,
   run?: AgentRunContext,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const exec = RETIRED_EXECUTORS[name]
   if (!exec) return null
@@ -1757,7 +1788,10 @@ export async function runRetiredTool(
   if (isReadOnlyShellTurn(run) && RETIRED_MUTATING_NAMES.has(name)) {
     return `Refused: this turn is read-only (/review, Code-Review Mode or Plan mode); ${name} changes state.`
   }
-  const result = await exec(args, run)
+  // R2-44: the registry's own `execute()` receives a signal, but the retired-
+  // name redirect used to drop it here, so a retired tool (code_execute via
+  // this path) never saw Stop except through run.abortSignal.
+  const result = await exec(args, run, signal)
   const hint = RETIRED_HINT[name]
   return hint ? `${result}\n\n(Note: ${name} is retired, next time use ${hint}.)` : result
 }

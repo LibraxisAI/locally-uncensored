@@ -2,6 +2,7 @@ use crate::os_error;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, State};
 
@@ -383,6 +384,165 @@ mod path_tests {
     }
 }
 
+/// R2-44: `execute_code` used to take no run id, so Stop had nothing to cancel
+/// once the interpreter had started — same hole `shell_execute_cancel` closed
+/// for the shell tool (see the comment there). This is the same fix, on its
+/// own registry: code execution is always foreground here, no background
+/// tasks, so it needs neither the task-list nor the stale-entry sweep the
+/// shell registry carries.
+#[derive(Default)]
+struct RunningCode {
+    pid: Option<u32>,
+    cancelled: bool,
+}
+static RUNNING_CODE: once_cell::sync::Lazy<Mutex<std::collections::HashMap<String, RunningCode>>> =
+    once_cell::sync::Lazy::new(Default::default);
+
+fn code_register(call_id: &str) {
+    RUNNING_CODE.lock().unwrap().entry(call_id.to_string()).or_default();
+}
+
+/// Attach the just-spawned pid. Returns `true` if a cancel already arrived
+/// (the race the shell registry documents: abort can beat the spawn).
+fn code_attach_pid(call_id: &str, pid: u32) -> bool {
+    let mut karte = RUNNING_CODE.lock().unwrap();
+    match karte.get_mut(call_id) {
+        Some(eintrag) => {
+            eintrag.pid = Some(pid);
+            eintrag.cancelled
+        }
+        None => false,
+    }
+}
+
+fn code_is_cancelled(call_id: &str) -> bool {
+    RUNNING_CODE.lock().unwrap().get(call_id).map(|e| e.cancelled).unwrap_or(false)
+}
+
+fn code_unregister(call_id: &str) {
+    RUNNING_CODE.lock().unwrap().remove(call_id);
+}
+
+fn code_mark_cancelled(call_id: &str) -> Option<u32> {
+    let mut karte = RUNNING_CODE.lock().unwrap();
+    let eintrag = karte.entry(call_id.to_string()).or_default();
+    eintrag.cancelled = true;
+    eintrag.pid
+}
+
+/// Abmelden beim Verlassen, an EINER Stelle — dieselbe Begruendung wie
+/// `ShellSlot` in shell.rs: `execute_code_blocking` kehrt an mehreren Stellen
+/// zurueck, eine Aufraeumzeile an jeder davon bliebe irgendwann an einer nicht
+/// mehr stehen.
+struct CodeSlot(Option<String>);
+impl CodeSlot {
+    fn new(call_id: Option<&str>) -> Self {
+        let kennung = call_id.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        if let Some(id) = kennung.as_deref() {
+            code_register(id);
+        }
+        Self(kennung)
+    }
+    fn id(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+impl Drop for CodeSlot {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.as_deref() {
+            code_unregister(id);
+        }
+    }
+}
+
+/// Stop fuer einen laufenden `execute_code`. Unbekannte Kennungen sind KEIN
+/// Fehler, wie bei `shell_execute_cancel`: der Lauf kann in derselben
+/// Millisekunde fertig geworden sein.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn execute_code_cancel(callId: String) -> Result<bool, String> {
+    let pid = code_mark_cancelled(&callId);
+    match pid {
+        Some(p) => {
+            tokio::task::spawn_blocking(move || super::shell::kill_tree(p))
+                .await
+                .map_err(|e| format!("Task join error: {}", e))?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Same shape as shell.rs's `shell_cancel_*` tests, on the code-execution
+/// registry: registration, the race between abort and spawn, and the empty-id
+/// no-op. No stale-entry sweep here (unlike shell.rs) because there is no
+/// background-task mode to age out.
+#[cfg(test)]
+mod code_cancel_tests {
+    use super::*;
+
+    #[test]
+    fn ein_abbruch_vor_dem_start_bleibt_stehen() {
+        let id = format!("code-test-{}", std::process::id());
+        code_register(&id);
+        assert_eq!(code_mark_cancelled(&id), None, "es gibt noch keine Prozesskennung");
+        // Der Start liest den Merker beim Anhaengen der Kennung.
+        assert!(code_attach_pid(&id, 4242), "der Start muss den Abbruch sehen");
+        code_unregister(&id);
+    }
+
+    #[test]
+    fn ein_abbruch_ohne_anmeldung_legt_den_merker_an() {
+        let id = format!("code-test-{}", std::process::id() as u64 + 1);
+        // R2-44: derselbe Wettlauf wie beim Shell-Werkzeug, der Abbruch kann
+        // eintreffen, bevor `execute_code_blocking` registriert hat.
+        assert_eq!(code_mark_cancelled(&id), None);
+        code_register(&id); // darf den Merker NICHT ueberschreiben
+        assert!(code_attach_pid(&id, 7));
+        code_unregister(&id);
+    }
+
+    #[test]
+    fn findet_den_laufenden_prozess() {
+        let id = format!("code-test-{}", std::process::id() as u64 + 2);
+        code_register(&id);
+        assert!(!code_attach_pid(&id, 1234), "ohne Abbruch laeuft er weiter");
+        assert!(!code_is_cancelled(&id));
+        assert_eq!(code_mark_cancelled(&id), Some(1234), "die Prozesskennung kommt zurueck");
+        assert!(code_is_cancelled(&id));
+        code_unregister(&id);
+    }
+
+    #[test]
+    fn ein_lauf_ohne_kennung_ist_unberuehrt() {
+        // `CodeSlot::new(None)` (kein callId vom Aufrufer) darf nie etwas anmelden.
+        let slot = CodeSlot::new(None);
+        assert_eq!(slot.id(), None);
+        assert!(!code_is_cancelled("gar-nicht-angemeldet"));
+    }
+
+    #[test]
+    fn eine_leere_kennung_zaehlt_als_keine() {
+        let slot = CodeSlot::new(Some("   "));
+        assert_eq!(slot.id(), None, "eine reine Leerraum-Kennung haette sich angemeldet");
+    }
+
+    #[test]
+    fn der_platz_meldet_sich_beim_verlassen_ab() {
+        let id = format!("code-test-{}", std::process::id() as u64 + 3);
+        {
+            let slot = CodeSlot::new(Some(&id));
+            code_attach_pid(&id, 31337);
+            assert_eq!(code_mark_cancelled(&id), Some(31337));
+            let _ = slot;
+        }
+        // Nach dem Drop ist die Karte weg: ein spaeterer Abbruch auf dieselbe
+        // Kennung legt einen FRISCHEN, unbeteiligten Eintrag an.
+        assert_eq!(code_mark_cancelled(&id), None);
+        code_unregister(&id);
+    }
+}
+
 /// Runs on the blocking pool: the poll loop below waits for the Python process
 /// for up to `timeout_ms`, and a sync #[command] would spend all of that on the
 /// Tauri main thread with the window frozen (same class as the installer tree and the
@@ -394,10 +554,11 @@ pub async fn execute_code(
     timeout: Option<u64>,
     #[allow(non_snake_case)] chatId: Option<String>,
     #[allow(non_snake_case)] workingDirectory: Option<String>,
+    #[allow(non_snake_case)] callId: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        execute_code_blocking(code, timeout, chatId, workingDirectory, &state)
+        execute_code_blocking(code, timeout, chatId, workingDirectory, callId, &state)
     })
     .await
     .map_err(|e| format!("Code execution task failed to run: {e}"))?
@@ -427,9 +588,13 @@ pub(crate) fn execute_code_blocking(
     timeout: Option<u64>,
     chatId: Option<String>,
     workingDirectory: Option<String>,
+    callId: Option<String>,
     state: &State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let timeout_ms = timeout.unwrap_or(30000);
+    // R2-44: registered BEFORE spawn, same race the shell registry documents —
+    // a cancel can arrive before the process exists at all.
+    let slot = CodeSlot::new(callId.as_deref());
 
     // The handle is never read, only held: dropping it deletes the directory,
     // and it must outlive the interpreter that is running the script in it.
@@ -462,6 +627,10 @@ pub(crate) fn execute_code_blocking(
     let mut child = cmd.spawn()
         .map_err(|e| format!("Spawn Python: {}", os_error::english(&e)))?;
 
+    // Attach the pid; if a cancel already arrived (raced the spawn above),
+    // kill immediately instead of letting the poll loop run one lap first.
+    let already_cancelled = slot.id().map(|id| code_attach_pid(id, child.id())).unwrap_or(false);
+
     // Both pipes are drained on their own threads from here on. A script that
     // prints more than a pipe buffer would otherwise block on write and never
     // exit — the tool call ate the full timeout and returned nothing. Same
@@ -469,11 +638,36 @@ pub(crate) fn execute_code_blocking(
     let (out_buf, out_done) = super::shell::drain(child.stdout.take().expect("stdout is piped"));
     let (err_buf, err_done) = super::shell::drain(child.stderr.take().expect("stderr is piped"));
 
+    let cancelled_result = |stdout: String| {
+        serde_json::json!({
+            "stdout": stdout,
+            "stderr": "Cancelled: the user stopped the run.",
+            "exitCode": -1,
+            "timedOut": false,
+            "cancelled": true,
+        })
+    };
+
+    if already_cancelled {
+        super::shell::kill_tree(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        super::shell::settle(&out_done, &err_done, std::time::Duration::from_millis(200));
+        return Ok(cancelled_result(super::shell::captured_text(&out_buf)));
+    }
+
     // Poll-based timeout since std::process::Child has no wait_timeout
     let start = std::time::Instant::now();
     let timeout_dur = std::time::Duration::from_millis(timeout_ms);
 
     loop {
+        if slot.id().map(code_is_cancelled).unwrap_or(false) {
+            super::shell::kill_tree(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            super::shell::settle(&out_done, &err_done, std::time::Duration::from_millis(200));
+            return Ok(cancelled_result(super::shell::captured_text(&out_buf)));
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 super::shell::settle(&out_done, &err_done, std::time::Duration::from_millis(500));

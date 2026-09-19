@@ -37,12 +37,20 @@ const backendCalls: { cmd: string; body: Record<string, unknown> }[] = []
  */
 let laufenLassen: (() => void) | null = null
 
+/** Same latch as `laufenLassen`, its own so the two tools don't interfere. */
+let codeLaufenLassen: (() => void) | null = null
+
 vi.mock('../../backend', () => ({
   backendCall: vi.fn(async (cmd: string, body: Record<string, unknown>) => {
     backendCalls.push({ cmd, body })
     if (cmd === 'shell_execute') {
       if (laufenLassen === null) return { stdout: 'ran', stderr: '', exitCode: 0, timedOut: false }
       await new Promise<void>((r) => { laufenLassen = r })
+      return { stdout: '', stderr: 'Cancelled: the user stopped the run.', exitCode: -1, timedOut: false, cancelled: true }
+    }
+    if (cmd === 'execute_code') {
+      if (codeLaufenLassen === null) return { stdout: 'ran', stderr: '', exitCode: 0, timedOut: false }
+      await new Promise<void>((r) => { codeLaufenLassen = r })
       return { stdout: '', stderr: 'Cancelled: the user stopped the run.', exitCode: -1, timedOut: false, cancelled: true }
     }
     if (cmd === 'shell_task_start') return { id: 'task-1' }
@@ -83,8 +91,10 @@ const ran = () => backendCalls.filter((c) => c.cmd === 'shell_execute')
 const killed = () => backendCalls.filter((c) => c.cmd === 'shell_task_kill')
 
 const cancelled = () => backendCalls.filter((c) => c.cmd === 'shell_execute_cancel')
+const codeRan = () => backendCalls.filter((c) => c.cmd === 'execute_code')
+const codeCancelled = () => backendCalls.filter((c) => c.cmd === 'execute_code_cancel')
 
-beforeEach(() => { backendCalls.length = 0; laufenLassen = null })
+beforeEach(() => { backendCalls.length = 0; laufenLassen = null; codeLaufenLassen = null })
 
 describe('shell_execute honours the run\'s Stop', () => {
   it('a command that has not started yet does not start', async () => {
@@ -177,6 +187,39 @@ describe('shell_execute honours the run\'s Stop', () => {
     ctrl.abort()
     await new Promise((r) => setTimeout(r, 0))
     expect(cancelled()).toHaveLength(0)
+  })
+
+  it('R2-44: code_execute (retired name, redirected) is also cancelled once started', async () => {
+    // `code_execute` has no entry in the registry itself, it only runs via
+    // the retired-tool redirect (`runRetiredTool`), which used to drop the
+    // signal `execute()` had already resolved from run/signal.
+    codeLaufenLassen = () => {}
+    const ctrl = new AbortController()
+    const lauf = registry.execute('code_execute', { code: 'print(1)' }, 1, undefined, ctrl.signal)
+    await new Promise((r) => setTimeout(r, 0))
+
+    const gestartet = codeRan()
+    expect(gestartet).toHaveLength(1)
+    const kennung = (gestartet[0].body as { callId?: string }).callId
+    expect(typeof kennung).toBe('string')
+    expect(kennung).toBeTruthy()
+    expect(codeCancelled()).toHaveLength(0)
+
+    ctrl.abort()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(codeCancelled()).toEqual([{ cmd: 'execute_code_cancel', body: { callId: kennung } }])
+
+    codeLaufenLassen?.()
+    await expect(lauf).resolves.toMatch(/cancelled/i)
+  })
+
+  it('NEGATIVE CONTROL: a code_execute run that finishes on its own is not cancelled', async () => {
+    const ctrl = new AbortController()
+    await registry.execute('code_execute', { code: 'print(1)' }, 1, undefined, ctrl.signal)
+    ctrl.abort()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(codeCancelled()).toHaveLength(0)
   })
 
   it('der Vordergrundpfad schickt seine Kennung wirklich mit', () => {

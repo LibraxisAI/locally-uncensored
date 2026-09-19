@@ -82,14 +82,14 @@ export class ToolRegistry {
    * Warnung weg.
    */
   private retiredRunner:
-    | ((name: string, args: ToolArgs, run?: AgentRunContext) => Promise<string | null>)
+    | ((name: string, args: ToolArgs, run?: AgentRunContext, signal?: AbortSignal) => Promise<string | null>)
     | null = null
 
   // ── Registration ──────────────────────────────────────────────
 
   /** Siehe `retiredRunner`. Wird von registerBuiltinTools() verdrahtet. */
   setRetiredRunner(
-    run: (name: string, args: ToolArgs, run?: AgentRunContext) => Promise<string | null>,
+    run: (name: string, args: ToolArgs, run?: AgentRunContext, signal?: AbortSignal) => Promise<string | null>,
   ) {
     this.retiredRunner = run
   }
@@ -239,7 +239,7 @@ export class ToolRegistry {
       // model that knows git_status from its context must not burn the step
       // on "Unknown tool". Der Redirect kommt über setRetiredRunner herein
       // (siehe `retiredRunner`) statt über einen Rück-Import auf builtin-tools.
-      const redirected = this.retiredRunner ? await this.retiredRunner(name, args, run) : null
+      const redirected = this.retiredRunner ? await this.retiredRunner(name, args, run, abort) : null
       if (redirected !== null) return redirected
       return `Error: Unknown tool "${name}"`
     }
