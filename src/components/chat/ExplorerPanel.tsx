@@ -130,6 +130,11 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   const [expanded, setExpanded] = useState<string[]>([])
   const [busy, setBusy] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  // R2-43: a folder-pick REFUSAL used to share `error` with the root-load
+  // failure. A later, unrelated load of the (still valid) current root
+  // succeeding cleared `error` on its way, wiping a refusal message the user
+  // had not read yet. Its own state survives any load that isn't about it.
+  const [pickError, setPickError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ExplorerNode | null>(null)
 
   const planWaiting = useCodexStore((s) =>
@@ -160,6 +165,7 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
     setExpanded([])
     setSelected(null)
     setError(null)
+    setPickError(null)
     if (root) load(root)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root])
@@ -211,7 +217,7 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   // steht in lib/dev-fs-jail.ts), der getippte Pfad ist der vorgesehene Weg
   // und er funktioniert. Deshalb steht er dort und nur dort.
   const pickFolder = async () => {
-    setError(null)
+    setPickError(null)
     if (!isTauri()) {
       const typed = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
       if (typed) setWorkingDirectory(typed)
@@ -224,7 +230,7 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
       })
       if (picked) setWorkingDirectory(picked)
     } catch (e) {
-      setError(workspacePickRefusedMessage(e))
+      setPickError(workspacePickRefusedMessage(e))
     }
   }
 
@@ -366,12 +372,12 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
             der Grund verschwand ungelesen. Der Nutzer sah einen Klick, der
             nichts tat, und den einzigen Satz, der ihm haette sagen koennen,
             warum, bekam er nie. Der Fehler steht deshalb zuerst. */}
-        {error ? (
+        {pickError || error ? (
           <p
             data-testid="explorer-error"
             className="text-[0.5rem] text-red-500/80 px-1 py-2 break-words"
           >
-            {error}
+            {pickError || error}
           </p>
         ) : !root ? (
           <p
