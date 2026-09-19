@@ -339,7 +339,27 @@ export function Header() {
        Spalte (jetzt `1fr` statt `auto`) und dehnen sich damit, aber ihr
        Inhalt bleibt an derselben Kante stehen wie vorher (links `justify-
        start`, rechts unten `justify-end` sind schon gesetzt), nachgemessen
-       um 0,0px Differenz zur alten Position. */
+       um 0,0px Differenz zur alten Position.
+
+       Runde 2 (Auflage 1, 19.09.2026): der enge Fall war nicht der gemessene.
+       Compare zeigt rechts nur drei ruhige Werkzeuge (~170px), Chat kann dort
+       zusaetzlich den Stale-Chip UND das Update-Badge tragen (~470px). Beide
+       Aussenspalten trugen `min-w-0`, also durfte die rechte Spalte auf ihren
+       1fr-Anteil (~281px bei 1024px Fensterbreite) schrumpfen, OHNE dass ihr
+       Inhalt mitschrumpfte: ein `<div>` ohne eigenes `flex-shrink` auf den
+       Kindern bleibt bei seiner natuerlichen Breite und lief links aus der
+       eigenen Spalte heraus, direkt in die letzten Reiter hinein (nachgemessen
+       Ueberlappung bei 1024/1100/1280px, `e2e/topnav-centering.spec.ts`,
+       "chat view with stale chip and update badge"). `min-w-0` runter von der
+       rechten Spalte (Zeile unten): jetzt ist ihre automatische Mindestbreite
+       ihr eigener Inhalt, die Spalte kann nicht mehr enger werden als das, was
+       darin steht. Nebeneffekt bei diesem seltenen Zusammentreffen: die
+       Reitergruppe weicht dann von der Fenstermitte ab (die linke Spalte
+       bleibt schmal, die rechte nimmt sich, was sie braucht), das ist die
+       Abwaegung, kein Fehler: nichts ueberlappt mehr und nichts wird
+       abgeschnitten, und im normalen Fall (keine der beiden Ausnahmen sichtbar)
+       bleibt die Zentrierung bei 0px, weil der Inhalt dann so oder so unter dem
+       1fr-Anteil liegt. */
     <header className="h-10 grid grid-cols-[1fr_auto_1fr] items-center px-3 bg-gray-200 dark:bg-lu-canvas z-40 gap-4">
       {/* Left: Sidebar + Logo */}
       <div className="flex items-center gap-2 min-w-0">
@@ -469,7 +489,7 @@ export function Header() {
           ein Ziel, keins klappt je ins Kebab — das ist die andere Haelfte der
           Regel aus D-S47. Die Navigation, die hier stand, ist in die Mitte
           gezogen. */}
-      <div className="flex items-center justify-end gap-2.5 min-w-0">
+      <div className="flex items-center justify-end gap-2.5">
         {/* Der Stale-Hinweis stand bis 04.09.2026 in der Mitte-Gruppe und
             schob die Navigation zur Seite, sobald er auftauchte. Er gehoert
             ohnehin hierher: er zeigt einen ZUSTAND, und das ist genau die
