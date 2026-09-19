@@ -2063,13 +2063,17 @@ export function useCodex() {
         // instead of parking a live closure for up to 615 s per call.
         const withTimeout = (name: string, args: ToolArgs, signal?: AbortSignal) =>
           raceWithToolTimeout(
+            name,
+            toolCallCapMs(name, args, settings),
             // The run's Stop travels all the way INTO the tool now (audit M1).
             // Before, the signal stopped at the batch scheduler: a shell command
             // already in flight kept mutating the repository for the rest of its
             // 615 s budget after the user hit the only brake the product has.
-            toolRegistry.execute(name, args, 1, run, signal ?? abort.signal),
-            name,
-            toolCallCapMs(name, args, settings),
+            // `raced` also carries the race's own timeout abort (klaerung-n5a
+            // Fix 2), so a call the cap kills is actually cancelled, not just
+            // ignored.
+            (raced) => toolRegistry.execute(name, args, 1, run, raced),
+            signal ?? abort.signal,
           )
 
         // Die Ablage-Warteschlange und ALLES, was sie anfasst — die vier
