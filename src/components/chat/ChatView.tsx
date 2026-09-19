@@ -15,6 +15,7 @@ import { RetrievalErrorBar } from './RetrievalErrorBar'
 import { LuEngineSwitchBar } from './LuEngineSwitchBar'
 import { useDocsAvailability } from '../../hooks/useDocsAvailability'
 import { AgentModeToggle } from './AgentModeToggle'
+import { FlashChatNotice } from './FlashChatNotice'
 import { AgentWorkspaceBadge } from './AgentWorkspaceBadge'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
 import { CHAT_BASE_SYSTEM_PROMPT } from '../../lib/system-prompt'
@@ -504,6 +505,12 @@ export function ChatView() {
                   <div className={`w-full ${COMPOSER_MAX_W} mx-auto px-3`}>
                     <div data-testid="chat-session-strip" className="flex items-center gap-1.5 px-2 py-0.5">
                       <AgentModeToggle />
+                      {/* Was diese Runde kostet, direkt neben dem Agent-Schalter
+                          (David, 19.09.2026): kein Band mehr ueber der Eingabe,
+                          das diese Leiste nach oben schob, sondern ein Etikett
+                          in genau dieser Leiste. Rendert `null` ohne
+                          Flash-Modell, verschiebt also nichts, wenn es fehlt. */}
+                      <FlashChatNotice />
                       <AgentWorkspaceBadge />
 
                       {/* Spacer */}

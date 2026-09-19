@@ -14,6 +14,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TokenCounter } from './TokenCounter'
 import { ContextDropdown } from './ContextDropdown'
 import { SmallModelModeToggle } from './SmallModelModeToggle'
+import { FlashChatNotice } from './FlashChatNotice'
 import { WorkingAnchor } from './WorkingAnchor'
 import { useCodexConfirmStore } from '../../stores/codexConfirmStore'
 import { PluginsDropdown } from './PluginsDropdown'
@@ -275,6 +276,10 @@ export function CodexView() {
               des Fensterwaehlers, nicht dieselbe Zahl ein zweites Mal daneben. */}
           <ContextDropdown><TokenCounter /></ContextDropdown>
           <SmallModelModeToggle />
+          {/* Was diese Runde kostet, denselben Ort wie im Chat-Reiter
+              (ChatView.tsx): ein Etikett in dieser Leiste statt eines Bandes
+              ueber der Eingabe. Rendert `null` ohne Flash-Modell. */}
+          <FlashChatNotice />
         </div>
 
         {/* R2-21: der Sperrgrund hing bisher nur als `title` am Entfernen-Knopf,
