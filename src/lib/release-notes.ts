@@ -333,6 +333,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'The model marks now live in the model list only.',
             detail: 'The model marks now live in the model list only, the line above the message box is gone; the Flash notice sits next to the Agent toggle.',
           },
+          {
+            title: 'A narrow window no longer scrolls the whole chat sideways.',
+            detail: 'At a narrow window width, picking a model, opening the sampling sliders or opening the plugins menu used to leave the whole chat shifted sideways afterward, because the shared chat area allowed the browser to scroll it into view when a clicked control sat partly off screen. That area no longer accepts a programmatic scroll, so it stays put.',
+          },
         ],
       },
     ],

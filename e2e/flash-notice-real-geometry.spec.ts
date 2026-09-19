@@ -24,21 +24,35 @@ import { routeCloud, seedOnboardingDone, signInViaGate, cloudSwitch } from './su
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type' }
 
 /**
- * Selects the model at a roomy default width, THEN resizes to the size under
- * test.
+ * Picks the model through the real UI, natively at the size under test where
+ * the trigger is actually reachable, at a roomy width first where it is not.
  *
- * Found while writing this proof, unrelated to Blocker A1: `ModelSelector`'s
- * dropdown, opened at 360px, leaves the shared scroll-clipped ancestor
- * (`ChatView.tsx`'s `overflow-hidden` content column) scrolled roughly 290px
- * to the right afterwards (`scrollLeft` on an `overflow-hidden` element is
- * still settable, and something, likely a focus-follow on the picked row,
- * sets it). That drags the WHOLE chat column, this popup's trigger included,
- * off-screen to the left, permanently, for reasons that have nothing to do
- * with this popup. Picking the model before narrowing the window sidesteps
- * that pre-existing bug instead of silently proving something else.
+ * Runde 4 (19.09.2026) tried native selection at all three sizes, including
+ * 360px. Runde 5 (19.09.2026, Nachmessung) found that does not hold at 360px,
+ * independent of the scrollLeft leak: the composer action row itself is
+ * wider than its box there (measured `scrollWidth` 586 against `clientWidth`
+ * 207, `ChatInput.tsx`'s action row carries no scroll of its own), so
+ * "Select chat model" sits at `x` 525, fully past the 360px window edge, the
+ * same as "Sampling" (423) and "Send message" (732). A real pointer cannot
+ * reach a control past the window edge either. The scrollLeft leak this spec
+ * used to trip over was Playwright's OWN actionability assist calling
+ * `scrollIntoView` on the nearest scrollable ancestor to reach it, something
+ * no real click ever does on its own; that assist is exactly what dragged
+ * the shared `ChatView.tsx` column sideways. Fixing the leak at the root
+ * (that ancestor now carries `overflow-clip` instead of `overflow-hidden`,
+ * proven in `e2e/model-selector-scroll-leak.spec.ts`) also removes the one
+ * thing that used to paper over this pre-existing, separate narrowness bug:
+ * `overflow-clip` rejects the same `scrollIntoView` assist, so the click now
+ * honestly times out instead of silently dragging the chat. That narrowness
+ * bug is real and unfixed, but it is not this fix's to solve (it needs its
+ * own toolbar-layout work, out of scope for a scrollLeak root fix), so 360px
+ * keeps the pre-Runde-4 workaround: pick the model at a roomy width first,
+ * then resize down. 900 and 1280px have no such overflow (measured
+ * `scrollWidth === clientWidth` there), so both pick natively.
  */
 async function boot(page: Page, width: number, height: number): Promise<void> {
-  await page.setViewportSize({ width: Math.max(width, 1024), height: Math.max(height, 700) })
+  const REACHABLE_AT_TARGET_WIDTH = width >= 900
+  await page.setViewportSize(REACHABLE_AT_TARGET_WIDTH ? { width, height } : { width: 1024, height: Math.max(height, 700) })
   await page.addInitScript(tauriMockInit, { assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME })
   await seedOnboardingDone(page)
   await routeCloud(page, { license: 'active', access: true, mediaLive: true, paidPlan: true })
@@ -56,7 +70,7 @@ async function boot(page: Page, width: number, height: number): Promise<void> {
   await page.getByRole('button', { name: /New Chat/i }).first().click()
   await page.getByRole('button', { name: 'Select chat model', exact: true }).click()
   await page.getByRole('button', { name: /Llama 3.1 8B Turbo/ }).click()
-  await page.setViewportSize({ width, height })
+  if (!REACHABLE_AT_TARGET_WIDTH) await page.setViewportSize({ width, height })
 }
 
 interface Box { x: number; y: number; width: number; height: number }
