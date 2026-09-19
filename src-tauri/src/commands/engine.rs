@@ -5492,6 +5492,27 @@ mod tests {
     /// "refused" immediately instead of talking to a real engine.
     const DEAD_PORT: u16 = 49871;
 
+    /// A `(binary, args)` pair that runs for `secs` seconds without going
+    /// through a shell, the shape `restore_engine`'s callers hand it after a
+    /// real launch (a binary path plus its own argv), so a shell cannot be
+    /// substituted in like `test_support::sleeper` does for a bare `Command`.
+    ///
+    /// Windows: `ping`, same binary and reasoning as `test_support::sleeper`:
+    /// `<shell> -c "sleep N"` gets exec-optimised by the MSYS runtime into a
+    /// BRAND NEW Windows process while the shell that was supposed to hold the
+    /// pid exits, so the `Child` this test tracks would already show as dead.
+    /// Unix: `sleep` directly; no shell needed there either.
+    fn long_lived_argv(secs: u32) -> (PathBuf, Vec<String>) {
+        if cfg!(windows) {
+            (
+                PathBuf::from("ping"),
+                vec!["-n".to_string(), (secs + 1).to_string(), "127.0.0.1".to_string()],
+            )
+        } else {
+            (PathBuf::from("sleep"), vec![secs.to_string()])
+        }
+    }
+
     fn park_child(state: &AppState, child: std::process::Child) {
         *state.bundled_engine.lock().unwrap() = Some(BundledEngine {
             child,
@@ -5576,25 +5597,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_failed_switch_puts_the_previous_model_back_on_its_own_port() {
         let (port, stop, handle) = gesunder_port();
         let state = AppState::new();
+        let (binary, args) = long_lived_argv(30);
         let vorher = PreviousEngine {
             model_path: "/tmp/hermes.gguf".into(),
-            args: vec!["-c".into(), "sleep 30".into()],
+            args,
             auto_layers: false,
             cpu_fallback: false,
             port,
             ctx: Some(8192),
         };
 
-        let zurueck = restore_engine(
-            Path::new(&crate::test_support::posix_shell()),
-            &state,
-            &vorher,
-            None,
-        );
+        let zurueck = restore_engine(&binary, &state, &vorher, None);
 
         assert!(zurueck, "the previous engine did not come back");
         {
@@ -5618,7 +5634,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_restore_that_fails_says_so_instead_of_claiming_success() {
         // Negativkontrolle. Ohne sie ginge der Fall oben auch auf einer
         // Funktion durch, die einfach immer `true` zurueckgibt, und die
@@ -5760,13 +5775,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_says_that_the_engine_ended_up_on_the_processor() {
         // The fallback was answered ONCE, in the return value of the start
         // call, and then forgotten. A status read a minute later described an
         // engine that ran at a tenth of its speed as an ordinary one.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5796,13 +5809,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_carries_what_the_sanity_probe_worked_around() {
         // Bug a: the ladder answered its sentence ONCE, in the return value of
         // the start call, and nobody reads that object past `.port`. The
         // status is what every surface polls, so the sentence lives there.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5822,13 +5833,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_typed_cpu_setting_is_not_reported_as_a_failed_start() {
         // The counter-check to the test above. Someone who wrote 0 into GPU
         // Layers got what he asked for, and telling him the graphics card
         // failed would be an invention.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5854,11 +5863,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn an_engine_killed_from_outside_stops_counting_as_running() {
         // The box: `Stop-Process` on lu-llama-server, and the line kept saying
         // "Engine running / Port: 8127" for as long as anyone watched.
-        let mut child = std::process::Command::new("sh")
+        let mut child = std::process::Command::new(crate::test_support::posix_shell())
             .args(["-c", "exit 0"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -5876,12 +5884,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_living_engine_is_left_exactly_where_it_is() {
         // Negative control. Without it the test above would pass on a function
         // that simply cleared the slot every time.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5899,13 +5905,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_reports_nothing_for_a_sidecar_whose_process_is_gone() {
         // The embeddings server had no reaping at all, so a killed sidecar kept
         // answering "running" on 8128 the way the chat engine used to on 8127.
         // Both status commands go through live_sidecar now, so this covers the
         // pair (A15 review).
-        let mut child = std::process::Command::new("sh")
+        let mut child = std::process::Command::new(crate::test_support::posix_shell())
             .args(["-c", "exit 0"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -5920,12 +5925,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_reports_a_sidecar_that_is_really_there() {
         // Negative control for the test above: live_sidecar must not simply
         // answer None.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5945,12 +5948,11 @@ mod tests {
     // ── A16: the watch that says a sidecar died without being asked ─────────
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn the_watch_names_the_port_of_a_sidecar_that_died() {
         // What the loop does once per tick. The port has to come out of the
         // slot before the reap clears it, which is the whole reason this is a
         // function and not two lines inside the thread.
-        let mut child = std::process::Command::new("sh")
+        let mut child = std::process::Command::new(crate::test_support::posix_shell())
             .args(["-c", "exit 0"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -5972,13 +5974,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn the_watch_stays_quiet_about_a_sidecar_that_is_still_running() {
         // Negative control. Without it the test above would pass on a watch
         // that announced a death on every tick and cleared the slot with it,
         // which would take the running engine off the screen.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
