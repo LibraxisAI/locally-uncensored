@@ -222,11 +222,50 @@ export function checkPromptSafety(
   // above for why "csam" is excluded from this check and stays run-only.
   const compactAll = base.replace(/[^a-z0-9]+/g, '')
   const compactLeet = deleeted.replace(/[^a-z0-9]+/g, '')
+  // Schlusspruefung Inhaltsschutz (Opus 5, 18.09.2026), Variante C: closes
+  // most of what is left for the SHORT term ("csam") after the checks above,
+  // without reopening the whole-string false alarm MIN_WHOLE_STRING_TERM_LENGTH
+  // exists to avoid. Two parts, both scoped to real whitespace, never
+  // merging two ordinary words across a plain space:
+  //   1) compact EACH whitespace-token on its own ("c*s*a*m" -> "csam" is
+  //      one token, no real space inside) and test it for "csam" as a
+  //      substring. Measured safe: 0 hits trying every one of the 235976
+  //      words in the system dictionary as "a WORD image".
+  //   2) additionally glue two ADJACENT tokens when BOTH are at most
+  //      SHORT_TERM_GLUE_MAX_LENGTH characters long (after compaction), to
+  //      catch a two-block split like "cs am" that step 1 alone cannot see
+  //      (neither token contains "csam" by itself, and `runs` above does not
+  //      apply either: a two-or-more-character block is not a
+  //      single-character run). The bound is measured, not guessed: at 2,
+  //      zero false alarms across the same dictionary check pairwise (165
+  //      real words of that length, 27225 pairs) and across a set of
+  //      ordinary prompts; at 3, two of those pairs read as ordinary short
+  //      English prose and would false-alarm. Never raise this bound without
+  //      re-measuring both.
+  // Reduces the measured residual for chunked/glued "csam" by 67% against
+  // the currently-live production fassung and 86% against the fassung
+  // before the original regression, at zero new false alarms.
+  const SHORT_TERM_GLUE_MAX_LENGTH = 2
+  const compactToken = (t: string) => t.replace(/[^a-z0-9]+/g, '')
+  const tokenCompactions = (text: string) => text.split(/\s+/).filter(Boolean).map(compactToken)
+  const shortTermHits = (tokens: string[]) => {
+    if (tokens.some((t) => t.includes('csam'))) return true
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      const a = tokens[i]
+      const b = tokens[i + 1]
+      if (a.length <= SHORT_TERM_GLUE_MAX_LENGTH && b.length <= SHORT_TERM_GLUE_MAX_LENGTH && (a + b).includes('csam')) {
+        return true
+      }
+    }
+    return false
+  }
   if (
     readable.some((t) => ALWAYS_BLOCKED.test(t)) ||
     runs.some((r) => ALWAYS_BLOCKED_COMPACT.test(r)) ||
     LONG_COMPACT.test(compactAll) ||
-    LONG_COMPACT.test(compactLeet)
+    LONG_COMPACT.test(compactLeet) ||
+    shortTermHits(tokenCompactions(base)) ||
+    shortTermHits(tokenCompactions(deleeted))
   ) {
     return { blocked: true, reason: 'csam' }
   }

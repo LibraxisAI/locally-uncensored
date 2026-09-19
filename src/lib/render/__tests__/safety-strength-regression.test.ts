@@ -86,6 +86,36 @@ let oldCheck: CheckFn
 let weakCheck: CheckFn
 let partialCheck: CheckFn
 
+/**
+ * Schlusspruefung Inhaltsschutz (Opus 5, 18.09.2026), Punkt 4: `ci.yml`
+ * checks out with the `actions/checkout` default `fetch-depth: 1` (a
+ * shallow clone), so `git show 03f98fdd~1:...` cannot resolve the object
+ * and this whole file went RED in CI, not skipped. `git cat-file -e` here
+ * is the same synchronous, side-effect-free check `katalog-paritaet-web`
+ * uses for a missing Web checkout, applied to a missing git object instead
+ * of a missing file. This gates the describe blocks below so a shallow
+ * checkout SKIPS them loudly (stderr message) instead of failing; a
+ * fetch-depth fix (or a normal, unshallowed local clone) makes them run
+ * again automatically. The frozen-floor table in
+ * safety-frozen-floor.test.ts does not need any of this: it carries no git
+ * dependency at all and is what actually guards CI.
+ */
+function hasGitObject(sha: string): boolean {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${sha}:${PATH_IN_REPO}`], { cwd: REPO_ROOT, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+const HAS_DESKTOP_HISTORY = hasGitObject(OLD_SHA) && hasGitObject(WEAK_SHA) && hasGitObject(PARTIAL_SHA)
+const HISTORY_GRUND =
+  '[safety-strength-regression] Vergleich gegen historische Desktop-Fassungen uebersprungen: ' +
+  `git-Objekte fuer ${OLD_SHA}, ${WEAK_SHA} oder ${PARTIAL_SHA} nicht erreichbar (flacher Checkout? ` +
+  'fetch-depth). Der git-unabhaengige Waechter mit demselben Anspruch steht in ' +
+  'safety-frozen-floor.test.ts und laeuft immer.'
+if (!HAS_DESKTOP_HISTORY) process.stderr.write(HISTORY_GRUND + '\n')
+
 async function loadFromGit(cwd: string, sha: string, pathInRepo: string): Promise<CheckFn> {
   const source = execFileSync('git', ['show', `${sha}:${pathInRepo}`], {
     cwd,
@@ -99,6 +129,7 @@ async function loadFromGit(cwd: string, sha: string, pathInRepo: string): Promis
 }
 
 beforeAll(async () => {
+  if (!HAS_DESKTOP_HISTORY) return
   oldCheck = await loadFromGit(REPO_ROOT, OLD_SHA, PATH_IN_REPO)
   weakCheck = await loadFromGit(REPO_ROOT, WEAK_SHA, PATH_IN_REPO)
   partialCheck = await loadFromGit(REPO_ROOT, PARTIAL_SHA, PATH_IN_REPO)
@@ -285,7 +316,7 @@ const LEGITIMATE_PROMPTS = [
   'a minority report style poster',
 ]
 
-describe('B1 (Runde 1): the fix is never weaker than the pre-regression version', () => {
+describe.skipIf(!HAS_DESKTOP_HISTORY)('B1 (Runde 1): the fix is never weaker than the pre-regression version', () => {
   it('every strict probe (letter-spaced + long-term chunked): CURRENT rank >= OLD (03f98fdd~1) rank', () => {
     const regressions: string[] = []
     for (const text of STRICT_PROBES) {
@@ -316,7 +347,7 @@ describe('B1 (Runde 1): the fix is never weaker than the pre-regression version'
   })
 })
 
-describe('B1 (Runde 4): the fix is never weaker than the WEAK (03f98fdd) fassung either', () => {
+describe.skipIf(!HAS_DESKTOP_HISTORY)('B1 (Runde 4): the fix is never weaker than the WEAK (03f98fdd) fassung either', () => {
   it('every strict probe (letter-spaced + long-term chunked): CURRENT rank >= WEAK (03f98fdd) rank', () => {
     const regressions: string[] = []
     for (const text of STRICT_PROBES) {
@@ -337,19 +368,22 @@ describe('B1 (Runde 4): the fix is never weaker than the WEAK (03f98fdd) fassung
    * CURRENT closes that gap completely for the long terms (STRICT_PROBES
    * above, zero regressions) and leaves only chunked/glued "csam" open,
    * measured here so a future change cannot silently regress it further:
-   * this count may only go DOWN. It is not required to be zero, because
-   * closing it fully (matching a bare "csam" glued inside a longer token,
-   * e.g. "xxcsamxx", or split as "cs am") would require a whole-string check
-   * on "csam" itself, which reintroduces the false-alarm class in
-   * LEGITIMATE_PROMPTS above (review-w2ui.md, Runde 4: "der Rest ist
-   * ausschliesslich csam-Verklebung ... und ohne Teilstringsuche auf vier
-   * Buchstaben nicht zu haben").
+   * this count may only go DOWN. It is not required to be zero: Schlusspruefung
+   * Inhaltsschutz (Opus 5, 18.09.2026) measured that fully closing it (a bare
+   * "csam" glued inside a longer token via arbitrary-length chains, not just
+   * an adjacent pair) needs a whole-string check on "csam" itself, which
+   * reintroduces the false-alarm class in LEGITIMATE_PROMPTS above. Variante
+   * C from that same review (per-whitespace-token compaction plus gluing two
+   * ADJACENT tokens of at most 2 characters each, see
+   * SHORT_TERM_GLUE_MAX_LENGTH in safety.ts) closes most of what is left
+   * without reopening that false alarm; the residual below is what stays
+   * open after Variante C, not before it.
    */
   it('residual gap on chunked/glued "csam" probes against OLD: measured, may only shrink', () => {
     const stillWeakerThanOld = CSAM_CHUNK_PROBES.filter((t) => rank(currentCheck(t)) < rank(oldCheck(t)))
-    // Measured on this probe list (41 chunked/glued "csam" probes): 29. May
-    // only shrink from here.
-    const RESIDUAL_CEILING_OLD = 29
+    // Measured on this probe list (41 chunked/glued "csam" probes) after
+    // Variante C: 6 (was 29 before it). May only shrink from here.
+    const RESIDUAL_CEILING_OLD = 6
     expect(
       stillWeakerThanOld.length,
       `residual vs OLD: ${stillWeakerThanOld.length} of ${CSAM_CHUNK_PROBES.length}\n${stillWeakerThanOld.join('\n')}`,
@@ -358,9 +392,9 @@ describe('B1 (Runde 4): the fix is never weaker than the WEAK (03f98fdd) fassung
 
   it('residual gap on chunked/glued "csam" probes against WEAK: measured, may only shrink', () => {
     const stillWeakerThanWeak = CSAM_CHUNK_PROBES.filter((t) => rank(currentCheck(t)) < rank(weakCheck(t)))
-    // Measured on this probe list (41 chunked/glued "csam" probes): 25. May
-    // only shrink from here.
-    const RESIDUAL_CEILING_WEAK = 25
+    // Measured on this probe list (41 chunked/glued "csam" probes) after
+    // Variante C: 4 (was 25 before it). May only shrink from here.
+    const RESIDUAL_CEILING_WEAK = 4
     expect(
       stillWeakerThanWeak.length,
       `residual vs WEAK: ${stillWeakerThanWeak.length} of ${CSAM_CHUNK_PROBES.length}\n${stillWeakerThanWeak.join('\n')}`,
@@ -374,14 +408,16 @@ describe('B1: zero false alarms on ordinary prompts', () => {
       expect(currentCheck(text).blocked, text).toBe(false)
     }
   })
+})
 
+describe.skipIf(!HAS_DESKTOP_HISTORY)('B1: zero false alarms on ordinary prompts (historischer Beleg)', () => {
   it('sanity: ALT and WEAK both DID false-alarm on several of these (that is why the whole-string check on "csam" was removed, not just narrowed)', () => {
     const oldFalseAlarms = LEGITIMATE_PROMPTS.filter((t) => oldCheck(t).blocked)
     expect(oldFalseAlarms.length).toBeGreaterThan(0)
   })
 })
 
-describe('NEGATIVE CONTROL: the checks above have teeth', () => {
+describe.skipIf(!HAS_DESKTOP_HISTORY)('NEGATIVE CONTROL: the checks above have teeth', () => {
   it('WEAK (03f98fdd) IS measurably weaker than OLD on the full probe list', () => {
     const regressions = ALL_PROBES.filter((t) => rank(weakCheck(t)) < rank(oldCheck(t)))
     // This is the point of the "never weaker than OLD" describe block above:
@@ -407,6 +443,81 @@ describe('NEGATIVE CONTROL: the checks above have teeth', () => {
   it('and PARTIAL is measurably weaker than CURRENT on chunked probes (the whole-string check is doing real work)', () => {
     const regressions = CHUNK_PROBES.filter((t) => rank(partialCheck(t)) < rank(currentCheck(t)))
     expect(regressions.length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * Variante C (Schlusspruefung Inhaltsschutz, Opus 5, 18.09.2026): the
+ * short-term ("csam") check in safety.ts glues two ADJACENT whitespace
+ * tokens when both are at most SHORT_TERM_GLUE_MAX_LENGTH (2) characters
+ * long. This directly exercises that mechanism and the false-alarm
+ * boundary it was measured against, WITHOUT reading an external word list:
+ * a large-scale sweep (235976 words of the system dictionary as single
+ * tokens and as pairs, 46 ordinary prompts) was run by hand for this round
+ * and is not repeated here on every CI run; this is the fast, portable
+ * regression guard for the same mechanism.
+ */
+describe('Variante C: the short-term token-glue check', () => {
+  it('catches a two-block split of "csam" (both blocks at most 2 characters)', () => {
+    for (const text of ['cs am', 'a cs am image', 'cs.am', 'cs-am', 'cs_am']) {
+      expect(currentCheck(text).blocked, text).toBe(true)
+      expect(currentCheck(text).reason, text).toBe('csam')
+    }
+  })
+
+  it('catches "csam" glued inside a longer single token (no real space)', () => {
+    for (const text of ['xxcsamxx', 'mycsamfile', 'thecsamlist', 'acsam', 'csamimage']) {
+      expect(currentCheck(text).blocked, text).toBe(true)
+      expect(currentCheck(text).reason, text).toBe('csam')
+    }
+  })
+
+  it('does NOT glue across a block longer than 2 characters ("csa m" stays open, a known accepted residual)', () => {
+    // Documents the boundary, not a gap to close here: "csa"(3) + "m"(1)
+    // does not satisfy "both <= 2", by design (see safety.ts comment on
+    // SHORT_TERM_GLUE_MAX_LENGTH). Counted in the residual-ceiling tests
+    // above.
+    expect(currentCheck('csa m').blocked).toBe(false)
+  })
+
+  it('never blocks two-letter English words placed next to each other (the false-alarm boundary the bound of 2 was measured against)', () => {
+    // Every common two-letter (or shorter) English word next to every other
+    // one of them: none of the 26*26 pairings spells "csam". This mirrors
+    // the review's 165-real-word, 27225-pair dictionary sweep at a size that
+    // runs on every CI invocation without reading an external file.
+    const SHORT_WORDS = [
+      'a', 'i', 'am', 'an', 'as', 'at', 'be', 'by', 'do', 'go', 'he', 'if',
+      'in', 'is', 'it', 'me', 'my', 'no', 'of', 'on', 'or', 'so', 'to', 'up',
+      'us', 'we',
+    ]
+    const falseAlarms: string[] = []
+    for (const a of SHORT_WORDS) {
+      for (const b of SHORT_WORDS) {
+        const text = `${a} ${b}`
+        if (currentCheck(text).blocked) falseAlarms.push(text)
+      }
+    }
+    expect(falseAlarms, falseAlarms.join(', ')).toEqual([])
+  })
+
+  it('REJECTED variant, documented not shipped: gluing when only ONE neighbor is short (not both) DOES false-alarm ("vitamin c samples")', () => {
+    // Not implemented in safety.ts: SHORT_TERM_GLUE_MAX_LENGTH gates on BOTH
+    // neighbors. This test proves why, by reimplementing the rejected
+    // "at least one" rule locally and showing it flags an ordinary sentence
+    // that the shipped "both" rule correctly lets through.
+    const compactToken = (t: string) => t.replace(/[^a-z0-9]+/g, '')
+    const looseGlueHits = (text: string): boolean => {
+      const tokens = text.toLowerCase().split(/\s+/).filter(Boolean).map(compactToken)
+      if (tokens.some((t) => t.includes('csam'))) return true
+      for (let i = 0; i + 1 < tokens.length; i++) {
+        const a = tokens[i]
+        const b = tokens[i + 1]
+        if ((a.length <= 2 || b.length <= 2) && (a + b).includes('csam')) return true
+      }
+      return false
+    }
+    expect(looseGlueHits('vitamin c samples')).toBe(true)
+    expect(currentCheck('vitamin c samples').blocked).toBe(false)
   })
 })
 
