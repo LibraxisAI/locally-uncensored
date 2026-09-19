@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
   clampNoticeLeft,
+  clampNoticeMaxHeight,
   FLASH_NOTICE_CLOSE_LABEL,
   FLASH_NOTICE_HEADING_EXHAUSTED,
   FLASH_NOTICE_HEADING_FREE,
@@ -264,5 +265,21 @@ describe('clampNoticeLeft, der Viewport-Clamp des Panels', () => {
     const { left, width } = clampNoticeLeft(-50, 360, 280)
     expect(-50 + left).toBeGreaterThanOrEqual(8 - 0.001)
     expect(width).toBe(280)
+  })
+})
+
+// Runde 3 (Abnahme 19.09.2026, Blocker A1): das Panel oeffnet jetzt nach oben
+// und muss deshalb seine eigene Hoehe auf den Platz klemmen, der ueber dem
+// Trigger frei ist, sonst laeuft es in einem niedrigen Fenster oben aus dem
+// Bild statt wie zuvor rechts.
+describe('clampNoticeMaxHeight, die Hoehenklemme des nach oben oeffnenden Panels', () => {
+  it('gibt den vollen Platz oberhalb des Triggers minus Abstand und Rand', () => {
+    // wrapTop=400, PANEL_GAP=6, PANEL_MARGIN=8
+    expect(clampNoticeMaxHeight(400)).toBe(400 - 6 - 8)
+  })
+
+  it('wird nie negativ, wenn der Trigger fast am oberen Fensterrand klebt', () => {
+    expect(clampNoticeMaxHeight(0)).toBe(0)
+    expect(clampNoticeMaxHeight(5)).toBe(0)
   })
 })

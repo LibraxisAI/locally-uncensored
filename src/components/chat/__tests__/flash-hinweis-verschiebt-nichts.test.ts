@@ -11,7 +11,7 @@
  * nicht nur entkoppelt), `ChatInput.tsx` kennt sie nicht mehr. Was sie zeigte,
  * lebt an zwei Stellen weiter: "No credits"/"Using credits" im Etikett neben
  * dem Agent-Schalter (`FlashChatNotice`), und BEIDE Marken unveraendert in der
- * Modellauswahl (`ModelRowMarks` in `ModelSelector.tsx`) — dort informiert
+ * Modellauswahl (`ModelRowMarks` in `ModelSelector.tsx`), dort informiert
  * sich der Nutzer, nicht ueber dem Feld, in das er gerade tippt.
  *
  * Dieser Test liest Quelltext, nicht das gerenderte DOM, aus demselben Grund
@@ -86,6 +86,25 @@ describe('das Popup liegt ausserhalb des Layoutflusses, wie der Sampling-Regler'
   it('FlashChatNotice setzt position: absolute fuers Panel, dieselbe Bauart', () => {
     expect(NOTICE).toMatch(/position:\s*'absolute'/)
     expect(SAMPLING).toMatch(/position:\s*'absolute'/)
+  })
+
+  // Runde 3 (Abnahme 19.09.2026, Blocker A1): die Sitzungsleiste steht unter
+  // dem Transkript, direkt ueber dem Composer, nicht oben. Ein Panel, das
+  // nach UNTEN oeffnet (`top: '100%'`), liefe dort aus dem Fenster und wuerde
+  // vom `overflow-hidden`-Vorfahren in ChatView.tsx abgeschnitten. Nur
+  // `position: absolute` zu pruefen (wie zuvor) faengt das nicht, deshalb
+  // steht hier zusaetzlich die Richtung selbst: `bottom: '100%'`, wie
+  // `SamplingControls`, und explizit NICHT `top: '100%'`.
+  it('das Panel oeffnet nach OBEN, wie SamplingControls, nicht nach unten', () => {
+    expect(NOTICE).toMatch(/bottom:\s*'100%'/)
+    expect(NOTICE).not.toMatch(/top:\s*'100%'/)
+    expect(SAMPLING).toMatch(/bottom:\s*'100%'/)
+  })
+
+  it('das Panel klemmt seine Hoehe auf den freien Platz ueber dem Trigger', () => {
+    expect(NOTICE).toContain('clampNoticeMaxHeight')
+    expect(NOTICE).toMatch(/maxHeight:\s*panelBox\.maxHeight/)
+    expect(NOTICE).toMatch(/overflowY:\s*'auto'/)
   })
 
   it('der Ausloeser ist eine einzeilige Zeile, kein Block mit eigener Hoehe', () => {

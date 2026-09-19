@@ -41,17 +41,56 @@ test('flash metadata and paid fallback reach the actual desktop composer', async
   // dann "Included". David am 12.09.2026 endgueltig zurueck auf "No credits",
   // weil "Included" nur sagt, dass etwas dabei ist. Dass die Marke am KONTO
   // haengt, traegt die Logik daneben und der Titel, nicht das Etikett. Die
-  // Zeile selbst ist unveraendert, nur ihr Aufdruck.
+  // Zeile selbst ist unveraendert, nur ihr Aufdruck. Sie steht weiterhin in
+  // der Modellauswahl selbst (`ModelRowMarks`), unabhaengig vom Etikett in
+  // der Sitzungsleiste.
   const marke = row.getByText('No credits', { exact: true })
   await expect(marke).toBeVisible()
   await expect(marke).toHaveAttribute('title', 'No credits on your plan, up to 50,000 tokens per day.')
   await row.click()
-  await expect(page.getByTestId('flash-chat-notice')).toContainText('50,000 input and output tokens')
+
+  // Runde 3 (Abnahme 19.09.2026, Blocker A2): kein Dauerband mehr ueber der
+  // Eingabe. Der Hinweis ist ein Etikett neben dem Agent-Schalter, das ein
+  // Popup oeffnet statt Platz zu beanspruchen, genau wie der Sampling-Regler.
+  const trigger = page.getByTestId('flash-chat-notice-trigger')
+  const panel = page.getByTestId('flash-chat-notice-panel')
   const composer = page.locator('textarea').first()
+
+  await expect(trigger).toBeVisible()
+  await expect(trigger).toHaveText('Using no credits')
+  await expect(panel).toBeHidden()
+
+  // Der Composer darf sich nicht bewegen, weder beim Oeffnen noch beim
+  // Schliessen: das war der Fehler des alten Dauerbandes, das den
+  // Agent-Schalter und alles darunter nach oben schob.
+  const composerTopBeforeOpen = (await composer.boundingBox())!.y
+
+  await trigger.click()
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText('50,000 input and output tokens')
+  const composerTopWhileOpen = (await composer.boundingBox())!.y
+  expect(composerTopWhileOpen).toBeCloseTo(composerTopBeforeOpen, 0)
+
+  // Das X schliesst.
+  await page.getByTestId('flash-chat-notice-close').click()
+  await expect(panel).toBeHidden()
+  const composerTopAfterClose = (await composer.boundingBox())!.y
+  expect(composerTopAfterClose).toBeCloseTo(composerTopBeforeOpen, 0)
+
+  // Escape schliesst ebenfalls.
+  await trigger.click()
+  await expect(panel).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+
   await composer.fill('Say hello')
   await composer.press('Enter')
-  await expect(page.getByTestId('flash-chat-notice').getByRole('status')).toContainText('41,000')
+  await trigger.click()
+  await expect(panel.getByRole('status')).toContainText('41,000')
   await expect(page.getByText('Flash browser proof 1.', { exact: true })).toBeVisible()
+  await page.getByTestId('flash-chat-notice-close').click()
+  await expect(panel).toBeHidden()
+
   await expect(async () => {
     if (requests < 2) {
       await composer.fill('Say hello again')
@@ -59,6 +98,7 @@ test('flash metadata and paid fallback reach the actual desktop composer', async
     }
     expect(requests).toBe(2)
   }).toPass({ timeout: 10000 })
-  await expect(page.getByTestId('flash-chat-notice').getByRole('alert')).toContainText('uses credits')
+  await trigger.click()
+  await expect(panel.getByRole('alert')).toContainText('uses credits')
   await expect(page.getByText('Flash browser proof 2.', { exact: true })).toBeVisible()
 })
