@@ -221,3 +221,77 @@ test('VoiceButton-Tooltip bleibt bei 360px vollstaendig sichtbar, nicht abgeschn
     expect(kasten.height, 'eine echte Hoehe, nicht auf 0 geclippt').toBeGreaterThan(10)
   }
 })
+
+/**
+ * Derselbe Leck-Pfad, jetzt im Code-Reiter (`CodexView.tsx`, gefixt auf
+ * Weisung des Orchestrators, gleiche Runde wie `d18d05a8`): dort sitzen
+ * dieselben drei Ausloeser (Modellwaehler, CodexModeDropdown,
+ * PluginsDropdown) in einer eigenen Zeile mit einem EIGENEN, NAEHEREN
+ * `overflow-hidden`-Vorfahren (`CodexView.tsx`, das "Main panel" umschliesst,
+ * verschachtelt INNERHALB von ChatView.tsx's bereits gefixtem Vorfahren).
+ * `findeSchneidendenVorfahren` findet den naechsten Vorfahren zuerst, misst
+ * hier also den CodexView-eigenen Knoten, nicht den von ChatView.tsx.
+ */
+async function bootCode(page: Page, width: number, height: number): Promise<void> {
+  await page.setViewportSize({ width, height })
+  await page.addInitScript(tauriMockInit, { assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME })
+  await seedOnboardingDone(page)
+  await page.goto('/')
+  // Modus zuerst, dann Chat: der Moduswechsel raeumt die aktive Unterhaltung
+  // weg (wie in coding-agent.spec.ts's boot() dokumentiert).
+  await page.getByRole('button', { name: 'Code', exact: true }).click()
+  await page.getByRole('button', { name: /New Chat/i }).first().click()
+}
+
+test('Code-Reiter: scrollLeft bleibt 0 durch Oeffnen, Waehlen, Schliessen bei 1280x800', async ({ page }) => {
+  await bootCode(page, 1280, 800)
+  const vorfahr = await findeSchneidendenVorfahren(page)
+  expect(await scrollLeftVon(page, vorfahr)).toBe(0)
+
+  const trigger = page.getByRole('button', { name: 'Select chat model', exact: true })
+  await trigger.click()
+  expect(await scrollLeftVon(page, vorfahr), 'nach dem Oeffnen').toBe(0)
+
+  const menu = page.getByTestId('model-picker-menu')
+  await expect(menu).toBeVisible()
+  const row = page.locator('[data-testid="model-picker-menu"] [role="button"]').first()
+  await expect(row).toBeVisible()
+  await row.click()
+  await expect(menu).toBeHidden()
+  expect(await scrollLeftVon(page, vorfahr), 'nach der Wahl, Menue zu').toBe(0)
+
+  await trigger.click()
+  await expect(menu).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toBeHidden()
+  expect(await scrollLeftVon(page, vorfahr), 'nach Escape').toBe(0)
+})
+
+/**
+ * Negativkontrolle fuer den Code-Reiter, gleiches Muster wie oben fuer den
+ * Chat-Reiter: der echte, laufende Baum bekommt seinen CodexView-Vorfahren
+ * zur Laufzeit auf `overflow: hidden` zurueckgesetzt (keine Quelldatei
+ * angefasst), eine direkte `scrollLeft`-Zuweisung wirkt dann wieder.
+ */
+test('Negativkontrolle Code-Reiter: ohne overflow-clip auf dem CodexView-Vorfahren wirkt eine scrollLeft-Zuweisung', async ({ page }) => {
+  // 360px, nicht 1280px: die geteilte `ChatInput`-Werkzeugzeile (Chat und
+  // Code teilen sich dieselbe Komponente) laeuft dort tatsaechlich ueber
+  // (derselbe Befund wie im Dateikopf fuer den Chat-Reiter), sonst gaebe es
+  // nichts zu scrollen und die Negativkontrolle waere wirkungslos, egal ob
+  // `hidden` oder `clip`.
+  await bootCode(page, 360, 720)
+  const vorfahr = await findeSchneidendenVorfahren(page)
+  expect(await scrollLeftVon(page, vorfahr)).toBe(0)
+
+  await page.evaluate((el) => {
+    (el as HTMLElement | null)?.style.setProperty('overflow', 'hidden')
+  }, vorfahr)
+
+  await page.evaluate((el) => {
+    const node = el as HTMLElement | null
+    if (node) node.scrollLeft = 300
+  }, vorfahr)
+
+  const nachher = await scrollLeftVon(page, vorfahr)
+  expect(nachher, 'mit overflow: hidden statt clip nimmt der Vorfahr die Zuweisung an').not.toBe(0)
+})

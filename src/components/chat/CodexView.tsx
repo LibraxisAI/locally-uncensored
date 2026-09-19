@@ -196,7 +196,17 @@ export function CodexView() {
   }
 
   return (
-    <div className="flex-1 flex overflow-hidden">
+    // Derselbe leckende Vorfahre wie in ChatView.tsx (flashchip Runde 5,
+    // e111f8f6..d18d05a8): overflow-hidden clippt visuell, verhindert aber
+    // kein programmatisches Scrollen. Ein Klick auf ModelSelector,
+    // CodexModeDropdown oder PluginsDropdown, deren Ausloeser teilweise
+    // ausserhalb der Zeile liegt, holt den Browser das fokussierte Element
+    // per scrollLeft auf GENAU DIESEM Vorfahren "in Sicht" und verschiebt den
+    // ganzen Code-Reiter seitlich, dauerhaft. overflow-clip clippt genauso,
+    // laesst aber kein programmatisches Scrollen zu. Kein Nachkomme in dieser
+    // Datei haengt scrollTop, scrollTo oder scrollIntoView an dieses Element
+    // (grep gegen src/components/chat/CodexView.tsx bestaetigt das).
+    <div className="flex-1 flex overflow-clip">
       {/* Main panel */}
       <div className="flex-1 flex flex-col min-w-0 relative">
         {/* Codex header */}
