@@ -147,7 +147,24 @@ cmake_flags_for() {
       # MSYS's argv rewriter), so use that instead of the LDFLAGS/
       # MSYS2_ENV_CONV_EXCL environment-variable workaround the box bauer used
       # to prove this out (e2e/k1-avx, 04-BOX-SIDECAR-AVX-BEFUND.md Schritt 1).
-      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DCMAKE_SHARED_LINKER_FLAGS=-MAP -DCMAKE_EXE_LINKER_FLAGS=-MAP" ;;
+      #
+      # A REAL sidecar rebuild on the box with only the two flags above
+      # (round 2's first attempt) surfaced a second, genuine gap: cmake has
+      # THREE linker-flags cache variables, not two.
+      # ggml/src/CMakeLists.txt:267 adds every GGML_BACKEND_DL backend
+      # (`add_library(${backend} MODULE ${ARGN})`, both the nine
+      # ggml-cpu-*.dll variants and ggml-vulkan.dll) as a CMake MODULE
+      # library, not SHARED, and MSVC/CMake links a MODULE target with
+      # CMAKE_MODULE_LINKER_FLAGS, a cache variable CMAKE_SHARED_LINKER_FLAGS
+      # never reaches. Measured: a build with only
+      # CMAKE_SHARED_LINKER_FLAGS/CMAKE_EXE_LINKER_FLAGS set to -MAP produced
+      # ggml.map, ggml-base.map, llama.map, llama-common.map,
+      # llama-server-impl.map, mtmd.map and llama-server.map (the exe) but
+      # NOT ONE .map for any ggml-cpu-*.dll or ggml-vulkan.dll — exactly the
+      # files verify-sidecar-isa.sh's Windows guard most needs a map for,
+      # since they are where an unconditional-AVX regression would actually
+      # ship. All three linker-flags variables now carry -MAP.
+      echo "$common -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DCMAKE_SHARED_LINKER_FLAGS=-MAP -DCMAKE_EXE_LINKER_FLAGS=-MAP -DCMAKE_MODULE_LINKER_FLAGS=-MAP" ;;
     x86_64-unknown-linux-gnu)
       # CMAKE_BUILD_RPATH_USE_ORIGIN=ON (BLOCKER B3): without it,
       # CMAKE_BUILD_WITH_INSTALL_RPATH's OFF default still makes CMake write
