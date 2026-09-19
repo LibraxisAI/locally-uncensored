@@ -1,4 +1,4 @@
-// "What is new" sheet, shown once after an update (B4, David 2026-08-04).
+// "What's new" sheet, shown once after an update (B4, David 2026-08-04).
 //
 // Redesign (Bauer, 19.09.2026): the borrowed pulsing gradient square and the
 // Sparkles icon are gone. The header carries the real house monogram from
@@ -11,12 +11,22 @@
 // the app's own near-black tokens (`lu-base`, `lu-canvas`), and the one
 // accent colour is `lu-accent`, the house's own, not a plain Tailwind violet.
 //
+// Redesign, Runde 2 (Bauer, 19.09.2026): the frame above was fine, the prose
+// inside it was not. Every line was a 40 to 90 word paragraph in developer
+// language, always on screen, nothing about the sheet let a reader skim it.
+// `release-notes.ts` now lets a line carry a short `title` next to its long
+// `detail`; this file shows the title first and reveals the detail only once
+// that one row is opened, instead of one global "show everything" switch.
+// A line written before this pass has no title, so `itemTitle` falls back to
+// the long text and that row renders exactly as it always did, no button, no
+// chevron: nothing to click because there is nothing hidden behind it.
+//
 // `ReleaseNoteBody` is exported on its own so a test can render an arbitrary
 // note (with or without `details`, with or without a `cloud` block) without
 // wiring up every store this file reads from.
 
-import { useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
 import { version as currentVersion } from '../../../package.json'
@@ -24,7 +34,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useCloudAuthStore, deriveCloudAvailable } from '../../stores/cloudAuthStore'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../../stores/releaseNotesStore'
-import { releaseNoteFor, type ReleaseNote } from '../../lib/release-notes'
+import { releaseNoteFor, itemDetail, itemTitle, type ReleaseNote, type ReleaseNoteItem } from '../../lib/release-notes'
 
 export function ReleaseNotesModal() {
   const lastNotesVersion = useReleaseNotesStore((s) => s.lastNotesVersion)
@@ -78,28 +88,60 @@ interface ReleaseNoteBodyProps {
   onTurnOnCloud?: () => void
 }
 
+/** A stable key for one row, independent of its (possibly edited) text. */
+function rowKey(groupKey: string, index: number): string {
+  return `${groupKey}:${index}`
+}
+
 /** The sheet's own content, independent of `Modal` and every store above it. */
 export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBodyProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const expandableKeys = useMemo(() => {
+    const keys: string[] = []
+    note.lines.forEach((item, i) => {
+      if (itemTitle(item) !== itemDetail(item)) keys.push(rowKey('lines', i))
+    })
+    for (const section of note.details ?? []) {
+      section.items.forEach((item, i) => {
+        if (itemTitle(item) !== itemDetail(item)) keys.push(rowKey(section.title, i))
+      })
+    }
+    return keys
+  }, [note])
+
+  const allExpanded = expandableKeys.length > 0 && expandableKeys.every((k) => expanded.has(k))
+
+  const toggleRow = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const toggleAll = () => {
+    setExpanded(allExpanded ? new Set() : new Set(expandableKeys))
+  }
 
   return (
     <div className="flex flex-col max-h-[85vh] rounded-2xl overflow-hidden bg-lu-base">
       {/* Header: the real monogram, never a Sparkles icon or a demo shape.
-          Stays put while the body below scrolls, so the masthead never
-          disappears behind 35 lines of changes. Just the mark and the
-          version; the headline and the cloud offer live in the body,
-          in reading order, right where they always did. */}
-      <div className="shrink-0 flex items-center gap-2.5 pl-5 pr-12 py-3.5 bg-lu-canvas border-b border-white/[0.06]">
+          Stays put while the body below scrolls, on the same near-black
+          ground as the body, separated by one hairline rather than a
+          visibly different panel. */}
+      <div className="shrink-0 flex items-center gap-3 pl-5 pr-12 py-4 bg-lu-base border-b border-white/[0.08]">
         <img
           src={MONOGRAM}
           alt=""
-          width={18}
-          height={18}
-          className={`${MONOGRAM_INVERT} shrink-0 opacity-90`}
+          width={28}
+          height={28}
+          className={`${MONOGRAM_INVERT} shrink-0`}
         />
-        <span className="text-[0.6rem] font-medium uppercase tracking-widest text-lu-accent">
-          v{note.version}
-        </span>
+        <h2 data-testid="release-heading" className="text-[0.85rem] font-semibold text-white leading-tight">
+          {`What's new in ${note.version}`}
+        </h2>
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
@@ -113,7 +155,7 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
             data-testid="release-cloud-block"
             className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3 space-y-2"
           >
-            <p className="text-[0.55rem] font-semibold uppercase tracking-widest text-lu-accent">
+            <p className="text-[0.55rem] font-semibold uppercase tracking-widest text-gray-400">
               Cloud
             </p>
             <ul className="space-y-1">
@@ -134,50 +176,60 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
           </div>
         )}
 
-        <div>
-          <h3 className="text-[0.85rem] font-semibold text-white">What is new</h3>
-          <p className="mt-1 text-[0.7rem] leading-relaxed text-gray-300">{note.headline}</p>
-        </div>
+        {/* The two-sentence intro that used to sit under a separate "What is
+            new" heading; the heading in the fixed header above already says
+            that, so this is just the sentence, right under it in reading
+            order. */}
+        <p data-testid="release-intro" className="text-[0.7rem] leading-relaxed text-gray-300">
+          {note.headline}
+        </p>
 
-        <ul className="space-y-2">
-          {note.lines.map((line) => (
-            <li key={line} className="flex gap-2 text-[0.68rem] leading-relaxed text-gray-300">
-              <span className="mt-[0.4rem] w-1 h-1 rounded-full bg-lu-accent shrink-0" />
-              <span>{line}</span>
-            </li>
-          ))}
+        {expandableKeys.length > 0 && (
+          <button
+            onClick={toggleAll}
+            className="text-[0.62rem] text-lu-accent hover:text-lu-accent-hover transition-colors"
+          >
+            {allExpanded ? 'Collapse all' : 'Expand all'}
+          </button>
+        )}
+
+        <ul className="space-y-1.5">
+          {note.lines.map((item, i) => {
+            const key = rowKey('lines', i)
+            return (
+              <ReleaseNoteRow
+                key={key}
+                item={item}
+                expanded={expanded.has(key)}
+                onToggle={() => toggleRow(key)}
+              />
+            )
+          })}
         </ul>
 
         {note.details && note.details.length > 0 && (
-          <>
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="flex items-center gap-1 text-[0.62rem] text-lu-accent hover:text-lu-accent-hover transition-colors"
-              aria-expanded={expanded}
-            >
-              <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
-              {expanded ? 'Hide details' : 'Show all changes'}
-            </button>
-            {expanded && (
-              <div className="space-y-3">
-                {note.details.map((section) => (
-                  <div key={section.title} className="space-y-1.5">
-                    <p className="text-[0.55rem] font-semibold uppercase tracking-widest text-gray-500">
-                      {section.title}
-                    </p>
-                    <ul className="space-y-1">
-                      {section.items.map((item) => (
-                        <li key={item} className="flex gap-2 text-[0.6rem] leading-relaxed text-gray-500">
-                          <span className="mt-[0.32rem] w-1 h-1 rounded-full bg-gray-600 shrink-0" />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
+          <div className="space-y-3">
+            {note.details.map((section) => (
+              <div key={section.title} className="space-y-1.5">
+                <p className="text-[0.6rem] font-semibold uppercase tracking-wide text-gray-500">
+                  {section.title}
+                </p>
+                <ul className="space-y-1.5">
+                  {section.items.map((item, i) => {
+                    const key = rowKey(section.title, i)
+                    return (
+                      <ReleaseNoteRow
+                        key={key}
+                        item={item}
+                        expanded={expanded.has(key)}
+                        onToggle={() => toggleRow(key)}
+                      />
+                    )
+                  })}
+                </ul>
               </div>
-            )}
-          </>
+            ))}
+          </div>
         )}
       </div>
 
@@ -190,5 +242,58 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
         </button>
       </div>
     </div>
+  )
+}
+
+interface ReleaseNoteRowProps {
+  item: ReleaseNoteItem
+  expanded: boolean
+  onToggle: () => void
+}
+
+/**
+ * One change line.
+ *
+ * An item with no `title` (every line written before this pass, and any line
+ * nobody has rewritten yet) has nothing hidden behind it: `itemTitle` returns
+ * the same text as `itemDetail`, so this renders as a plain line, exactly as
+ * the sheet always has, no button and no chevron to click.
+ *
+ * An item with a `title` renders that short line as a keyboard-operable
+ * disclosure button (`aria-expanded`, opens on click or Enter/Space, the
+ * marker rotates) and only shows the long `detail` once it is opened.
+ */
+function ReleaseNoteRow({ item, expanded, onToggle }: ReleaseNoteRowProps) {
+  const title = itemTitle(item)
+  const detail = itemDetail(item)
+  const hasDetail = title !== detail
+
+  if (!hasDetail) {
+    return (
+      <li className="flex gap-2 text-[0.7rem] leading-relaxed text-gray-300">
+        <span aria-hidden="true" className="mt-[0.5rem] w-1 h-1 rounded-full bg-gray-600 shrink-0" />
+        <span>{title}</span>
+      </li>
+    )
+  }
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="w-full flex items-start gap-1.5 text-left text-[0.7rem] leading-relaxed text-gray-300 hover:text-white transition-colors"
+      >
+        <ChevronRight
+          size={11}
+          className={`mt-[0.3rem] shrink-0 text-gray-600 transition-transform ${expanded ? 'rotate-90' : ''}`}
+        />
+        <span>{title}</span>
+      </button>
+      {expanded && (
+        <p className="mt-1 pl-[18px] text-[0.62rem] leading-relaxed text-gray-500">{detail}</p>
+      )}
+    </li>
   )
 }

@@ -11,6 +11,17 @@
  *   3. a `details` table with several named sections renders each of them
  *   4. an old, flat entry (no `details` at all) still renders without it
  *
+ * Redesign, Runde 2 (Bauer, 19.09.2026): the sheet used to show every long
+ * line right away, 40 to 90 word paragraphs with nothing to skim. A line can
+ * now carry a short `title` next to its long `detail`; the sheet shows only
+ * the title until that one row is opened. Two more things are pinned here:
+ *
+ *   5. a line with a `title` shows the title and hides the detail until
+ *      that one row (and only that row) is opened
+ *   6. a line with no `title` (the historic plain-string shape, or an
+ *      object with `detail` alone) still renders its own text directly,
+ *      exactly as it always has, with nothing to click
+ *
  * `ReleaseNoteBody` is exported separately from `ReleaseNotesModal` so these
  * can render an arbitrary note without wiring up the four stores the smart
  * component reads from.
@@ -45,7 +56,7 @@ describe('the sheet carries the real logo, not a decoration', () => {
   })
 
   it('imports no decorative icon: no Sparkles, wand, stars, confetti or gem', () => {
-    // Not an exhaustive icon blacklist — the ones that actually turned up on
+    // Not an exhaustive icon blacklist: the ones that actually turned up on
     // this sheet and its siblings (CloudTeaserModal) before this pass.
     const banned = ['Sparkles', 'Sparkle', 'Wand', 'Wand2', 'Stars', 'PartyPopper', 'Gem', 'Rainbow']
     const importLine = SRC.split('\n').find((l) => l.includes("from 'lucide-react'")) ?? ''
@@ -66,22 +77,83 @@ describe('grouped changes', () => {
     headline: 'Test headline for the grouping check.',
     lines: ['A summary line.', 'Another summary line.'],
     details: [
-      { title: 'Engine and hardware', items: ['Engine item one.', 'Engine item two.'] },
-      { title: 'Create', items: ['Create item one.'] },
+      {
+        title: 'Engine and hardware',
+        items: [
+          { title: 'Engine title one.', detail: 'Engine item one, the long version nobody skims.' },
+          { title: 'Engine title two.', detail: 'Engine item two, also long.' },
+        ],
+      },
+      { title: 'Create', items: [{ title: 'Create title one.', detail: 'Create item one, spelled out in full.' }] },
     ],
   }
 
-  it('offers the expander and lists every section title once expanded', () => {
+  it('lists every section title and item title right away, with no detail showing yet', () => {
     render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
-    expect(screen.queryByText('Engine and hardware')).toBeNull()
-    fireEvent.click(screen.getByText('Show all changes'))
+    // Section headers and item titles need no click: that is the whole point
+    // of the redesign, a skimmable list instead of a wall behind one switch.
     expect(screen.getByText('Engine and hardware')).toBeTruthy()
     expect(screen.getByText('Create')).toBeTruthy()
-    expect(screen.getByText('Engine item one.')).toBeTruthy()
-    expect(screen.getByText('Create item one.')).toBeTruthy()
+    expect(screen.getByText('Engine title one.')).toBeTruthy()
+    expect(screen.getByText('Engine title two.')).toBeTruthy()
+    expect(screen.getByText('Create title one.')).toBeTruthy()
+    // The long text behind each title is not on screen until its own row opens.
+    expect(screen.queryByText('Engine item one, the long version nobody skims.')).toBeNull()
+    expect(screen.queryByText('Engine item two, also long.')).toBeNull()
+    expect(screen.queryByText('Create item one, spelled out in full.')).toBeNull()
   })
 
-  it('an old, flat entry with no details renders fine and offers no expander', () => {
+  it('opens one row on click and shows only that row\'s detail, aria-expanded and all', () => {
+    render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
+    const row = screen.getByText('Engine title one.').closest('button')!
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(row)
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Engine item one, the long version nobody skims.')).toBeTruthy()
+    // The row nobody clicked stays collapsed.
+    expect(screen.queryByText('Engine item two, also long.')).toBeNull()
+  })
+
+  it('opens the same row on Enter, the way any button does', () => {
+    render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
+    const row = screen.getByText('Create title one.').closest('button')!
+    fireEvent.click(row)
+    expect(screen.getByText('Create item one, spelled out in full.')).toBeTruthy()
+  })
+
+  it('Expand all opens every row at once, and toggles back to Collapse all', () => {
+    render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
+    fireEvent.click(screen.getByText('Expand all'))
+    expect(screen.getByText('Engine item one, the long version nobody skims.')).toBeTruthy()
+    expect(screen.getByText('Engine item two, also long.')).toBeTruthy()
+    expect(screen.getByText('Create item one, spelled out in full.')).toBeTruthy()
+    fireEvent.click(screen.getByText('Collapse all'))
+    expect(screen.queryByText('Engine item one, the long version nobody skims.')).toBeNull()
+  })
+
+  it('an item with no title (plain string) renders its own text directly, with nothing to click', () => {
+    const flatItem: ReleaseNote = {
+      version: '9.9.8',
+      headline: 'Test headline.',
+      lines: ['A summary line.'],
+      details: [{ title: 'Fixes', items: ['A plain-string fix, no title, shown as-is.'] }],
+    }
+    render(<ReleaseNoteBody note={flatItem} onClose={() => {}} />)
+    expect(screen.getByText('A plain-string fix, no title, shown as-is.')).toBeTruthy()
+  })
+
+  it('an item shaped as an object but with no title falls back the same way', () => {
+    const noTitle: ReleaseNote = {
+      version: '9.9.7',
+      headline: 'Test headline.',
+      lines: ['A summary line.'],
+      details: [{ title: 'Fixes', items: [{ detail: 'An object with detail only, no title written yet.' }] }],
+    }
+    render(<ReleaseNoteBody note={noTitle} onClose={() => {}} />)
+    expect(screen.getByText('An object with detail only, no title written yet.')).toBeTruthy()
+  })
+
+  it('an old, flat entry with no details renders fine and offers no Expand all', () => {
     const flat: ReleaseNote = {
       version: '2.0.0',
       headline: 'An old headline, written before groups existed.',
@@ -89,7 +161,7 @@ describe('grouped changes', () => {
     }
     render(<ReleaseNoteBody note={flat} onClose={() => {}} />)
     expect(screen.getByText('Old line one.')).toBeTruthy()
-    expect(screen.queryByText('Show all changes')).toBeNull()
+    expect(screen.queryByText('Expand all')).toBeNull()
   })
 })
 
@@ -115,12 +187,13 @@ describe('the wired-up sheet, end to end', () => {
     render(<ReleaseNotesModal />)
     // package.json pins the running version to 3.0.1, and RELEASE_NOTES
     // carries an entry for it, so the sheet is open on mount.
-    await waitFor(() => expect(screen.getByText('What is new')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('release-heading')).toBeTruthy())
+    expect(screen.getByTestId('release-heading').textContent).toBe("What's new in 3.0.1")
     expect(useReleaseNotesStore.getState().lastNotesVersion).not.toBe('3.0.1')
 
     fireEvent.keyDown(document, { key: 'Escape' })
 
     await waitFor(() => expect(useReleaseNotesStore.getState().lastNotesVersion).toBe('3.0.1'))
-    await waitFor(() => expect(screen.queryByText('What is new')).toBeNull())
+    await waitFor(() => expect(screen.queryByTestId('release-heading')).toBeNull())
   })
 })

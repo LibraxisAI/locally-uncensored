@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
-import { RELEASE_NOTES, releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
+import { RELEASE_NOTES, releaseNoteFor, itemDetail, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
 import { CLOUD_PITCH, CLOUD_REFUSAL_LINE, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -24,12 +24,19 @@ const UNKNOWN = '9.9.9'
 
 beforeEach(() => useReleaseNotesStore.setState({ lastNotesVersion: null }))
 
+/**
+ * The long, guard-bound text of every line, headline included, regardless of
+ * whether a line is still the historic plain string or carries a `title`
+ * alongside its `detail` (Runde 2, 19.09.2026). This is what every anchor
+ * below matches against, so a title never has to repeat the anchor text: the
+ * detail underneath it still does.
+ */
 function proseOf(version: string): string {
   const note = releaseNoteFor(version)
   return [
     note?.headline ?? '',
-    ...(note?.lines ?? []),
-    ...(note?.details ?? []).flatMap((s) => s.items),
+    ...(note?.lines ?? []).map(itemDetail),
+    ...(note?.details ?? []).flatMap((s) => s.items).map(itemDetail),
   ]
     .join('\n')
     .toLowerCase()
@@ -46,7 +53,30 @@ describe('the notes table', () => {
     for (const n of RELEASE_NOTES) {
       expect(n.headline.trim().length, `${n.version}: headline`).toBeGreaterThan(10)
       expect(n.lines.length, `${n.version}: lines`).toBeGreaterThanOrEqual(2)
-      for (const l of n.lines) expect(l.trim().length, `${n.version}: empty line`).toBeGreaterThan(0)
+      for (const l of n.lines) expect(itemDetail(l).trim().length, `${n.version}: empty line`).toBeGreaterThan(0)
+    }
+  })
+
+  it('every 3.0.1 line has a title, and no title is a text wall', () => {
+    // Runde 2 (19.09.2026): the sheet used to show 35 developer paragraphs
+    // with nothing to skim. Every line of the SHIPPING version now has to
+    // carry a short `title`, or the redesign quietly regresses to walls of
+    // text the next time someone appends a line without writing one. Older
+    // entries are exempt: they were written before `title` existed and fall
+    // back to their own long text on the sheet, which is the documented,
+    // backward-compatible behaviour, not a gap to close retroactively.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    const note = releaseNoteFor(shipping)
+    const allItems = [...(note?.lines ?? []), ...(note?.details ?? []).flatMap((s) => s.items)]
+    expect(allItems.length, `${shipping}: no lines at all`).toBeGreaterThan(0)
+    for (const item of allItems) {
+      expect(typeof item, `${shipping}: a line is still a plain string, no title`).toBe('object')
+      if (typeof item === 'object') {
+        expect(item.title?.trim().length ?? 0, `${shipping}: a line has no title`).toBeGreaterThan(0)
+        expect(item.title!.length, `${shipping}: title too long: "${item.title}"`).toBeLessThanOrEqual(90)
+      }
     }
   })
 
@@ -362,9 +392,10 @@ describe('the notes table', () => {
     // Long sentences only: a short one can legitimately repeat.
     const sentences = (text: string) =>
       text.split(/(?<=\.)\s+/).map((x) => x.trim().toLowerCase()).filter((x) => x.length > 30)
-    const inLines = new Set((note?.lines ?? []).flatMap(sentences))
+    const inLines = new Set((note?.lines ?? []).map(itemDetail).flatMap(sentences))
     const repeated = (note?.details ?? [])
       .flatMap((s) => s.items)
+      .map(itemDetail)
       .flatMap(sentences)
       .filter((x) => inLines.has(x))
     expect(repeated, 'said word for word in both places').toEqual([])
@@ -393,7 +424,7 @@ describe('the notes table', () => {
     expect(titles).toContain('Cloud')
     for (const s of note?.details ?? []) {
       expect(s.items.length, `${s.title}: items`).toBeGreaterThanOrEqual(3)
-      for (const i of s.items) expect(i.trim().length, `${s.title}: empty item`).toBeGreaterThan(0)
+      for (const i of s.items) expect(itemDetail(i).trim().length, `${s.title}: empty item`).toBeGreaterThan(0)
     }
   })
 
@@ -430,14 +461,19 @@ describe('the notes table', () => {
     )
     expect(modal).toContain('release-cloud-block')
     expect(modal, 'the block has no way into the cloud').toContain('Turn on Cloud')
-    // Vor allem anderen: der Block steht im Quelltext vor der Ueberschrift
-    // des Blatts, und die Ueberschrift ist das erste, was sonst kam.
+    // Vor allem anderen: der Block steht im Quelltext vor der restlichen
+    // Prosa des Blatts.
     //
-    // Gegen die gerenderte Ueberschrift, nicht gegen die Zeichenkette: die
-    // Datei beginnt mit einem Kommentar, der "What is new" ebenfalls nennt,
-    // und gegen den stand der Block immer hinten.
+    // Runde 2 (19.09.2026): "What is new" plus ein separates Versions-Label
+    // wichen "What's new in {version}" in der FESTEN Kopfzeile (Logo und
+    // Ueberschrift bleiben beim Scrollen sichtbar, wie Version und Logo es
+    // vorher schon taten) und stehen darum vor JEDEM Inhalt, auch vor dem
+    // Cloud-Block. Das ist kein Verstoss gegen "vor allem anderen": der
+    // Massstab war immer der INHALT, nicht das Chrome. Der Marker fuer den
+    // ersten echten Inhaltssatz ist jetzt `release-intro`, das Gegenstueck zur
+    // fruehen "What is new</h3>"-Ueberschrift im Koerper.
     expect(modal.indexOf('release-cloud-block'))
-      .toBeLessThan(modal.indexOf('What is new</h3>'))
+      .toBeLessThan(modal.indexOf('data-testid="release-intro"'))
     // Der Knopf faellt auf denselben Weg zurueck wie der Schalter im Kopf.
     expect(modal).toContain('setCloudGateOpen(true)')
     expect(modal).toContain("updateSettings({ appMode: 'cloud' })")
@@ -454,16 +490,24 @@ describe('the notes table', () => {
       .not.toContain('more credits per euro')
   })
 
-  it('the modal renders the expander and the sections', () => {
-    // Source guard, same pattern as the settings guards: the sheet must offer
-    // Show all changes and map note.details, or the table above is dead data.
+  it('the modal renders every section and lets a line disclose its own detail', () => {
+    // Source guard, same pattern as the settings guards: the sheet must map
+    // note.details and section.items, or the table above is dead data.
+    //
+    // Runde 2 (19.09.2026): the one global "Show all changes" switch is gone,
+    // replaced by a per-line disclosure (aria-expanded) plus an "Expand all"
+    // convenience that opens every one of them at once. Both are pinned here
+    // so a later edit cannot quietly bring back one wall of always-visible
+    // text.
     const src = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), '../../components/release/ReleaseNotesModal.tsx'),
       'utf8',
     )
-    expect(src).toContain('Show all changes')
     expect(src).toContain('note.details.map')
     expect(src).toContain('section.items.map')
+    expect(src).toContain('aria-expanded')
+    expect(src).toContain('Expand all')
+    expect(src, 'the old global switch is back').not.toContain('Show all changes')
   })
 })
 

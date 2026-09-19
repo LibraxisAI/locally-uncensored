@@ -66,9 +66,32 @@ export const SHEET_MARKED_MODELS = CLOUD_PITCH.unfilteredChatModels
  */
 const FLASH_DAILY = CLOUD_PITCH.flashDailyTokens.toLocaleString('en-US')
 
+/**
+ * One change line.
+ *
+ * The historic shape is a plain string: the long, exact text a guard or
+ * CHANGELOG.md binds to, shown as-is. The sheet redesign (Bauer, Runde 2,
+ * 19.09.2026) adds a second shape for a line that also carries a short,
+ * plain-language `title`: the sheet then shows the title and reveals `detail`
+ * only once that one row is opened. A line written before this addition, or
+ * one nobody has rewritten yet, stays a plain string and renders exactly as
+ * it always has, title and detail being the same text.
+ */
+export type ReleaseNoteItem = string | { title?: string; detail: string }
+
+/** The long text bound to CHANGELOG.md and to the wording guards, whichever shape the line has. */
+export function itemDetail(item: ReleaseNoteItem): string {
+  return typeof item === 'string' ? item : item.detail
+}
+
+/** The short line the sheet shows first; falls back to the long text when no title was written. */
+export function itemTitle(item: ReleaseNoteItem): string {
+  return typeof item === 'string' ? item : (item.title ?? item.detail)
+}
+
 export interface ReleaseNoteSection {
   title: string
-  items: string[]
+  items: ReleaseNoteItem[]
 }
 
 export interface ReleaseNote {
@@ -101,7 +124,7 @@ export interface ReleaseNote {
     note: string
   }
   /** Two to five short lines. Anything longer goes into `details`. */
-  lines: string[]
+  lines: ReleaseNoteItem[]
   /** The full list behind the expander, grouped into sections. */
   details?: ReleaseNoteSection[]
 }
@@ -116,68 +139,184 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   // 3.0.0 selbst nicht enthielt.
   {
     version: '3.0.1',
-    headline: 'A GPU without a measured free reading gets a safer plan, and Linux/AppImage installs stop losing environment variables to it',
+    // Auflage 4 (Bauer, Runde 2, 19.09.2026): die zwei Saetze, die unter der
+    // Ueberschrift stehen. Der alte Satz hier war der GPU/Umgebungsvariablen-
+    // Satz aus Auflage 1, in Entwicklersprache und nur ueber EINEN der 35
+    // Fixes; er ist durch eine kurze Einordnung ersetzt. CHANGELOG.md behaelt
+    // seinen eigenen, technischeren Einleitungssatz (Auftrag Punkt 6: das
+    // CHANGELOG bleibt unveraendert), die zwei Texte duerfen auseinanderlaufen.
+    headline: 'This update fixes bugs you reported since 3.0.0. Most of them sit in the local engine on older machines, ComfyUI on Linux, the Stop button, and chats running at the same time.',
     lines: [
-      'The local engine now picks its CPU code path at startup, so older processors without AVX2 can run local models instead of the engine exiting right after start.',
-      'On a GPU where the free VRAM could not actually be measured (no nvidia-smi, for instance), the LU Engine used to plan layers as if the whole card were sitting empty and log "N MiB are free" for a number that was really the total size, other programs included. It now takes a bigger safety margin on that weaker reading and logs it correctly as total capacity, not free memory, so a start plans fewer layers rather than too many.',
-      'Linux AppImage: a foreign program the app starts (git, a system Python, pip, ffmpeg, nvidia-smi, the coding agent shell, and now every program the Character Trainer starts too) no longer inherits the AppImage runtime\'s own LD_LIBRARY_PATH, PYTHONHOME and related variables. That inheritance made a perfectly healthy system Python fail to import ssl or find its standard library, with a diagnosis that pointed at a broken Python install rather than the real cause.',
-      'On a platform where pip refuses to write into the system Python (Arch, Debian 12+, Fedora 38+, Ubuntu 23.04+), the isolated venv LU already built there no longer dies at the first pip call, and the same fix keeps the Coding Agent\'s own terminal from picking up the same poisoned environment for every git, pip or python command typed into it.',
-      'Installing or repairing ComfyUI, LU now searches the interpreters already on your machine for one PyTorch actually ships wheels for, and uses that one automatically, with no picker in Settings. If none is found, it says so and tells you what to install before starting the roughly 2 GB PyTorch download, instead of that download running for minutes and then failing with pip\'s own generic error.',
+      {
+        title: 'Local models now run on older processors without AVX2.',
+        detail: 'The local engine now picks its CPU code path at startup, so older processors without AVX2 can run local models instead of the engine exiting right after start.',
+      },
+      {
+        title: 'GPU memory that cannot be measured now gets a safer estimate.',
+        detail: 'On a GPU where the free VRAM could not actually be measured (no nvidia-smi, for instance), the LU Engine used to plan layers as if the whole card were sitting empty and log "N MiB are free" for a number that was really the total size, other programs included. It now takes a bigger safety margin on that weaker reading and logs it correctly as total capacity, not free memory, so a start plans fewer layers rather than too many.',
+      },
+      {
+        title: 'Linux AppImage programs no longer inherit its own environment variables.',
+        detail: 'Linux AppImage: a foreign program the app starts (git, a system Python, pip, ffmpeg, nvidia-smi, the coding agent shell, and now every program the Character Trainer starts too) no longer inherits the AppImage runtime\'s own LD_LIBRARY_PATH, PYTHONHOME and related variables. That inheritance made a perfectly healthy system Python fail to import ssl or find its standard library, with a diagnosis that pointed at a broken Python install rather than the real cause.',
+      },
+      {
+        title: 'Pip installs work again on Linux distros that block system Python.',
+        detail: 'On a platform where pip refuses to write into the system Python (Arch, Debian 12+, Fedora 38+, Ubuntu 23.04+), the isolated venv LU already built there no longer dies at the first pip call, and the same fix keeps the Coding Agent\'s own terminal from picking up the same poisoned environment for every git, pip or python command typed into it.',
+      },
+      {
+        title: 'ComfyUI installs now pick a Python version PyTorch supports.',
+        detail: 'Installing or repairing ComfyUI, LU now searches the interpreters already on your machine for one PyTorch actually ships wheels for, and uses that one automatically, with no picker in Settings. If none is found, it says so and tells you what to install before starting the roughly 2 GB PyTorch download, instead of that download running for minutes and then failing with pip\'s own generic error.',
+      },
     ],
     // Auflage 3 (Bauer, 19.09.2026): dieselben 30 Zeilen wie zuvor, kein
     // Wort geaendert (die Anker in releaseNotesStore.test.ts binden sie
     // woertlich), nur auf vier Themen verteilt statt in einem Eimer
     // "Fixes". 35 Zeilen in einem Block sind auf dem Blatt schwer zu lesen;
     // vier betitelte Gruppen sind es nicht.
+    //
+    // Auflage 4 (Bauer, Runde 2, 19.09.2026): jede Zeile bekommt zusaetzlich
+    // einen `title`, den kurzen Satz, den das Blatt jetzt zeigt, bevor jemand
+    // klickt. `detail` ist zeichengleich mit Auflage 3, also mit dem, was die
+    // Waechter unten binden.
     details: [
       {
         title: 'Engine and hardware',
         items: [
-          'The LU Engine crashing immediately on an old CPU now says which instruction set is missing, measured from the CPU itself rather than guessed, and stops retrying the same binary a second time since it would only fail the same way again.',
-          'The engine startup probe\'s log line read as if a model that is still loading, one that is thinking, and one that has genuinely failed all looked the same. The wording for each case is distinct now.',
-          'The CI check that runs on every pull request now fails independently on each platform instead of one platform\'s failure hiding whatever the other platform would have found.',
-          'Picking a specific GPU for a local model or the Character Trainer now keeps using that physical card even if Windows or Linux renumber the cards between detection and start.',
-          'Opening the Hardware tab in Settings while a local model or the trainer was starting up could freeze it for a moment; it no longer waits on that GPU detection.',
+          {
+            title: 'A crash on an old CPU now names the missing instruction set.',
+            detail: 'The LU Engine crashing immediately on an old CPU now says which instruction set is missing, measured from the CPU itself rather than guessed, and stops retrying the same binary a second time since it would only fail the same way again.',
+          },
+          {
+            title: 'Engine startup messages now say clearly what stage a model is in.',
+            detail: 'The engine startup probe\'s log line read as if a model that is still loading, one that is thinking, and one that has genuinely failed all looked the same. The wording for each case is distinct now.',
+          },
+          {
+            title: 'The automated build check now reports each platform\'s failures separately.',
+            detail: 'The CI check that runs on every pull request now fails independently on each platform instead of one platform\'s failure hiding whatever the other platform would have found.',
+          },
+          {
+            title: 'A chosen GPU stays selected even if the system renumbers cards.',
+            detail: 'Picking a specific GPU for a local model or the Character Trainer now keeps using that physical card even if Windows or Linux renumber the cards between detection and start.',
+          },
+          {
+            title: 'The Hardware tab no longer freezes while a model is starting.',
+            detail: 'Opening the Hardware tab in Settings while a local model or the trainer was starting up could freeze it for a moment; it no longer waits on that GPU detection.',
+          },
         ],
       },
       {
         title: 'Chat and agents',
         items: [
-          'Sending in one conversation while another is still streaming no longer mixes their text together, and a second agent run no longer gets silently dropped while the first one is still going, both now finish on their own.',
-          'The local model runs one conversation at a time, and a chat that has to wait its turn now says so, with a line showing how many chats are ahead of it. Stop works while it is still waiting, and takes it out of the line.',
-          'Stop, signing out and quitting the app now reach every conversation, including one that has not started running yet and is only waiting its turn, not just the one open on screen.',
-          'Moving the Temperature, Top P or Max tokens slider now changes that one conversation only, instead of every open chat sharing one value from the Settings page. A chat with no slider of its own still follows Settings, and a field nobody moved anywhere is left out of the request so the model applies its own default.',
-          'Pressing Stop while the Coding Agent is running code now actually stops that run, the same way it already stopped a shell command.',
-          'A memory entry with more than one line survives export and import again, both separator styles the web writes are read back, and one sensitive memory entry no longer blocks the whole sync.',
-          'The composer lock during a send now only affects that one conversation, not every open chat, Stop in one chat no longer cancels an image or video render running in another, and picking a third remembered agent folder now asks for confirmation like the first two do.',
-          'On Windows, pressing Stop on a command that had only just started now also ends the worker the shell launches a moment later, so a build or install cancelled at the very beginning stops instead of running on and writing files in the background.',
-          'A Cloud chat request that hits its own four minute limit is now treated as finished right away instead of being retried up to three more times with the same four minute wait on each try.',
-          'The No refusals mark in the desktop model picker now carries an icon and bolder text so it is actually noticeable, instead of blending into the smallest text on the row.',
-          'Dismissing the stale model notice in the chat header now actually dismisses it, instead of it reappearing on the very next update.',
-          'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
+          {
+            title: 'Two chats running at once no longer mix up their text.',
+            detail: 'Sending in one conversation while another is still streaming no longer mixes their text together, and a second agent run no longer gets silently dropped while the first one is still going, both now finish on their own.',
+          },
+          {
+            title: 'A waiting chat now shows its place in the queue.',
+            detail: 'The local model runs one conversation at a time, and a chat that has to wait its turn now says so, with a line showing how many chats are ahead of it. Stop works while it is still waiting, and takes it out of the line.',
+          },
+          {
+            title: 'Stop now reaches every conversation, not just the open one.',
+            detail: 'Stop, signing out and quitting the app now reach every conversation, including one that has not started running yet and is only waiting its turn, not just the one open on screen.',
+          },
+          {
+            title: 'Temperature and other sliders now apply to one chat only.',
+            detail: 'Moving the Temperature, Top P or Max tokens slider now changes that one conversation only, instead of every open chat sharing one value from the Settings page. A chat with no slider of its own still follows Settings, and a field nobody moved anywhere is left out of the request so the model applies its own default.',
+          },
+          {
+            title: 'Stop now also ends commands the coding agent started.',
+            detail: 'Pressing Stop while the Coding Agent is running code now actually stops that run, the same way it already stopped a shell command.',
+          },
+          {
+            title: 'Multi-line memory entries survive export and import again.',
+            detail: 'A memory entry with more than one line survives export and import again, both separator styles the web writes are read back, and one sensitive memory entry no longer blocks the whole sync.',
+          },
+          {
+            title: 'Sending in one chat no longer locks every other chat.',
+            detail: 'The composer lock during a send now only affects that one conversation, not every open chat, Stop in one chat no longer cancels an image or video render running in another, and picking a third remembered agent folder now asks for confirmation like the first two do.',
+          },
+          {
+            title: 'On Windows, Stop now also ends a build just started.',
+            detail: 'On Windows, pressing Stop on a command that had only just started now also ends the worker the shell launches a moment later, so a build or install cancelled at the very beginning stops instead of running on and writing files in the background.',
+          },
+          {
+            title: 'A timed-out cloud chat request no longer retries for minutes.',
+            detail: 'A Cloud chat request that hits its own four minute limit is now treated as finished right away instead of being retried up to three more times with the same four minute wait on each try.',
+          },
+          {
+            title: 'The No refusals mark is easier to notice in the picker.',
+            detail: 'The No refusals mark in the desktop model picker now carries an icon and bolder text so it is actually noticeable, instead of blending into the smallest text on the row.',
+          },
+          {
+            title: 'Dismissing the stale model notice now actually dismisses it.',
+            detail: 'Dismissing the stale model notice in the chat header now actually dismisses it, instead of it reappearing on the very next update.',
+          },
+          {
+            title: 'The coding agent now explains why it cannot change folders.',
+            detail: 'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
+          },
         ],
       },
       {
         title: 'Create',
         items: [
-          'A finished image in Create has an Animate this image button that carries it straight into a video render, the same as the browser studio, and the No refusals mark now shows on cloud models in the desktop picker as well.',
-          'qwen-image-edit is selectable from the seed and edit pickers again, the upscale tool is named Enhance Image to match the web, and Krea 2 checkpoints load with the right UNET, CLIP and VAE nodes instead of falling back to an unknown loader.',
-          'The Create button now stays disabled instead of failing on the server when the chosen model needs a mask that was never supplied, and the local character LoRA list refreshes itself right after a training finishes instead of needing a restart.',
-          '"Failed to fetch" is no longer shown as the whole explanation for a failed cloud render, and the out of credits dialog now has a distinct title for each of its three reasons instead of one generic one.',
-          'The model picker no longer crashes when grouping models by family, a custom OpenAI compatible endpoint now receives Top K, a model name is no longer cut off at its first colon, and a newly added provider starts with no value pre filled.',
-          'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
+          {
+            title: 'Animate this image now works from Create in the desktop app.',
+            detail: 'A finished image in Create has an Animate this image button that carries it straight into a video render, the same as the browser studio, and the No refusals mark now shows on cloud models in the desktop picker as well.',
+          },
+          {
+            title: 'qwen-image-edit is selectable again, and Krea 2 loads correctly.',
+            detail: 'qwen-image-edit is selectable from the seed and edit pickers again, the upscale tool is named Enhance Image to match the web, and Krea 2 checkpoints load with the right UNET, CLIP and VAE nodes instead of falling back to an unknown loader.',
+          },
+          {
+            title: 'Create now blocks a render before it fails on the server.',
+            detail: 'The Create button now stays disabled instead of failing on the server when the chosen model needs a mask that was never supplied, and the local character LoRA list refreshes itself right after a training finishes instead of needing a restart.',
+          },
+          {
+            title: 'A failed cloud render now explains itself instead of one error.',
+            detail: '"Failed to fetch" is no longer shown as the whole explanation for a failed cloud render, and the out of credits dialog now has a distinct title for each of its three reasons instead of one generic one.',
+          },
+          {
+            title: 'The model picker no longer crashes when grouping by family.',
+            detail: 'The model picker no longer crashes when grouping models by family, a custom OpenAI compatible endpoint now receives Top K, a model name is no longer cut off at its first colon, and a newly added provider starts with no value pre filled.',
+          },
+          {
+            title: 'ltx-2 LoRA renders now cost credits, matching the web.',
+            detail: 'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
+          },
         ],
       },
       {
         title: 'Backends and settings',
         items: [
-          'The Troubleshoot panel now tests the LM Studio address you actually configured in Settings, instead of always trying the default 127.0.0.1:1234.',
-          'Replacing an OpenAI compatible backend now parks the API key it displaces in the OS keychain instead of dropping it, and gives it back if you switch back to that backend or remove the one that replaced it. The warning that a key will be lost only shows on a device with no keychain to park it in.',
-          'Setting an install location for the Character Trainer now also redirects pip, Hugging Face and torch\'s own caches there, so moving the trainer off a small system drive keeps those caches off it too. The field itself now rejects a path it cannot actually use, always shows the folder it will really install to, and an emptied field goes back to the default; the Z Image base model downloads always follow your configured model folder in Settings, ComfyUI, either way.',
-          'The first click into the Models folders tab is faster, since it asks the running engine directly instead of falling back to a stale cache, and the onboarding VRAM hint asks LU\'s own probe first so it works before ComfyUI is installed.',
-          'Settings now says when Ollama is reachable but switched off, instead of just Reachable, which read as if it were actually being used.',
-          'On Windows, the Troubleshoot panel now says Not running for a backend that is switched off, instead of Reachable, slow to answer, which read as if the backend were alive and merely busy.',
-          'The Local Media (Apple MLX) panel now mentions that a Hugging Face token can help its downloads, the same hint ComfyUI already gives for its own model downloads.',
+          {
+            title: 'Troubleshoot now tests the LM Studio address you configured.',
+            detail: 'The Troubleshoot panel now tests the LM Studio address you actually configured in Settings, instead of always trying the default 127.0.0.1:1234.',
+          },
+          {
+            title: 'Replacing a backend no longer throws away its API key.',
+            detail: 'Replacing an OpenAI compatible backend now parks the API key it displaces in the OS keychain instead of dropping it, and gives it back if you switch back to that backend or remove the one that replaced it. The warning that a key will be lost only shows on a device with no keychain to park it in.',
+          },
+          {
+            title: 'Moving the trainer\'s install folder now moves its caches too.',
+            detail: 'Setting an install location for the Character Trainer now also redirects pip, Hugging Face and torch\'s own caches there, so moving the trainer off a small system drive keeps those caches off it too. The field itself now rejects a path it cannot actually use, always shows the folder it will really install to, and an emptied field goes back to the default; the Z Image base model downloads always follow your configured model folder in Settings, ComfyUI, either way.',
+          },
+          {
+            title: 'The Models folders tab now opens faster on the first click.',
+            detail: 'The first click into the Models folders tab is faster, since it asks the running engine directly instead of falling back to a stale cache, and the onboarding VRAM hint asks LU\'s own probe first so it works before ComfyUI is installed.',
+          },
+          {
+            title: 'Settings now says when Ollama is reachable but switched off.',
+            detail: 'Settings now says when Ollama is reachable but switched off, instead of just Reachable, which read as if it were actually being used.',
+          },
+          {
+            title: 'A backend that is not running reads as Not running on Windows.',
+            detail: 'On Windows, the Troubleshoot panel now says Not running for a backend that is switched off, instead of Reachable, slow to answer, which read as if the backend were alive and merely busy.',
+          },
+          {
+            title: 'Local Media now mentions that a Hugging Face token helps.',
+            detail: 'The Local Media (Apple MLX) panel now mentions that a Hugging Face token can help its downloads, the same hint ComfyUI already gives for its own model downloads.',
+          },
         ],
       },
     ],
