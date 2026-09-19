@@ -280,24 +280,7 @@ export function FlashChatNotice() {
     }
     place()
     window.addEventListener('resize', place)
-    // Runde 4 (19.09.2026): bisher stand hier nur `resize`. Ein Scroll auf
-    // einem der beiden Vorfahren, die diese Rechnung schon kennt
-    // (`abschneidendeFlaeche` und die 360px-Zeile in `ChatInput.tsx`, seit
-    // demselben Fund selbst `overflow-x-auto`), aendert `rect`/`grenze`
-    // genauso wie ein Resize, ohne dass eines gefeuert wird: das Panel blieb
-    // an der ALTEN Stelle haengen, obwohl sein Ausloeser laengst woanders
-    // stand. `capture: true`, weil ein Scroll auf einem inneren Container
-    // (die Composer-Zeile zum Beispiel) nicht zum `window` hochblubbert, nur
-    // in der Einfangphase ankommt — dasselbe Argument wie
-    // `useAnchoredPopover.ts` (Web) und `create/ui/Select.tsx`/`Tooltip.tsx`
-    // (Desktop) es fuer ihre eigenen Popover schon führen. `passive: true`,
-    // weil `place()` nichts an dem Scroll selbst aendert (kein
-    // `preventDefault`), nur danach neu misst.
-    window.addEventListener('scroll', place, { capture: true, passive: true })
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-    }
+    return () => window.removeEventListener('resize', place)
   }, [open])
 
   if (!policy) return null

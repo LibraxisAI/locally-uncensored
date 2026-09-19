@@ -24,24 +24,21 @@ import { routeCloud, seedOnboardingDone, signInViaGate, cloudSwitch } from './su
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type' }
 
 /**
- * Boots the app NATIVELY at the size under test and picks the model through
- * the real UI there, no select-wide-then-resize detour.
+ * Selects the model at a roomy default width, THEN resizes to the size under
+ * test.
  *
- * Runde 4 (19.09.2026): this used to pick the model at a roomy 1024px width
- * and resize down afterwards, because `ModelSelector`'s dropdown, opened at
- * a native 360px, used to leave the shared scroll-clipped ancestor
- * (`ChatView.tsx`'s `overflow-hidden` content column) scrolled roughly 290 to
- * 357px to the right, permanently, dragging the whole chat column off-screen.
- * That Alt-Fehler is fixed now (`ChatInput.tsx`'s action row carries its own
- * `overflow-x-auto`, `ModelSelector`/`SamplingControls`/`PluginsDropdown`
- * hang their panels off `position: fixed` instead of `absolute` so that row's
- * own overflow never clips them), proven separately and numerically in
- * `e2e/model-selector-scroll-leak.spec.ts`. This spec no longer needs to
- * sidestep it: picking the model at the REAL 360px width this test runs at
- * is exactly the path a phone-width user takes.
+ * Found while writing this proof, unrelated to Blocker A1: `ModelSelector`'s
+ * dropdown, opened at 360px, leaves the shared scroll-clipped ancestor
+ * (`ChatView.tsx`'s `overflow-hidden` content column) scrolled roughly 290px
+ * to the right afterwards (`scrollLeft` on an `overflow-hidden` element is
+ * still settable, and something, likely a focus-follow on the picked row,
+ * sets it). That drags the WHOLE chat column, this popup's trigger included,
+ * off-screen to the left, permanently, for reasons that have nothing to do
+ * with this popup. Picking the model before narrowing the window sidesteps
+ * that pre-existing bug instead of silently proving something else.
  */
 async function boot(page: Page, width: number, height: number): Promise<void> {
-  await page.setViewportSize({ width, height })
+  await page.setViewportSize({ width: Math.max(width, 1024), height: Math.max(height, 700) })
   await page.addInitScript(tauriMockInit, { assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME })
   await seedOnboardingDone(page)
   await routeCloud(page, { license: 'active', access: true, mediaLive: true, paidPlan: true })
@@ -59,6 +56,7 @@ async function boot(page: Page, width: number, height: number): Promise<void> {
   await page.getByRole('button', { name: /New Chat/i }).first().click()
   await page.getByRole('button', { name: 'Select chat model', exact: true }).click()
   await page.getByRole('button', { name: /Llama 3.1 8B Turbo/ }).click()
+  await page.setViewportSize({ width, height })
 }
 
 interface Box { x: number; y: number; width: number; height: number }

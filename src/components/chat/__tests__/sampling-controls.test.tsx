@@ -256,16 +256,8 @@ describe('the sampling popup', () => {
     render(<SamplingControls />)
     open()
     const panel = screen.getByTestId('sampling-panel')
-    // Runde 4 (19.09.2026, Alt-Fehler-Fund): `fixed` statt `absolute`, damit
-    // die Composer-Zeile ihren eigenen `overflow-x-auto` (ChatInput.tsx)
-    // tragen kann, ohne dieses Panel senkrecht abzuschneiden. `bottom` ist
-    // seither eine gemessene Zahl (`panelBox`), nicht mehr die literale
-    // `'100%'`; jsdom hat kein Layout, also bleibt sie hier nur "gesetzt"
-    // geprueft, die echte Zahl misst `e2e/model-selector-scroll-leak.spec.ts`
-    // und `sampling-popup.spec.ts` am echten Browser.
-    expect(panel.style.position).toBe('fixed')
-    expect(panel.style.bottom).not.toBe('')
-    expect(panel.style.bottom).not.toBe('100%')
+    expect(panel.style.position).toBe('absolute')
+    expect(panel.style.bottom).toBe('100%')
     expect(panel.getAttribute('role')).toBe('dialog')
     expect(panel.getAttribute('aria-label')).toBe(SAMPLING_DIALOG_LABEL)
   })

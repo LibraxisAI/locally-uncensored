@@ -596,43 +596,8 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, l
             No wrapping, a fixed-height row, and every control shrink-0 with
             only the middle spacer giving way, das `flex: 0 0 auto` steckt
             seit der Composer-Grammatik im Rezept `.lu-control` (index.css),
-            nicht mehr als `shrink-0` an jedem einzelnen Knopf.
-
-            Alt-Fehler, gefunden waehrend der Flash-Popup-Arbeit (19.09.2026):
-            bei 360px reicht die Summe der `shrink-0`-Knoepfe (Clip, Voice,
-            Think, Effort, die view-eigenen Actions, die Cloud-Marke, Sampling,
-            Modellwaehler, Send) laengst nicht mehr in die verfuegbare Breite,
-            der gemeinsame Zwischenraum ist schon auf 0 geschrumpft. Diese Zeile
-            hatte selbst kein `overflow`, also zaehlte der Ueberschuss zur
-            scrollbaren Flaeche des naechsten Vorfahren dazu, der eines traegt
-            (`ChatView.tsx`s `overflow-hidden`-Spalte um Verlauf UND Composer).
-            Klickte man dort ein Kontrollelement an, das teilweise ausserhalb
-            der sichtbaren Zeile lag (z.B. den Modellwaehler), holte der
-            Browser es mit `scrollLeft` auf DIESEM Vorfahren "in Sicht", und
-            das verschob die ganze Spalte seitlich, Verlauf inklusive,
-            dauerhaft, auch nach dem Schliessen (gemessen: 290 bis 357px).
-            Ein lokaler Bildlauf NUR um den Modellwaehler herum wurde erst
-            versucht und verworfen: alles, was VOR ihm in der Zeile steht
-            (Plugins zum Beispiel), reicht bei 360px selbst schon ueber den
-            sichtbaren Rand hinaus, also stand auch ein eng geschnittener
-            Wrapper um nur den Waehler noch ausserhalb des Fensters, und der
-            Browser haette trotzdem den gemeinsamen Vorfahren gesucht, um ERST
-            den Wrapper selbst in Sicht zu holen.
-            `overflow-x-auto` steht deshalb auf der ganzen Zeile: der
-            Ueberschuss bleibt lokal, jedes Kontrollelement bleibt erreichbar
-            (seitwaerts scrollen statt gar nicht sehen), und der gemeinsame
-            Vorfahr bekommt nie wieder etwas zu verschieben. Das zwingt
-            `overflow-y` derselben Zeile auf `auto` (CSS Overflow Module
-            Level 3: eine Achse ungleich `visible` foerdert die andere zu
-            `auto`), was jedes `position: absolute`-Popup in dieser Zeile
-            senkrecht abgeschnitten haette. `ModelSelector`, `SamplingControls`
-            und `PluginsDropdown` haengen ihre Panels deshalb jetzt an
-            `position: fixed` (siehe der Kommentar an `MenuBox` in
-            `ModelSelector.tsx`), das zaehlt zu keines Vorfahren scrollbarer
-            Flaeche mehr und wird von keinem `overflow` mehr beschnitten. Die
-            Zeilenhoehe (`min-h-[38px]`) aendert sich dadurch nicht, nur die
-            Breite bekommt einen eigenen Bildlauf statt eines fremden. */}
-        <div className="flex flex-nowrap items-center gap-1 px-2 py-1.5 min-h-[38px] overflow-x-auto overscroll-x-contain scrollbar-thin border-t border-gray-200 dark:border-white/[0.05]">
+            nicht mehr als `shrink-0` an jedem einzelnen Knopf. */}
+        <div className="flex flex-nowrap items-center gap-1 px-2 py-1.5 min-h-[38px] border-t border-gray-200 dark:border-white/[0.05]">
           {/* Clip button */}
           <button
             onClick={() => fileInputRef.current?.click()}

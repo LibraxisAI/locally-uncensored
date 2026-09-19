@@ -86,27 +86,17 @@ describe('das Aufklappmenue bleibt im Fenster', () => {
 
   it('es misst, wie viel Platz ueber dem Ausloeser wirklich ist', () => {
     // Ein festes max-h in vh weiss nichts davon, wo der Ausloeser sitzt.
-    // Runde 4 (19.09.2026, Alt-Fehler-Fund): die Messung selbst ist gleich
-    // geblieben (frei = Platz ueber bzw. unter dem Ausloeser), sie steht
-    // jetzt nur in CSS-Pixeln statt in Bildschirmpixeln (`fensterHoeheCss`
-    // statt `window.innerHeight` direkt), weil das Menue seither an
-    // `position: fixed` haengt und `zoom` weiterhin mitrechnet, und das
-    // Ergebnis landet in `menuBox.maxHeight` statt in einem eigenen
-    // `menuePlatz`-State.
-    expect(src).toContain('const frei = openUpward ? r.top : fensterHoeheCss - r.bottom')
-    expect(src).toContain('const maxHeight = Math.max(200, Math.round(frei - 18))')
-    expect(src).toContain('maxHeight: menuBox?.maxHeight,')
+    expect(src).toContain('const frei = openUpward ? r.top : window.innerHeight - r.bottom')
+    expect(src).toContain('setMenuePlatz(')
+    expect(src).toContain('style={menuePlatz === null ? undefined : { maxHeight: menuePlatz }}')
   })
 
   it('und was nicht mehr hineinpasst, laesst sich scrollen', () => {
-    // P5: das Menue trug fest overflow: hidden, also half weder Mausrad noch
+    // P5: das Menue trug overflow-hidden, also half weder Mausrad noch
     // scrollTop, und der Kopf der Meldung stand bei -149 px.
     const menue = src.slice(src.indexOf('data-testid="model-picker-menu"'))
     expect(menue).toContain('overflow-y-auto')
-    // Das feste `overflow-hidden` von frueher ist keine Klasse mehr, nur noch
-    // Prosa in einem Kommentar (der die alte Falle beschreibt); das echte
-    // `className` traegt `overflow-y-auto`, geprueft oben.
-    expect(menue.slice(0, 200)).not.toMatch(/className="[^"]*\boverflow-hidden\b/)
+    expect(menue.slice(0, 400)).not.toContain('overflow-hidden')
   })
 
   it('der Fehlerkasten hat seinen eigenen Deckel', () => {

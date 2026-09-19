@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import { Plug, ChevronDown, Bone, User, Users, Wrench } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -17,35 +17,6 @@ const CAVEMAN_MODES: { value: CavemanMode; label: string; desc: string }[] = [
   { value: 'ultra', label: 'Ultra', desc: 'Maximum brevity' },
 ]
 
-/**
- * Alt-Fehler, gefunden waehrend der Flash-Popup-Arbeit (19.09.2026), am
- * echten 360px-Fenster: `ChatInput.tsx`s Aktionszeile traegt seit demselben
- * Fund `overflow-x-auto` (Begruendung dort), damit ihr eigener Ueberschuss
- * nicht mehr den gemeinsamen `ChatView`-Vorfahren seitlich verschiebt. Das
- * zwingt `overflow-y` derselben Zeile auf `auto` (CSS Overflow Module Level
- * 3), was dieses Panel bei `openUpward` senkrecht abgeschnitten haette.
- * `position: fixed` statt `absolute` ist die Wurzelloesung, nicht ein
- * `preventScroll`: ein `fixed` Element zaehlt zur scrollbaren Flaeche keines
- * Vorfahren dazu, dessen Containing Block es nicht ist, und wird deshalb von
- * keinem `overflow` beschnitten. `zoom: var(--ui-scale)` (index.css) zaehlt
- * trotzdem weiter, dieselbe Skala-Rechnung wie in `SamplingControls.tsx`/
- * `ModelSelector.tsx`, siehe der volle Kommentar an `MenuBox` dort.
- */
-const PANEL_WIDTH = 224
-const PANEL_MARGIN = 8
-
-/** The area that actually clips this panel's anchor, not the window. */
-function schneidendeFlaeche(el: Element): { links: number; rechts: number } {
-  for (let p = el.parentElement; p; p = p.parentElement) {
-    const cs = getComputedStyle(p)
-    if (cs.overflowY !== 'visible' || cs.overflowX !== 'visible') {
-      const r = p.getBoundingClientRect()
-      return { links: r.left, rechts: r.right }
-    }
-  }
-  return { links: 0, rechts: window.innerWidth }
-}
-
 // `openUpward` opens the panel above the trigger — used when Plugins sits in
 // the composer action bar (bottom of the screen) instead of the top toolbar.
 //
@@ -61,40 +32,6 @@ export function PluginsDropdown({
 }: { openUpward?: boolean; iconOnly?: boolean } = {}) {
   const [open, setOpen] = useState(false)
   useDismissOnEscape(open, () => setOpen(false))
-  const wrapRef = useRef<HTMLDivElement>(null)
-  /** Wo das (jetzt `position: fixed`) Panel landet. `null` bis der erste
-   *  Effektlauf misst; solange bleibt es unsichtbar statt einen Frame lang
-   *  an der falschen Stelle aufzublitzen. */
-  const [panelBox, setPanelBox] = useState<{ left: number; top?: number; bottom?: number } | null>(null)
-  useLayoutEffect(() => {
-    if (!open) { setPanelBox(null); return }
-    const messen = () => {
-      const wrap = wrapRef.current
-      if (!wrap) return
-      const rRoh = wrap.getBoundingClientRect()
-      const skala = wrap.offsetWidth > 0 ? rRoh.width / wrap.offsetWidth : 1
-      const r = { left: rRoh.left / skala, right: rRoh.right / skala, top: rRoh.top / skala, bottom: rRoh.bottom / skala }
-      const grenzeRoh = schneidendeFlaeche(wrap)
-      const grenze = { links: grenzeRoh.links / skala, rechts: grenzeRoh.rechts / skala }
-      // `right: 0` vorher: rechte Kante des Panels = rechte Kante des
-      // Ausloesers. Als natuerlicher linker Rand, in der Einheit von
-      // `grenze` (deren linke Kante bei 0 liegt), dann geklemmt.
-      const naturalLeft = r.right - grenze.links - PANEL_WIDTH
-      const grenzeBreite = grenze.rechts - grenze.links
-      const left = Math.min(
-        Math.max(naturalLeft, PANEL_MARGIN),
-        Math.max(grenzeBreite - PANEL_WIDTH - PANEL_MARGIN, PANEL_MARGIN),
-      )
-      const fensterHoeheCss = window.innerHeight / skala
-      setPanelBox({
-        left: grenze.links + left,
-        ...(openUpward ? { bottom: fensterHoeheCss - r.top + 4 } : { top: r.bottom + 4 }),
-      })
-    }
-    messen()
-    window.addEventListener('resize', messen)
-    return () => window.removeEventListener('resize', messen)
-  }, [open, openUpward])
   const [cavemanOpen, setCavemanOpen] = useState(false)
   const [personaOpen, setPersonaOpen] = useState(false)
   const [groupOpen, setGroupOpen] = useState(false)
@@ -142,7 +79,7 @@ export function PluginsDropdown({
   const anyPluginActive = !!(isCavemanActive || isPersonaActive || chatToolsEnabled || isGroupActive)
 
   return (
-    <div className="relative" ref={wrapRef}>
+    <div className="relative">
       {iconOnly ? (
         <button
           onClick={() => setOpen(!open)}
@@ -190,20 +127,7 @@ export function PluginsDropdown({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            // `position: fixed`, `left`/`top`/`bottom` aus `panelBox`: siehe
-            // der Kommentar an `schneidendeFlaeche` oben fuer die volle
-            // Begruendung (Alt-Fehler-Fund 19.09.2026).
-            style={{
-              position: 'fixed',
-              left: panelBox?.left,
-              top: panelBox?.top,
-              bottom: panelBox?.bottom,
-              width: PANEL_WIDTH,
-              visibility: panelBox ? 'visible' : 'hidden',
-            }}
-            className="z-50 rounded-lg lu-elevated py-1.5"
-          >
+          <div className={`absolute right-0 z-50 w-56 rounded-lg lu-elevated py-1.5 ${openUpward ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
 
             {/* ── Chat Tools toggle (v2.5.3) ──────────────── */}
             <div className="px-2.5">

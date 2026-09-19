@@ -618,101 +618,6 @@ function LoadToggle({ loaded, busy, disabled, onClick }: {
   )
 }
 
-// ── Menu placement: fixed, not absolute ───────────────────────
-//
-// Alt-Fehler, gefunden waehrend der Flash-Popup-Arbeit (19.09.2026), am
-// echten 360px-Fenster: dieses Menue haengt (hing) `position: absolute` an
-// einem `relative`-Wrapper, der selbst innerhalb von `ChatView.tsx`s
-// `overflow-hidden`-Spalte liegt (Verlauf UND Composer in einer Spalte). Bei
-// 360px reicht die Summe der Composer-Knoepfe (Clip, Voice, Think, Effort,
-// die view-eigenen Actions, Sampling, dieser Waehler, Send) laengst nicht
-// mehr in die verfuegbare Breite; der Ausloeser dieses Menues stand dadurch
-// selbst schon teilweise oder ganz ausserhalb des sichtbaren Bereichs. Ein
-// `position: absolute`-Kind zaehlt IMMER zur scrollbaren Flaeche seines
-// naechsten Vorfahren mit `overflow != visible` dazu (auch bei
-// `overflow-hidden`, dort bleibt `scrollLeft` weiter setzbar, nur die
-// Bildlaufleiste fehlt); klickte man den Ausloeser, holte der Browser ihn
-// mit `scrollLeft` auf GENAU DIESEM Vorfahren "in Sicht", und das verschob
-// die ganze Spalte seitlich, Verlauf inklusive, dauerhaft auch nach dem
-// Schliessen (gemessen: 290 bis 357px).
-//
-// `position: fixed` ist die Wurzelloesung, nicht `preventScroll` allein:
-// ein `fixed` Element zaehlt zur scrollbaren Flaeche KEINES Vorfahren dazu,
-// dessen Containing Block es nicht ist (das ist bei dieser App fuer jeden
-// Vorfahren der Fall, keiner traegt `transform`/`filter`/`will-change`), es
-// wird also von keinem `overflow-hidden` beschnitten und kann keinen
-// `scrollLeft` ausloesen, egal wo es im Baum haengt. Kein Portal noetig
-// dafuer (anders als `create/ui/Select.tsx`, der zusaetzlich Stapelkontexte
-// umgeht).
-//
-// `zoom: var(--ui-scale)` auf `#root` (index.css) zaehlt trotzdem weiter:
-// anders als `transform` macht `zoom` keinen eigenen Containing Block auf,
-// es skaliert einfach die ganze gerenderte Seite, `fixed`-Nachfahren
-// eingeschlossen. `getBoundingClientRect` liefert weiter sichtbare Pixel,
-// `top`/`left`/`bottom`/`width` als `fixed`-Werte werden aber als
-// CSS-Pixel gelesen und beim Rendern erneut mit dem Zoom multipliziert,
-// dieselbe Rechnung wie in ContextDropdown.tsx/FlashChatNotice.tsx bleibt
-// also noetig (siehe der Messeffekt unten).
-//
-// Geklemmt wird weiterhin gegen die schneidende Flaeche (nicht das Fenster),
-// damit das Menue bei 360px nicht ueber die eingeklappte Seitenleiste
-// hinaus nach links rutscht, derselbe Fund wie an `FlashChatNotice.tsx`.
-
-/** Menu width, the same 288px `w-72` set before. */
-const MENU_WIDTH = 288
-/** Breathing room kept between the menu and the clipping edge. */
-const MENU_MARGIN = 8
-/** Gap between the trigger and the menu, the old `mb-1.5`/`mt-1.5`. */
-const MENU_GAP = 6
-
-/** Where a `position: fixed` panel gets placed and how big it is allowed to be. */
-export interface MenuBox {
-  left: number
-  width: number
-  maxHeight: number
-  /** Set when the menu opens downward. */
-  top?: number
-  /** Set when the menu opens upward. */
-  bottom?: number
-}
-
-/**
- * The area that actually clips this menu's ANCHOR, not the window. Same
- * search as `FlashChatNotice.tsx`'s `abschneidendeFlaeche`: the first
- * ancestor that is not `overflow: visible` on either axis, or the window
- * when there is none. The menu itself (now `fixed`) is never clipped by
- * this, the search only decides where its edge should land so it does not
- * visually run over the collapsed sidebar.
- */
-function schneidendeFlaeche(el: Element): { links: number; rechts: number } {
-  for (let p = el.parentElement; p; p = p.parentElement) {
-    const cs = getComputedStyle(p)
-    if (cs.overflowY !== 'visible' || cs.overflowX !== 'visible') {
-      const r = p.getBoundingClientRect()
-      return { links: r.left, rechts: r.right }
-    }
-  }
-  return { links: 0, rechts: window.innerWidth }
-}
-
-/**
- * Where the menu's left edge lands, clamped into the clipping ancestor.
- *
- * `naturalLeft` is where the menu would sit with no clamp at all (the old
- * `right-0` or centered anchor, expressed as a left offset, in the SAME
- * coordinate space as `grenzeBreite`: 0 = the clipping ancestor's own left
- * edge). Pure so the clamp itself is testable without mounting a DOM, same
- * shape as `clampNoticeLeft` in `FlashChatNotice.tsx`.
- */
-export function clampMenuLeft(naturalLeft: number, grenzeBreite: number, wanted: number): { left: number; width: number } {
-  const width = Math.min(wanted, Math.max(grenzeBreite - MENU_MARGIN * 2, 0))
-  const left = Math.min(
-    Math.max(naturalLeft, MENU_MARGIN),
-    Math.max(grenzeBreite - width - MENU_MARGIN, MENU_MARGIN),
-  )
-  return { left, width }
-}
-
 // ── Component ─────────────────────────────────────────────────
 
 export interface ModelSelectorProps {
@@ -806,20 +711,22 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   const [togglingOllama, setTogglingOllama] = useState<string | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   /**
-   * Wo das (jetzt `position: fixed`) Menue landet und wie hoch es hoechstens
-   * werden darf, in Pixeln. `null` bis der erste Effektlauf misst; solange
-   * bleibt das Menue unsichtbar (`visibility: hidden`) statt einen Frame
-   * lang an der falschen Stelle aufzublitzen.
+   * Wie hoch das Aufklappmenue hoechstens werden darf, in Pixeln.
    *
-   * Die Hoehenklemme selbst ist der alte Befund von Persona P5 (03.09.2026):
-   * ohne sie wurde das Menue nach einem Fehlstart 902 px hoch in einem
-   * 808 px hohen Fenster, weit oben aus dem Bild heraus, und war wegen
-   * seines eigenen `overflow-hidden` weder mit dem Mausrad noch mit
-   * `scrollTop` erreichbar. Die Lage (statt `bottom-full`/`top-full` an
-   * einem `absolute`-Element) ist der Alt-Fehler-Fund vom 19.09.2026, siehe
-   * den Kommentar an `MenuBox` oben.
+   * Persona P5 hat am 03.09.2026 am echten Build gemessen: nach einem
+   * Fehlstart war das Menue 902 px hoch in einem 808 px hohen Fenster, der
+   * Kasten mit der Fehlermeldung begann bei -149 px, also oberhalb des
+   * Fensterrands, und weil das Menue `overflow-hidden` traegt, kam man da
+   * weder mit dem Mausrad noch mit `scrollTop` hin. Sichtbar blieb nur das
+   * rohe Maschinenprotokoll, der Satz mit dem Namen des Modells und dem
+   * Handlungsvorschlag war unerreichbar.
+   *
+   * Ein festes `max-h` in vh reicht dafuer nicht: das Menue haengt mit
+   * `bottom-full` am Ausloeser, und wie viel Platz DARUEBER ist, weiss nur
+   * der Ausloeser selbst. Also gemessen, bei jedem Oeffnen und bei jeder
+   * Groessenaenderung des Fensters.
    */
-  const [menuBox, setMenuBox] = useState<MenuBox | null>(null)
+  const [menuePlatz, setMenuePlatz] = useState<number | null>(null)
 
   // Keep the per-row On/Off LOAD state LIVE while the dropdown is open
   // (David 2026-06-12: "on und offload button sehr delayed und nicht immer
@@ -1293,54 +1200,18 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   const hasOllamaModels = textModels.some(m => ('provider' in m && m.provider === 'ollama') || !('provider' in m))
   textModelsEmptyRef.current = textModels.length === 0
 
-  // Wo das Menue landet und wie hoch es hoechstens werden darf, gemessen bei
-  // jedem Oeffnen und bei jeder Groessenaenderung, solange es offen ist.
-  //
-  // `position: fixed` aendert nur, WESSEN `overflow` das Menue beschneiden
-  // kann (keiner, siehe der Kommentar an `MenuBox` oben) — nicht, ob `zoom`
-  // weiter zaehlt. `zoom: var(--ui-scale)` auf `#root` skaliert die ganze
-  // gerenderte Seite EINSCHLIESSLICH `fixed`-Nachfahren (anders als
-  // `transform`, das einen eigenen Containing Block aufmacht, aendert `zoom`
-  // nichts an dieser Zurechnung). `getBoundingClientRect` liefert weiter
-  // sichtbare Pixel, `offsetWidth` die CSS-Pixel des Elements selbst, und
-  // `top`/`left`/`bottom`/`width` als `fixed`-Werte werden als CSS-Pixel
-  // gelesen und beim Rendern erneut mit dem Zoom multipliziert — dieselbe
-  // Rechnung wie in ContextDropdown.tsx/FlashChatNotice.tsx, nur diesmal auf
-  // ALLE vier Groessen angewandt (auch `window.innerHeight`), nicht nur auf
-  // das gemessene Rechteck.
-  //
-  // 18 px Abzug bei der Hoehe: 6 px Abstand des Menues zum Ausloeser plus
-  // 12 px Luft zum Fensterrand. Die Untergrenze von 200 px ist die
-  // Notbremse fuer ein sehr flaches Fenster, in dem sonst ein Menue ohne
-  // Inhalt herauskaeme.
+  // Messen, wie viel Fenster ueber (bzw. unter) dem Ausloeser noch frei ist.
+  // 18 px Abzug: 6 px Abstand des Menues zum Ausloeser plus 12 px Luft zum
+  // Fensterrand. Die Untergrenze von 200 px ist die Notbremse fuer ein sehr
+  // flaches Fenster, in dem sonst ein Menue ohne Inhalt herauskaeme.
   useLayoutEffect(() => {
-    if (!open) { setMenuBox(null); return }
+    if (!open) return
     const messen = () => {
       const el = ref.current
       if (!el) return
-      const rRoh = el.getBoundingClientRect()
-      const skala = el.offsetWidth > 0 ? rRoh.width / el.offsetWidth : 1
-      const r = { left: rRoh.left / skala, right: rRoh.right / skala, top: rRoh.top / skala, bottom: rRoh.bottom / skala }
-      const grenzeRoh = schneidendeFlaeche(el)
-      const grenze = { links: grenzeRoh.links / skala, rechts: grenzeRoh.rechts / skala }
-      const grenzeBreite = grenze.rechts - grenze.links
-      // `right-0` (Composer, unten): rechte Kante des Menues = rechte Kante
-      // des Ausloesers. `left-1/2 -translate-x-1/2` (Kopfzeile): Menue auf
-      // den Ausloeser zentriert. Beides als natuerlicher linker Rand, in der
-      // Einheit von `grenze` (deren linke Kante bei 0 liegt).
-      const naturalLeft = openUpward
-        ? r.right - grenze.links - MENU_WIDTH
-        : (r.left + r.right) / 2 - grenze.links - MENU_WIDTH / 2
-      const { left, width } = clampMenuLeft(naturalLeft, grenzeBreite, MENU_WIDTH)
-      const fensterHoeheCss = window.innerHeight / skala
-      const frei = openUpward ? r.top : fensterHoeheCss - r.bottom
-      const maxHeight = Math.max(200, Math.round(frei - 18))
-      setMenuBox({
-        left: grenze.links + left,
-        width,
-        maxHeight,
-        ...(openUpward ? { bottom: fensterHoeheCss - r.top + MENU_GAP } : { top: r.bottom + MENU_GAP }),
-      })
+      const r = el.getBoundingClientRect()
+      const frei = openUpward ? r.top : window.innerHeight - r.bottom
+      setMenuePlatz(Math.max(200, Math.round(frei - 18)))
     }
     messen()
     window.addEventListener('resize', messen)
@@ -1401,24 +1272,10 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
         {open && (
           <motion.div
             data-testid="model-picker-menu"
-            // `position: fixed`, gemessen von `menuBox` (siehe der Kommentar
-            // an `MenuBox` oben fuer die volle Begruendung: escaped jeden
-            // beschneidenden Vorfahren im Baum, kann also nie mehr dessen
-            // `scrollLeft` verschieben). Vor der ersten Messung
-            // (`menuBox === null`, dieser Frame laeuft vor dem Bild dank
-            // `useLayoutEffect`) bleibt das Menue unsichtbar statt an der
-            // falschen Stelle aufzublitzen, genau wie `create/ui/Select.tsx`
-            // es fuer sein eigenes `fixed`-Menue haelt.
-            style={{
-              position: 'fixed',
-              left: menuBox?.left,
-              top: menuBox?.top,
-              bottom: menuBox?.bottom,
-              width: menuBox?.width,
-              maxHeight: menuBox?.maxHeight,
-              visibility: menuBox ? 'visible' : 'hidden',
-            }}
-            className="rounded-lg overflow-x-hidden overflow-y-auto scrollbar-thin z-50 lu-elevated"
+            style={menuePlatz === null ? undefined : { maxHeight: menuePlatz }}
+            className={`absolute w-72 rounded-lg overflow-x-hidden overflow-y-auto scrollbar-thin z-50 lu-elevated ${
+              openUpward ? 'bottom-full mb-1.5 right-0' : 'top-full mt-1.5 left-1/2 -translate-x-1/2'
+            }`}
             initial={{ opacity: 0, y: openUpward ? 6 : -6, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: openUpward ? 6 : -6, scale: 0.98 }}
@@ -1571,30 +1428,6 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                         role="button"
                         tabIndex={rowDisabled ? -1 : 0}
                         aria-disabled={rowDisabled}
-                        // Alt-Fehler, gefunden waehrend der Flash-Popup-Arbeit (19.09.2026):
-                        // ein Klick auf dieses `role="button"`-Div mit `tabIndex` fokussiert
-                        // es nach den gewoehnlichen Browserregeln, GENAU wie ein Klick auf ein
-                        // echtes <button>-Element es taete, das ist keine Fehlfunktion. Das
-                        // Menue haengt aber `position: absolute` an einem `relative`-Wrapper,
-                        // der selbst innerhalb von `ChatView.tsx`s `overflow-hidden`-Spalte
-                        // liegt (Zeile ~280), und diese Zeile zaehlt bei 360px Fensterbreite
-                        // zum SCHNEIDENDEN Vorfahren dazu, nicht zum Fenster. Bekommt eine
-                        // Zeile hier den Fokus, holt der Browser sie mit seinem eigenen
-                        // Scroll-in-Sicht in den sichtbaren Bereich, und `overflow-hidden`
-                        // verhindert genau das nicht, nur die Bildlaufleiste dazu (derselbe
-                        // Befund wie am Flash-Popup, `FlashChatNotice.tsx`). Gemessen: eine
-                        // Modellwahl bei 360px liess `scrollLeft` auf dieser Spalte bei rund
-                        // 289 bis 323px stehen, dauerhaft, auch nachdem das Menue laengst zu
-                        // war, weil der Scroll schon beim Fokussieren passiert war, nicht erst
-                        // beim Schliessen.
-                        //
-                        // Die Wahl selbst haengt an `onClick`, nicht am Fokus: die Zeile
-                        // braucht den Fokus fuer die Maus gar nicht, nur fuer Tab. Also wird
-                        // NUR der Maus-Fokus unterdrueckt (`preventDefault` auf `mousedown`
-                        // haelt exakt diesen einen Schritt an, siehe die "focusing steps" der
-                        // HTML-Spezifikation), Tab-Fokus und die Enter/Leertaste in
-                        // `onKeyDown` bleiben unangetastet.
-                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => {
                           // A17: the switched-off row used to swallow the
                           // click whole, and both busy sentences sit behind
