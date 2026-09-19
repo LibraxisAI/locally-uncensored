@@ -18,6 +18,7 @@ import { INTENT_MAP } from './intents'
 import { subscribeInstallRuns, getInstallRun } from '../../../lib/model-install-runs'
 import { useWorkflowStore, shouldShowManagerNotice } from '../../../stores/workflowStore'
 import { noPromptHint, shouldShowLaneHint } from './laneHint'
+import { needsMaskFor } from './maskGate'
 import { ModelChip } from './ModelChip'
 import { PromptHistory } from './PromptHistory'
 import { SpecialControls } from './SpecialIntentControls'
@@ -44,6 +45,7 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   const showNegative = useCreateStore((s) => s.showNegative)
   const toggleNegative = useCreateStore((s) => s.toggleNegative)
   const source = useCreateStore((s) => s.source)
+  const mask = useCreateStore((s) => s.mask)
   const isGenerating = useCreateStore((s) => s.isGenerating)
   const backend = useCreateStore((s) => s.backend)
   const targetResolution = useCreateStore((s) => s.targetResolution)
@@ -132,6 +134,8 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   // hide the toggle (and the collapsed field) where it would be silently
   // dropped, like the other dead knobs on cloud.
   const negSupported = backend !== 'cloud' || cloudModelById(runModel)?.negative_prompt === true
+  // R5-66: see maskGate.ts for the full rule and why 'edit' differs from Web.
+  const needsMask = needsMaskFor(intent, backend, cloudModelById(runModel)?.maskless)
   // Per-intent readiness for the 2.5.8 categories (mirrors the submit-time
   // checks of BOTH lanes so the button never invites a doomed run). The
   // local lanes always speak from a portrait (no hosted resync endpoints)
@@ -164,6 +168,7 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   const canGenerate =
     (!needPrompt || prompt.trim().length > 0) &&
     (!meta.needsSource || !!source) &&
+    (!needsMask || !!mask) &&
     specialReady &&
     creditsOk &&
     !installing
@@ -192,7 +197,16 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
               <PromptField
                 value={prompt}
                 onChange={setPrompt}
-                placeholder={characterUse ? 'Describe the scene for your character…' : meta.placeholder}
+                placeholder={
+                  characterUse
+                    ? 'Describe the scene for your character…'
+                    // R5-66: the shared 'edit' placeholder promises a maskless
+                    // restyle that only the local lane actually allows once a
+                    // cloud model requires a mask.
+                    : (intent === 'edit' && needsMask
+                      ? 'Describe the new look. Paint an area first to tell it what to change…'
+                      : meta.placeholder)
+                }
                 onSubmit={() => canGenerate && !isGenerating && guardedGenerate()}
               />
             </div>
