@@ -815,6 +815,35 @@ export async function secretDelete(account: string): Promise<void> {
   await invoke('secret_delete', { account })
 }
 
+// ── Parked provider key keychain (R9) ────────────────────────────
+// Same vault as secretSet/Get/Delete above, but a second, narrower namespace
+// (Rust: PARKED_PREFIX "parked-key:") for a backend that is NOT one of the
+// four fixed provider slots, e.g. an OpenAI-compatible backend the shared
+// `openai` slot just displaced. `backendId` must already be a valid slug
+// ([a-z0-9-]{1,64}, see lib/parked-key.ts) before it reaches here; an
+// invalid one is rejected on the Rust side with an error starting
+// "refused:", which never echoes the id or the value, and is a caller bug,
+// not a "no keychain here" signal (that is "keychain unavailable"/
+// "keychain unsupported", same two strings secretSet/Get/Delete's callers
+// already check for).
+export async function secretParkSet(backendId: string, value: string): Promise<void> {
+  if (!isTauri()) throw new Error('keychain unavailable (web build)')
+  const invoke = await getInvoke()
+  await invoke('secret_park_set', { backendId, value })
+}
+
+export async function secretParkGet(backendId: string): Promise<string | null> {
+  if (!isTauri()) throw new Error('keychain unavailable (web build)')
+  const invoke = await getInvoke()
+  return (await invoke('secret_park_get', { backendId })) as string | null
+}
+
+export async function secretParkDelete(backendId: string): Promise<void> {
+  if (!isTauri()) throw new Error('keychain unavailable (web build)')
+  const invoke = await getInvoke()
+  await invoke('secret_park_delete', { backendId })
+}
+
 // OAuth loopback (LU Cloud Google/GitHub login): bind a 127.0.0.1 port from
 // the fixed ladder, then await the browser round-trip. Rust side single-shots
 // the accept; the returned string is the raw callback query (code=… / error=…).

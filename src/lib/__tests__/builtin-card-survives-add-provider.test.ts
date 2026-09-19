@@ -242,66 +242,74 @@ describe('the wiring, so the rule reaches the screen', () => {
     expect(pane.slice(start, end)).not.toMatch(/[–—]/)
   })
 
-  // Opus-Review Nachbesserung 6 (3.0.1, F3): Enable on the standby card used
-  // to come back with no key and a silent 401, the slot's name/URL were
+  // Opus-Review Nachbesserung 6 (3.0.1, F3) + R9: Enable on the standby card
+  // used to come back with no key and a silent 401, the slot's name/URL were
   // restored through slotHandbackUpdate, but nothing ever restored the
   // parked backend's own apiKey. Every path that hands the slot to a
-  // REMEMBERED backend must read `displaced.apiKey` and push it through
-  // setProviderApiKey (store + keychain), not just merge the plain patch.
+  // REMEMBERED backend must read `displaced` (its name, for R9's keychain
+  // lookup, and its apiKey, for F3's session-only fallback) and push the
+  // result through setProviderApiKey (store + keychain), not just merge the
+  // plain patch.
   it('handBackSlot restores the parked key through setProviderApiKey, not a plain merge', () => {
     const start = pane.indexOf('function handBackSlot()')
     const end = pane.indexOf('\n  }', start)
     const body = pane.slice(start, end)
-    expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
-    expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
-    // Reads the parked value BEFORE overwriting `providers.openai` with the
-    // handback patch, read-after-write here would read the NEW (wrong) slot.
-    expect(body.indexOf('const parked')).toBeLessThan(body.indexOf("setProviderConfig('openai', update)"))
+    expect(body).toMatch(/const displaced = providers\.openai\.displaced/)
+    expect(body).toMatch(/restoreParkedApiKey\(displaced\?\.name, displaced\?\.apiKey\)/)
+    // Reads the displaced record BEFORE overwriting `providers.openai` with
+    // the handback patch, read-after-write here would read the NEW (wrong) slot.
+    expect(body.indexOf('const displaced')).toBeLessThan(body.indexOf("setProviderConfig('openai', update)"))
   })
 
   it('removeOccupant restores the parked key too, same as Enable on standby', () => {
-    const start = pane.indexOf('function removeOccupant()')
+    const start = pane.indexOf('async function removeOccupant()')
     const end = pane.indexOf('\n  }', start)
     const body = pane.slice(start, end)
-    expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
-    expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
+    expect(body).toMatch(/const displaced = providers\.openai\.displaced/)
+    expect(body).toMatch(/restoreParkedApiKey\(displaced\?\.name, displaced\?\.apiKey\)/)
   })
 
   it('Disable swapping the built-in engine back in restores the parked key too', () => {
     const start = pane.indexOf('const handback = slotDisableOccupantUpdate(providers.openai)')
     const end = pane.indexOf('\n    }', start)
     const body = pane.slice(start, end)
-    expect(body).toMatch(/const parked = providers\.openai\.displaced\?\.apiKey/)
-    expect(body).toMatch(/restoreParkedApiKey\(parked\)/)
+    expect(body).toMatch(/const displaced = providers\.openai\.displaced/)
+    expect(body).toMatch(/restoreParkedApiKey\(displaced\?\.name, displaced\?\.apiKey\)/)
   })
 
-  it('restoreParkedApiKey decodes the parked value and clears when nothing was parked', () => {
-    const start = pane.indexOf('function restoreParkedApiKey(')
+  // R9: the OS keychain (restoreParkedApiKeyForBackend) is tried before the
+  // F3 session-only fallback, so a key parked before a restart still comes
+  // back on a device with a keychain; only an empty keychain answer falls
+  // through to `parkedObfuscated`.
+  it('restoreParkedApiKey tries the keychain first and falls back to the parked session value', () => {
+    const start = pane.indexOf('async function restoreParkedApiKey(')
     const end = pane.indexOf('\n  }', start)
     const body = pane.slice(start, end)
-    expect(body).toMatch(/setProviderApiKey\('openai', parkedObfuscated !== undefined \? deobfuscate\(parkedObfuscated\) : ''\)/)
+    expect(body).toMatch(/restoreParkedApiKeyForBackend\(backendName\)/)
+    expect(body).toMatch(/setProviderApiKey\('openai', fromKeychain !== null \? fromKeychain : \(parkedObfuscated !== undefined \? deobfuscate\(parkedObfuscated\) : ''\)\)/)
   })
 
-  // Review-Runde 2, Punkt 5: displaced.apiKey only survives in memory for the
-  // running session (Nachbesserung 6). The OS keychain layer
-  // (src-tauri/src/commands/secret.rs) enforces a fixed, exact-match account
-  // allowlist and refuses a synthetic "parked key" entry, so a restart
-  // between takeover and handback still loses the displaced key. Since a
-  // durable per-backend keychain entry needs a Rust change out of scope
-  // here, the takeover instead warns before it happens.
-  it('a takeover that would clear a non-empty key is guarded before it runs', () => {
-    const start = pane.indexOf('function wouldLoseApiKeyOnRestart(')
+  // Review-Runde 2, Punkt 5 (F3) + R9: F3's `displaced.apiKey` only survives
+  // in memory for the running session, and R9 gives it a durable place to go
+  // instead, the OS keychain (parked-key: namespace, secret.rs). Only when
+  // that park attempt itself fails, no keychain on this device, does the
+  // takeover still warn before it happens; on a device that has one, this
+  // no longer counts as a loss.
+  it('a takeover that would clear a non-empty key tries to park it, and only warns if that fails', () => {
+    const start = pane.indexOf('async function wouldLoseApiKeyOnRestart(')
     const end = pane.indexOf('\n  }', start)
     const body = pane.slice(start, end)
     expect(body).toMatch(/takeoverClearsApiKey\(providers\.openai, incoming\)/)
     expect(body).toMatch(/getProviderApiKey\('openai'\) !== ''/)
+    expect(body).toMatch(/parkApiKeyForBackend\(providers\.openai\.name, getProviderApiKey\('openai'\)\)/)
+    expect(body).toMatch(/return !parked/)
   })
 
   it('selectPreset asks before a local preset takeover that would lose the key', () => {
-    const start = pane.indexOf('function selectPreset(')
+    const start = pane.indexOf('async function selectPreset(')
     const end = pane.indexOf('\n  }', start)
     const body = pane.slice(start, end)
-    expect(body).toMatch(/if \(wouldLoseApiKeyOnRestart\(preset\)\)/)
+    expect(body).toMatch(/if \(await wouldLoseApiKeyOnRestart\(preset\)\)/)
     expect(body).toMatch(/setShowKeyLossWarning\(true\)/)
   })
 
@@ -311,7 +319,7 @@ describe('the wiring, so the rule reaches the screen', () => {
     expect(cloudModalStart).toBeGreaterThan(-1)
     expect(keyLossModalStart).toBeGreaterThan(cloudModalStart)
     const between = pane.slice(cloudModalStart, keyLossModalStart)
-    expect(between).toMatch(/if \(pendingPreset && wouldLoseApiKeyOnRestart\(pendingPreset\)\)/)
+    expect(between).toMatch(/if \(pendingPreset && await wouldLoseApiKeyOnRestart\(pendingPreset\)\)/)
     expect(between).toMatch(/setShowKeyLossWarning\(true\)/)
   })
 

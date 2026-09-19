@@ -23,6 +23,7 @@ import { reachVerdict, liveSlotStatus, type SlotStatus } from '../../lib/builtin
 import type { ProviderId, ProviderConfig } from '../../api/providers/types'
 import { disabledSlotNote } from '../../lib/disabled-slot-note'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
+import { parkApiKeyForBackend, restoreParkedApiKeyForBackend } from '../../lib/parked-key'
 
 const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
 
@@ -244,18 +245,23 @@ export function ProviderSettings() {
     run()
   }
 
-  // Opus-Review Nachbesserung 6 (3.0.1, F3): every path below that hands the
-  // shared `openai` slot to a REMEMBERED backend (Remove on the occupant,
-  // Enable on the standby card, Disable swapping it back in) must restore
-  // that backend's own parked key too, not just its name/URL. Through
+  // Opus-Review Nachbesserung 6 (3.0.1, F3) + R9: every path below that hands
+  // the shared `openai` slot to a REMEMBERED backend (Remove on the
+  // occupant, Enable on the standby card, Disable swapping it back in) must
+  // restore that backend's own key too, not just its name/URL. R9's OS
+  // keychain (secret_park_get, via restoreParkedApiKeyForBackend) is tried
+  // FIRST, since a key parked there survives an app restart; `displaced.
+  // apiKey` (F3, session-only) is the fallback for a device with no
+  // keychain, or a `displaced` record written before R9 existed. Through
   // setProviderApiKey, not a plain field merge: that is the call that keeps
   // the OS keychain in step with the store, and it has to run AFTER
   // setProviderConfig so it is the last word on `openai`'s key field. No
-  // parked key (an older `displaced` record, written before this fix, or a
-  // backend that never had one) clears it instead of leaving the key of
-  // whichever backend just left sitting there under a new name.
-  function restoreParkedApiKey(parkedObfuscated: string | undefined) {
-    setProviderApiKey('openai', parkedObfuscated !== undefined ? deobfuscate(parkedObfuscated) : '')
+  // parked key anywhere (a backend that never had one) clears it instead of
+  // leaving the key of whichever backend just left sitting there under a
+  // new name.
+  async function restoreParkedApiKey(backendName: string | undefined, parkedObfuscated: string | undefined) {
+    const fromKeychain = backendName ? await restoreParkedApiKeyForBackend(backendName) : null
+    setProviderApiKey('openai', fromKeychain !== null ? fromKeychain : (parkedObfuscated !== undefined ? deobfuscate(parkedObfuscated) : ''))
   }
 
   // Remove on the backend that holds the shared local slot: the slot goes back
@@ -263,12 +269,12 @@ export function ProviderSettings() {
   // instead of parked on standby. Offered only where `displaced` knows a state
   // to return to, so the app's own engine and the three other slots have no
   // Remove at all.
-  function removeOccupant() {
+  async function removeOccupant() {
     const update = slotRemoveOccupantUpdate(providers.openai)
     if (!update) return
-    const parked = providers.openai.displaced?.apiKey
+    const displaced = providers.openai.displaced
     setProviderConfig('openai', update)
-    restoreParkedApiKey(parked)
+    await restoreParkedApiKey(displaced?.name, displaced?.apiKey)
     setStatuses(prev => ({ ...prev, openai: 'idle' }))
     setExpandedProvider('openai')
   }
@@ -285,39 +291,41 @@ export function ProviderSettings() {
   // Reset button has for this one slot, without resetting anything else, and
   // it swaps rather than forgets: the backend now leaving the slot takes the
   // standby card in its turn.
-  function handBackSlot() {
+  async function handBackSlot() {
     const update = slotHandbackUpdate(providers.openai)
     if (!update) return
-    const parked = providers.openai.displaced?.apiKey
+    const displaced = providers.openai.displaced
     setProviderConfig('openai', update)
-    restoreParkedApiKey(parked)
+    await restoreParkedApiKey(displaced?.name, displaced?.apiKey)
     setStatuses(prev => ({ ...prev, openai: 'idle' }))
     setExpandedProvider('openai')
   }
 
-  // Review-Runde 2, Punkt 5: whether accepting `preset` into the shared
-  // `openai` slot would destroy a currently-set, non-empty API key with no
-  // way to bring it back. The displaced key only survives in
-  // `displaced.apiKey` for the running session (F3 Nachbesserung 6); a
-  // restart between takeover and handback still loses it, because the OS
-  // keychain layer (src-tauri/src/commands/secret.rs) only accepts a fixed,
-  // exact-match set of account names and refuses a synthetic per-backend
-  // "parked key" entry by design. Told up front, so the loss is a choice
-  // made with eyes open instead of a 401 the next time the backend returns.
-  function wouldLoseApiKeyOnRestart(preset: typeof PROVIDER_PRESETS[0]): boolean {
+  // Review-Runde 2, Punkt 5 (F3) + R9: whether accepting `preset` into the
+  // shared `openai` slot would destroy a currently-set, non-empty API key
+  // with no way to bring it back. R9 tries to prevent that outright: the
+  // outgoing key is parked in the OS keychain (parkApiKeyForBackend,
+  // survives an app restart) before this function answers, and only a
+  // FAILED park still counts as a loss, e.g. no keychain on this device
+  // (Linux, or the LU_NO_KEYCHAIN test switch), in which case F3's warning
+  // card is shown so the loss is a choice made with eyes open instead of a
+  // 401 the next time the backend returns.
+  async function wouldLoseApiKeyOnRestart(preset: typeof PROVIDER_PRESETS[0]): Promise<boolean> {
     if (preset.providerId === 'ollama' || preset.providerId === 'anthropic') return false
     const incoming = { name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed }
-    return takeoverClearsApiKey(providers.openai, incoming) && getProviderApiKey('openai') !== ''
+    if (!(takeoverClearsApiKey(providers.openai, incoming) && getProviderApiKey('openai') !== '')) return false
+    const parked = await parkApiKeyForBackend(providers.openai.name, getProviderApiKey('openai'))
+    return !parked
   }
 
   // Add a preset (enable a provider without disabling others)
-  function selectPreset(preset: typeof PROVIDER_PRESETS[0]) {
+  async function selectPreset(preset: typeof PROVIDER_PRESETS[0]) {
     if (!preset.isLocal) {
       setPendingPreset(preset)
       setShowCloudWarning(true)
       return
     }
-    if (wouldLoseApiKeyOnRestart(preset)) {
+    if (await wouldLoseApiKeyOnRestart(preset)) {
       setPendingPreset(preset)
       setShowKeyLossWarning(true)
       return
@@ -383,9 +391,9 @@ export function ProviderSettings() {
     if (!nextEnabled && id === 'openai') {
       const handback = slotDisableOccupantUpdate(providers.openai)
       if (handback) {
-        const parked = providers.openai.displaced?.apiKey
+        const displaced = providers.openai.displaced
         setProviderConfig('openai', handback)
-        restoreParkedApiKey(parked)
+        void restoreParkedApiKey(displaced?.name, displaced?.apiKey)
         setStatuses(prev => ({ ...prev, openai: 'idle' }))
         return
       }
@@ -850,12 +858,14 @@ export function ProviderSettings() {
             <button
               onClick={() => {
                 setShowCloudWarning(false)
-                if (pendingPreset && wouldLoseApiKeyOnRestart(pendingPreset)) {
-                  setShowKeyLossWarning(true)
-                  return
-                }
-                if (pendingPreset) applyPreset(pendingPreset)
-                setPendingPreset(null)
+                void (async () => {
+                  if (pendingPreset && await wouldLoseApiKeyOnRestart(pendingPreset)) {
+                    setShowKeyLossWarning(true)
+                    return
+                  }
+                  if (pendingPreset) applyPreset(pendingPreset)
+                  setPendingPreset(null)
+                })()
               }}
               className="px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
             >
@@ -865,12 +875,15 @@ export function ProviderSettings() {
         </div>
       </Modal>
 
-      {/* Review-Runde 2, Punkt 5: standby key not surviving a restart */}
+      {/* Review-Runde 2, Punkt 5: standby key not surviving a restart. Only
+          reached now (R9) when parkApiKeyForBackend already tried and
+          failed to place the key in the OS keychain, so it stays accurate:
+          this device really has nowhere durable to keep it. */}
       <Modal open={showKeyLossWarning} onClose={() => { setShowKeyLossWarning(false); setPendingPreset(null) }} title="">
         <div className="space-y-4 text-center" data-testid="key-loss-warning-modal">
           <h3 className="text-base font-semibold text-white">API Key Will Be Lost</h3>
           <p className="t-control text-gray-400 leading-relaxed">
-            The current OpenAI-compatible backend has an API key set. Switching backends clears it from this slot, and it will NOT survive an app restart while parked.
+            The current OpenAI-compatible backend has an API key set, and this device has no OS keychain LU could safely park it in. Switching backends clears it from this slot, and it will NOT survive an app restart while parked.
           </p>
           <p className="t-control text-gray-400 leading-relaxed">
             If you switch back to this backend later, you will need to enter the key again.
