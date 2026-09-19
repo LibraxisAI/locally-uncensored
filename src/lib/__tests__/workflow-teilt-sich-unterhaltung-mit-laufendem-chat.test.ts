@@ -14,11 +14,11 @@
  * ist stattdessen der wartende Arbeitsablauf.
  *
  * Fix AN DER WURZEL in `run-slot.ts` (nicht an der Aufrufstelle): der
- * normale Buchungsweg merkt sich einen vorgefundenen Griff, verkettet ihn
- * mit dem eigenen (Stop erreicht BEIDE, solange beide leben), und schreibt
- * ihn im `finally` identitaetsgeprueft zurueck statt ihn zu loeschen. Das
- * deckt jeden Aufrufer, der sich eine Kennung mit einem anderen Halter
- * teilt, nicht nur `WorkflowEngine`.
+ * normale Buchungsweg haengt sein eigenes Glied an die Abbruchkette dieser
+ * Kennung (Stop erreicht ALLE lebenden Glieder), und nimmt beim Aufraeumen
+ * GENAU dieses eigene Glied wieder heraus, statt einen vorgefundenen Griff
+ * blind zurueckzuschreiben. Das deckt jeden Aufrufer, der sich eine Kennung
+ * mit einem anderen Halter teilt, nicht nur `WorkflowEngine`.
  *
  * `WorkflowEngine.run()` bucht weiterhin bewusst unter `this.conversationId`
  * (nicht unter einer privaten Kennung wie der Sub-Agent seit `a9ded97d`):
@@ -27,6 +27,19 @@
  * private Kennung wuerde die Wartezeile ("wartet auf die Grafikkarte") von
  * dieser Unterhaltung lösen. Siehe den Kommentar in `workflow-engine.ts`s
  * `run()`.
+ *
+ * ── DIE ECHTE SENDEFORM (Schlusspruefung, review-w2lane.md) ─────────────────
+ *
+ * Der Chat-Ersatz (`chatErsatz` unten) registriert seinen eigenen Griff
+ * IM RUMPF, genau wie `useChat.ts` es an drei Stellen wirklich tut (Zeile
+ * 412 und 940: `useGenerationStore.getState().registerAborter(convId,
+ * myAborter)`, mit einem identitaetsgeprueften `stillOwnsSlot`-Aufraeumen
+ * danach). Eine Vorgaengerfassung dieses Tests liess ihren Chat-Ersatz
+ * NICHT im Rumpf registrieren, sondern sich allein auf den `abort`-Callback
+ * von `runInLane` verlassen: "kein Griff verwaist" war damit gruen, weil der
+ * gemessene Fall (ein toter Griff aus einem Rumpf, der direkt in den Store
+ * schreibt) gar nicht entstehen konnte. Mit der echten Sendeform entsteht er
+ * sehr wohl, und die Zusage muss auch dann noch stimmen.
  *
  * Lauf: npx vitest run src/lib/__tests__/workflow-teilt-sich-unterhaltung-mit-laufendem-chat.test.ts
  */
@@ -42,6 +55,35 @@ import { useAgentLoopStore } from '../../stores/agentLoopStore'
 import { stopAllBackgroundWork } from '../background-shutdown'
 import { __resetRunStopsForTests } from '../run-stop'
 import type { AgentWorkflow, WorkflowStep, WorkflowEngineCallbacks } from '../../types/agent-workflows'
+
+/**
+ * Chat-Ersatz in der ECHTEN Sendeform: registriert im Rumpf seinen eigenen
+ * Griff (wie `useChat.ts:412` und `:940`), statt sich auf den `abort`-
+ * Callback von `run-slot.ts` zu verlassen, und raeumt ihn identitaetsgeprueft
+ * wieder auf (`stillOwnsSlot`, wie `useChat.ts:425` und `:1325`).
+ */
+function chatErsatz(convId: string, onAbort: () => void): { lauf: Promise<string>; abortController: AbortController } {
+  const abortController = new AbortController()
+  const lauf = runInLane(
+    { conversationId: convId, lane: 'local', abort: () => abortController.abort() },
+    async () => {
+      const myAborter = () => { onAbort(); abortController.abort() }
+      useGenerationStore.getState().registerAborter(convId, myAborter)
+      try {
+        await new Promise<void>((resolve) => {
+          if (abortController.signal.aborted) { resolve(); return }
+          abortController.signal.addEventListener('abort', () => resolve())
+        })
+      } finally {
+        const stillOwnsSlot = useGenerationStore.getState().aborters[convId] === myAborter
+        if (stillOwnsSlot) {
+          useGenerationStore.getState().clearAborter(convId)
+        }
+      }
+    },
+  )
+  return { lauf, abortController }
+}
 
 const LOCAL_MODEL = 'qwen3:8b'
 
@@ -86,11 +128,7 @@ beforeEach(() => {
 describe("Opus' Messfall: ein Chat laeuft in 'a', ein Arbeitsablauf stellt sich unter derselben Kennung an", () => {
   it('Stop stoppt den Chat-Strom UND den wartenden Arbeitsablauf, danach ist kein Griff verwaist', async () => {
     let chatAbortCalled = false
-    const chat = steuerbar()
-    const chatLauf = runInLane(
-      { conversationId: 'a', lane: 'local', abort: () => { chatAbortCalled = true; chat.aufloesen() } },
-      async () => { await chat.versprechen },
-    )
+    const { lauf: chatLauf } = chatErsatz('a', () => { chatAbortCalled = true })
     await takte(3)
     expect(localLaneHolder()).toBe('a')
 
@@ -124,11 +162,7 @@ describe("Opus' Messfall: ein Chat laeuft in 'a', ein Arbeitsablauf stellt sich 
 
   it('dasselbe ueber stopAllBackgroundWork (Abmelden, Fenster schliessen, App beenden)', async () => {
     let chatAbortCalled = false
-    const chat = steuerbar()
-    const chatLauf = runInLane(
-      { conversationId: 'a', lane: 'local', abort: () => { chatAbortCalled = true; chat.aufloesen() } },
-      async () => { await chat.versprechen },
-    )
+    const { lauf: chatLauf } = chatErsatz('a', () => { chatAbortCalled = true })
     await takte(3)
 
     const errors: string[] = []
@@ -183,5 +217,89 @@ describe('NEGATIVKONTROLLE: ohne einen zweiten, sich die Kennung teilenden Lauf 
 
     expect(chatAbortCalled).toBe(true)
     expect(useGenerationStore.getState().aborters['nur-chat']).toBeUndefined()
+  })
+})
+
+/**
+ * Folgeauftrag 1, Schlusspruefung (review-w2lane.md): "der tote Griff soll
+ * nicht zurueckgeschrieben werden". Drei Buchungen unter derselben Kennung,
+ * `lane: 'cloud'` damit alle drei sofort laufen (die lokale Spur serialisiert
+ * sonst streng nach Anstellreihenfolge, hier soll die ENDREIHENFOLGE frei
+ * waehlbar sein, nicht die Startreihenfolge). Gemessen war: nur die exakte
+ * Umkehrung der Buchungsreihenfolge (c-b-a) raeumte die verkettete Closure
+ * vollstaendig ab, jede andere liess einen toten Griff stehen. Mit der Liste
+ * lebender Glieder statt der Closure darf JEDE Endreihenfolge keinen toten
+ * Griff mehr hinterlassen.
+ */
+describe('Folgeauftrag 1: drei Laeufe unter einer Kennung, alle sechs Endreihenfolgen', () => {
+  function macheLauf(label: string): { lauf: Promise<string>; beenden: () => void } {
+    let beenden!: () => void
+    const wartet = new Promise<void>((r) => { beenden = r })
+    const lauf = runInLane(
+      { conversationId: 'x', lane: 'cloud', abort: () => {} },
+      async () => { await wartet; void label },
+    )
+    return { lauf, beenden }
+  }
+
+  const REIHENFOLGEN: Array<[string, string, string]> = [
+    ['a', 'b', 'c'], ['a', 'c', 'b'], ['b', 'a', 'c'],
+    ['b', 'c', 'a'], ['c', 'a', 'b'], ['c', 'b', 'a'],
+  ]
+
+  it.each(REIHENFOLGEN)('Endreihenfolge %s-%s-%s: kein toter Griff bleibt stehen', async (r1, r2, r3) => {
+    const laeufe: Record<string, { lauf: Promise<string>; beenden: () => void }> = {
+      a: macheLauf('a'), b: macheLauf('b'), c: macheLauf('c'),
+    }
+    await takte(3)
+    expect(useGenerationStore.getState().aborters['x']).toBeDefined()
+
+    for (const label of [r1, r2, r3]) {
+      laeufe[label].beenden()
+      await laeufe[label].lauf
+    }
+
+    // Alle drei sind fertig: nichts darf mehr registriert sein, egal in
+    // welcher Reihenfolge sie geendet haben.
+    expect(useGenerationStore.getState().aborters['x']).toBeUndefined()
+  })
+})
+
+/**
+ * Zweiter Fund der Schlusspruefung: die Kette war nicht gegen einen
+ * werfenden Vorgaenger gesichert. `griffAusKette` ruft jedes Glied jetzt
+ * einzeln in einem eigenen `try/catch` (siehe Kopf von `run-slot.ts`).
+ */
+describe('NEGATIVKONTROLLE: ein werfendes Glied in der Kette reisst die uebrigen nicht mit', () => {
+  it('zwei Laeufe unter einer Kennung, einer wirft beim Abbruch: der andere wird trotzdem gerufen, und Stop wirft nicht', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let bAbortCalled = false
+    let beendenA!: () => void
+    const wartetA = new Promise<void>((r) => { beendenA = r })
+    let beendenB!: () => void
+    const wartetB = new Promise<void>((r) => { beendenB = r })
+
+    const aLauf = runInLane(
+      { conversationId: 'y', lane: 'cloud', abort: () => { throw new Error('a wirft beim Abbruch') } },
+      async () => { await wartetA },
+    )
+    await takte(3)
+    const bLauf = runInLane(
+      { conversationId: 'y', lane: 'cloud', abort: () => { bAbortCalled = true } },
+      async () => { await wartetB },
+    )
+    await takte(3)
+
+    // Stop auf die Kennung: das werfende Glied darf den Aufruf nicht
+    // hochreissen, und das folgende Glied muss trotzdem noch gerufen werden.
+    expect(() => useGenerationStore.getState().aborters['y']?.()).not.toThrow()
+    expect(bAbortCalled).toBe(true)
+
+    beendenA()
+    beendenB()
+    await Promise.all([aLauf, bLauf])
+    expect(useGenerationStore.getState().aborters['y']).toBeUndefined()
+
+    warnSpy.mockRestore()
   })
 })

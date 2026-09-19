@@ -131,11 +131,148 @@
  * damit `stopAllBackgroundWork` ihn erreicht und er sich in dieselbe lokale
  * Spur einreiht wie jeder andere Lauf. `runsInHeldLane` bleibt fuer ihn
  * `undefined` (der Vorgabewert).
+ *
+ * ── DIE GRIFFKETTE IST EINE LISTE LEBENDER GLIEDER, KEINE VERSCHACHTELTE
+ *    SCHLIESSUNG ──────────────────────────────────────────────────────────
+ *
+ * (Schlusspruefung, bau/review-w2lane.md, Folgeauftraege 1 und 3) Die
+ * Vorgaengerfassung merkte sich beim Registrieren den VORGEFUNDENEN Griff
+ * einer Kennung einmalig (`vorgefundenerGriff`) und schrieb ihn im `finally`
+ * blind zurueck, wenn der eigene Griff noch der aktuell registrierte war.
+ * Das ist eine verschachtelte Closure: `c` wickelt `b` ein, `b` wickelt `a`
+ * ein. Endet `a` zuerst (nicht als letzter Registrierer), findet er seinen
+ * eigenen Griff nicht mehr aktuell vor (er ist laengst von `b` und `c`
+ * eingewickelt) und raeumt gar nichts auf; sein Abbruch bleibt fuer immer in
+ * der Kette, die `c` haelt. Gemessen: von vier moeglichen Endreihenfolgen
+ * dreier Buchungen unter derselben Kennung raeumte nur die exakte Umkehrung
+ * der Buchungsreihenfolge (`c-b-a`) die Kette vollstaendig ab.
+ *
+ * Die Antwort ist deshalb keine Closure, sondern `Map<Kennung, Glied[]>`
+ * (`griffKetten` unten): jeder Aufrufer haengt beim Registrieren sein EIGENES
+ * Glied (eigene Identitaet plus eigene Funktion) an die Liste seiner Kennung,
+ * und nimmt beim Aufraeumen GENAU dieses Glied wieder heraus, egal wo in der
+ * Liste es steht und egal in welcher Reihenfolge die anderen enden. Der in
+ * `generationStore.aborters` registrierte Griff wird nicht mehr einmalig
+ * eingefroren, sondern bei jeder Aenderung der Liste neu aus den DANN noch
+ * lebenden Gliedern gebaut (`griffAusKette`); Stop ruft also immer genau die
+ * Glieder, die wirklich noch da sind, nie mehr und nie weniger.
+ *
+ * Ein Sendeweg wie `useChat.ts` registriert seinen eigenen, echten
+ * Abbruchgriff DIREKT in `generationStore` (nicht ueber dieses Modul), sobald
+ * sein `AbortController` steht, und ueberschreibt damit das hier zuletzt
+ * eingetragene Glied. `griffKettenHinzufuegen` erkennt das (der Store traegt
+ * dann nicht mehr die zuletzt von diesem Modul gebaute Funktion) und
+ * uebernimmt den echten Griff als neuen Inhalt fuer GENAU DAS Glied, das ihn
+ * zuletzt gesetzt hatte, statt ihn als anonymen, nie wieder entfernbaren
+ * Fremdkoerper einzuwickeln: das eigene `aufraeumen` dieses Laufs (das ueber
+ * dieselbe Identitaet laeuft) findet sein Glied damit auch dann wieder, wenn
+ * sein Rumpf zwischendurch direkt in den Store geschrieben hat.
+ *
+ * Zweiter Fund derselben Pruefung: ein werfendes Glied durfte die uebrigen
+ * nicht mit reissen. `griffAusKette` ruft deshalb jedes Glied einzeln in
+ * einem eigenen `try/catch`.
  */
 import { admit, release, holdsLocalLane, type RunLane, type HeldLocalLane } from './run-lanes'
 import { useGenerationStore } from '../stores/generationStore'
 
 export type { HeldLocalLane }
+
+/** Ein lebendes Glied der Abbruchkette einer Kennung. */
+interface Kettenglied {
+  readonly identity: symbol
+  fn: () => void
+}
+
+/** Die Ketten je Kennung, nur fuer dieses Modul sichtbar. */
+const griffKetten = new Map<string, Kettenglied[]>()
+/** Welche `griffAusKette`-Funktion dieses Modul zuletzt fuer eine Kennung selbst registriert hat, um fremde Uebernahmen zu erkennen. */
+const eigeneRegistrierung = new Map<string, () => void>()
+
+/** Baut die aktuell im Store zu hinterlegende Funktion aus den lebenden Gliedern einer Kennung. Liest die Liste bei JEDEM Aufruf frisch, nie eine Momentaufnahme. */
+function griffAusKette(conversationId: string): () => void {
+  return (): void => {
+    for (const glied of griffKetten.get(conversationId) ?? []) {
+      try {
+        glied.fn()
+      } catch (error) {
+        // Ein werfendes Glied darf die uebrigen nicht mitreissen (Folgeauftrag
+        // 3, review-w2lane.md): jeder Abbruch bekommt seinen eigenen Versuch.
+        console.warn('[run-slot] a link in the abort chain for', conversationId, 'threw while aborting. Calling the rest anyway.', error)
+      }
+    }
+  }
+}
+
+/** Baut die Kette neu und traegt sie im Store ein. */
+function griffKetteNeuEintragen(conversationId: string): void {
+  const neu = griffAusKette(conversationId)
+  eigeneRegistrierung.set(conversationId, neu)
+  useGenerationStore.getState().registerAborter(conversationId, neu)
+}
+
+/**
+ * Das eigene Glied eines Laufs an die Kette seiner Kennung haengen.
+ *
+ * Erkennt eine zwischenzeitliche fremde Uebernahme (ein Sendeweg hat seinen
+ * eigenen, echten Griff direkt registriert und damit das zuletzt hier
+ * eingetragene Glied ueberschrieben): dann wird dieser echte Griff als
+ * neuer Inhalt des ZULETZT hinzugefuegten Gliedes uebernommen, statt als
+ * nie wieder entfernbarer Fremdkoerper eingewickelt zu werden. Gibt es noch
+ * gar keine Kette fuer diese Kennung, wird ein etwaiger, schon vorher (von
+ * ausserhalb dieses Moduls) registrierter Griff als eigenes, anonymes Glied
+ * uebernommen, damit er nicht verloren geht.
+ */
+function griffKettenHinzufuegen(conversationId: string, identity: symbol, fn: () => void): void {
+  const store = useGenerationStore.getState()
+  let liste = griffKetten.get(conversationId)
+  if (!liste) {
+    const gefunden = store.aborters[conversationId]
+    liste = gefunden ? [{ identity: Symbol('fremd-vorgefunden'), fn: gefunden }] : []
+    griffKetten.set(conversationId, liste)
+  } else if (liste.length > 0 && store.aborters[conversationId] !== eigeneRegistrierung.get(conversationId)) {
+    const letztes = liste[liste.length - 1]
+    const aktuell = store.aborters[conversationId]
+    if (aktuell) {
+      // Das zuletzt hinzugefuegte Glied hat direkt in den Store geschrieben
+      // (ein Sendeweg, der seinen eigenen Griff registriert): das ist
+      // immer noch DASSELBE Glied, nur mit neuem Inhalt.
+      letztes.fn = aktuell
+    } else {
+      // Es hat sich selbst aus dem Store entfernt (`clearAborter`), also ist
+      // sein Lauf schon vorbei: das Glied ist tot, nicht nur veraltet.
+      liste.pop()
+    }
+  }
+  liste.push({ identity, fn })
+  griffKetteNeuEintragen(conversationId)
+}
+
+/**
+ * Das eigene Glied eines Laufs wieder aus der Kette seiner Kennung nehmen.
+ *
+ * Anders als die Vorgaengerfassung wird hier NICHTS zurueckgeschrieben:
+ * es wird genau das eigene Glied entfernt, egal wo es in der Liste steht,
+ * und die Kette wird aus dem, was danach noch lebt, neu gebaut. Bleibt
+ * niemand mehr uebrig, wird der Store geleert, aber nur wenn er noch die
+ * eigene Kette traegt (ein Sendeweg kann inzwischen direkt uebernommen
+ * haben, siehe `griffKettenHinzufuegen`); in dem Fall gehoert der Store
+ * schon jemand anderem, und dieses Modul fasst ihn nicht mehr an.
+ */
+function griffKettenEntfernen(conversationId: string, identity: symbol): void {
+  const liste = griffKetten.get(conversationId)
+  if (!liste) return
+  const store = useGenerationStore.getState()
+  const eigeneKetteIstAktiv = store.aborters[conversationId] === eigeneRegistrierung.get(conversationId)
+  const uebrig = liste.filter((glied) => glied.identity !== identity)
+  if (uebrig.length === 0) {
+    griffKetten.delete(conversationId)
+    eigeneRegistrierung.delete(conversationId)
+    if (eigeneKetteIstAktiv) store.clearAborter(conversationId)
+    return
+  }
+  griffKetten.set(conversationId, uebrig)
+  if (eigeneKetteIstAktiv) griffKetteNeuEintragen(conversationId)
+}
 
 export interface RunSlotOptions {
   /** Der sichtbare Lauf. Dieselbe Kennung, die der Stop-Knopf benennt. */
@@ -202,24 +339,22 @@ export async function runInLane(
   // Verklemmung aus dem Dateikopf, weil der aeussere Lauf auf genau diesen
   // Rumpf wartet. Fehler kommen unveraendert heraus, wie beim normalen Weg.
   if (runsInHeldLane && holdsLocalLane(runsInHeldLane.conversationId, runsInHeldLane.identity)) {
-    const store = useGenerationStore.getState()
-    // An den Abbruchgriff des Elternlaufs anhaengen: Stop auf die
+    // An die Abbruchkette der Elternkennung anhaengen: Stop auf die
     // Elternunterhaltung muss diesen inneren Rumpf mit erreichen, sonst
     // waere ein Vordergrund-Sub-Agent oder ein verschachtelter Arbeitsablauf
     // ueber den Stop-Knopf der Unterhaltung, die ihn gestartet hat, nicht
-    // mehr abbrechbar. Der alte Griff wird danach exakt wiederhergestellt,
-    // damit das `finally` des Elternlaufs (das seinen EIGENEN Griff per
-    // Referenz wiedererkennt) unveraendert weiterfunktioniert.
-    const elternGriff = store.aborters[runsInHeldLane.conversationId]
-    const griffFuerBeide = (): void => { elternGriff?.(); abort?.() }
-    if (abort) store.registerAborter(runsInHeldLane.conversationId, griffFuerBeide)
+    // mehr abbrechbar. `griffKettenHinzufuegen`/`-Entfernen` (siehe Dateikopf,
+    // Abschnitt "DIE GRIFFKETTE IST EINE LISTE LEBENDER GLIEDER") haengen
+    // dieses eigene Glied an dieselbe Kette, die auch der Elternlauf traegt,
+    // und nehmen beim Aufraeumen GENAU dieses Glied wieder heraus, ohne
+    // etwas anderes zurueckzuschreiben.
+    const innerIdentity = Symbol('nested-in-held-lane')
+    if (abort) griffKettenHinzufuegen(runsInHeldLane.conversationId, innerIdentity, abort)
     try {
       await body(runsInHeldLane)
       return 'ran'
     } finally {
-      if (abort && useGenerationStore.getState().aborters[runsInHeldLane.conversationId] === griffFuerBeide) {
-        useGenerationStore.getState().registerAborter(runsInHeldLane.conversationId, elternGriff ?? (() => {}))
-      }
+      if (abort) griffKettenEntfernen(runsInHeldLane.conversationId, innerIdentity)
     }
   }
   if (runsInHeldLane && lane === 'local') {
@@ -281,31 +416,21 @@ export async function runInLane(
     abort?.()
   }
 
-  // Den VORGEFUNDENEN Griff dieser Kennung merken, bevor er ueberschrieben
-  // wird (BLOCKER 3, Nachpruefung 2 von review-w2lane.md, gemessen).
+  // Das eigene Glied an die Abbruchkette dieser Kennung haengen (siehe
+  // Dateikopf, Abschnitt "DIE GRIFFKETTE IST EINE LISTE LEBENDER GLIEDER").
   //
   // Diese Kennung gehoert nicht zwingend diesem Lauf: sie kann die eines
   // laufenden Chat-Zugs sein (`WorkflowEngine.run()` bucht unter
   // `this.conversationId`, und aus dem Ablauf-Fenster ist das die gerade
   // sichtbare Unterhaltung, ohne jede Sperre gegen einen dort laufenden
   // Zug), oder allgemein die eines beliebigen anderen Halters, der zufaellig
-  // dieselbe Kennung traegt. Ohne dieses Merken registrierte die naechste
-  // Zeile ihren eigenen Griff rueckhaltlos ueber den vorgefundenen, und
-  // `aufraeumen` loeschte ihn am Ende ersatzlos: Stop auf diese Kennung
-  // erreichte danach nur noch DIESEN Lauf, nie mehr den, der vorher da war,
-  // und `stopAllBackgroundWork` traf ihn ebenso wenig.
-  //
-  // Der gehaltene (mitfahrende) Weg oben macht das schon richtig
-  // (`elternGriff`/`griffFuerBeide`); dieser normale Buchungsweg bekommt
-  // jetzt denselben Mechanismus, an der Wurzel, statt dass jede
-  // Aufrufstelle (Sub-Agent, Arbeitsablauf, jede kuenftige) selbst daran
-  // denken muss.
+  // dieselbe Kennung traegt. `griffKettenHinzufuegen` nimmt einen schon
+  // vorgefundenen Griff als eigenes Glied mit auf, statt ihn zu verlieren,
+  // und `griffKettenEntfernen` nimmt beim Aufraeumen GENAU das eigene Glied
+  // wieder heraus, egal in welcher Reihenfolge mehrere Laeufe unter
+  // derselben Kennung enden.
   const store = useGenerationStore.getState()
-  const vorgefundenerGriff = store.aborters[conversationId]
-  const kombinierterGriff = vorgefundenerGriff
-    ? (): void => { vorgefundenerGriff(); abbruchgriff() }
-    : abbruchgriff
-  store.registerAborter(conversationId, kombinierterGriff)
+  griffKettenHinzufuegen(conversationId, identity, abbruchgriff)
   store.bookRun(conversationId, lane, identity)
 
   const urteil = admit(lane, conversationId, () => {
@@ -341,7 +466,7 @@ export async function runInLane(
   }
 
   if (grund === 'ausgereiht') {
-    aufraeumen(conversationId, kombinierterGriff, vorgefundenerGriff, identity)
+    aufraeumen(conversationId, identity)
     return 'cancelled-while-queued'
   }
 
@@ -349,7 +474,7 @@ export async function runInLane(
     await body(held)
     return 'ran'
   } finally {
-    aufraeumen(conversationId, kombinierterGriff, vorgefundenerGriff, identity)
+    aufraeumen(conversationId, identity)
     // DIE PFLICHT AUS DEM KOPF VON run-lanes.ts, an ihrer einzigen Stelle.
     // Der Platz ist beim Zurueckkehren aus `release` schon an den Naechsten
     // vergeben; wer den Rueckgabewert verwirft, laesst die Spur haengen.
@@ -358,41 +483,23 @@ export async function runInLane(
 }
 
 /**
- * Buchung weg, eigener Abbruchgriff weg, VORGEFUNDENER Griff wiederhergestellt.
+ * Buchung weg, eigenes Glied aus der Abbruchkette dieser Kennung genommen.
  *
- * Beides nur, wenn der registrierte Griff noch UNSERER ist (`eigenerGriff`,
- * per Referenz verglichen). Der Sendeweg registriert im Rumpf seinen eigenen
- * Abbruchgriff und ueberschreibt diesen dabei; ihn danach blind wegzuraeumen,
- * naehme dem Nutzer den Stop-Knopf fuer einen Lauf, der noch ausrollt.
  * Dieselbe Frage gilt seit Blocker A fuer die Buchung selbst: ein spaet
  * kommendes `finally` eines abgeloesten Laufs (Stop, sofort neu gesendet)
  * darf `generationStore.runs` nicht loeschen, wenn der NEUE Lauf die
- * Unterhaltung inzwischen uebernommen hat.
+ * Unterhaltung inzwischen uebernommen hat; `endRun` prueft das schon selbst
+ * ueber `identity`.
  *
- * `vorgefundenerGriff` (BLOCKER 3, Nachpruefung 2 von review-w2lane.md):
- * WIRD ZURUECKGESCHRIEBEN statt geloescht, wenn es einen gab. Ohne diese
- * Zeile endete jeder normal buchende Lauf, dessen Kennung schon einen
- * fremden Griff trug (ein laufender Chat-Zug in derselben Unterhaltung, ein
- * Arbeitsablauf, der sie sich teilt), damit, dass der Fremde seinen
- * Abbruchgriff fuer immer verliert, auch wenn dieser Lauf hier laengst
- * fertig ist und niemand mehr Stop darauf druecken kann: `endet false, dann
- * still nie wieder erreichbar`. Gemessen an `WorkflowEngine.run()`, das aus
- * dem Ablauf-Fenster unter der gerade sichtbaren Unterhaltung bucht und sich
- * dabei anstellt, waehrend dort ein Chat laeuft.
+ * `griffKettenEntfernen` (Schlusspruefung, review-w2lane.md, Folgeauftrag 1)
+ * nimmt GENAU das eigene Glied aus der Liste lebender Glieder dieser
+ * Kennung, statt einen vorgefundenen Griff blind zurueckzuschreiben: ein
+ * zurueckgeschriebener Griff eines laengst beendeten Laufs waere ein toter
+ * Griff, den ein spaeterer Lauf derselben Kennung erbt und der Kette
+ * einverleibt. Siehe Dateikopf, Abschnitt "DIE GRIFFKETTE IST EINE LISTE
+ * LEBENDER GLIEDER".
  */
-function aufraeumen(
-  conversationId: string,
-  eigenerGriff: () => void,
-  vorgefundenerGriff: (() => void) | undefined,
-  identity: unknown,
-): void {
-  const store = useGenerationStore.getState()
-  store.endRun(conversationId, identity)
-  if (useGenerationStore.getState().aborters[conversationId] === eigenerGriff) {
-    if (vorgefundenerGriff) {
-      store.registerAborter(conversationId, vorgefundenerGriff)
-    } else {
-      store.clearAborter(conversationId)
-    }
-  }
+function aufraeumen(conversationId: string, identity: symbol): void {
+  useGenerationStore.getState().endRun(conversationId, identity)
+  griffKettenEntfernen(conversationId, identity)
 }
