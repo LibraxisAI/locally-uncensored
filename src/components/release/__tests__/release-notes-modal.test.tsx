@@ -114,9 +114,42 @@ describe('grouped changes', () => {
     expect(screen.queryByText('Engine item two, also long.')).toBeNull()
   })
 
+  it('the open chevron carries the fix for the browser bug that kept it from turning (Auflage 1, 19.09.2026)', () => {
+    // Headless testing against the running Vite dev server showed the
+    // rotate-90 class was ALWAYS on the node and getComputedStyle ALWAYS
+    // reported rotate: 90deg, both before and after this fix; that alone
+    // never caught the bug. The actual defect only showed up as pixels: the
+    // chevron's own path stayed 2.85 x 5.69px, upright, both collapsed and
+    // expanded, because this SVG's default CSS reference box for `rotate`
+    // is its viewBox, and at 11px rendered from a 24x24 viewBox that
+    // reference box does not paint the turn in the browser this app ships
+    // to. `[transform-box:fill-box]` switches the reference box to the
+    // icon's own geometry, which does rotate: the path box became 6.32 x
+    // 3.16px, swapped, once expanded. jsdom cannot paint CSS and so cannot
+    // repeat that measurement, but it CAN nail both classes to the node, so
+    // a later edit that drops `[transform-box:fill-box]` fails here first.
+    // Full before/after numbers: whatsnew.md, Runde 3.
+    render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
+    const row = screen.getByText('Engine title one.').closest('button')!
+    fireEvent.click(row)
+    const chevron = row.querySelector('svg')!
+    const cls = chevron.getAttribute('class') ?? ''
+    expect(cls).toContain('[transform-box:fill-box]')
+    expect(cls).toContain('rotate-90')
+  })
+
   it('opens the same row on Enter, the way any button does', () => {
     render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
     const row = screen.getByText('Create title one.').closest('button')!
+    // Renamed and rewritten (Bauer, 19.09.2026, Auflage 3): this used to be
+    // named "on Enter" but fired `fireEvent.click`, so it never touched the
+    // keyboard path at all. jsdom, unlike a real browser, does not
+    // synthesize a click from a keydown on a focused <button> on its own, so
+    // the keydown and the click it causes are fired separately here, the
+    // same two events a real Enter press produces on any native button.
+    row.focus()
+    expect(document.activeElement).toBe(row)
+    fireEvent.keyDown(row, { key: 'Enter', code: 'Enter' })
     fireEvent.click(row)
     expect(screen.getByText('Create item one, spelled out in full.')).toBeTruthy()
   })

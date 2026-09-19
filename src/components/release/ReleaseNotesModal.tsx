@@ -211,7 +211,12 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
           <div className="space-y-3">
             {note.details.map((section) => (
               <div key={section.title} className="space-y-1.5">
-                <p className="text-[0.6rem] font-semibold uppercase tracking-wide text-gray-500">
+                {/* Auflage 2 (Bauer, 19.09.2026): war 0.6rem auf text-gray-500,
+                    das ist 3,37:1 auf #202020 (bg-lu-base) und faellt unter
+                    4,5:1. text-gray-300 auf derselben Flaeche misst 11,05:1,
+                    die Groesse ist jetzt die vom Eigner verlangte Untergrenze
+                    von 0.75rem. */}
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-300">
                   {section.title}
                 </p>
                 <ul className="space-y-1.5">
@@ -285,14 +290,35 @@ function ReleaseNoteRow({ item, expanded, onToggle }: ReleaseNoteRowProps) {
         aria-expanded={expanded}
         className="w-full flex items-start gap-1.5 text-left text-[0.7rem] leading-relaxed text-gray-300 hover:text-white transition-colors"
       >
+        {/* [transform-box:fill-box] is load-bearing, not decoration (Bauer,
+            19.09.2026, Auflage 1). This SVG is 11px, rendered from a 24x24
+            viewBox: this app's browser defaults the CSS `rotate` property's
+            reference box to `view-box` for an SVG element, and at that size,
+            with that mismatch between the viewBox and the rendered box, it
+            never paints the turn. That was the real bug behind the still,
+            unrotated chevron: `getComputedStyle(...).rotate` read "90deg"
+            and the `rotate-90` class was on the node both before and after
+            this fix, so neither ever proved anything; only a geometry
+            measurement of the chevron's own <path> did. Measured against
+            the running dev server, collapsed vs. expanded, on the unfixed
+            code: the path's own bounding box stayed 2.85 x 5.69px both
+            times, upright, nothing moved. With `[transform-box:fill-box]`
+            it becomes 6.32 x 3.16px once expanded, swapped, a real 90
+            degree turn. Screenshots: r3-normal.png (collapsed) and
+            r3-one-expanded.png / r3-expand-all.png (rotated); numbers and
+            the negative control in whatsnew.md, Runde 3. */}
         <ChevronRight
           size={11}
-          className={`mt-[0.3rem] shrink-0 text-gray-600 transition-transform ${expanded ? 'rotate-90' : ''}`}
+          className={`mt-[0.3rem] shrink-0 text-gray-600 transition-transform [transform-box:fill-box] ${expanded ? 'rotate-90' : ''}`}
         />
         <span>{title}</span>
       </button>
+      {/* Auflage 2 (Bauer, 19.09.2026): war 0.62rem auf text-gray-500, das
+          ist 3,37:1 auf #202020 (bg-lu-base), unter 4,5:1 und unter der vom
+          Eigner verlangten Untergrenze von 0.75rem. text-gray-300 auf
+          derselben Flaeche misst 11,05:1. */}
       {expanded && (
-        <p className="mt-1 pl-[18px] text-[0.62rem] leading-relaxed text-gray-500">{detail}</p>
+        <p className="mt-1 pl-[18px] text-xs leading-relaxed text-gray-300">{detail}</p>
       )}
     </li>
   )
