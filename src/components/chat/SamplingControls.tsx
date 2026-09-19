@@ -4,7 +4,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useChatStore } from '../../stores/chatStore'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
-import { SAMPLING_DEFAULTS, effectiveSampling, samplingIsChanged } from '../../lib/sampling'
+import { SAMPLING_DEFAULTS, effectiveSampling, samplingIsChanged, hasOwnSampling } from '../../lib/sampling'
 import type { SamplingOverrides } from '../../lib/sampling'
 
 /**
@@ -119,6 +119,12 @@ export function SamplingControls() {
 
   const value = effectiveSampling(settings, overrides)
   const changed = samplingIsChanged(settings, overrides)
+  // F1 (review-w2ui.md, 18.09.2026): Reset only deletes THIS chat's own
+  // override, so it must go by whether one exists, not by whether the
+  // EFFECTIVE value differs from the shipped default (`changed` above): that
+  // is also true when only the Settings page moved and this chat never
+  // touched its own slider, and Reset then has nothing to delete.
+  const ownSampling = hasOwnSampling(overrides)
   const write = (patch: SamplingOverrides) => {
     if (activeId) setSampling(activeId, patch)
   }
@@ -276,13 +282,19 @@ export function SamplingControls() {
             <button
               type="button"
               className="text-gray-400 underline disabled:opacity-40"
-              disabled={!changed}
+              disabled={!ownSampling}
+              title={
+                ownSampling
+                  ? undefined
+                  : 'This chat has no values of its own yet, it already follows the Settings page.'
+              }
               onClick={() => {
                 setDraft(null)
-                // Deletes this chat's own values (David's Entscheid,
-                // R5-10/R5-11): the chat goes back to following the Settings
-                // page, rather than pinning today's defaults into it forever
-                // the way a plain "write the defaults" reset would.
+                // Deletes this chat's own values (the orchestrator's
+                // decision, R5-10/R5-11, F2): the chat goes back to following
+                // the Settings page, rather than pinning today's defaults
+                // into it forever the way a plain "write the defaults" reset
+                // would.
                 if (activeId) resetSampling(activeId)
               }}
             >

@@ -4,8 +4,11 @@ import type { Settings } from '../types/settings'
 /**
  * Sampling for one conversation: temperature, top_p and a max output cap.
  *
- * R5-10/R5-11 (3.0.1-Liste), David's Entscheid vom 18.09.2026 (two earlier
- * bauers left this "braucht Entscheid", see bau/w2ui.md):
+ * R5-10/R5-11 (3.0.1-Liste), the orchestrator's decision on 18.09.2026 (two
+ * earlier bauers left this "braucht Entscheid", see bau/w2ui.md; F2, review-
+ * w2ui.md: this line previously attributed the decision to David, which the
+ * 18.09.2026 review found unsupported by any written source and asked to be
+ * corrected):
  *
  * 1. The values belong to the CHAT, not to the app. A moved slider applies to
  *    THIS conversation only; a chat that never touched its own slider follows
@@ -110,12 +113,31 @@ export function buildSamplingRequest(
 
 /**
  * Whether this chat sends any sampling value at all. Drives the quiet marker
- * on the closed control and the enabled state of Reset, so the marker means
- * exactly one thing: something about this chat is on the wire.
+ * on the closed control: the marker means exactly one thing, something about
+ * this chat is on the wire, whether that value came from this chat's own
+ * override or from the Settings page differing from the shipped default.
+ *
+ * NOT the right check for whether Reset can do anything (see
+ * `hasOwnSampling` below): a chat that never touched its own slider can
+ * still show this as true purely because the Settings page moved, and Reset
+ * has nothing of this chat's own to delete in that case.
  */
 export function samplingIsChanged(
   settings: Pick<Settings, 'temperature' | 'topP' | 'maxTokens'>,
   overrides?: SamplingOverrides,
 ): boolean {
   return Object.keys(buildSamplingRequest(settings, overrides)).length > 0
+}
+
+/**
+ * F1 (review-w2ui.md, 18.09.2026): whether THIS conversation has its own
+ * sampling value at all, i.e. whether `resetConversationSampling` has
+ * anything to delete. `samplingIsChanged` answers a different question (is
+ * anything non-default on the wire, from EITHER source) and used to also
+ * gate the Reset button: a chat that never moved its own slider, on a
+ * Settings page that had moved, showed Reset as enabled and clicking it
+ * deleted a field (`sampling`) that did not exist, doing nothing.
+ */
+export function hasOwnSampling(overrides?: SamplingOverrides): boolean {
+  return !!overrides && Object.keys(overrides).length > 0
 }

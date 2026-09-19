@@ -210,14 +210,29 @@ describe('SamplingControls', () => {
     expect((screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('offers no reset for a chat that only follows an already-moved Settings page', () => {
-    // "Changed" has to mean something is really on the wire, not "this chat
-    // has its own record": a chat with no override that merely inherits a
-    // moved Settings slider is exactly that case.
+  it('F1 (review-w2ui.md, 18.09.2026): Reset is disabled for a chat that only follows an already-moved Settings page', () => {
+    // Reset can only delete THIS chat's own override. A chat with no
+    // override that merely inherits a moved Settings slider has nothing of
+    // its own to delete, so the button must stay disabled: before this fix
+    // it read `changed` (something is on the wire, from EITHER source) and
+    // showed itself as clickable here, and clicking it deleted a field
+    // (`sampling`) that never existed: no error, but no effect either.
     useSettingsStore.getState().updateSettings({ temperature: 1.9 })
     render(<SamplingControls />)
     open()
-    expect((screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement).disabled).toBe(false)
+    const reset = screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement
+    expect(reset.disabled).toBe(true)
+    expect(reset.title).toMatch(/already follows the Settings page/)
+  })
+
+  it('F1: Reset becomes enabled the moment this chat gets its own value, even while the Settings page also differs', () => {
+    useSettingsStore.getState().updateSettings({ temperature: 1.9 })
+    useChatStore.getState().setConversationSampling('c1', { temperature: 1.2 })
+    render(<SamplingControls />)
+    open()
+    const reset = screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement
+    expect(reset.disabled).toBe(false)
+    expect(reset.title).toBeFalsy()
   })
 
   it('says plainly that reasoning models react less, instead of hiding the control', () => {
