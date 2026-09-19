@@ -44,6 +44,7 @@ import { mayEnableFromWizard } from '../../lib/onboarding-provider-gate'
 import { bundledPickerIdForFile } from '../../lib/bundled-download-activation'
 import { backendCall } from '../../api/backend'
 import { getSystemVRAM } from '../../api/comfyui'
+import { getMaxVramGb } from '../../lib/hardware'
 import { classifyOnboardingBackend, resolveOnboardingBackend } from '../../lib/onboarding-backend'
 import { ProgressBar } from '../ui/ProgressBar'
 import { formatBytes } from '../../lib/formatters'
@@ -256,7 +257,24 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
 
   // Detect VRAM for a memory advisory. Failed probes leave the model visible
   // with its stated requirements; they never imply that the model will fit.
-  useEffect(() => { getSystemVRAM().then(v => setSystemVRAM(v)).catch(() => {}) }, [])
+  //
+  // R2-51: `getSystemVRAM` asks the RUNNING ComfyUI's own /system_stats, so
+  // the advisory only ever appeared once ComfyUI itself was up — on this very
+  // step, before ComfyUI has necessarily been started, that is most of the
+  // time. `getMaxVramGb` (lib/hardware.ts) asks the Rust `detect_gpus` probe
+  // instead (nvidia-smi/rocm-smi/lspci/wmic), which works with no engine
+  // running at all. ComfyUI's own number stays the fallback for a GPU vendor
+  // none of those tools name (0 from getMaxVramGb reads as "unknown", not as
+  // "no VRAM"), so a machine ComfyUI can already see is not made to look
+  // worse than it is.
+  useEffect(() => {
+    getMaxVramGb().then((v) => {
+      if (v > 0) { setSystemVRAM(v); return }
+      getSystemVRAM().then((v2) => setSystemVRAM(v2)).catch(() => {})
+    }).catch(() => {
+      getSystemVRAM().then((v2) => setSystemVRAM(v2)).catch(() => {})
+    })
+  }, [])
 
   // Die CHATFAEHIGEN Modelle, die der Nutzer schon hat, mit Namen und nicht
   // nur als Zahl.
