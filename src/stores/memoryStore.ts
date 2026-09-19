@@ -950,7 +950,11 @@ export const useMemoryStore = create<MemoryState>()(
         const target = get().entries.find((e) => e.id === targetId)
         if (!target || target.sensitive) return
         const candidate = ctx?.newId ? get().entries.find(e => e.id === ctx.newId) : undefined
-        if (target.scope !== candidate?.scope) return
+        // R2-36: `target.scope !== candidate?.scope` returned true whenever
+        // there was no candidate at all (candidate?.scope undefined, target.scope
+        // set), so an UPDATE without ctx.newId never applied. The scope check
+        // only makes sense when there IS a candidate to compare against.
+        if (candidate && target.scope !== candidate.scope) return
 
         const merged = mergedContent.trim()
         if (!merged) return
