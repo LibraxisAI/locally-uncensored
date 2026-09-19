@@ -20,6 +20,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { stopAllBackgroundWork } from '../background-shutdown'
 import { WorkflowEngine } from '../workflow-engine'
+import { APPROVE_ALL } from '../../api/agents/tool-executor'
 import { buildDelegateExecutor, _setDepth, type SubAgentRunner } from '../../api/agents/sub-agent'
 import { useAgentTaskStore } from '../../stores/agentTaskStore'
 import { useGenerationStore } from '../../stores/generationStore'
@@ -63,7 +64,7 @@ describe('stopAllBackgroundWork erreicht Workflow-Lauf UND Hintergrund-Sub-Agent
       onStepError: (_i, e) => stepErrors.push(e),
       onWaitingForInput: () => {}, onComplete: () => {}, onError: () => {},
     }
-    const engine = new WorkflowEngine(workflow, 'wf-conv', callbacks)
+    const engine = new WorkflowEngine(workflow, 'wf-conv', callbacks, APPROVE_ALL)
     const workflowLaufend = engine.run()
     await takte()
     expect(localLaneHolder()).toBe('wf-conv')

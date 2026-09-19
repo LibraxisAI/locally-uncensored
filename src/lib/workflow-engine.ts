@@ -24,7 +24,6 @@ import { buildSamplingRequest } from './sampling'
 // Beides sind generische Module ohne Rückkante. Der Shim bleibt für seine
 // verbliebenen Aufrufer bestehen.
 import { toolRegistry } from '../api/mcp/tool-registry'
-import { DEFAULT_PERMISSIONS } from '../api/mcp/types'
 import type { ToolArgs } from '../api/mcp/types'
 import { streamProviderTurn } from './provider-stream'
 import { runInLane, type HeldLocalLane } from './run-slot'
@@ -35,6 +34,77 @@ import { buildHermesToolPrompt, parseHermesToolCalls, stripToolCallTags, hasTool
 import { resolveToolCallingStrategy } from './agent-strategy'
 import type { AgentWorkflow, WorkflowStep, StepResult, WorkflowEngineCallbacks } from '../types/agent-workflows'
 import type { ChatMessage, ToolDefinition } from '../api/providers/types'
+import { usePermissionStore } from '../stores/permissionStore'
+// Nebenbefund, bau/review-wfplay.md Teil B: die Engine fuehrte Werkzeuge
+// bisher direkt ueber `toolRegistry.execute` aus, ohne jede Freigabe, und bot
+// Prompt-Schritten `DEFAULT_PERMISSIONS` an statt des echten Stores. Derselbe
+// Fehler wie AGT-1 (sub-agent.ts), derselbe Fix: ein Pflicht-Gate im
+// Konstruktor. Die ENTSCHEIDUNG selbst kommt aus derselben, bereits
+// gehaerteten Tabelle wie beim Agenten-Chat und beim Sub-Agenten
+// (`resolveApprovalLevel`, agent-approval-policy.ts), nur das VERDRAHTEN auf
+// die Warteschlange baut `buildWorkflowApprovalGate` unten selbst, statt
+// `sub-agent.ts`s `buildSubAgentGates` zu importieren: deren zwei
+// `await import(...)` (Permission-Store, Warteschlange) haengen einen echten
+// Tick ein, den `run_workflow`s bestehende Lane-Zeitmess-Tests (u.a.
+// `heldLocalLane-wird-immer-weitergereicht.test.ts`) nicht vorhalten, vorher
+// gruen, mit `buildSubAgentGates` dort zwei rot (Zahlen im Baubericht). Die
+// Politik-TABELLE bleibt eine einzige Stelle, nur die Verdrahtung ist doppelt.
+import { resolveApprovalLevel } from './agent-approval-policy'
+import { enqueueApproval, removeApproval, type ApprovalEntry } from './approval-queue'
+import type { AgentToolCall } from '../types/agent-mode'
+import type { ApprovalGate, ExecutionRequest, ExecutorToolDef } from '../api/agents/tool-executor'
+
+/**
+ * Build a real `ApprovalGate` for a `run_workflow` tool call's nested engine
+ * (builtin-tools.ts's `executeRunWorkflow`), synchronously wired (no dynamic
+ * `import()`) so it never adds a tick the lane-timing tests do not expect.
+ * Same decision table as `buildSubAgentGates` (sub-agent.ts): a `blocked`
+ * category refuses outright, `auto` runs unattended, `confirm` enqueues into
+ * the SAME conversation-keyed queue the rest of Agent mode reads
+ * (`approval-queue.ts`), so the user sees the same "Requesting approval"
+ * card. Fail closed: no conversation to ask in refuses a `confirm` tool
+ * rather than running it.
+ */
+export function buildWorkflowApprovalGate(run: AgentRunContext | undefined): ApprovalGate {
+  const convId = run?.conversationId ?? null
+  const abortSignal = run?.abortSignal
+  return async (req) => {
+    if (abortSignal?.aborted) return false
+    const perm = usePermissionStore.getState()
+    const categoryLevel = toolRegistry.getPermissionLevelWithOverrides(
+      req.toolName,
+      perm.getEffectivePermissions(convId ?? undefined),
+      {},
+    )
+    const level = resolveApprovalLevel(req.toolName, {
+      categoryLevel,
+      override: perm.perToolOverrides[req.toolName],
+      // A workflow is never a Code-tab surface: there is no preset to defer
+      // to, only the permission store above.
+      codexMode: null,
+      readOnlyRun: run?.readOnlyShellTurn === true,
+    })
+    if (level === 'blocked') return false
+    if (level === 'auto') return true
+    if (!convId) return false
+    return new Promise<boolean>((resolve) => {
+      const toolCall: AgentToolCall = {
+        id: req.id,
+        toolName: req.toolName,
+        args: req.args,
+        status: 'pending_approval',
+        timestamp: Date.now(),
+      }
+      const entry: ApprovalEntry = { toolCall, resolve }
+      enqueueApproval(convId, entry)
+      abortSignal?.addEventListener(
+        'abort',
+        () => { if (removeApproval(convId, entry)) resolve(false) },
+        { once: true },
+      )
+    })
+  }
+}
 
 // ── Safety Limits ─────────────────────────────────────────────
 
@@ -88,6 +158,16 @@ export class WorkflowEngine {
   private depth: number
   private runsInHeldLane: HeldLocalLane | null
   /**
+   * The gate every tool call this engine executes has to pass, whether from
+   * a `tool` step or requested by the model inside a `prompt` step. Required,
+   * with no default: a caller that forgets to wire one gets a compile error
+   * instead of a silent, ungated `shell_execute` (same lesson as AGT-1's
+   * `awaitApproval` on `ExecutorRuntime`, tool-executor.ts). A caller that
+   * genuinely wants no gating passes `APPROVE_ALL` and thereby says so in
+   * writing.
+   */
+  private approve: ApprovalGate
+  /**
    * The proof this run itself hands to ITS OWN nested `run_workflow` or
    * (foreground) `delegate_task` tool step (second-degree nesting), set from
    * `runInLane`'s `held` callback argument once this run's own lane
@@ -101,6 +181,11 @@ export class WorkflowEngine {
     workflow: AgentWorkflow,
     conversationId: string,
     callbacks: WorkflowEngineCallbacks,
+    /**
+     * REQUIRED, see the field doc above. Pass tool-executor's `APPROVE_ALL`
+     * to opt out explicitly; there is no implicit opt-out.
+     */
+    approve: ApprovalGate,
     initialVariables?: Record<string, string>,
     depth: number = 0,
     /**
@@ -113,19 +198,63 @@ export class WorkflowEngine {
      * Runde 4, bau/review-w2lane.md, a boolean here used to be blind trust).
      * If the check fails, this run books its own place instead of hanging
      * behind a stale or fake proof. A top-level workflow (started from the
-     * workflow panel, or from the "run workflow <name>" chat trigger) is
-     * never nested, so it leaves this at the default `null` and books its
-     * own slot from scratch.
+     * "run workflow <name>" chat trigger, the only surviving trigger since
+     * the dead Settings play button was removed) is never nested, so it
+     * leaves this at the default `null` and books its own slot from scratch.
      */
     runsInHeldLane: HeldLocalLane | null = null
   ) {
+    if (!approve) {
+      // Defense in depth behind the TS type: a caller reached from plain JS,
+      // or one that spreads old positional args after a signature change,
+      // gets a thrown error instead of `undefined` quietly skipping every
+      // gate check below.
+      throw new Error('WorkflowEngine requires an approve gate (ApprovalGate). Pass APPROVE_ALL from tool-executor.ts to opt out explicitly.')
+    }
     this.workflow = workflow
     this.conversationId = conversationId
     this.callbacks = callbacks
+    this.approve = approve
     this.variables = { ...workflow.variables, ...(initialVariables || {}) }
     this.abortController = new AbortController()
     this.depth = depth
     this.runsInHeldLane = runsInHeldLane
+  }
+
+  /**
+   * Gate one tool call through the same policy an agent-chat turn or a
+   * delegated sub-agent already goes through (Nebenbefund,
+   * bau/review-wfplay.md Teil B). Raced against this run's own abort signal
+   * so Stop resolves a still-pending approval with `false` even if the
+   * underlying gate's own promise (a real queued approval, say) never
+   * settles on its own: the run must not hang on a click that is never
+   * coming once Stop was pressed.
+   */
+  private async gatedApproval(
+    toolName: string,
+    args: ToolArgs,
+    run: AgentRunContext | undefined,
+  ): Promise<{ approved: true } | { approved: false; message: string }> {
+    if (this.abortController.signal.aborted) {
+      return { approved: false, message: `Cancelled: the run was stopped before ${toolName} could run.` }
+    }
+    const tool: ExecutorToolDef = toolRegistry.resolveExecutable(toolName) ?? { name: toolName }
+    const req: ExecutionRequest = {
+      id: `${this.conversationId}-${toolName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      toolName,
+      args,
+      run,
+    }
+    const approved = await Promise.race([
+      this.approve(req, tool),
+      new Promise<boolean>((resolve) => {
+        this.abortController.signal.addEventListener('abort', () => resolve(false), { once: true })
+      }),
+    ])
+    if (!approved) {
+      return { approved: false, message: `Tool call rejected: ${toolName} was not approved.` }
+    }
+    return { approved: true }
   }
 
   /**
@@ -144,9 +273,9 @@ export class WorkflowEngine {
    *
    * `conversationId: this.conversationId` DELIBERATELY, not a private
    * per-run identity (BLOCKER 3, Nachpruefung 2 von review-w2lane.md): a
-   * workflow started from the Workflow panel shares its visible
-   * conversation on purpose, it writes its step messages into that same
-   * chat, so a queued workflow SHOULD show up there ("waiting for the local
+   * workflow started from the "run workflow <name>" chat trigger shares its
+   * visible conversation on purpose, it writes its step messages into that
+   * same chat, so a queued workflow SHOULD show up there ("waiting for the local
    * lane") via `isRunQueued`/`runQueuePosition`. A private identity like the
    * sub-agent's would have fixed the abort-handle bug just as well but at
    * the cost of that legitimate wait-row attribution, per the review's own
@@ -346,8 +475,13 @@ export class WorkflowEngine {
         if (chunk.done) break
       }
     } else {
-      // With tools
-      const tools: ToolDefinition[] = toolRegistry.toOllamaTools(DEFAULT_PERMISSIONS)
+      // With tools. The catalog offered to the model is the user's OWN
+      // permission store, not a fixed default (Nebenbefund, bau/review-
+      // wfplay.md Teil B): `DEFAULT_PERMISSIONS` used to sit here, so a
+      // category the user set to 'blocked' was invisible everywhere else in
+      // the app yet still handed to the model in a workflow prompt step.
+      const permissions = usePermissionStore.getState().getEffectivePermissions(this.conversationId)
+      const tools: ToolDefinition[] = toolRegistry.toOllamaTools(permissions)
       const allowedTools = step.allowedTools
         ? tools.filter(t => step.allowedTools!.includes(t.function.name))
         : tools
@@ -361,8 +495,13 @@ export class WorkflowEngine {
         })
         output = turn.content || ''
 
-        // Execute any tool calls
+        // Execute any tool calls, gated the same as a tool step (see
+        // executeToolStep below): the catalog above already hides a blocked
+        // category from the model, but a model can still hallucinate a name
+        // or ask for a 'confirm' tool the user has not approved yet.
         for (const tc of turn.toolCalls) {
+          const gate = await this.gatedApproval(tc.function.name, tc.function.arguments, undefined)
+          if (!gate.approved) throw new Error(gate.message)
           const result = await toolRegistry.execute(tc.function.name, tc.function.arguments)
           output += `\n[Tool: ${tc.function.name}] ${result}`
         }
@@ -397,6 +536,8 @@ export class WorkflowEngine {
           const toolCalls = parseHermesToolCalls(rawContent)
           output = stripToolCallTags(rawContent)
           for (const tc of toolCalls) {
+            const gate = await this.gatedApproval(tc.name, tc.arguments, undefined)
+            if (!gate.approved) throw new Error(gate.message)
             const result = await toolRegistry.execute(tc.name, tc.arguments)
             output += `\n[Tool: ${tc.name}] ${result}`
           }
@@ -463,6 +604,20 @@ export class WorkflowEngine {
           heldLocalLane: this.heldLocalLane,
         }
       : undefined
+
+    const gate = await this.gatedApproval(step.toolName, args, runForTool)
+    if (!gate.approved) {
+      return {
+        stepId: step.id,
+        status: 'failed',
+        output: '',
+        startedAt,
+        completedAt: Date.now(),
+        error: gate.message,
+        toolCalls: [{ name: step.toolName, args, result: gate.message }],
+      }
+    }
+
     const result = await toolRegistry.execute(step.toolName, args, 1, runForTool)
     const isError = result.startsWith('Error:')
 

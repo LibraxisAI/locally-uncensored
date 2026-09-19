@@ -44,6 +44,7 @@ import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
 import { useAgentTaskStore } from '../../stores/agentTaskStore'
 import { toolRegistry, registerBuiltinTools } from '../../api/mcp'
 import { WorkflowEngine } from '../workflow-engine'
+import { APPROVE_ALL } from '../../api/agents/tool-executor'
 import { buildDelegateExecutor, _setDepth, type SubAgentRunner } from '../../api/agents/sub-agent'
 import type { AgentWorkflow, WorkflowStep, WorkflowEngineCallbacks } from '../../types/agent-workflows'
 import type { AgentRunContext } from '../../api/agent-context'
@@ -151,7 +152,7 @@ describe('3) Workflow reicht den eigenen Beweis an einen zweiten run_workflow-Sc
     const outer = workflowOf('outer-id', 'outer', [
       { id: 'call-inner', type: 'tool', label: 'call-inner', toolName: 'run_workflow', toolArgs: { name: 'inner' } },
     ])
-    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks())
+    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks(), APPROVE_ALL)
     const results = await engine.run()
 
     expect(results.map((r) => r.status)).toEqual(['completed'])
@@ -218,7 +219,7 @@ describe('5) Sub-Agent im Workflow: ein Arbeitsablaufschritt ruft delegate_task 
     const outer = workflowOf('outer-id', 'outer', [
       { id: 'call-agent', type: 'tool', label: 'call-agent', toolName: 'delegate_task', toolArgs: { goal: 'x' } },
     ])
-    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks())
+    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks(), APPROVE_ALL)
     const results = await engine.run()
 
     expect(results.map((r) => r.status)).toEqual(['completed'])
@@ -245,7 +246,7 @@ describe('5) Sub-Agent im Workflow: ein Arbeitsablaufschritt ruft delegate_task 
     const outer = workflowOf('outer-id', 'outer', [
       { id: 'call-agent', type: 'tool', label: 'call-agent', toolName: 'delegate_task', toolArgs: { goal: 'x' } },
     ])
-    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks())
+    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks(), APPROVE_ALL)
     const results = await engine.run()
 
     expect(results.map((r) => r.status)).toEqual(['completed'])

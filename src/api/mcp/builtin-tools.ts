@@ -11,7 +11,7 @@ import { backendCall, fetchExternal } from '../backend'
 import { getActiveChatId, getActiveConversationId, getActiveWorkspace, isChatArtifactMode, captureChatArtifact, isReadOnlyShellTurn } from '../agent-context'
 import type { AgentRunContext } from '../agent-context'
 import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
-import { WorkflowEngine } from '../../lib/workflow-engine'
+import { WorkflowEngine, buildWorkflowApprovalGate } from '../../lib/workflow-engine'
 import type { StepResult } from '../../types/agent-workflows'
 import { DELEGATE_TASK_TOOL_DEF, buildDelegateExecutor } from '../agents/sub-agent'
 import {
@@ -1608,7 +1608,20 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
     // it against the actual holder at run time before skipping its own
     // booking, so a stale or absent proof falls back to booking normally
     // instead of silently trusting the marker.
-    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth, run?.heldLocalLane ?? null)
+    //
+    // The gate (Nebenbefund, bau/review-wfplay.md Teil B): one approval for
+    // `run_workflow` itself already fell before this executor ran, but that
+    // approval was for "run this workflow", not for whatever it does inside.
+    // Passing `APPROVE_ALL` here, the reviewer's own first suggestion, would
+    // turn that single approval into a blank check for every tool the
+    // workflow's steps (or a model inside a prompt step) go on to call,
+    // including a `shell_execute` the user never saw. `buildWorkflowApprovalGate`
+    // resolves the REAL gate from `run`'s own conversation and read-only flag,
+    // same decision table `delegate_task` already goes through, so a
+    // `confirm` tool inside the workflow still asks, on the same queue the
+    // rest of Agent mode uses.
+    const approve = buildWorkflowApprovalGate(run)
+    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, approve, initialVars, _workflowDepth, run?.heldLocalLane ?? null)
     await engine.run()
   } finally {
     _workflowDepth--

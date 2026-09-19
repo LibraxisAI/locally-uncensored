@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { WorkflowEngine, MAX_STEPS_EXECUTED } from '../workflow-engine'
+import { APPROVE_ALL } from '../../api/agents/tool-executor'
 import { useMemoryStore } from '../../stores/memoryStore'
 import type { AgentWorkflow, WorkflowStep, WorkflowEngineCallbacks } from '../../types/agent-workflows'
 
@@ -53,7 +54,7 @@ function run(steps: WorkflowStep[], variables: Record<string, string> = {}) {
     onComplete: () => {},
     onError: (e) => errors.push(e),
   }
-  const engine = new WorkflowEngine(workflow, 'conv', callbacks, variables)
+  const engine = new WorkflowEngine(workflow, 'conv', callbacks, APPROVE_ALL, variables)
   return engine.run().then((results) => ({ results, errors }))
 }
 

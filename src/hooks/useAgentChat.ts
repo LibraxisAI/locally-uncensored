@@ -69,7 +69,7 @@ import {
   fanoutDirective,
   unresolvedModelNote,
 } from '../lib/agent-fanout'
-import { setExplicitFanout } from '../api/agents/sub-agent'
+import { setExplicitFanout, buildSubAgentGates } from '../api/agents/sub-agent'
 import { appendTaskReport } from '../lib/agent-task-report'
 import { useAgentTaskStore } from '../stores/agentTaskStore'
 import { useAgentGoalStore, renderGoalSection } from '../stores/agentGoalStore'
@@ -355,7 +355,24 @@ export function useAgentChat() {
           },
         }
 
-        const engine = new WorkflowEngine(workflow, convId, callbacks)
+        // Nebenbefund, bau/review-wfplay.md Teil B: this trigger used to hand
+        // the engine no gate at all, so a workflow's own tool steps ran
+        // unattended. Reusing `buildSubAgentGates` (audit AGT-1's fix, same
+        // approach a delegated sub-agent already gets) reaches the SAME
+        // conversation-keyed approval queue and permission store the rest of
+        // Agent mode uses, so the user sees the same "Requesting approval"
+        // block, not a bespoke one for workflows.
+        const gates = await buildSubAgentGates({
+          token: `workflow-trigger-${convId}`,
+          chatId: null,
+          conversationId: convId,
+          workspace: null,
+          artifactMode: false,
+          readOnlyShellTurn: false,
+          mode: null,
+          artifacts: [],
+        })
+        const engine = new WorkflowEngine(workflow, convId, callbacks, gates.awaitApproval)
         await engine.run()
         return
       }
