@@ -138,6 +138,11 @@ installs stop losing environment variables to it.
   the web catalog, instead of pricing as free.
 - **The model marks now live in the model list only**, the line above the
   message box is gone; the Flash notice sits next to the Agent toggle.
+- **At a narrow window width, picking a model or opening the sampling or
+  plugins popups no longer shifts the whole chat sideways.** The shared chat
+  area allowed the browser to scroll it into view when a clicked control sat
+  partly off screen. That area no longer accepts a programmatic scroll, so it
+  stays put.
 
 ## [3.0.0] - 2026-09-13
 

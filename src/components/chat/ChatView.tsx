@@ -277,7 +277,19 @@ export function ChatView() {
           the AnimatePresence as ONE instance: a second copy per branch would
           drop the draft the moment the first message creates the conversation,
           which is worse than having no input field at all. */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
+      {/* Runde 5 (19.09.2026): `overflow-hidden` clippt visuell, verhindert aber
+          KEIN programmatisches Scrollen. Klickt man einen Ausloeser, der
+          teilweise ausserhalb der 360px-Zeile liegt (Modellwaehler, Sampling,
+          Plugins), holt der Browser das fokussierte Element per `scrollLeft`
+          auf GENAU DIESEM Vorfahren "in Sicht", und das verschiebt den ganzen
+          Chat seitlich, dauerhaft. `overflow-clip` clippt genauso, laesst aber
+          kein programmatisches Scrollen zu (CSS Overflow Module Level 3):
+          `scrollLeft`-Zuweisungen darauf bleiben wirkungslos. Beide Achsen
+          duerfen hier `clip` sein, kein Nachkomme haengt `scrollTop`,
+          `scrollTo` oder `scrollIntoView` an DIESES Element (grep gegen
+          `src/components/chat/`, siehe `flashchip.md` Runde 5); der Verlauf
+          traegt seinen eigenen `overflow-y-auto` weiter unten. */}
+      <div className="flex-1 flex overflow-clip min-h-0">
         <div className="flex-1 flex flex-col min-w-0 relative">
           {chatMode === 'codex' && activeConversationId ? (
             <CodexView />

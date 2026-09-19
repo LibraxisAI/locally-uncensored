@@ -159,6 +159,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
           'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
           'The model marks now live in the model list only, the line above the message box is gone; the Flash notice sits next to the Agent toggle.',
+          'At a narrow window width, picking a model, opening the sampling sliders or opening the plugins menu used to leave the whole chat shifted sideways afterward, because the shared chat area allowed the browser to scroll it into view when a clicked control sat partly off screen. That area no longer accepts a programmatic scroll, so it stays put.',
         ],
       },
     ],
