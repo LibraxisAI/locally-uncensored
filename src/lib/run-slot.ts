@@ -281,8 +281,31 @@ export async function runInLane(
     abort?.()
   }
 
+  // Den VORGEFUNDENEN Griff dieser Kennung merken, bevor er ueberschrieben
+  // wird (BLOCKER 3, Nachpruefung 2 von review-w2lane.md, gemessen).
+  //
+  // Diese Kennung gehoert nicht zwingend diesem Lauf: sie kann die eines
+  // laufenden Chat-Zugs sein (`WorkflowEngine.run()` bucht unter
+  // `this.conversationId`, und aus dem Ablauf-Fenster ist das die gerade
+  // sichtbare Unterhaltung, ohne jede Sperre gegen einen dort laufenden
+  // Zug), oder allgemein die eines beliebigen anderen Halters, der zufaellig
+  // dieselbe Kennung traegt. Ohne dieses Merken registrierte die naechste
+  // Zeile ihren eigenen Griff rueckhaltlos ueber den vorgefundenen, und
+  // `aufraeumen` loeschte ihn am Ende ersatzlos: Stop auf diese Kennung
+  // erreichte danach nur noch DIESEN Lauf, nie mehr den, der vorher da war,
+  // und `stopAllBackgroundWork` traf ihn ebenso wenig.
+  //
+  // Der gehaltene (mitfahrende) Weg oben macht das schon richtig
+  // (`elternGriff`/`griffFuerBeide`); dieser normale Buchungsweg bekommt
+  // jetzt denselben Mechanismus, an der Wurzel, statt dass jede
+  // Aufrufstelle (Sub-Agent, Arbeitsablauf, jede kuenftige) selbst daran
+  // denken muss.
   const store = useGenerationStore.getState()
-  store.registerAborter(conversationId, abbruchgriff)
+  const vorgefundenerGriff = store.aborters[conversationId]
+  const kombinierterGriff = vorgefundenerGriff
+    ? (): void => { vorgefundenerGriff(); abbruchgriff() }
+    : abbruchgriff
+  store.registerAborter(conversationId, kombinierterGriff)
   store.bookRun(conversationId, lane, identity)
 
   const urteil = admit(lane, conversationId, () => {
@@ -318,7 +341,7 @@ export async function runInLane(
   }
 
   if (grund === 'ausgereiht') {
-    aufraeumen(conversationId, abbruchgriff, identity)
+    aufraeumen(conversationId, kombinierterGriff, vorgefundenerGriff, identity)
     return 'cancelled-while-queued'
   }
 
@@ -326,7 +349,7 @@ export async function runInLane(
     await body(held)
     return 'ran'
   } finally {
-    aufraeumen(conversationId, abbruchgriff, identity)
+    aufraeumen(conversationId, kombinierterGriff, vorgefundenerGriff, identity)
     // DIE PFLICHT AUS DEM KOPF VON run-lanes.ts, an ihrer einzigen Stelle.
     // Der Platz ist beim Zurueckkehren aus `release` schon an den Naechsten
     // vergeben; wer den Rueckgabewert verwirft, laesst die Spur haengen.
@@ -335,20 +358,41 @@ export async function runInLane(
 }
 
 /**
- * Buchung weg, eigener Abbruchgriff weg.
+ * Buchung weg, eigener Abbruchgriff weg, VORGEFUNDENER Griff wiederhergestellt.
  *
- * Beides nur, wenn es noch UNSERES ist (`identity`). Der Sendeweg
- * registriert im Rumpf seinen eigenen Abbruchgriff und ueberschreibt diesen
- * dabei; ihn danach blind wegzuraeumen, naehme dem Nutzer den Stop-Knopf fuer
- * einen Lauf, der noch ausrollt. Dieselbe Frage gilt seit Blocker A fuer die
- * Buchung selbst: ein spaet kommendes `finally` eines abgeloesten Laufs
- * (Stop, sofort neu gesendet) darf `generationStore.runs` nicht loeschen,
- * wenn der NEUE Lauf die Unterhaltung inzwischen uebernommen hat.
+ * Beides nur, wenn der registrierte Griff noch UNSERER ist (`eigenerGriff`,
+ * per Referenz verglichen). Der Sendeweg registriert im Rumpf seinen eigenen
+ * Abbruchgriff und ueberschreibt diesen dabei; ihn danach blind wegzuraeumen,
+ * naehme dem Nutzer den Stop-Knopf fuer einen Lauf, der noch ausrollt.
+ * Dieselbe Frage gilt seit Blocker A fuer die Buchung selbst: ein spaet
+ * kommendes `finally` eines abgeloesten Laufs (Stop, sofort neu gesendet)
+ * darf `generationStore.runs` nicht loeschen, wenn der NEUE Lauf die
+ * Unterhaltung inzwischen uebernommen hat.
+ *
+ * `vorgefundenerGriff` (BLOCKER 3, Nachpruefung 2 von review-w2lane.md):
+ * WIRD ZURUECKGESCHRIEBEN statt geloescht, wenn es einen gab. Ohne diese
+ * Zeile endete jeder normal buchende Lauf, dessen Kennung schon einen
+ * fremden Griff trug (ein laufender Chat-Zug in derselben Unterhaltung, ein
+ * Arbeitsablauf, der sie sich teilt), damit, dass der Fremde seinen
+ * Abbruchgriff fuer immer verliert, auch wenn dieser Lauf hier laengst
+ * fertig ist und niemand mehr Stop darauf druecken kann: `endet false, dann
+ * still nie wieder erreichbar`. Gemessen an `WorkflowEngine.run()`, das aus
+ * dem Ablauf-Fenster unter der gerade sichtbaren Unterhaltung bucht und sich
+ * dabei anstellt, waehrend dort ein Chat laeuft.
  */
-function aufraeumen(conversationId: string, eigenerGriff: () => void, identity: unknown): void {
+function aufraeumen(
+  conversationId: string,
+  eigenerGriff: () => void,
+  vorgefundenerGriff: (() => void) | undefined,
+  identity: unknown,
+): void {
   const store = useGenerationStore.getState()
   store.endRun(conversationId, identity)
   if (useGenerationStore.getState().aborters[conversationId] === eigenerGriff) {
-    store.clearAborter(conversationId)
+    if (vorgefundenerGriff) {
+      store.registerAborter(conversationId, vorgefundenerGriff)
+    } else {
+      store.clearAborter(conversationId)
+    }
   }
 }

@@ -139,6 +139,23 @@ export class WorkflowEngine {
    * workflow the same way `useChat`/`useAgentChat` do: `runInLane` registers
    * the abort handle before the body ever starts, so the queued case is
    * covered too, not just the running one.
+   *
+   * `conversationId: this.conversationId` DELIBERATELY, not a private
+   * per-run identity (BLOCKER 3, Nachpruefung 2 von review-w2lane.md): a
+   * workflow started from the Workflow panel shares its visible
+   * conversation on purpose, it writes its step messages into that same
+   * chat, so a queued workflow SHOULD show up there ("waiting for the local
+   * lane") via `isRunQueued`/`runQueuePosition`. A private identity like the
+   * sub-agent's would have fixed the abort-handle bug just as well but at
+   * the cost of that legitimate wait-row attribution, per the review's own
+   * comparison. The bug (a queued workflow's booking silently overwriting
+   * and then erasing a live chat's own abort handle under the same
+   * conversationId, so Stop on the chat killed the workflow instead) is
+   * fixed at the root in `run-slot.ts` now: any normal booking there
+   * remembers a foreign handle it finds already registered under the same
+   * conversationId, chains Stop to reach both while they coexist, and
+   * restores the foreign one instead of erasing it once this run ends. That
+   * fix covers every caller sharing a conversationId, not just this one.
    */
   async run(): Promise<StepResult[]> {
     if (this.depth >= MAX_WORKFLOW_DEPTH) {

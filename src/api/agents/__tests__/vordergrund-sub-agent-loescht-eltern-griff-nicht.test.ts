@@ -101,23 +101,30 @@ describe('ein Vordergrund-Sub-Agent unter einem Cloud-Elternzug mit eigenem loka
   })
 })
 
-describe('GEGENPROBE: eine Buchung unter der fremden Kennung des Elternzugs loescht dessen Griff wirklich', () => {
-  it('nachgebaut direkt gegen run-slot.ts: der Griff des Halters ist nach dem verschachtelten Lauf weg', async () => {
-    // Derselbe Fehler wie vor dem Fix, direkt am Modul nachgemessen statt im
-    // Sub-Agenten: ein Lauf, der KEINEN gueltigen Beweis vorlegt, bucht
-    // trotzdem unter der Kennung eines fremden, noch laufenden Halters.
+describe('run-slot.ts selbst: eine Buchung unter der fremden Kennung eines Halters loescht dessen Griff NICHT mehr (Blocker 3, Nachpruefung 2)', () => {
+  it('nachgebaut direkt gegen run-slot.ts, unabhaengig vom Sub-Agenten: der Griff des Halters bleibt danach da und erreichbar', async () => {
+    // Diese Zeilen bauten vor dem Wurzel-Fix in run-slot.ts (Blocker 3,
+    // Nachpruefung 2 von review-w2lane.md) genau den Fehler nach, den dieser
+    // Test urspruenglich als GEGENPROBE zeigte: ein Lauf ohne gueltigen
+    // Beweis, der unter der Kennung eines fremden, noch laufenden Halters
+    // bucht, loeschte dessen Griff ersatzlos. Der Fix sitzt jetzt in
+    // `run-slot.ts`s normalem Buchungszweig selbst (er merkt sich einen
+    // vorgefundenen Griff und schreibt ihn im `finally` identitaetsgeprueft
+    // zurueck), trifft also JEDEN Aufrufer, der sich eine Kennung mit einem
+    // anderen Halter teilt, nicht nur den Sub-Agenten. Dieselben Zeilen
+    // pruefen jetzt die Positivprobe.
     let elternAbortCalled = false
     await runInLane(
       { conversationId: 'eltern-conv', lane: 'cloud', abort: () => { elternAbortCalled = true } },
       async () => {
         await runInLane({ conversationId: 'eltern-conv', lane: 'local' }, async () => {})
         // Der verschachtelte Lauf hat seinen eigenen Griff unter derselben
-        // Kennung registriert und in seinem `finally` wieder geloescht, ohne
-        // zu wissen, dass vorher der Griff des Elternzugs dort stand.
-        expect(useGenerationStore.getState().aborters['eltern-conv']).toBeUndefined()
-        // Ein Stop auf den Elternzug JETZT erreicht ihn nicht mehr:
+        // Kennung registriert und im `finally` den vorgefundenen (den des
+        // Elternzugs) zurueckgeschrieben, statt ihn ersatzlos zu loeschen.
+        expect(useGenerationStore.getState().aborters['eltern-conv']).toBeDefined()
+        // Ein Stop auf den Elternzug erreicht ihn jetzt noch:
         useGenerationStore.getState().aborters['eltern-conv']?.()
-        expect(elternAbortCalled).toBe(false)
+        expect(elternAbortCalled).toBe(true)
       },
     )
   })
