@@ -92,6 +92,34 @@ pub struct SystemHealthReport {
 /// a live-but-slow server gets classified as `Timeout`, not `Unreachable`.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// How long the CONNECT phase of a probe may take before the backend counts
+/// as not running, derived from the probe window so a caller that shortens
+/// the window shortens both halves with it.
+///
+/// Without a connect window of its own, Windows decided the verdict. A
+/// connect to a closed port is not refused on the spot there the way it is on
+/// Linux and macOS: the stack retransmits the SYN and only reports
+/// WSAECONNREFUSED afterwards. Measured on the Windows box for plain
+/// `127.0.0.1`, with nothing listening: 2.06 s for `TcpStream::connect`, the
+/// same 2.02 s for tokio. That is longer than the whole probe window, so
+/// reqwest's overall timeout fired first, the error was a timeout and not a
+/// connect error, and every backend that was simply NOT RUNNING was reported
+/// to a Windows customer as "Reachable, slow to answer" (the Troubleshoot
+/// panel's `Timeout` wording). That is the same lie T5 removed for the
+/// opposite case, pointing the other way: the panel told people a backend
+/// they had never started was alive.
+///
+/// A third of the window is generous for what the connect phase actually
+/// does here. Two of the three endpoints are on this machine, where a
+/// handshake either completes in microseconds or is never going to complete;
+/// the third, a customer-configured Ollama base, can sit on the LAN, and
+/// 500 ms of the production window is far more than a handshake needs there.
+/// What remains of the window still belongs to the question the timeout was
+/// raised for: a server that ACCEPTED the connection and is slow to answer.
+fn connect_window(timeout: Duration) -> Duration {
+    timeout / 3
+}
+
 // NOTE: this is `async` and uses the ASYNC reqwest client on purpose.
 // system_health is a `#[tauri::command] async fn`, so its body runs on a
 // tokio worker thread. `reqwest::blocking` builds (and on drop, tears down)
@@ -102,7 +130,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 // shares the existing runtime and has no such problem.
 async fn probe_http(url: &str, timeout: Duration) -> BackendProbe {
     let endpoint = url.to_string();
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(connect_window(timeout))
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             return BackendProbe {
@@ -130,8 +162,12 @@ async fn probe_http(url: &str, timeout: Duration) -> BackendProbe {
             let head = msg.chars().take(160).collect::<String>();
             // `is_connect()` covers connection-refused cross-platform
             // (Windows reports "os error 10061 / actively refused", not the
-            // Unix "Connection refused" string). Nothing is listening, so
-            // this is the genuine "not running" case.
+            // Unix "Connection refused" string) and, since the client carries
+            // a `connect_window`, a handshake that never completed either.
+            // Both mean the same thing to the person reading the panel:
+            // nothing accepted a connection, so nothing is running there.
+            // This branch stays FIRST on purpose, because a connect timeout
+            // answers true to `is_timeout()` as well.
             let refused = e.is_connect()
                 || msg.contains("Connection refused")
                 || msg.contains("ConnectFailed")
@@ -504,9 +540,37 @@ mod tests {
         });
     }
 
+    /// The wiring that keeps the split honest on Windows: the connect phase
+    /// has to give up well inside the probe window, or the overall timeout
+    /// fires first and a refused connection arrives as a timeout error. It
+    /// also has to leave most of the window to the phase the timeout exists
+    /// for, so neither half may collapse into the other.
+    #[test]
+    fn the_connect_window_ends_well_inside_the_probe_window() {
+        let connect = connect_window(PROBE_TIMEOUT);
+        assert!(
+            connect < PROBE_TIMEOUT,
+            "a connect window that reaches the probe window cannot beat it: {connect:?} vs {PROBE_TIMEOUT:?}"
+        );
+        assert!(
+            PROBE_TIMEOUT - connect >= Duration::from_millis(500),
+            "too little of the window is left for a server that answers slowly: {connect:?} of {PROBE_TIMEOUT:?}"
+        );
+        assert!(
+            connect >= Duration::from_millis(250),
+            "a handshake to a configured Ollama on the LAN needs more room than {connect:?}"
+        );
+    }
+
     /// The other half of the same split: nothing listening at all is still
     /// the genuine "Not running" case and must stay `Unreachable`, not
     /// regress to `Timeout` now that the two are distinguished.
+    ///
+    /// This is the test the Windows box failed before the connect window
+    /// existed, and it is the one that proves the fix: there, a connect to a
+    /// closed port is only refused after about two seconds, so without a
+    /// connect window of its own the probe gave up as a TIMEOUT and told the
+    /// customer a backend that was never started was alive but slow.
     #[test]
     fn nothing_listening_still_reads_as_unreachable() {
         let rt = tokio::runtime::Runtime::new().unwrap();
