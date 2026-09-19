@@ -135,6 +135,10 @@ describe('endpointMap covers every backendCall/invokeMedia site the frontend can
     'character_training_status', 'check_download_space', 'clear_download_entry',
     'clear_training_set', 'comfy_upload_image', 'delete_bundled_model', 'delete_orphan_download',
     'detect_gpus', 'disconnect_remote_device', 'download_voice',
+    // execute_code_cancel (R2-44): the execute_code counterpart to
+    // shell_execute_cancel below, same reasoning, same Tauri-only shape
+    // (Rust kills the process tree by callId, no HTTP route makes sense).
+    'execute_code_cancel',
     'exit_app', 'file_read', 'find_orphan_downloads', 'fix_comfyui_cors', 'funnel_ping',
     'get_comfy_gpu_status', 'get_current_time', 'import_local_model', 'install_character_trainer',
     'install_lmstudio', 'install_lmstudio_status', 'install_method', 'install_python',
