@@ -25,6 +25,15 @@
  * einen dispatchten Remote-Chat vor der ersten Mobil-Nachricht, weil die
  * Bedingung `conv.mode !== 'lu'` jeden anderen Modus ausschloss. `mode:
  * 'remote'` zaehlt jetzt mit (Fix in ChatView.tsx, activeConvIsEmpty).
+ *
+ * BLOCKER (review-teil15.md): der A3-Umbau schrieb die Bedingung als
+ * `conv.mode !== 'lu' && conv.mode !== 'remote'` und liess dabei die alte
+ * Vorbelegung "kein mode-Feld heisst lu" fallen. Fuer eine Unterhaltung ohne
+ * `mode` (Chats von vor 5382d831, oder importiert ueber
+ * lib/parsers/chatbot-export.ts) lautete das Ergebnis wieder `false`, also
+ * derselbe leere Hauptbereich wie das urspruengliche F1-Symptom. Fix: die
+ * Vorbelegung sitzt jetzt in genau einer Stelle, `lib/conversation-mode.ts`,
+ * und ChatView.tsx wie RecentChats.tsx lesen beide von dort.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createElement } from 'react'
@@ -103,6 +112,21 @@ describe('F1: eine aktive, leere Unterhaltung zeigt nie einen komplett leeren Ha
     expect(screen.getByTestId('chat-landing')).toBeTruthy()
   })
 
+  it('BLOCKER-FIX (review-teil15.md): eine leere Unterhaltung OHNE mode-Feld zeigt den Leerzustand, nicht eine leere Flaeche', () => {
+    // Pre-Migration-Chats (mode eingefuehrt 5382d831, 05.04.2026) und Importe
+    // ueber chatbot-export.ts tragen kein `mode`-Feld. `conv.mode` ist hier
+    // absichtlich `undefined`, nicht `'lu'`.
+    useUIStore.setState({ sidebarOpen: true })
+    const { mode: _mode, ...withoutMode } = conv('legacy', 'Legacy Chat', NOW)
+    useChatStore.setState({
+      conversations: [withoutMode as Conversation],
+      activeConversationId: 'legacy',
+    })
+    render(createElement(ChatView))
+    expect(screen.getByTestId('chat-landing')).toBeTruthy()
+    expect(screen.getByText('Ask LU anything')).toBeTruthy()
+  })
+
   it('A3: ein dispatchter, noch leerer Remote-Chat zeigt denselben Leerzustand-Block, nicht eine leere Flaeche', () => {
     useUIStore.setState({ sidebarOpen: true })
     useChatStore.setState({
@@ -114,7 +138,7 @@ describe('F1: eine aktive, leere Unterhaltung zeigt nie einen komplett leeren Ha
     expect(screen.getByText('Ask LU anything')).toBeTruthy()
   })
 
-  it('A3-NEGATIVKONTROLLE: ein Remote-Chat mit der ersten Nachricht weicht dem Transkript, wie bei lu', () => {
+  it('A3-WAECHTER (keine Negativkontrolle fuer diesen Fix, siehe review-teil15.md Auflage 3): ein Remote-Chat mit der ersten Nachricht weicht dem Transkript, wie bei lu; waere auch ohne den A3-Fix gruen, weil ein Remote-Chat vor A3 nie einen Landing-Block zeigte', () => {
     useUIStore.setState({ sidebarOpen: true })
     useChatStore.setState({
       conversations: [{

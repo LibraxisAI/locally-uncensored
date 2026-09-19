@@ -38,6 +38,7 @@ import { RecentChats } from './RecentChats'
 import { useUIStore } from '../../stores/uiStore'
 import { useCompareStore } from '../../stores/compareStore'
 import { exportConversation } from '../../lib/chat-export'
+import { conversationMode } from '../../lib/conversation-mode'
 import { PermissionOverrideBar } from './PermissionOverrideBar'
 import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
@@ -92,7 +93,8 @@ export function ChatView() {
     // Reiterwechsel den Zustand zuruecksetzt. 'codex' bleibt aussen vor
     // (eigene Ansicht, CodexView, siehe chatMode-Weiche oben); 'openclaw' hat
     // keinen aktiven Einstiegspunkt in der UI und bleibt deshalb unberuehrt.
-    if (conv.mode !== 'lu' && conv.mode !== 'remote') return false
+    const mode = conversationMode(conv)
+    if (mode !== 'lu' && mode !== 'remote') return false
     return conv.messages.filter((m) => m.role !== 'system' && !m.hidden).length === 0
   })
   const activeModel = useModelStore((s) => s.activeModel)
@@ -503,7 +505,7 @@ export function ChatView() {
                     <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto scrollbar-thin py-4 px-3">
                       <div
                         data-testid="chat-landing"
-                        className="flex flex-col items-center text-center gap-2"
+                        className="w-full max-w-[var(--lu-measure)] flex flex-col items-center text-center gap-2"
                       >
                         <img
                           src={MONOGRAM}
