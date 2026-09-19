@@ -890,3 +890,57 @@ for (const [claim, why] of [
   assert.ok(flat.includes(claim), `CHANGELOG.md ${appVersion}: ${why} does not match the catalogue (${claim})`)
 }
 console.log(`Cloud panel guard passed: ${MARKED_MODELS} marked chat models, ${openVideo} open video and ${openImage} open image models counted in the catalogue, EUR ${hostedTier.monthlyEUR} on the button, and a subscriber advantage of ${factor}x divided out of the live pack and plan tables.`)
+
+// ── R5-57, R5-58, R5-59: the Desktop seed must not silently fall behind ─────
+//
+// The desktop app's own offline fallback catalog (src/lib/render/
+// cloud-models.ts, CLOUD_MODEL_SEED) is a separate, hand-copied file, not a
+// generated mirror of the web catalog: it exists so Create still has a model
+// list before the first live GET /api/jobs/catalog lands. qwen-image-edit
+// (an 'ops: ['edit']' model, maskless) went missing from it entirely and was
+// unreachable from the edit picker until this fix, exactly the class of drift
+// this guard exists to catch on the next model the two catalogs disagree on.
+//
+// Deliberately an ID + LABEL comparison, nothing about price: the seed is
+// meant to go stale on price (the live catalog is the pricing truth, see the
+// module comment at the top of cloud-models.ts) and a guard that failed on
+// that would be noise nobody could act on. `wan-2.2-spicy-extend` is read
+// here as an ordinary row like any other, unrenamed, so a guard that lived
+// only to protect ITS id would be pointless duplication of the type system.
+const desktopMediaPath = new URL('../src/lib/render/cloud-models.ts', import.meta.url)
+const desktopMediaSource = ts.createSourceFile(
+  'cloud-models.ts', readFileSync(desktopMediaPath, 'utf8'), ts.ScriptTarget.Latest, true,
+)
+// Own small AST walk rather than the shared `objects()` above: that helper
+// only captures string/numeric literals, so it cannot see `edit: true`
+// (a boolean) or `ops: ['edit']` (an array) at all. Reading each object
+// literal's own full text (not a single source LINE) is what makes this safe
+// against entries that spread id/label/edit/ops across several lines —
+// flux-dev is written that way in both files.
+function editCapableIds(sourceFile) {
+  const out = new Map()
+  function visit(node) {
+    if (ts.isObjectLiteralExpression(node)) {
+      const text = node.getText(sourceFile)
+      const id = /id:\s*'([^']+)'/.exec(text)?.[1]
+      if (id) {
+        const label = /label:\s*'([^']+)'/.exec(text)?.[1]
+        const editCapable = /edit:\s*true/.test(text) || /ops:\s*\[[^\]]*'edit'[^\]]*\]/.test(text)
+        if (editCapable) out.set(id, label)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return out
+}
+const desktopEditModels = editCapableIds(desktopMediaSource)
+const webEditModels = editCapableIds(mediaSource)
+assert.ok(desktopEditModels.size > 0, 'no edit-capable model found in the desktop seed at all')
+for (const [id, webLabel] of webEditModels) {
+  assert.ok(desktopEditModels.has(id),
+    `desktop seed is missing the edit-capable model '${id}' (${webLabel}) that the web catalogue serves`)
+  assert.equal(desktopEditModels.get(id), webLabel,
+    `desktop seed labels '${id}' as "${desktopEditModels.get(id)}", web calls it "${webLabel}"`)
+}
+console.log(`Seed sync guard passed: ${desktopEditModels.size} edit-capable model(s) in the desktop seed match the web catalogue by id and label.`)
