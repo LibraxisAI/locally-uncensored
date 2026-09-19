@@ -246,7 +246,6 @@ function WorkflowSection() {
 
   return (
     <WorkflowList
-      onRun={() => {}}
       onEdit={(id) => { setEditingId(id); setWfView('builder') }}
       onCreate={() => { setEditingId(undefined); setWfView('builder') }}
     />

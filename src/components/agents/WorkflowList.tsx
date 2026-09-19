@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Play, Pencil, Trash2, Copy, Plus, Search, FileText, Code, Zap } from 'lucide-react'
+import { Pencil, Trash2, Copy, Plus, Search, FileText, Code, Zap } from 'lucide-react'
 import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
 import type { AgentWorkflow } from '../../types/agent-workflows'
 
@@ -9,12 +9,11 @@ const ICON_MAP: Record<string, typeof Search> = {
 }
 
 interface WorkflowListProps {
-  onRun: (workflowId: string) => void
   onEdit: (workflowId: string) => void
   onCreate: () => void
 }
 
-export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
+export function WorkflowList({ onEdit, onCreate }: WorkflowListProps) {
   const { workflows, removeWorkflow, duplicateWorkflow } = useAgentWorkflowStore()
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
@@ -47,13 +46,6 @@ export function WorkflowList({ onRun, onEdit, onCreate }: WorkflowListProps) {
           <p className="text-[0.55rem] text-gray-600">{workflow.steps.length} steps</p>
         </div>
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-          <button
-            onClick={() => onRun(workflow.id)}
-            className="p-1 rounded hover:bg-green-500/20 text-gray-500 hover:text-green-400"
-            title="Run"
-          >
-            <Play size={11} />
-          </button>
           {!workflow.isBuiltIn && (
             <button
               onClick={() => onEdit(workflow.id)}
