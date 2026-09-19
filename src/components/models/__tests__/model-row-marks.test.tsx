@@ -33,7 +33,8 @@ describe('ModelRowMarks', () => {
     expect(screen.getByText('No refusals')).toBeTruthy()
   })
 
-  // K12 (3.0.1): the Discord report was "can't find it", not "it's wrong",   // plain text at the smallest size on a crowded row, no icon at all. An
+  // K12 (3.0.1): the Discord report was "can't find it", not "it's wrong",
+  // plain text at the smallest size on a crowded row, no icon at all. An
   // icon is the cheapest signal that survives a quick scan of the list; the
   // text itself and the typography ladder step stay unchanged (see the
   // comment on the mark in ModelRowMarks.tsx).

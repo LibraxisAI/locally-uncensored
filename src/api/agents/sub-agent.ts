@@ -638,7 +638,8 @@ export async function defaultSubAgentRunner(
     messages.push({ role: 'assistant', content: turn.content || '', tool_calls: turn.toolCalls })
     // Map each result back to its ORIGINATING call by index. executeParallel
     // preserves input order (results[i] <-> requests[i] <-> turn.toolCalls[i]),
-    // so zipping by index gives every tool message the correct tool_call_id,     // even when the turn fired the same tool twice. The previous find-by-name
+    // so zipping by index gives every tool message the correct tool_call_id,
+    // even when the turn fired the same tool twice. The previous find-by-name
     // matched the FIRST call for both duplicates, leaving the second call's id
     // with no result; strict OpenAI-compatible providers (lu-cloud/DeepInfra,
     // openai, anthropic) then 400/422'd on the next turn and delegate_task

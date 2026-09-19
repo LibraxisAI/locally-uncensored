@@ -96,7 +96,8 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderConfig> = {
     apiKey: '',
     isLocal: false,
   },
-  // LU Cloud chat (lu-labs.ai inference proxy). apiKey stays empty forever,   // auth is the user's Supabase session token, injected per request by
+  // LU Cloud chat (lu-labs.ai inference proxy). apiKey stays empty forever,
+  // auth is the user's Supabase session token, injected per request by
   // LuCloudProvider. useCloudAuth flips `enabled` with the account state.
   'lu-cloud': {
     id: 'lu-cloud',
@@ -346,7 +347,8 @@ export const useProviderStore = create<ProviderState>()(
       // throws every configured backend away. Harmless today (no blob carries a
       // numeric version yet), fatal the day this store goes to 2.
       migrate: keepPersistedState,
-      // Blobs persisted before the lu-cloud provider existed lack its entry,       // backfill every missing provider from defaults so getProvider() can't
+      // Blobs persisted before the lu-cloud provider existed lack its entry,
+      // backfill every missing provider from defaults so getProvider() can't
       // hit an undefined config after an update.
       merge: (persisted: unknown, current: ProviderState): ProviderState => {
         const p = (persisted ?? {}) as Partial<ProviderState>

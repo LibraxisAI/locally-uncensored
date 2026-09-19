@@ -116,7 +116,8 @@ describe('memory markdown round trip: the whole data-loss class (Opus-Review Nac
       expect(after.content).toBe(before.content)
       expect(after.title).toBe(before.title)
       expect(after.source).toBe(before.source)
-      // The date round trips to DAY precision only (see isoTag/isoBack),       // that is the export format, not a bug this test should flag.
+      // The date round trips to DAY precision only (see isoTag/isoBack),
+      // that is the export format, not a bug this test should flag.
       const beforeDay = new Date(before.updatedAt).toISOString().slice(0, 10)
       const afterDay = new Date(after.updatedAt).toISOString().slice(0, 10)
       expect(afterDay).toBe(beforeDay)

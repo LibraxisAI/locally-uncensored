@@ -1424,7 +1424,8 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
   const resetPermissions = usePermissionStore((s) => s.resetToDefaults)
   // The arm records the tab it was made on, so "still armed?" is a question
   // that can be answered while rendering. Switching tabs while armed must
-  // disarm, otherwise a click armed on General would confirm-fire on Agent,   // and armedScopeFor() is that rule (src/lib/reset-arming.ts). It replaces a
+  // disarm, otherwise a click armed on General would confirm-fire on Agent,
+  // and armedScopeFor() is that rule (src/lib/reset-arming.ts). It replaces a
   // `useEffect(..., [tab])` that disarmed one render too late.
   const [arm, setArm] = useState<ResetArm<SettingsTab>>(null)
   const armed = armedScopeFor(arm, tab)
@@ -1991,7 +1992,8 @@ export function SettingsPage() {
                   // The line above is what actually re-runs the wizard: AppShell
                   // gates it on settings.onboardingDone, and that store is
                   // persisted, so it survives the reload below. The backend call
-                  // only clears the marker FILE, which is read in one place,                   // the NSIS-update recovery in AppShell, and only when the
+                  // only clears the marker FILE, which is read in one place,
+                  // the NSIS-update recovery in AppShell, and only when the
                   // store itself was lost.
                   //
                   // Level (a): silent on purpose. The visible action succeeds

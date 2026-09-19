@@ -349,7 +349,8 @@ export function ProviderSettings() {
       // switching to LM Studio/vLLM clears the built-in flag and re-selecting
       // Built-in restores it.
       // F3 (3.0.1, T4 Nebenfund): a real takeover must not leave the
-      // displaced backend's API key sitting in the shared slot's field,       // see takeoverClearsApiKey in lib/openai-slot-handover.ts. Checked
+      // displaced backend's API key sitting in the shared slot's field,
+      // see takeoverClearsApiKey in lib/openai-slot-handover.ts. Checked
       // against the same shape slotTakeoverUpdate itself reads below.
       if (takeoverClearsApiKey(providers.openai, {
         name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed,

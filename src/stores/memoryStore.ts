@@ -1070,7 +1070,8 @@ export const useMemoryStore = create<MemoryState>()(
           md += `## ${typeTitles[type]}\n\n`
           for (const entry of typeEntries) {
             const date = isoTag(entry.updatedAt)
-            // R2-25: escaped so a multi-line entry stays ONE physical line,             // see escapeMdContent. The bracket-ending check below still reads
+            // R2-25: escaped so a multi-line entry stays ONE physical line,
+            // see escapeMdContent. The bracket-ending check below still reads
             // the RAW content: `\n`-escaping never adds or removes a
             // trailing `]`, and checking the escaped form would be the same
             // answer read through an extra step.
@@ -1181,7 +1182,8 @@ export const useMemoryStore = create<MemoryState>()(
           return { added: 0, updated: 0, alreadyPresent: 0 }
         }
         // Tolerant shape handling: accept LU's own {entries:[...]} export, a
-        // bare [...] array, or {memories:[...]} (konata-session 2026-06-07,         // imports silently produced 0 entries on any other shape).
+        // bare [...] array, or {memories:[...]} (konata-session 2026-06-07,
+        // imports silently produced 0 entries on any other shape).
         const entriesField = prop(raw, 'entries')
         const memoriesField = prop(raw, 'memories')
         const arr: unknown[] = Array.isArray(raw) ? raw

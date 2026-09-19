@@ -51,7 +51,8 @@ export interface ProviderConfig {
     disabledByUser?: boolean
     // Opus-Review Nachbesserung 6 (3.0.1, F3): the pushed-out backend's own
     // API key, so a takeover does not just stop LEAKING it into the new
-    // occupant's field (the original F3 fix) but also stops DESTROYING it,     // handing the slot back used to come back with no key and a silent 401.
+    // occupant's field (the original F3 fix) but also stops DESTROYING it,
+    // handing the slot back used to come back with no key and a silent 401.
     // Same "obfuscated" representation `apiKey` itself carries, an opaque
     // blob this app never needs to read as text outside providerStore.ts.
     // Session-only on purpose: providerStore.ts's `partialize` strips this
@@ -169,7 +170,8 @@ export interface ChatOptions {
   temperature?: number
   topP?: number
   // Ollama/Anthropic support this. The real OpenAI API does not, but F3
-  // (3.0.1): the OpenAI-COMPATIBLE provider (self-hosted endpoints,   // llama.cpp, vLLM, KoboldCpp, LM Studio, the built-in engine) sends it as
+  // (3.0.1): the OpenAI-COMPATIBLE provider (self-hosted endpoints,
+  // llama.cpp, vLLM, KoboldCpp, LM Studio, the built-in engine) sends it as
   // an extension field, the same way it already sends top_p.
   topK?: number
   maxTokens?: number

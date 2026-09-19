@@ -779,7 +779,8 @@ export class OpenAIProvider implements ProviderClient {
 
     if (options?.temperature !== undefined) body.temperature = options.temperature
     if (options?.topP !== undefined) body.top_p = options.topP
-    // F3: temperature and top_p reached the request, top_k never did,     // the sampling popup's slider promised an effect that never happened.
+    // F3: temperature and top_p reached the request, top_k never did,
+    // the sampling popup's slider promised an effect that never happened.
     // LU Cloud is excluded on purpose: its proxy protocol genuinely has no
     // such field (sampling-reaches-the-cloud-body.test.ts), unlike a real
     // self-hosted llama.cpp/vLLM/KoboldCpp/LM-Studio/built-in-engine server.
@@ -904,7 +905,8 @@ export class OpenAIProvider implements ProviderClient {
 
         const content = choice.delta?.content || ''
 
-        // Yield native reasoning as `thinking` so the panel fills live,         // without this the entire reasoning phase of a cloud reasoner is
+        // Yield native reasoning as `thinking` so the panel fills live,
+        // without this the entire reasoning phase of a cloud reasoner is
         // silently dropped and the chat sits in dead air (uselu fc55c91).
         const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning ?? ''
         if (repetitionStop?.push(content) || reasoningRepetitionStop?.push(reasoning)) {
@@ -993,7 +995,8 @@ export class OpenAIProvider implements ProviderClient {
 
     if (options?.temperature !== undefined) body.temperature = options.temperature
     if (options?.topP !== undefined) body.top_p = options.topP
-    // F3: temperature and top_p reached the request, top_k never did,     // the sampling popup's slider promised an effect that never happened.
+    // F3: temperature and top_p reached the request, top_k never did,
+    // the sampling popup's slider promised an effect that never happened.
     // LU Cloud is excluded on purpose: its proxy protocol genuinely has no
     // such field (sampling-reaches-the-cloud-body.test.ts), unlike a real
     // self-hosted llama.cpp/vLLM/KoboldCpp/LM-Studio/built-in-engine server.
@@ -1729,7 +1732,8 @@ export class OpenAIProvider implements ProviderClient {
 
     // LM Studio: model load fails when there's no inference runtime for the
     // model's format installed. The raw API error reads "No LM Runtime found
-    // for model format 'gguf'" which doesn't tell a noob what to do,     // rewrite it into actionable steps. This commonly happens on Windows
+    // for model format 'gguf'" which doesn't tell a noob what to do,
+    // rewrite it into actionable steps. This commonly happens on Windows
     // ARM64 where LM Studio doesn't auto-fetch a runtime, and on any fresh
     // install where the user installed via LU's in-app install_lmstudio.
     // The runtime catalogue isn't reachable from `lms` CLI (no `runtime`
