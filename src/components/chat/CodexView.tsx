@@ -268,6 +268,20 @@ export function CodexView() {
           <SmallModelModeToggle />
         </div>
 
+        {/* R2-21: der Sperrgrund hing bisher nur als `title` am Entfernen-Knopf,
+            und ein `disabled` Knopf nimmt keine Mauszeiger-Ereignisse an, also
+            ist der Hinweis nie erschienen (derselbe Fehler wie im ExplorerPanel,
+            dort mit `explorer-workdir-lock` behoben). Ruhiger Ton, keine
+            Warnfarbe: gesperrt ist ein Zustand, der von selbst endet. */}
+        {lockReason && (
+          <p
+            data-testid="codex-workdir-lock"
+            className={`px-3 py-1 text-[0.55rem] border-b border-gray-200 dark:border-white/[0.04] ${HINWEIS_TEXT.ruhig}`}
+          >
+            {CODEX_WORKDIR_LOCK_TITLE[lockReason]}
+          </p>
+        )}
+
         {/* Git-missing banner (v2.5.0). Codex shells out to git for
             status/diff/commit/log, and without it those tools fail. Minimal,
             dismiss-by-installing: an Install button (opens the platform git
