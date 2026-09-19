@@ -2546,6 +2546,17 @@ export function useAgentChat() {
             (runState.content ? runState.content + '\n\n' : '') +
             `The server is limiting how many requests this account may send in a short window, and the run waited for it once already. Give it ${when}, then send your message again. Nothing was charged for the refused attempts.`
           )
+        } else if ((err as { code?: string })?.code === 'flash_timeout') {
+          // R5-53: isTerminalModelError now stops this from being retried at
+          // all, so this branch is reached after exactly one attempt, not
+          // three. Unlike the 429 branch above, the server's own line already
+          // says exactly what happened ("reached its four-minute limit"), so
+          // it is left standing instead of being replaced with new prose.
+          loopHalt = 'flash timeout'
+          useChatStore.getState().updateMessageContent(
+            convId!, assistantMessage.id,
+            (runState.content ? runState.content + '\n\n' : '') + errorMsg
+          )
         } else if (sendRefusal) {
           // Bug B3 round 2, nebenbefund 3: a chat-tools turn in PLAIN chat
           // runs through this same executor, so the template's own Jinja

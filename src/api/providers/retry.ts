@@ -75,6 +75,24 @@ async function isPermanent429(res: Response): Promise<boolean> {
   }
 }
 
+/**
+ * R5-53: a 504 carrying `code: 'flash_timeout'` means the free-tier request
+ * already sat out its own four-minute hard deadline (see the server's
+ * `abortedResponse` in app/api/inference/v1/chat/completions/route.ts).
+ * Retrying reruns the same request against the same deadline and produces
+ * the identical timeout every time — this is the 504 twin of
+ * `isPermanent429` above, not a transient gateway hiccup a second attempt
+ * could fix.
+ */
+async function isPermanentFlashTimeout(res: Response): Promise<boolean> {
+  if (res.status !== 504) return false
+  try {
+    return /flash_timeout/.test(await res.clone().text())
+  } catch {
+    return false
+  }
+}
+
 export interface TransientRetryOptions {
   signal?: AbortSignal
   /** Total attempts including the first. Defaults to MAX_TRANSIENT_ATTEMPTS. */
@@ -104,6 +122,7 @@ export async function sendWithTransientRetry(
     if (!TRANSIENT_STATUS.has(res.status)) return res
     if (opts?.signal?.aborted) return res
     if (await isPermanent429(res)) return res
+    if (await isPermanentFlashTimeout(res)) return res
 
     // The server's own number wins — a fixed-window limiter refuses again for
     // the whole window, so guessing shorter just burns an attempt inside it.

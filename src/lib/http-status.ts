@@ -99,7 +99,14 @@ export function retryDelayMs(err: unknown, attempt: number): number {
 
 export function isTerminalModelError(err: unknown): boolean {
   const e = err as { code?: unknown; provider?: unknown } | null
-  if (e?.code === 'credits_exhausted' || e?.code === 'signed_out') return true
+  // R5-53: `flash_timeout` is a 504, so without this line it fell through to
+  // "status >= 400 && status < 500" (false) and read as a plain gateway
+  // hiccup worth retrying. The free-tier request had already sat out its own
+  // four-minute hard deadline (see the server's route), so each of the three
+  // attempts in the connRetries ladder repeated the same four-minute wait —
+  // twelve silent minutes before the run gave up, same shape as the
+  // `credits_exhausted` bug this line is modelled on.
+  if (e?.code === 'credits_exhausted' || e?.code === 'signed_out' || e?.code === 'flash_timeout') return true
   const status = httpStatusOf(err)
   if (status === 429 || status === 408) return false
   if (status === 401 && e?.provider === 'lu-cloud') return false
