@@ -99,4 +99,62 @@ describe('Fokus nach Gespraechswechsel per Tastatur', () => {
     // aber die Fahne wurde nie gesetzt: das Suchfeld behaelt seinen Fokus.
     expect(document.activeElement).toBe(suchfeld)
   })
+
+  /**
+   * Auflage 7 (Review composer Runde 2, 19.09.2026): `SHORTCUT_ACTIONS['new-conversation']`
+   * ruft `createConversation` NUR `if (model)`. Ohne aktives Modell wechselt
+   * `conversationId` also gar nicht, ChatInput bleibt montiert, der
+   * `useLayoutEffect` dort laeuft nie - vor dem Fix blieb die Fahne trotzdem
+   * gesetzt stehen, und der NAECHSTE Wechsel (hier per Maus/Sidebar) haette
+   * ihr Ziel einmalig den Fokus gestohlen, selbst wenn der Nutzer laengst in
+   * einem ganz anderen Feld stand.
+   */
+  it('Ctrl+N OHNE aktives Modell: kein Wechsel, und der Fokus bleibt', () => {
+    useModelStore.setState({ activeModel: null })
+    const convA = useChatStore.getState().createConversation(MODEL, '')
+    useChatStore.getState().setActiveConversation(convA)
+    render(<Host />)
+
+    const nodeA = screen.getByPlaceholderText('Message...') as HTMLTextAreaElement
+    nodeA.focus()
+    expect(document.activeElement).toBe(nodeA)
+
+    act(() => {
+      fireEvent.keyDown(nodeA, { key: 'n', ctrlKey: true })
+    })
+
+    // Ohne Modell hat SHORTCUT_ACTIONS['new-conversation'] nichts erzeugt:
+    // derselbe Knoten, derselbe Fokus.
+    expect(useChatStore.getState().activeConversationId).toBe(convA)
+    expect(screen.getByPlaceholderText('Message...')).toBe(nodeA)
+    expect(document.activeElement).toBe(nodeA)
+  })
+
+  it('NEGATIVKONTROLLE fuer Auflage 7: nach einem wirkungslosen Ctrl+N stiehlt der naechste Wechsel per Maus keinen Fokus', () => {
+    useModelStore.setState({ activeModel: null })
+    const convA = useChatStore.getState().createConversation(MODEL, '')
+    useChatStore.getState().setActiveConversation(convA)
+    render(<Host />)
+
+    const nodeA = screen.getByPlaceholderText('Message...') as HTMLTextAreaElement
+    nodeA.focus()
+    act(() => {
+      fireEvent.keyDown(nodeA, { key: 'n', ctrlKey: true })
+    })
+
+    // Jetzt kommt das Modell zurueck (Modelliste fertig geladen) und der
+    // Nutzer wechselt per Sidebar-Klick, nicht per Tastatur, in ein
+    // Suchfeld hinein.
+    useModelStore.setState({ activeModel: MODEL })
+    const suchfeld = screen.getByLabelText('Suchfeld') as HTMLInputElement
+    suchfeld.focus()
+    expect(document.activeElement).toBe(suchfeld)
+
+    const convB = useChatStore.getState().createConversation(MODEL, '')
+    act(() => { useChatStore.getState().setActiveConversation(convB) })
+
+    // Ohne den Fix haette die von Ctrl+N liegen gebliebene Fahne hier den
+    // Fokus aus dem Suchfeld gerissen. Mit dem Fix wurde sie nie gesetzt.
+    expect(document.activeElement).toBe(suchfeld)
+  })
 })

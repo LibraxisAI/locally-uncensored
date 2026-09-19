@@ -185,8 +185,22 @@ export const SHORTCUT_ACTIONS: Readonly<Record<ShortcutId, () => void>> = {
  */
 let composerFocusPending = false
 
-/** Wird nur gesetzt, wenn der Tastendruck selbst aus dem Composer-Feld kam. */
+/**
+ * Auflage 7 (Review composer Runde 2, 19.09.2026): `SHORTCUT_ACTIONS['new-conversation']`
+ * ruft `createConversation` nur `if (model)`. Fehlt ein aktives Modell (frische
+ * Installation, Modelliste noch nicht geladen, Modell wegen `modelOutOfMode`
+ * geleert), wechselt `conversationId` nie, ChatInput bleibt montiert, der
+ * `useLayoutEffect` dort laeuft folglich nie, und die Fahne blieb bisher
+ * gesetzt stehen. Der naechste Wechsel per Maus haette dann einmalig den
+ * Fokus gestohlen, auch wenn der Nutzer laengst in einem Suchfeld stand.
+ *
+ * Fix: `markComposerFocusPending` setzt die Fahne nur noch, wenn wirklich
+ * gewechselt wird - derselbe `activeModel`-Blick, den die Aktion selbst
+ * gleich danach synchron macht, kann sich zwischen den beiden Aufrufen nicht
+ * aendern.
+ */
 function markComposerFocusPending() {
+  if (!useModelStore.getState().activeModel) return
   composerFocusPending = true
 }
 
