@@ -14,23 +14,40 @@
  * (locallyuncensored.com), not to this signed-in-only account setting. The
  * word "filter" stays allowed here.
  *
- * Run: npx vitest run src/components/settings/__tests__/content-policy-wording-parity.test.ts
+ * B5 (review-w2ui.md, 18.09.2026): this used to read Web's source through a
+ * fixed six-`..` `__dirname` path, which only resolves from
+ * `lu-301-wt/<name>/`. Outside that (the main checkout, Windows, CI) the
+ * `readFileSync` at module scope threw and took the whole file down. Same
+ * fix as `katalog-paritaet-web.test.ts`: LU_WEB_REPO from the environment,
+ * then a couple of `process.cwd()`-relative candidates, and a clean skip
+ * with a message when none exist, instead of a false green or a hard crash.
+ *
+ * Run: LU_WEB_REPO=/path/to/web npx vitest run \
+ *   src/components/settings/__tests__/content-policy-wording-parity.test.ts
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const DESKTOP_SRC = readFileSync(resolve(__dirname, '../ContentPolicySettings.tsx'), 'utf8')
 
-// The web repo lives as a sibling checkout next to this one, same as the
-// safety.ts parity work for R5-9. Read-only reference, never imported.
-const WEB_PATH = resolve(
-  __dirname,
-  '../../../../../../lu-300-web/apps/web/components/settings/ContentPolicySettings.tsx',
-)
-const WEB_SRC = readFileSync(WEB_PATH, 'utf8')
+const REL_PATH = 'apps/web/components/settings/ContentPolicySettings.tsx'
+const KANDIDATEN = [
+  ...(process.env.LU_WEB_REPO?.trim() ? [resolve(process.env.LU_WEB_REPO.trim())] : []),
+  resolve(process.cwd(), '../lu-300-web'),
+  resolve(process.cwd(), '../lu-300-web-katalog'),
+]
+const WEB = KANDIDATEN.find((p) => existsSync(resolve(p, REL_PATH)))
+if (!WEB) {
+  process.stderr.write(
+    '[content-policy-wording-parity] uebersprungen: kein Web-Checkout gefunden. Gesucht in: ' +
+      KANDIDATEN.join(' | ') +
+      '. Setze LU_WEB_REPO, damit der Paritaetswaechter laeuft.\n',
+  )
+}
+const WEB_SRC = WEB ? readFileSync(resolve(WEB, REL_PATH), 'utf8') : ''
 
-describe('R5-5, R5-6: the strict and off hints match Web word for word', () => {
+describe.skipIf(!WEB)('R5-5, R5-6: the strict and off hints match Web word for word', () => {
   it('the "strict" hint is identical', () => {
     const hint = "The strictest setting we have. Choose this if others use your screen."
     expect(DESKTOP_SRC).toContain(hint)
@@ -60,7 +77,7 @@ describe('R5-5, R5-6: the strict and off hints match Web word for word', () => {
   })
 })
 
-describe('R5-4: the footnote keeps Web wording for its first two sentences', () => {
+describe.skipIf(!WEB)('R5-4: the footnote keeps Web wording for its first two sentences', () => {
   const sharedPrefix = 'Applies to images and video generated in the cloud. Text is unaffected.'
 
   it('Desktop carries the shared prefix plus its own local-machine sentence', () => {

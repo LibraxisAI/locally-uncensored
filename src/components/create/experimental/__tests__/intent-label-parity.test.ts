@@ -10,17 +10,37 @@
  * (a sibling checkout, same pattern as the R5-9 and R5-4 parity tests) rather
  * than importing it, since it is a Next.js file this bundle cannot import.
  *
- * Run: npx vitest run src/components/create/experimental/__tests__/intent-label-parity.test.ts
+ * B5 (review-w2ui.md, 18.09.2026): this used to read Web's source through a
+ * fixed seven-`..` `__dirname` path, which only resolves from
+ * `lu-301-wt/<name>/`. Outside that (the main checkout, Windows, CI) the
+ * `readFileSync` at module scope threw and took the whole file down. Same
+ * fix as `katalog-paritaet-web.test.ts`: LU_WEB_REPO from the environment,
+ * then a couple of `process.cwd()`-relative candidates, and a clean skip
+ * with a message when none exist, instead of a false green or a hard crash.
+ *
+ * Run: LU_WEB_REPO=/path/to/web npx vitest run \
+ *   src/components/create/experimental/__tests__/intent-label-parity.test.ts
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { INTENT_MAP } from '../intents'
 
-const WEB_SRC = readFileSync(
-  resolve(__dirname, '../../../../../../../lu-300-web/apps/web/components/create/experimental/intents.ts'),
-  'utf8',
-)
+const REL_PATH = 'apps/web/components/create/experimental/intents.ts'
+const KANDIDATEN = [
+  ...(process.env.LU_WEB_REPO?.trim() ? [resolve(process.env.LU_WEB_REPO.trim())] : []),
+  resolve(process.cwd(), '../lu-300-web'),
+  resolve(process.cwd(), '../lu-300-web-katalog'),
+]
+const WEB = KANDIDATEN.find((p) => existsSync(resolve(p, REL_PATH)))
+if (!WEB) {
+  process.stderr.write(
+    '[intent-label-parity] uebersprungen: kein Web-Checkout gefunden. Gesucht in: ' +
+      KANDIDATEN.join(' | ') +
+      '. Setze LU_WEB_REPO, damit der Paritaetswaechter laeuft.\n',
+  )
+}
+const WEB_SRC = WEB ? readFileSync(resolve(WEB, REL_PATH), 'utf8') : ''
 
 /** Pulls label/short for one intent id out of Web's source, without importing it. */
 function webLabelShort(id: string): { label: string; short: string } | null {
@@ -32,7 +52,7 @@ function webLabelShort(id: string): { label: string; short: string } | null {
   return label && short ? { label, short } : null
 }
 
-describe('R5-67: shared intents keep the same label/short as Web', () => {
+describe.skipIf(!WEB)('R5-67: shared intents keep the same label/short as Web', () => {
   const sharedIds = ['image', 'removebg', 'video', 'animate', 'upscale', 'eraser', 'character', 'lipsync', 'music', 'extend', 'motion']
 
   it.each(sharedIds)('%s matches Web word for word', (id) => {
