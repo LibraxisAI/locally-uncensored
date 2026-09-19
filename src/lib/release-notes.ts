@@ -329,6 +329,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'Reinstall trainer now confirms before it starts.',
             detail: 'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder, instead of starting the reinstall the moment the button is clicked.',
           },
+          {
+            title: 'The model marks now live in the model list only.',
+            detail: 'The model marks now live in the model list only, the line above the message box is gone; the Flash notice sits next to the Agent toggle.',
+          },
         ],
       },
     ],

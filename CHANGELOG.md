@@ -147,6 +147,8 @@ installs stop losing environment variables to it.
 - **Reinstall trainer in Character Studio now opens a confirmation dialog
   first**, showing the current trainer folder, instead of starting the
   reinstall the moment the button is clicked.
+- **The model marks now live in the model list only**, the line above the
+  message box is gone; the Flash notice sits next to the Agent toggle.
 
 ## [3.0.0] - 2026-09-13
 
