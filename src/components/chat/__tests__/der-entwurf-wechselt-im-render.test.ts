@@ -36,6 +36,29 @@ import { dirname, resolve } from 'node:path'
 const here = dirname(fileURLToPath(import.meta.url))
 const quelle = readFileSync(resolve(here, '../ChatInput.tsx'), 'utf8')
 
+/**
+ * Auflage 9 (Review composer Runde 2, 19.09.2026): jeder
+ * `use(Layout)?Effect(() => { ... })`-Rumpf, per Klammerzaehlung begrenzt auf
+ * SEIN eigenes schliessendes `}` - kein `[^]*?`, das ueber die Effektgrenze
+ * hinauslaufen oder an ihr vorbeigreifen kann.
+ */
+function alleEffektRuempfe(quelltext: string): string[] {
+  const ruempfe: string[] = []
+  const kopf = /use(?:Layout)?Effect\(\(\) => \{/g
+  let treffer: RegExpExecArray | null
+  while ((treffer = kopf.exec(quelltext))) {
+    const start = treffer.index + treffer[0].length
+    let tiefe = 1
+    let i = start
+    for (; i < quelltext.length && tiefe > 0; i++) {
+      if (quelltext[i] === '{') tiefe++
+      else if (quelltext[i] === '}') tiefe--
+    }
+    ruempfe.push(quelltext.slice(start, i - 1))
+  }
+  return ruempfe
+}
+
 /** Der Renderzweig, der den Wechsel bemerkt. */
 const wechsel = quelle.indexOf('if (letztesGespraech !== conversationId) {')
 /** Sein Ende: die naechste Zeile, die auf Komponentenebene wieder zumacht. */
@@ -51,11 +74,70 @@ describe('der Wechsel wird im Render entschieden, nicht in einem Effekt', () => 
     expect(quelle).toContain('const [entwuerfe, setEntwuerfe] = useState<')
   })
 
-  it('kein Effekt haengt mehr am Gespraechswechsel', () => {
-    // Der Rueckweg in einen `useEffect(..., [conversationId])` wuerde
-    // set-state-in-effect zurueckholen. Hier steht er als Zusicherung, damit
-    // der Grund am Ort steht und nicht nur in einer Regelmeldung.
-    expect(quelle).not.toContain('}, [conversationId])')
+  it('kein Effekt verschiebt den Entwurf mehr', () => {
+    // Der Rueckweg in einen `useEffect(..., [conversationId])`, der
+    // `setEntwuerfe`/`setInput` fuer den Wechsel selbst aufruft, wuerde
+    // set-state-in-effect zurueckholen. Die Zusicherung prueft genau DAS
+    // Muster (ein Effekt, dessen Rumpf `setEntwuerfe(` ODER `setInput(`
+    // erreicht), nicht jeden Text mit der Abhaengigkeit `[conversationId]`:
+    // Auflage 1 (Review composer, 19.09.2026) hat seitdem einen ZWEITEN,
+    // unabhaengigen `useLayoutEffect` mit genau dieser Abhaengigkeit
+    // bekommen (Fokus-Wiederherstellung nach Ctrl/Cmd+N), der mit dem
+    // Entwurfswechsel nichts zu tun hat und diesen Waechter sonst
+    // faelschlich rot faerben wuerde.
+    //
+    // Auflage 9 (Review composer Runde 2, 19.09.2026): die fruehere Fassung
+    // war `/use(?:Layout)?Effect\(\(\) => \{[^]*?setEntwuerfe\(/` - `[^]*?`
+    // sucht ueber JEDE Effektgrenze hinweg. Ein `setEntwuerfe(` in einem
+    // SPAETEREN Rueckruf (nicht im Effektrumpf selbst) haette diesen
+    // Waechter also falsch rot gefaerbt, und ein reiner `setInput(`-Rueckfall
+    // ohne `setEntwuerfe(` waere gar nicht erst aufgefallen. `effektRuempfe`
+    // unten klammert deshalb jeden Effektrumpf per Klammerzaehlung bis zu
+    // SEINEM schliessenden `}` ein, bevor er nach `setEntwuerfe(` ODER
+    // `setInput(` sucht - keine Regex, die ueber die Grenze hinausgreifen
+    // kann.
+    const effektRuempfe = alleEffektRuempfe(quelle)
+    expect(effektRuempfe.length).toBeGreaterThan(0)
+    const effektVerschiebtEntwurf = effektRuempfe.some(
+      (rumpf) => rumpf.includes('setEntwuerfe(') || rumpf.includes('setInput('),
+    )
+    expect(effektVerschiebtEntwurf).toBe(false)
+  })
+
+  it('NEGATIVKONTROLLE: ein `setInput(`-only-Rueckfall in einem Effekt faerbt den Waechter rot', () => {
+    // Der historische Fehler war nicht zwingend `setEntwuerfe(` - ein Effekt,
+    // der nur `setInput(zurueck?.text ?? '')` aufruft (die Rettung ohne die
+    // Ablage), waere von der alten Nadel unentdeckt geblieben. Diese Probe
+    // haengt keinen echten Effekt an ChatInput.tsx, sondern haelt am
+    // TEXTBEWEIS fest: dieselbe Funktion, mit einer erfundenen Quelle
+    // gefuettert, erkennt den `setInput`-only-Fall.
+    const erfundeneQuelle = `
+  useLayoutEffect(() => {
+    const zurueck = conversationId ? entwuerfe[conversationId] : undefined
+    setInput(zurueck?.text ?? '')
+  }, [conversationId])
+`
+    const rumpfe = alleEffektRuempfe(erfundeneQuelle)
+    expect(rumpfe.some((r) => r.includes('setInput('))).toBe(true)
+  })
+
+  it('NEGATIVKONTROLLE: `setEntwuerfe(` in einem Rueckruf NACH einem fremden Effekt faerbt nicht faelschlich rot', () => {
+    // Der Fehler der alten Nadel in der ANDEREN Richtung: `[^]*?` haette
+    // dieses Konstrukt (ein voellig unbeteiligter Effekt, gefolgt von einem
+    // `setEntwuerfe(` weit ausserhalb jedes Effektrumpfs) als Treffer
+    // gemeldet. Die klammerzaehlende Fassung schneidet den ersten Effekt an
+    // SEINEM eigenen `}` ab und sieht das spaetere `setEntwuerfe(` gar nicht.
+    const erfundeneQuelle = `
+  useEffect(() => {
+    textareaRef.current?.focus()
+  }, [conversationId])
+
+  const spaeterUnbeteiligt = () => {
+    setEntwuerfe((bisher) => ({ ...bisher }))
+  }
+`
+    const rumpfe = alleEffektRuempfe(erfundeneQuelle)
+    expect(rumpfe.some((r) => r.includes('setEntwuerfe('))).toBe(false)
   })
 })
 

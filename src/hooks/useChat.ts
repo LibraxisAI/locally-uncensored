@@ -382,61 +382,123 @@ export function useChat() {
    * same time, silently, because `localLaneHolder()` never heard about the
    * group round at all. */
   const runGroupRound = useCallback(async (convId: string, content: string, images: ImageAttachment[] | undefined, models: string[]) => {
-    useChatStore.getState().addMessage(convId, {
-      id: uuid(),
-      role: 'user',
-      content,
-      images,
-      timestamp: Date.now(),
-    })
+    // Auflage 3 (Review composer, 19.09.2026): derselbe Wiedereintritts-Riegel
+    // wie sendMessage oben ("Re-entry guard"). Ohne ihn ueberschrieb ein
+    // doppeltes Enter auf einem Gruppenchat den Token der ersten Runde weiter
+    // unten in `activeChatRuns`, ohne einen Haenger zu erzeugen (die erste
+    // Runde loescht wegen der Identitaetspruefung im `finally` unten nichts,
+    // die zweite raeumt am Ende auf) - aber der Doppelklick-Schutz griff fuer
+    // Gruppenrunden bisher nicht, und ein doppelter Nutzerzug landete im
+    // Verlauf. Claim synchron, vor der ersten Nachricht, exakt wie dort.
+    if (activeChatRuns.has(convId)) {
+      log.info('chat.duplicate_group_round_blocked', { convId })
+      return
+    }
+    const myRunToken = Symbol(convId)
+    activeChatRuns.set(convId, myRunToken)
 
-    // The round holds the lane its SPEAKERS need. Mixed local+cloud speakers
-    // hold the local lane: a single local speaker anywhere in the round still
-    // ties up the one engine slot for the whole round's duration, and the
-    // safe reading is "this round touches the local card", not "every
-    // speaker does". Getting this wrong the other way (treating a mixed
-    // round as cloud) would let a local speaker in the round run alongside
-    // an unrelated local conversation, the exact VRAM swap this module
-    // exists to prevent.
-    const facts = currentLaneFacts()
-    const lane = models.some((model) => laneOf(model, facts) === 'local') ? 'local' : 'cloud'
-    const abort = new AbortController()
-    await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
-      // The generationStore aborter map IS the run register, keyed by convId,
-      // see the ChatRun doc comment above sendMessage. Nothing else needs to
-      // remember this controller: Stop looks it up there, by conversation, not
-      // through a hook-instance ref that a second overlapping run would
-      // overwrite.
-      const myAborter = () => abort.abort()
-      useGenerationStore.getState().registerAborter(convId, myAborter)
-      setIsGenerating(true)
-      useGenerationStore.getState().setGenerating(convId, true)
-      try {
-        for (const model of models) {
-          if (abort.signal.aborted) break
-          await runGroupTurn(convId, model, models, abort)
-        }
-      } finally {
-        // Same identity check as the single-model turn below (Blocker 2,
-        // review-lanes.md): a Stop followed by an immediate resend on this
-        // conversation can register a new aborter before this round's
-        // finally runs.
-        const stillOwnsSlot = useGenerationStore.getState().aborters[convId] === myAborter
-        if (stillOwnsSlot) {
-          useGenerationStore.getState().clearAborter(convId)
-        }
-        // The round is over, so it goes on disk BEFORE the app says so. Same
-        // contract as the single-model turn below and as the Agent and Coding
-        // runs; see stores/durability.ts for the measurement that made the
-        // order matter.
-        await endTurnDurably(() => {
-          if (stillOwnsSlot) {
-            setIsGenerating(false)
-            useGenerationStore.getState().setGenerating(convId, false)
+    // Auflage 8 (Review composer, 19.09.2026): der Claim oben und dieser
+    // `try` muessen luecklos aneinanderliegen. Ein Wurf zwischen ihnen (zum
+    // Beispiel aus `addMessage` oder `currentLaneFacts`, beide unten im
+    // Rumpf) haette den Eintrag in `activeChatRuns` fuer immer stehen lassen
+    // - der Gruppenchat waere dauerhaft gesperrt gewesen, und `size > 0`
+    // haette "Stop generation" nach jedem spaeteren Lauf angezeigt, also
+    // genau der Geisterzustand, den dieser Zweig repariert, aus einer neuen
+    // Ecke. Das innere `finally` weiter unten raeumt den Normalfall (und den
+    // Abbruch waehrend des Laufs) schon auf; dieses AEUSSERE `finally` ist
+    // nur fuer den Fall da, dass der Rumpf nie bis dorthin kommt, und ist
+    // deshalb ein reiner No-op, wenn das innere schon geraeumt hat
+    // (Identitaetspruefung, wie ueberall in dieser Datei).
+    try {
+      useChatStore.getState().addMessage(convId, {
+        id: uuid(),
+        role: 'user',
+        content,
+        images,
+        timestamp: Date.now(),
+      })
+
+      // The round holds the lane its SPEAKERS need. Mixed local+cloud speakers
+      // hold the local lane: a single local speaker anywhere in the round still
+      // ties up the one engine slot for the whole round's duration, and the
+      // safe reading is "this round touches the local card", not "every
+      // speaker does". Getting this wrong the other way (treating a mixed
+      // round as cloud) would let a local speaker in the round run alongside
+      // an unrelated local conversation, the exact VRAM swap this module
+      // exists to prevent.
+      const facts = currentLaneFacts()
+      const lane = models.some((model) => laneOf(model, facts) === 'local') ? 'local' : 'cloud'
+      const abort = new AbortController()
+      // Runs this hook-global `isGenerating` boolean unconditionally down to
+      // (see Ghost-Stop-Fix note above `activeChatRuns`): registered/removed by
+      // its OWN identity, independent of `generationStore.aborters`. Der Token
+      // selbst ist jetzt oben entstanden (Auflage 3), zusammen mit dem Claim.
+      const laneOutcome = await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
+        // The generationStore aborter map IS the run register, keyed by convId,
+        // see the ChatRun doc comment above sendMessage. Nothing else needs to
+        // remember this controller: Stop looks it up there, by conversation, not
+        // through a hook-instance ref that a second overlapping run would
+        // overwrite.
+        const myAborter = () => abort.abort()
+        useGenerationStore.getState().registerAborter(convId, myAborter)
+        setIsGenerating(true)
+        useGenerationStore.getState().setGenerating(convId, true)
+        try {
+          for (const model of models) {
+            if (abort.signal.aborted) break
+            await runGroupTurn(convId, model, models, abort)
           }
-        })
+        } finally {
+          // Same identity check as the single-model turn below (Blocker 2,
+          // review-lanes.md): a Stop followed by an immediate resend on this
+          // conversation can register a new aborter before this round's
+          // finally runs.
+          const stillOwnsSlot = useGenerationStore.getState().aborters[convId] === myAborter
+          if (stillOwnsSlot) {
+            useGenerationStore.getState().clearAborter(convId)
+          }
+          if (activeChatRuns.get(convId) === myRunToken) {
+            activeChatRuns.delete(convId)
+          }
+          // The round is over, so it goes on disk BEFORE the app says so. Same
+          // contract as the single-model turn below and as the Agent and Coding
+          // runs; see stores/durability.ts for the measurement that made the
+          // order matter.
+          await endTurnDurably(() => {
+            // Ghost-Stop-Fix (G31 Nachbesserung, 3.0.1): `isGenerating` is
+            // recomputed from the live run registry (`activeChatRuns.size`),
+            // NOT gated on `stillOwnsSlot` the way `generationStore`'s OWN
+            // per-conversation flag still is below. An external abort (Stop
+            // button on ANOTHER conversation never reaches here, but sign-out,
+            // window close and app quit all call
+            // `generationStore.abortConversation(convId)` directly, see
+            // lib/background-shutdown.ts) clears `aborters[convId]` WITHOUT
+            // starting a replacement round, so `stillOwnsSlot` is false here,
+            // and nothing else was ever going to flip this hook's global flag
+            // back to false. `activeChatRuns` has its own, independent identity
+            // check just above and is authoritative for "is a plain-chat or
+            // group round still actually running", exactly like
+            // `activeAgentRuns.size > 0` in useAgentChat.ts.
+            setIsGenerating(activeChatRuns.size > 0)
+            if (stillOwnsSlot) {
+              useGenerationStore.getState().setGenerating(convId, false)
+            }
+          })
+        }
+      })
+      if (laneOutcome === 'cancelled-while-queued' && activeChatRuns.get(convId) === myRunToken) {
+        // Wie bei sendMessage weiter unten: Stop hat die Runde aus der
+        // Warteschlange der lokalen Spur geholt, bevor ihr eigenes `finally`
+        // je lief (das lebt im Rumpf oben) - der oben synchron beanspruchte
+        // Eintrag muss deshalb hier freigegeben werden.
+        activeChatRuns.delete(convId)
       }
-    })
+    } finally {
+      if (activeChatRuns.get(convId) === myRunToken) {
+        activeChatRuns.delete(convId)
+        setIsGenerating(activeChatRuns.size > 0)
+      }
+    }
   }, [])
 
   const sendMessage = useCallback(async (content: string, images?: ImageAttachment[]) => {
@@ -511,9 +573,24 @@ export function useChat() {
         // outcome is reported the same way an aborted summary call itself
         // would report it) or while it is actually running.
         const compactAbort = new AbortController()
-        setIsGenerating(true)
-        useGenerationStore.getState().setGenerating(convId, true)
+        // Auflage 2 (Review composer, 19.09.2026): dieselbe Invariante wie
+        // sendMessage und runGroupRound. Ohne Eintrag in `activeChatRuns`
+        // haette ein `/compact` in Unterhaltung B das hook-globale
+        // `isGenerating` unbedingt geloescht, waehrend A noch streamt (der
+        // Schaden blieb bisher klein, weil `composerBusy` die Store-Fahne je
+        // Unterhaltung ohnehin mitliest, aber diese Stelle war die einzige,
+        // die aus der Reihe fiel).
+        const myRunToken = Symbol(convId)
+        activeChatRuns.set(convId, myRunToken)
+        // Auflage 8 (Review composer, 19.09.2026): die beiden Zustandssetzer
+        // waren bisher NACH dem Claim, aber NOCH VOR dem `try`. Sie werfen
+        // praktisch nie, aber "praktisch nie" ist nicht "kann nicht" - ein
+        // Wurf dort haette den `finally` unten uebersprungen und den Eintrag
+        // in `activeChatRuns` fuer immer stehen lassen. Jetzt liegen sie IM
+        // `try`, direkt hinter dem Claim, luecklos.
         try {
+          setIsGenerating(true)
+          useGenerationStore.getState().setGenerating(convId, true)
           // No model selected: `runCompactForConversation` reports `no-model`
           // on its own without touching any provider, so there is nothing
           // local to guard against; `'cloud'` starts immediately and never
@@ -538,13 +615,19 @@ export function useChat() {
             )
           }
         } finally {
+          if (activeChatRuns.get(convId) === myRunToken) {
+            activeChatRuns.delete(convId)
+          }
           // The summary (or the "Stopped" notice) is already in the store by
           // this point; only the announcement that flips Stop back to Send
           // waits for the write, same contract as the send path below and
           // runGroupRound above (stores/durability.ts has the measurement
           // that made the order matter).
           await endTurnDurably(() => {
-            setIsGenerating(false)
+            // Auflage 2: wie in runGroupRound/sendMessage errechnet aus der
+            // Laufregistry, nicht unbedingt auf false gesetzt, sonst reisst
+            // ein `/compact` in B die Fahne unter einem noch streamenden A weg.
+            setIsGenerating(activeChatRuns.size > 0)
             useGenerationStore.getState().setGenerating(convId, false)
           })
         }
@@ -1350,12 +1433,27 @@ export function useChat() {
       // The answer itself is already painted, so what waits here is the Stop
       // button turning back into Send, not the text.
       await endTurnDurably(() => {
-        // Review-lanes.md point 1: same asymmetry as Blocker 2. Only THIS
-        // run flipping the hook's own flag back to false when it still owns
-        // the slot keeps a still-running resend on the same conversation
-        // from being reported as idle while it is not.
+        // Ghost-Stop-Fix (G31 Nachbesserung, 3.0.1 box test Z2/Nebenfund 3):
+        // `isGenerating` used to be gated on `stillOwnsSlot`, same as
+        // `generationStore`'s per-conversation flag below. That is right for
+        // the STORE flag (review-lanes.md point 1: a still-running resend on
+        // the same conversation must not be reported idle), but wrong for
+        // THIS hook-global boolean: `generationStore.abortConversation`
+        // (called by the Stop button, sign-out, window close and app quit,
+        // lib/background-shutdown.ts) clears `aborters[run.convId]`
+        // synchronously and WITHOUT starting a replacement run, so
+        // `stillOwnsSlot` is false here even though nobody else will ever
+        // flip this flag back to false. The composer then reads `isGenerating`
+        // (hooks/useChat.ts's return value, fed into `composerBusy`) as
+        // permanently "Stop", with no run in sight, measured on the box
+        // after a window-close (BERICHT.md Nebenfund 3). `activeChatRuns` is
+        // cleared by its OWN identity check just above, independent of
+        // `generationStore`, so its size is authoritative for "is a plain
+        // chat send still actually running", same pattern as
+        // `activeAgentRuns.size > 0` in useAgentChat.ts, which never had
+        // this bug.
+        setIsGenerating(activeChatRuns.size > 0)
         if (stillOwnsSlot) {
-          setIsGenerating(false)
           useGenerationStore.getState().setGenerating(run.convId, false)
         }
       })

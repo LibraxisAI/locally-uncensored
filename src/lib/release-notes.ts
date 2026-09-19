@@ -259,6 +259,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'The Memory sources chip under every answer is gone.',
             detail: 'The Memory sources chip under every AI answer is gone; the purple brain icon in the session strip below the transcript, right above the composer, still opens Memory.',
           },
+          {
+            title: 'A draft no longer merges into the next chat after switching.',
+            detail: 'A draft left in the message box no longer merges into the next thing you type after switching conversations, and the composer no longer gets stuck showing Stop after closing the window, signing out or quitting with a message still in flight.',
+          },
         ],
       },
       {

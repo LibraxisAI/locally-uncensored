@@ -140,6 +140,10 @@ installs stop losing environment variables to it.
   brain icon in the session strip below the transcript, right above the
   composer, still opens Memory, so repeating it under each reply only added
   clutter.
+- **A draft left in the message box no longer merges into the next thing you
+  type after switching conversations**, and the composer no longer gets stuck
+  showing Stop after closing the window, signing out or quitting with a
+  message still in flight.
 
 ## [3.0.0] - 2026-09-13
 
