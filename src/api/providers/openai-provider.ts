@@ -184,6 +184,7 @@ function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
     name: asString(m.name),
     flash: m.flash,
     usage_class: m.usage_class,
+    unfiltered: m.unfiltered,
     /*
      * GH #129: dieselbe Zahl, wie der jeweilige Server sie nennt, gelesen vom
      * selben Leser wie die Kaskade (context-probe). Das kostet keine einzige
@@ -215,6 +216,15 @@ function toModelEntry(m: Record<string, unknown>): OpenAIModelEntry {
     // a second place to keep right.
     reasoning_effort_default: asString(m.reasoning_effort_default),
   }
+}
+
+/**
+ * Only the two measured values survive. Anything else a foreign server
+ * writes into this field is dropped, same rule at both call sites, one
+ * place to keep it right (see the shared literal these two used to be).
+ */
+function asUnfiltered(u: unknown): 'full' | 'partial' | undefined {
+  return u === 'full' || u === 'partial' ? u : undefined
 }
 
 // ── Known context lengths for popular models ───────────────────
@@ -1108,9 +1118,7 @@ export class OpenAIProvider implements ProviderClient {
           supportsVision: m.input_modalities?.includes('image') || undefined,
           thinkMode: m.think,
           flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
-        // Nur die beiden gemessenen Werte werden uebernommen. Alles andere,
-        // was ein fremder Server in dieses Feld schreibt, faellt weg.
-        unfiltered: m.unfiltered === 'full' || m.unfiltered === 'partial' ? m.unfiltered : undefined,
+          unfiltered: asUnfiltered(m.unfiltered),
           effortLevels: m.reasoning_effort_levels,
           effortDefault: m.reasoning_effort_default,
         }
@@ -1136,9 +1144,7 @@ export class OpenAIProvider implements ProviderClient {
         supportsVision: m.input_modalities?.includes('image') || undefined,
         thinkMode: m.think,
         flash: this.config.apiKey?.startsWith('lu_') ? undefined : parseFlashPolicy(m.flash, m.usage_class, this.catalogKey(m.id)),
-        // Nur die beiden gemessenen Werte werden uebernommen. Alles andere,
-        // was ein fremder Server in dieses Feld schreibt, faellt weg.
-        unfiltered: m.unfiltered === 'full' || m.unfiltered === 'partial' ? m.unfiltered : undefined,
+        unfiltered: asUnfiltered(m.unfiltered),
         // Straight through, no invention: a server that does not declare the
         // ladder leaves both undefined, and undefined is what switches the
         // whole effort feature off for this model.
