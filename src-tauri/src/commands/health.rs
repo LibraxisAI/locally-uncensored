@@ -288,21 +288,56 @@ fn comfy_probe_url(state: &AppState) -> String {
 }
 
 // LM Studio has no equivalent configured-base field in `AppState`: unlike
-// Ollama/ComfyUI it is only ever set up as a generic OpenAI-compatible
-// provider slot in the frontend's persisted (webview-local) provider store,
-// which Rust has no read access to. A remote/LAN LM Studio a user pointed the
-// app at via Settings -> Providers is therefore invisible to this probe and
-// it still targets the documented local default. This is a known, narrower
-// gap than the Ollama/ComfyUI one T5 reported, worth a real fix (a command
-// that pushes the configured LM Studio base into `AppState`, mirroring
-// `set_ollama_host`) but out of scope here; flagged rather than silently
-// left as if it were already solved.
+// Ollama/ComfyUI, which Rust itself spawns/manages and therefore owns a
+// persisted address for (`set_ollama_host`/`set_comfyui_host`, config.json),
+// LM Studio is set up purely as a generic OpenAI-compatible provider slot in
+// the frontend's persisted (webview-local) provider store, and Rust has no
+// read access to that store. Giving LM Studio a second AppState field plus a
+// `set_lm_studio_host` command would create a duplicate, Rust-owned copy of a
+// value the frontend already owns and would have to keep both sides in sync
+// (review R8 Nachbesserung, 2026-09-18) for no benefit, since Rust never
+// spawns LM Studio and has nothing of its own to persist. Instead
+// `system_health` takes the resolved base as an optional argument, exactly
+// the "Befehlsargument" alternative construction the AppState field is the
+// other half of: the caller (SettingsPage.tsx) reads its OWN provider store
+// for whichever `openai`-slot entry is named "LM Studio" and passes that
+// base along, same one-shot-probe shape as everything else here. Falls back
+// to the documented local default when absent or unparsable.
 const LM_STUDIO_PROBE_URL: &str = "http://127.0.0.1:1234/v1/models";
 
+/// Turn a user-configured LM Studio base (e.g. `http://192.168.1.20:1234/v1`,
+/// as stored by the frontend's provider slot) into a `/models` probe URL.
+/// Mirrors `normalize_ollama_base`'s tolerance for a scheme-less host, but
+/// soft-fails to the documented local default instead of erroring the whole
+/// report: this is a best-effort probe, not a setter, and a bad or absent
+/// override must never take the whole Troubleshoot panel down.
+fn lm_studio_probe_url(override_base: Option<&str>) -> String {
+    if let Some(raw) = override_base {
+        let trimmed = raw.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                trimmed.to_string()
+            } else {
+                format!("http://{}", trimmed)
+            };
+            if let Ok(u) = url::Url::parse(&with_scheme) {
+                if u.host_str().is_some_and(|h| !h.is_empty()) {
+                    return format!("{}/models", with_scheme);
+                }
+            }
+        }
+    }
+    LM_STUDIO_PROBE_URL.to_string()
+}
+
 #[tauri::command]
-pub async fn system_health(state: State<'_, AppState>) -> Result<SystemHealthReport, String> {
+pub async fn system_health(
+    state: State<'_, AppState>,
+    lm_studio_base: Option<String>,
+) -> Result<SystemHealthReport, String> {
     let ollama_url = ollama_probe_url(&state);
     let comfy_url = comfy_probe_url(&state);
+    let lm_studio_url = lm_studio_probe_url(lm_studio_base.as_deref());
 
     // Probe all three backends concurrently, each bounded by
     // PROBE_TIMEOUT, so worst case is ~PROBE_TIMEOUT total instead of 3x
@@ -311,7 +346,7 @@ pub async fn system_health(state: State<'_, AppState>) -> Result<SystemHealthRep
     let (ollama, comfyui, lm_studio) = tokio::join!(
         probe_http(&ollama_url, PROBE_TIMEOUT),
         probe_http(&comfy_url, PROBE_TIMEOUT),
-        probe_http(LM_STUDIO_PROBE_URL, PROBE_TIMEOUT),
+        probe_http(&lm_studio_url, PROBE_TIMEOUT),
     );
 
     // collect_host_facts is blocking (sysinfo refresh + nvidia-smi
@@ -373,6 +408,48 @@ mod tests {
     fn comfy_probe_url_falls_back_to_the_default_when_unconfigured() {
         let state = AppState::new();
         assert_eq!(comfy_probe_url(&state), "http://localhost:8188/system_stats");
+    }
+
+    // ── LM Studio: a non-default address passed as a command argument ──────
+
+    #[test]
+    fn lm_studio_probe_url_follows_a_non_default_argument() {
+        assert_eq!(
+            lm_studio_probe_url(Some("http://192.168.1.20:1234/v1")),
+            "http://192.168.1.20:1234/v1/models"
+        );
+    }
+
+    #[test]
+    fn lm_studio_probe_url_falls_back_to_the_default_when_absent() {
+        assert_eq!(lm_studio_probe_url(None), LM_STUDIO_PROBE_URL);
+    }
+
+    #[test]
+    fn lm_studio_probe_url_falls_back_to_the_default_when_blank() {
+        assert_eq!(lm_studio_probe_url(Some("   ")), LM_STUDIO_PROBE_URL);
+    }
+
+    #[test]
+    fn lm_studio_probe_url_accepts_a_scheme_less_host() {
+        assert_eq!(lm_studio_probe_url(Some("lmstudio.lan:1234/v1")), "http://lmstudio.lan:1234/v1/models");
+    }
+
+    #[test]
+    fn lm_studio_probe_url_falls_back_when_unparsable() {
+        // A space is invalid in a host per RFC 3952 / the WHATWG URL spec,
+        // so this reliably fails to parse (unlike e.g. "http://", whose
+        // trailing slashes get trimmed down to a bare "http:" that then
+        // parses as a technically-valid, if useless, "http" host).
+        assert_eq!(lm_studio_probe_url(Some("not a valid host")), LM_STUDIO_PROBE_URL);
+    }
+
+    #[test]
+    fn lm_studio_probe_url_does_not_double_the_slash() {
+        assert_eq!(
+            lm_studio_probe_url(Some("http://192.168.1.20:1234/v1/")),
+            "http://192.168.1.20:1234/v1/models"
+        );
     }
 
     // ── T5: a slow-but-alive server must read Timeout, not Unreachable ──────

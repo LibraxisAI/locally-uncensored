@@ -2550,7 +2550,17 @@ function TroubleshootSection() {
     setLoading(true)
     setHinweis(null)
     try {
-      const r = await backendCall<SystemHealthReport>('system_health', {})
+      // R8-Nachzug (LM-Studio-Adresse, 2026-09-18): Rust besitzt keinen
+      // eigenen Speicherplatz fuer die LM-Studio-Basis (anders als Ollama/
+      // ComfyUI, die es selbst startet), also liest der Aufrufer seinen
+      // eigenen Provider-Store und reicht die konfigurierte Adresse als
+      // Befehlsargument durch, statt ein zweites AppState-Feld nur fuer
+      // einen Wert zu pflegen, den Rust ohnehin nie selbst setzt.
+      const openaiSlot = useProviderStore.getState().providers.openai
+      const lmStudioBase = openaiSlot?.name?.toLowerCase().includes('lm studio')
+        ? openaiSlot.baseUrl
+        : undefined
+      const r = await backendCall<SystemHealthReport>('system_health', { lmStudioBase })
       setReport(r)
     } catch (e) {
       setHinweis(troubleshootHinweis(e, isTauri()))
