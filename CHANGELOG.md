@@ -136,8 +136,6 @@ installs stop losing environment variables to it.
 - **The reason the Coding Agent will not let go of its current folder is now
   shown as a visible line**, instead of only a tooltip a disabled button never
   shows.
-- **ltx-2 LoRA renders in the desktop app now carry a credit cost**, matching
-  the web catalog, instead of pricing as free.
 - **The "Memory sources" chip under every AI answer is gone.** The purple
   brain icon in the session strip below the transcript, right above the
   composer, still opens Memory, so repeating it under each reply only added
