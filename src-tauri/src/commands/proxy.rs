@@ -839,7 +839,14 @@ async fn cancellable_request(
         // body was previously covered only by the reqwest timeout, not by
         // Stop, the same class of gap the success-path read below was
         // already fixed for.
+        //
+        // F1 fix (review-w2rust.md): `biased;` with the cancel branch first
+        // makes "a cancel that lands exactly when the body finishes reading
+        // is still a cancel" deterministic instead of a coin flip between
+        // the two ready branches (tokio::select! otherwise polls in random
+        // order).
         let text = tokio::select! {
+            biased;
             _ = token.cancelled() => return Err("proxy_localhost: cancelled".to_string()),
             r = resp.text() => r.unwrap_or_default(),
         };
@@ -1097,8 +1104,12 @@ async fn pump_proxy_stream(
             let status = resp.status().as_u16();
             // Same fix as cancellable_request's error branch: race the body
             // read against Stop instead of leaving it covered only by the
-            // reqwest timeout.
+            // reqwest timeout. `biased;` (F1, review-w2rust.md) keeps a
+            // cancel that lands exactly when the body finishes reading a
+            // cancel (Ok(())), never the coin flip that could otherwise
+            // surface it as Err("HTTP 500: ...") instead.
             let text = tokio::select! {
+                biased;
                 _ = token.cancelled() => return Ok(()),
                 r = resp.text() => r.unwrap_or_default(),
             };
