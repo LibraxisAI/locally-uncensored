@@ -9,7 +9,7 @@ import { CLOUD_BASE } from '../api/cloud/config'
 
 export const CREDITS_EXHAUSTED_EVENT = 'lu:credits-exhausted'
 
-/** Which cap said no — drives the dialog title and copy. 'credits' = the
+/** Which cap said no, drives the dialog title and copy. 'credits' = the
  *  shared pool, 'video_budget' = the monthly video sub-budget (top-ups
  *  bypass it), 'trainings' = no included run remains and the top-up wallet
  *  cannot cover the selected training. Matches apps/web/lib/credits-

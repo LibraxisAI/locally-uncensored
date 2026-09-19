@@ -1,5 +1,5 @@
 /**
- * R5-66 — before this fix, `Composer.tsx`'s `canGenerate` never looked at
+ * R5-66: before this fix, `Composer.tsx`'s `canGenerate` never looked at
  * `useCreateStore.mask` at all: a cloud edit or an eraser run with no mask
  * painted was submitted anyway and came back as a server error, instead of
  * the Create button simply staying off. `needsMaskFor` (maskGate.ts) is the

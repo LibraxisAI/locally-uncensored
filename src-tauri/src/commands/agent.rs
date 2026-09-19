@@ -385,8 +385,8 @@ mod path_tests {
 }
 
 /// R2-44: `execute_code` used to take no run id, so Stop had nothing to cancel
-/// once the interpreter had started — same hole `shell_execute_cancel` closed
-/// for the shell tool (see the comment there). This is the same fix, on its
+/// once the interpreter had started, the same hole `shell_execute_cancel`
+/// closed for the shell tool (see the comment there). This is the same fix, on its
 /// own registry: code execution is always foreground here, no background
 /// tasks, so it needs neither the task-list nor the stale-entry sweep the
 /// shell registry carries.
@@ -430,7 +430,7 @@ fn code_mark_cancelled(call_id: &str) -> Option<u32> {
     eintrag.pid
 }
 
-/// Abmelden beim Verlassen, an EINER Stelle — dieselbe Begruendung wie
+/// Abmelden beim Verlassen, an EINER Stelle, dieselbe Begruendung wie
 /// `ShellSlot` in shell.rs: `execute_code_blocking` kehrt an mehreren Stellen
 /// zurueck, eine Aufraeumzeile an jeder davon bliebe irgendwann an einer nicht
 /// mehr stehen.
@@ -592,7 +592,7 @@ pub(crate) fn execute_code_blocking(
     state: &State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let timeout_ms = timeout.unwrap_or(30000);
-    // R2-44: registered BEFORE spawn, same race the shell registry documents —
+    // R2-44: registered BEFORE spawn, same race the shell registry documents,
     // a cancel can arrive before the process exists at all.
     let slot = CodeSlot::new(callId.as_deref());
 

@@ -1,8 +1,8 @@
 /**
- * R2-51 — the VRAM advisory on ModelsStep used to ask ONLY the running
+ * R2-51: the VRAM advisory on ModelsStep used to ask ONLY the running
  * ComfyUI's own /system_stats (`getSystemVRAM`, api/comfyui.ts). On this very
  * step, before ComfyUI has necessarily been started, that meant the memory
- * warning next to an oversized model was silent almost all the time — not
+ * warning next to an oversized model was silent almost all the time, not
  * because the machine had enough VRAM, but because nothing had asked yet.
  *
  * `getMaxVramGb` (lib/hardware.ts) asks the Rust `detect_gpus` probe
@@ -49,7 +49,7 @@ describe('R2-51: ModelsStep prefers the Rust GPU probe over ComfyUI for the VRAM
     const block = src.slice(at, src.indexOf('}, [])', at) + 10)
     expect(block).toContain('.catch(() => {')
     // Two independent fallback paths: the `v === 0` branch inside `.then`,
-    // and the `.catch` for a thrown/rejected probe — both must call
+    // and the `.catch` for a thrown/rejected probe, both must call
     // getSystemVRAM, or a rejected detect_gpus call would leave the
     // advisory permanently null even though ComfyUI could still answer.
     const comfyCalls = block.split('getSystemVRAM()').length - 1
@@ -57,7 +57,7 @@ describe('R2-51: ModelsStep prefers the Rust GPU probe over ComfyUI for the VRAM
   })
 })
 
-describe('R2-51: NEGATIVE CONTROL — getMaxVramGb genuinely needs no ComfyUI', () => {
+describe('R2-51: NEGATIVE CONTROL, getMaxVramGb genuinely needs no ComfyUI', () => {
   it('is documented to fail soft to 0 rather than throw when detect_gpus is unavailable', async () => {
     // Exercises the real function (no engine, no Tauri) to prove the claim
     // in ModelsStep's new comment: a probe failure here is silent, not a

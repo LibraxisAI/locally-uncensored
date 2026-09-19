@@ -69,7 +69,7 @@ describe('and giving up says when to come back', () => {
 
   it('a throttle does not kill a /loop, unlike an empty wallet', () => {
     // R5-53 added the flash_timeout branch right after this one, which DOES
-    // set loopHalt (a flash timeout is final, unlike a throttle) — so the end
+    // set loopHalt (a flash timeout is final, unlike a throttle), so the end
     // anchor is that branch's own start, not the next NAMED branch further
     // down, or this slice would swallow flash_timeout's loopHalt too and
     // read as a false regression here.

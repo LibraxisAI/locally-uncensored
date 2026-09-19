@@ -1,5 +1,5 @@
 /**
- * R5-9 — safety.ts was two copies that no longer agreed. Web had grown
+ * R5-9: safety.ts was two copies that no longer agreed. Web had grown
  * `collapseSpacing` (a stricter letter-spacing fold than Desktop's
  * `spacedRuns`) plus a cloud-tier adult gate (`ADULT_SOFT_TERMS` /
  * `ADULT_HARD_TERMS`, `AdultPolicy`); Desktop had neither, so the same prompt
@@ -10,7 +10,7 @@
  * Desktop's `checkPromptSafety`. The same 24 probes (verbatim) also run
  * against Web's `apps/web/lib/render/__tests__/safety.test.ts`; both must
  * reach the same verdict for each one. The CSAM floor on the server is
- * unchanged by this file — it only brings the client pre-check on Desktop
+ * unchanged by this file, it only brings the client pre-check on Desktop
  * up to what Web already does.
  *
  * Run: npx vitest run src/lib/render/__tests__/adult-tier-parity.test.ts
@@ -63,7 +63,7 @@ describe('R5-9: the 24-probe table matches Web verdict for verdict', () => {
   })
 })
 
-describe('R5-9: NEGATIVE CONTROL — the two named phrases stay free on every tier', () => {
+describe('R5-9: NEGATIVE CONTROL, the two named phrases stay free on every tier', () => {
   it('torpedo launch is never blocked, on any tier or policy', () => {
     for (const opts of [
       {},
@@ -118,14 +118,14 @@ describe('R5-9: the cloud-tier adult gate now matches Web', () => {
     })
   })
 
-  it('CSAM always wins over adult-cloud — reason and alert semantics stay CSAM', () => {
+  it('CSAM always wins over adult-cloud, reason and alert semantics stay CSAM', () => {
     const v = checkPromptSafety('a nude child', { tier: 'cloud' })
     expect(v.blocked).toBe(true)
     expect(v.reason).toBe('minor+sexual')
     expect(checkPromptSafety('child porn', { tier: 'cloud' }).reason).toBe('csam')
   })
 
-  it('does NOT block soft adult words on their own — narrower than SEXUAL_TERMS', () => {
+  it('does NOT block soft adult words on their own, narrower than SEXUAL_TERMS', () => {
     expect(checkPromptSafety('sexy adult model, lingerie photoshoot', { tier: 'cloud' }).blocked).toBe(false)
     expect(checkPromptSafety('seductive vampire, gothic portrait', { tier: 'cloud' }).blocked).toBe(false)
   })
@@ -142,7 +142,7 @@ describe('R5-9: the cloud-tier adult gate now matches Web', () => {
 
   it('NEGATIVE CONTROL: without a cloud tier, the adult gate never fires at all', () => {
     // Desktop's current callers (useCreate.ts, useCloudCreate.ts) never pass
-    // tier: 'cloud' yet — this is the guard that a future caller opting in
+    // tier: 'cloud' yet, this is the guard that a future caller opting in
     // is a deliberate change, not a silent default flip.
     expect(checkPromptSafety('hardcore porn scene').blocked).toBe(false)
     expect(checkPromptSafety('hardcore porn scene', { policy: 'strict' }).blocked).toBe(false)

@@ -915,8 +915,8 @@ const desktopMediaSource = ts.createSourceFile(
 // only captures string/numeric literals, so it cannot see `edit: true`
 // (a boolean) or `ops: ['edit']` (an array) at all. Reading each object
 // literal's own full text (not a single source LINE) is what makes this safe
-// against entries that spread id/label/edit/ops across several lines —
-// flux-dev is written that way in both files.
+// against entries that spread id/label/edit/ops across several lines,
+// which is how flux-dev is written in both files.
 function editCapableIds(sourceFile) {
   const out = new Map()
   function visit(node) {

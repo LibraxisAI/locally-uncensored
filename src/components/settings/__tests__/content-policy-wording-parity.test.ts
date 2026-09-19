@@ -1,5 +1,5 @@
 /**
- * R5-4, R5-5, R5-6 — ContentPolicySettings.tsx had drifted from the Web
+ * R5-4, R5-5, R5-6: ContentPolicySettings.tsx had drifted from the Web
  * wording in three spots: the "strict" and "off" hints (R5-5, R5-6) and the
  * footnote about what the setting covers (R5-4). One wording is better than
  * two for the two hints that mean the same thing on both sides; the footnote

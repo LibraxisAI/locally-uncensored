@@ -103,7 +103,7 @@ export function isTerminalModelError(err: unknown): boolean {
   // "status >= 400 && status < 500" (false) and read as a plain gateway
   // hiccup worth retrying. The free-tier request had already sat out its own
   // four-minute hard deadline (see the server's route), so each of the three
-  // attempts in the connRetries ladder repeated the same four-minute wait —
+  // attempts in the connRetries ladder repeated the same four-minute wait,
   // twelve silent minutes before the run gave up, same shape as the
   // `credits_exhausted` bug this line is modelled on.
   if (e?.code === 'credits_exhausted' || e?.code === 'signed_out' || e?.code === 'flash_timeout') return true

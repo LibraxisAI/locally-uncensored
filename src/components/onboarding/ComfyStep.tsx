@@ -144,8 +144,8 @@ export function ComfyStep({ skin, fleet, step, setStep }: ComfyStepProps) {
             if (legacy.complete !== false) setComfyReady(true)
             return
           }
-          // aq: both scans reason from disk paths and still found nothing —
-          // one last knock on the configured port before calling it not
+          // aq: both scans reason from disk paths and still found nothing,
+          // so one last knock on the configured port before calling it not
           // found, in case ComfyUI is already running from a place neither
           // scan looks (a hand-launched venv, a network path, ...).
           const running = await probeRunningComfyPort(localFetch, comfyuiUrl('/internal/folder_paths'))

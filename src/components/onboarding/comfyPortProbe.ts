@@ -1,4 +1,4 @@
-// aq (3.0.1) — `detect_all_comfyui_installs` walks known install locations on
+// aq (3.0.1): `detect_all_comfyui_installs` walks known install locations on
 // disk; it finds nothing when ComfyUI lives somewhere the scan never looks
 // (a custom venv launched by hand, a network drive, a path the scan's
 // heuristics miss) even though the user already has it running. The legacy
@@ -9,7 +9,7 @@
 // `/internal/folder_paths` (the same endpoint `comfy_folders::folders_of`
 // reads on the Rust side for a running-instance probe) directly from the
 // renderer, the same way the rest of this file already talks to a live
-// ComfyUI once it knows where one is. No new Rust command needed — `fetchFn`
+// ComfyUI once it knows where one is. No new Rust command needed, `fetchFn`
 // is `localFetch` in production, which already proxies localhost requests
 // through Tauri where the webview's own fetch cannot reach them.
 //

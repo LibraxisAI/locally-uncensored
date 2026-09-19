@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * R5-51 — signalCreditsExhausted() and the dialog it opens used to know only
+ * R5-51: signalCreditsExhausted() and the dialog it opens used to know only
  * one reason ('credits'). The cloud Create hooks already distinguished three
  * server codes (credits_exhausted, video_budget_exhausted, trainings_exhausted,
  * see throttleMessage in useCloudCreate.ts) but only the first one opened the

@@ -1,5 +1,5 @@
 /**
- * aq (3.0.1) — `detect_all_comfyui_installs` and the legacy `find_comfyui`
+ * aq (3.0.1): `detect_all_comfyui_installs` and the legacy `find_comfyui`
  * both reason from disk paths and can both come back empty even while
  * ComfyUI is genuinely running (a hand-launched venv, a network path,
  * anything the scan heuristics do not look at). `probeRunningComfyPort` is

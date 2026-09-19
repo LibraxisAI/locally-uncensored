@@ -1,8 +1,8 @@
 /**
- * R5-67 — intents.ts had drifted from Web's labels for the shared intents.
+ * R5-67: intents.ts had drifted from Web's labels for the shared intents.
  * Web is authoritative for "Enhance" (the upscale intent); Desktop keeps its
  * own longer "Edit / Image to Image" label for 'edit' on purpose (GH D#86,
- * see the comment on that entry) — that one is NOT supposed to match Web.
+ * see the comment on that entry), that one is NOT supposed to match Web.
  * Web's separate 'video_upscale' intent is a feature decision for David, not
  * a label fix, and stays out of both this test and this repo's INTENTS.
  *
@@ -56,7 +56,7 @@ describe('R5-67: shared intents keep the same label/short as Web', () => {
     expect(INTENT_MAP.edit.short).toBe(web?.short)
   })
 
-  it('intent ids are unchanged by the rename — a saved gallery/createStore state must not strand', () => {
+  it('intent ids are unchanged by the rename, so a saved gallery/createStore state must not strand', () => {
     expect(INTENT_MAP.upscale.label).toBeDefined()
     expect(Object.keys(INTENT_MAP)).toContain('upscale')
     expect(Object.keys(INTENT_MAP)).not.toContain('enhance')

@@ -1,9 +1,9 @@
 /**
- * R5-53 — a 504 with code 'flash_timeout' means the free-tier request already
+ * R5-53: a 504 with code 'flash_timeout' means the free-tier request already
  * sat out its own four-minute server-side deadline; retrying it repeats that
  * same wait. Before this fix `isTerminalModelError` did not recognise the
  * code (a 504 falls outside "status >= 400 && status < 500"), so the
- * connRetries ladder in useAgentChat.ts retried it up to three times —
+ * connRetries ladder in useAgentChat.ts retried it up to three times,
  * twelve silent minutes before the run gave up with a generic message.
  *
  * Source-level, matching loop-stops-on-terminal.test.ts: what has to hold is
@@ -52,7 +52,7 @@ describe('R5-53: isTerminalModelError treats flash_timeout like credits_exhauste
   })
 
   it('NEGATIVE CONTROL: a plain 504 (no code) is not named in the terminal guard', () => {
-    // The terminal check is code-based, not status-based, for this one — a
+    // The terminal check is code-based, not status-based, for this one, so a
     // bare 504 must keep falling through to the transient path below it.
     const guardLine = httpStatus.slice(
       httpStatus.indexOf('export function isTerminalModelError'),

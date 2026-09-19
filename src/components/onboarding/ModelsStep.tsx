@@ -259,7 +259,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
   // with its stated requirements; they never imply that the model will fit.
   //
   // R2-51: `getSystemVRAM` asks the RUNNING ComfyUI's own /system_stats, so
-  // the advisory only ever appeared once ComfyUI itself was up — on this very
+  // the advisory only ever appeared once ComfyUI itself was up, and on this very
   // step, before ComfyUI has necessarily been started, that is most of the
   // time. `getMaxVramGb` (lib/hardware.ts) asks the Rust `detect_gpus` probe
   // instead (nvidia-smi/rocm-smi/lspci/wmic), which works with no engine

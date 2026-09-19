@@ -80,7 +80,7 @@ async function isPermanent429(res: Response): Promise<boolean> {
  * already sat out its own four-minute hard deadline (see the server's
  * `abortedResponse` in app/api/inference/v1/chat/completions/route.ts).
  * Retrying reruns the same request against the same deadline and produces
- * the identical timeout every time — this is the 504 twin of
+ * the identical timeout every time. This is the 504 twin of
  * `isPermanent429` above, not a transient gateway hiccup a second attempt
  * could fix.
  */
