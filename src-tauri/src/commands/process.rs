@@ -1404,7 +1404,14 @@ fn start_ollama_blocking(state: &AppState) -> Result<serde_json::Value, String> 
     // CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES / ONEAPI_DEVICE_SELECTOR
     // so Ollama uses the pinned card on multi-vendor / multi-GPU machines.
     // No-op when the pick is "auto" (default).
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
     #[cfg(target_os = "windows")]
@@ -1845,7 +1852,14 @@ fn start_comfyui_blocking(state: &AppState) -> Result<serde_json::Value, String>
     // backend (torch / DirectML / IPEX) reads these on import, so the pick
     // takes effect on next spawn (current process must be restarted for a
     // change to apply — surfaced as a hint in the Settings UI).
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
     #[cfg(target_os = "windows")]

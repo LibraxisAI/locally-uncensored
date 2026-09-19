@@ -834,7 +834,22 @@ async fn cancellable_request(
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
+        // Race this read too (review 2026-09-18 Runde 2, "kleiner Rest"): a
+        // backend that answers with an error status and then sits on the
+        // body was previously covered only by the reqwest timeout, not by
+        // Stop, the same class of gap the success-path read below was
+        // already fixed for.
+        //
+        // F1 fix (review-w2rust.md): `biased;` with the cancel branch first
+        // makes "a cancel that lands exactly when the body finishes reading
+        // is still a cancel" deterministic instead of a coin flip between
+        // the two ready branches (tokio::select! otherwise polls in random
+        // order).
+        let text = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err("proxy_localhost: cancelled".to_string()),
+            r = resp.text() => r.unwrap_or_default(),
+        };
         return Err(format!("HTTP {}: {}", status, text));
     }
 
@@ -1087,7 +1102,17 @@ async fn pump_proxy_stream(
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
+            // Same fix as cancellable_request's error branch: race the body
+            // read against Stop instead of leaving it covered only by the
+            // reqwest timeout. `biased;` (F1, review-w2rust.md) keeps a
+            // cancel that lands exactly when the body finishes reading a
+            // cancel (Ok(())), never the coin flip that could otherwise
+            // surface it as Err("HTTP 500: ...") instead.
+            let text = tokio::select! {
+                biased;
+                _ = token.cancelled() => return Ok(()),
+                r = resp.text() => r.unwrap_or_default(),
+            };
             return Err(format!("HTTP {}: {}", status, text));
         }
 
@@ -2010,6 +2035,49 @@ mod tests {
         });
     }
 
+    /// Same fix as `cancelling_during_an_error_bodys_read_returns_almost_
+    /// immediately` (`cancellable_request`'s twin gap), for the streaming
+    /// pump: a backend that answers a non-2xx status and then stalls the
+    /// body must be cut off by Stop, not left to the 7200 s whole-request
+    /// timeout alone.
+    #[test]
+    fn cancelling_during_a_stalled_error_body_returns_almost_immediately_in_the_stream_pump() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let port = raw_stub(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 999999\r\n\r\nstart",
+                Some(Duration::from_secs(10)),
+            )
+            .await;
+            let token = tokio_util::sync::CancellationToken::new();
+            let cancel_token = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                cancel_token.cancel();
+            });
+            let short = Duration::from_secs(30);
+
+            let start = std::time::Instant::now();
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(2),
+                pump_and_collect(&format!("http://127.0.0.1:{}/", port), &token, short, short),
+            )
+            .await;
+            let elapsed = start.elapsed();
+
+            let (out, chunks) = outcome.expect(
+                "pump_proxy_stream must not hang on a stalled ERROR body -- \
+                 without the fix this only returns once the stub's 10s hold elapses",
+            );
+            assert!(out.is_ok(), "a cancel must not surface as an error: {out:?}");
+            // Same rule as every other cancel branch in this pump ("end what
+            // has an end"): Ok(()) always gets the EOF marker, regardless of
+            // which phase the cancel landed in.
+            assert_eq!(chunks, vec![Vec::<u8>::new()], "a cancel must still emit EOF: {chunks:?}");
+            assert!(elapsed < Duration::from_millis(1000), "took {elapsed:?}");
+        });
+    }
+
     /// The only other bound on a proxied stream is the 7200 s whole-request
     /// timeout, so a backend that dies with the socket still open (killed
     /// process, suspended container, LAN backend that fell off the Wi-Fi) held
@@ -2282,6 +2350,50 @@ mod tests {
             let elapsed = start.elapsed();
 
             let result = outcome.expect("cancellable_request must not hang on a stalled body");
+            assert!(result.is_err(), "a cancelled call must not report success: {result:?}");
+            assert!(elapsed < Duration::from_millis(1000), "took {elapsed:?}");
+        });
+    }
+
+    /// Review 2026-09-18 Runde 2, "kleiner Rest": the ERROR branch (status
+    /// not 2xx) read its body with a bare `.await`, not raced against the
+    /// token, so a backend that answers e.g. 500 and then stalls the body
+    /// could only be cut off by the reqwest timeout, never by Stop. Same
+    /// shape as `cancelling_during_body_read_returns_almost_immediately`
+    /// above, but the stub answers an error status.
+    #[test]
+    fn cancelling_during_an_error_bodys_read_returns_almost_immediately() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let port = raw_stub(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 999999\r\n\r\nstart",
+                Some(Duration::from_secs(10)),
+            )
+            .await;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap();
+            let token = tokio_util::sync::CancellationToken::new();
+            let cancel_token = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                cancel_token.cancel();
+            });
+
+            let start = std::time::Instant::now();
+            let request = client.get(format!("http://127.0.0.1:{}/", port));
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(2),
+                cancellable_request(request, &token),
+            )
+            .await;
+            let elapsed = start.elapsed();
+
+            let result = outcome.expect(
+                "cancellable_request must not hang on a stalled ERROR body -- \
+                 without the fix this only returns once the stub's 10s hold elapses",
+            );
             assert!(result.is_err(), "a cancelled call must not report success: {result:?}");
             assert!(elapsed < Duration::from_millis(1000), "took {elapsed:?}");
         });

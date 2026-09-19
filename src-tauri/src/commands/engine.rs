@@ -2841,7 +2841,14 @@ fn spawn_engine_attempt(
         .stderr(Stdio::piped());
     // Forward the user's GPU pick (CUDA/HIP/OneAPI) exactly like start_ollama;
     // no-op in the default "auto" mode. On mac this is inert (Metal).
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
     // K1 (3.0.1): point a dynamic-ISA sidecar (Windows/Linux) at its
@@ -3745,7 +3752,14 @@ fn start_bundled_embed_blocking(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
     // K1 (3.0.1): this is the same dynamic-ISA binary the chat engine spawns

@@ -67,6 +67,7 @@ import { CivitaiApiKeySetting } from './CivitaiApiKeySetting'
 import { HfTokenSetting } from './HfTokenSetting'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
 import { ContentPolicySettings } from './ContentPolicySettings'
+import { isLmStudioProvider } from '../../lib/hf-to-provider'
 
 // ── User profile picture (Appearance) ───────────────────────────
 // Self-contained like HfDownloadPathSetting. Stores the picture as a
@@ -2539,6 +2540,30 @@ export function ProbeBadge({ probe, switchedOff }: { probe: BackendProbe; switch
   )
 }
 
+/**
+ * R8-Nachzug (LM-Studio-Adresse, 2026-09-18): Rust besitzt keinen eigenen
+ * Speicherplatz fuer die LM-Studio-Basis (anders als Ollama/ComfyUI, die es
+ * selbst startet), also liest der Aufrufer seinen eigenen Provider-Store und
+ * reicht die konfigurierte Adresse als Befehlsargument durch, statt ein
+ * zweites AppState-Feld nur fuer einen Wert zu pflegen, den Rust ohnehin nie
+ * selbst setzt. Als eigene, exportierte Funktion, damit der Argumentname
+ * `lmStudioBase` (Tauri wandelt ihn nach camelCase fuer `lm_studio_base`,
+ * siehe health.rs) und die Erkennung beider Schreibweisen ("LM Studio",
+ * "LMStudio") direkt getestet werden koennen, ohne die ganze Komponente zu
+ * rendern (B3/F5-Nachbesserung, review-w2rust.md).
+ *
+ * Nutzt den kanonischen Helfer `isLmStudioProvider` (statt eines eigenen
+ * `includes('lm studio')`), der auch einen Slot-Namen wie "LMStudio" erkennt,
+ * genau wie modelStore.ts und ModelSelector.tsx es bereits tun. Eine zweite,
+ * engere Wahrheit fuer denselben Begriff haette denselben Bug fuer diese
+ * Schreibweise offen gelassen.
+ */
+export function lmStudioBaseArg(
+  openaiSlot: { name?: string; baseUrl?: string } | undefined,
+): { lmStudioBase: string | undefined } {
+  return { lmStudioBase: isLmStudioProvider(openaiSlot?.name) ? openaiSlot?.baseUrl : undefined }
+}
+
 function TroubleshootSection() {
   const [report, setReport] = useState<SystemHealthReport | null>(null)
   const [loading, setLoading] = useState(false)
@@ -2550,7 +2575,8 @@ function TroubleshootSection() {
     setLoading(true)
     setHinweis(null)
     try {
-      const r = await backendCall<SystemHealthReport>('system_health', {})
+      const openaiSlot = useProviderStore.getState().providers.openai
+      const r = await backendCall<SystemHealthReport>('system_health', lmStudioBaseArg(openaiSlot))
       setReport(r)
     } catch (e) {
       setHinweis(troubleshootHinweis(e, isTauri()))
