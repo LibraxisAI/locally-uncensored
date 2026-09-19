@@ -60,6 +60,13 @@ export function Header() {
   // the model with "does not support (chat|completion|generate)". Offers a
   // one-click refresh that re-pulls the model (progress tracked in DownloadBadge).
   const [staleError, setStaleError] = useState<{ model: string; message: string } | null>(null)
+  // Models whose stale chip the user dismissed this session (Posten 3,
+  // bau/review-lanes.md "Runde 3 der Pruefung": lu-300-desktop 1f19b7b8,
+  // ported here because the two repos' Header.tsx have since diverged too
+  // far for a clean cherry-pick). Without this list the X below only clears
+  // local state, and the effect two below rebuilds the chip from the health
+  // store in the very same pass, so the click did nothing a user could see.
+  const [dismissedStale, setDismissedStale] = useState<string[]>([])
   const { pullModel, isPullingModel, fetchModels } = useModels()
   const healthStaleModels = useModelHealthStore((s) => s.staleModels)
   const addStaleToHealth = useModelHealthStore((s) => s.setStaleModels)
@@ -150,6 +157,13 @@ export function Header() {
       return
     }
     const isStale = healthStaleModels.includes(modelToUse)
+    // Dismissed this session: stay hidden even though the health store still
+    // lists the model as stale. Checked BEFORE the re-pin branches below, so
+    // switching away and back to this same model does not resurrect it.
+    if (isStale && dismissedStale.includes(modelToUse)) {
+      if (staleError) setStaleError(null)
+      return
+    }
     if (isStale && !staleError) {
       setStaleError({
         model: modelToUse,
@@ -165,7 +179,7 @@ export function Header() {
         message: `Model "${modelToUse}" has a stale manifest. Run "ollama pull ${modelToUse}" to refresh.`,
       })
     }
-  }, [modelToUse, isOllamaModel, healthStaleModels, staleError])
+  }, [modelToUse, isOllamaModel, healthStaleModels, staleError, dismissedStale])
 
   const toggleTheme = () => {
     updateSettings({ theme: settings.theme === 'dark' ? 'light' : 'dark' })
@@ -456,7 +470,10 @@ export function Header() {
               <span>Refresh</span>
             </button>
             <button
-              onClick={() => setStaleError(null)}
+              onClick={() => {
+                setDismissedStale((d) => (staleError && !d.includes(staleError.model) ? [...d, staleError.model] : d))
+                setStaleError(null)
+              }}
               className="flex items-center rounded p-[1px] hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
               title="Dismiss"
               aria-label="Dismiss"
