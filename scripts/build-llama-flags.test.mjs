@@ -43,7 +43,7 @@ test('BL1: the Windows MSVC linker-map flags use -MAP, not /MAP', () => {
 
 test('BL1 (real box rebuild finding): CMAKE_MODULE_LINKER_FLAGS also carries -MAP, not just SHARED/EXE', () => {
   // ggml/src/CMakeLists.txt adds every GGML_BACKEND_DL backend
-  // (ggml-cpu-*.dll, ggml-vulkan.dll — exactly the files this guard cares
+  // (ggml-cpu-*.dll, ggml-vulkan.dll, exactly the files this guard cares
   // about most) as a CMake MODULE library, which MSVC links with
   // CMAKE_MODULE_LINKER_FLAGS, not CMAKE_SHARED_LINKER_FLAGS. A real sidecar
   // rebuild on the box with only the SHARED/EXE flags set produced .map

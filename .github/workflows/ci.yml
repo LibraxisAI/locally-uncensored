@@ -444,7 +444,7 @@ jobs:
           # LD_LIBRARY_PATH pointed at it. This job stubs the sidecar as a
           # zero-byte file (see "Stub llama-server sidecar" above), so
           # whether linuxdeploy hits the identical failure here was NOT
-          # independently measured on that stub — this only mirrors the
+          # independently measured on that stub; this only mirrors the
           # release-lane fix defensively, for the same reason, so this gate
           # and the real release build cannot silently diverge on it. Empty
           # on windows-latest, where LD_LIBRARY_PATH is meaningless.

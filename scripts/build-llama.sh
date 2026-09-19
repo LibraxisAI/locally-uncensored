@@ -160,7 +160,7 @@ cmake_flags_for() {
       # CMAKE_SHARED_LINKER_FLAGS/CMAKE_EXE_LINKER_FLAGS set to -MAP produced
       # ggml.map, ggml-base.map, llama.map, llama-common.map,
       # llama-server-impl.map, mtmd.map and llama-server.map (the exe) but
-      # NOT ONE .map for any ggml-cpu-*.dll or ggml-vulkan.dll — exactly the
+      # NOT ONE .map for any ggml-cpu-*.dll or ggml-vulkan.dll, exactly the
       # files verify-sidecar-isa.sh's Windows guard most needs a map for,
       # since they are where an unconditional-AVX regression would actually
       # ship. All three linker-flags variables now carry -MAP.

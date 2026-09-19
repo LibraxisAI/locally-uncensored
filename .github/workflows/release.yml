@@ -506,8 +506,8 @@ jobs:
       # existing files") is NOT fatal, it still exits 0, which is the
       # suspected reason the real 3.0.0 AppImage shipped once with no
       # CPU-dispatch companions at all despite a green build. Nothing in
-      # this workflow inspected the BUILT artifact before this step existed
-      # — the boot-smoke step above only checks the pre-bundle staging
+      # this workflow inspected the BUILT artifact before this step existed:
+      # the boot-smoke step above only checks the pre-bundle staging
       # directory, never what linuxdeploy actually packed. If linuxdeploy
       # ever silently drops a companion again, this is what turns that red:
       # extract the real .AppImage this run just produced and diff its
