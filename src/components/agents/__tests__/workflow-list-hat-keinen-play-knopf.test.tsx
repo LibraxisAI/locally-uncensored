@@ -5,8 +5,12 @@
  * (`onRun={() => {}}` in SettingsPage.tsx). Der Knopf ist entfernt statt
  * verdrahtet zu werden, denn der Weg, ihn "echt" zu machen, wurde in
  * fix/301-wfplay geprueft und mit Auflagen 1-4 (Blocker) zurueckgewiesen: der
- * einzige tatsaechlich funktionierende Startweg fuer einen Ablauf bleibt das
- * Agenten-Werkzeug `run_workflow`.
+ * verbleibende Startweg fuer einen Ablauf ist das Agenten-Werkzeug
+ * `run_workflow` (und der Chat-Ausloeser "run workflow <name>"). Richtigstellung,
+ * bau/review-wfgate.md Auflage 6: "funktionierend" war zum Zeitpunkt dieses
+ * Kommentars zu grosszuegig formuliert, alle drei eingebauten Ablaeufe
+ * haengen ueber diesen Weg am ersten user_input-Schritt, siehe die Korrektur
+ * dazu in workflow-engine.ts (`prefilledUserInput`).
  *
  * Dieser Test haelt fest, dass die Liste ohne den Knopf rendert und die
  * beiden anderen Aktionen (Bearbeiten, Loeschen) unveraendert da sind.
@@ -34,7 +38,7 @@ function workflow(overrides: Partial<AgentWorkflow> = {}): AgentWorkflow {
 
 beforeEach(() => {
   cleanup()
-  useAgentWorkflowStore.setState({ workflows: [workflow()], executions: [], activeExecutionId: null })
+  useAgentWorkflowStore.setState({ workflows: [workflow()] })
 })
 
 describe('WorkflowList', () => {

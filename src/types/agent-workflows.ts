@@ -78,7 +78,6 @@ export interface AgentWorkflow {
 // ── Execution ─────────────────────────────────────────────────
 
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-export type WorkflowStatus = 'idle' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'cancelled'
 
 export interface StepResult {
   stepId: string
@@ -94,19 +93,13 @@ export interface StepResult {
   }>
 }
 
-export interface WorkflowExecution {
-  id: string
-  workflowId: string
-  workflowName: string
-  status: WorkflowStatus
-  currentStepIndex: number
-  stepResults: StepResult[]
-  variables: Record<string, string>  // runtime variable state
-  conversationId?: string
-  startedAt: number
-  completedAt?: number
-  error?: string
-}
+// Auflage 7, bau/review-wfgate.md: `WorkflowExecution` and `WorkflowStatus`
+// (a full execution-history record type: id, status, currentStepIndex,
+// stepResults, variables, conversationId, timestamps) were removed here
+// alongside the dead execution-history slice of `agentWorkflowStore.ts`
+// that was their only production reader and writer. `WorkflowEngine`
+// (workflow-engine.ts) tracks a run's own state independently via
+// `StepResult[]` and never touched this type.
 
 // ── Engine Callbacks ──────────────────────────────────────────
 
