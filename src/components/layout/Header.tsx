@@ -317,8 +317,30 @@ export function Header() {
        Kopfzeile war ausgerechnet die HELLERE, obwohl sie hinter allem liegt.
        Nebeneffekt, gemessen: die aktive Nav-Pille und die Hover-Flaeche der
        Fensterknoepfe waren beide `gray-100` auf `gray-100` und damit
-       unsichtbar; sie haben jetzt Grund unter sich. */
-    <header className="h-10 grid grid-cols-[auto_1fr_auto] items-center px-3 bg-gray-200 dark:bg-lu-canvas z-40 gap-4">
+       unsichtbar; sie haben jetzt Grund unter sich.
+
+       D-T-Mitte (18.09.2026): Spalten waren `auto_1fr_auto`. Die Mitte-Spalte
+       war damit der REST zwischen zwei ungleich breiten Aussenspalten (links
+       Burger+Logo ~59px, rechts vier Werkzeuge ~178px), und `justify-center`
+       zentriert nur INNERHALB dieser Restflaeche, nicht im Fenster. Gemessen
+       am laufenden Fenster stand die Reihe deshalb 59,7px links vom Fenster-
+       und Leistenmittelpunkt, bei jeder Breite und in Cloud wie Lokal gleich
+       weit, weil die Differenz allein aus den Aussenspalten kommt, nicht aus
+       dem Inhalt der Mitte. Der A/B-Vergleich zentriert sein "VS" seinerseits
+       im Inhaltsbereich (Compare blendet die Seitenleiste aus, `AppShell.tsx`:
+       `{!isComparing && <Sidebar />}`), und der liegt bei symmetrischem
+       `p-2` im Fenster mittig, also ist die Fenstermitte hier dieselbe Achse
+       wie die VS-Achse.
+
+       Jetzt `1fr_auto_1fr`: die Mitte ist eine dritte, eigene Spalte, die sich
+       auf ihren Inhalt einmisst und ZWISCHEN zwei GLEICH GROSSEN Restspalten
+       liegt, damit liegt sie automatisch auf der Fenstermitte, unabhaengig
+       davon, wie breit links und rechts sind. Links und rechts behalten ihre
+       Spalte (jetzt `1fr` statt `auto`) und dehnen sich damit, aber ihr
+       Inhalt bleibt an derselben Kante stehen wie vorher (links `justify-
+       start`, rechts unten `justify-end` sind schon gesetzt), nachgemessen
+       um 0,0px Differenz zur alten Position. */
+    <header className="h-10 grid grid-cols-[1fr_auto_1fr] items-center px-3 bg-gray-200 dark:bg-lu-canvas z-40 gap-4">
       {/* Left: Sidebar + Logo */}
       <div className="flex items-center gap-2 min-w-0">
         <button
