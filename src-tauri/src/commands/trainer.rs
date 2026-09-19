@@ -3985,9 +3985,18 @@ mod tests {
 
         // A UNC share is a different prefix from a drive letter, even one
         // pointing at the very same physical machine, because there is no
-        // portable way to prove otherwise from the path text alone.
-        let comfy_unc = Path::new(r"\\nas\ComfyUI");
-        assert!(super::suggested_trainer_root(Some(comfy_unc), default_root).is_some());
+        // portable way to prove otherwise from the path text alone. The
+        // ComfyUI folder needs one path segment PAST the share itself
+        // (`\\nas\media\ComfyUI`, not `\\nas\ComfyUI`): a bare
+        // `\\server\share` is the whole prefix and root together on
+        // Windows, so `Path::parent()` on it alone returns `None` and
+        // `suggested_trainer_root` would bail out before it ever reaches
+        // the drive comparison (Opus review-teil11.md B1).
+        let comfy_unc = Path::new(r"\\nas\media\ComfyUI");
+        assert_eq!(
+            super::suggested_trainer_root(Some(comfy_unc), default_root),
+            Some(r"\\nas\media\LU-Trainer".to_string())
+        );
     }
 
     /// K5 point 3: an empty install path is the way back to the default, not
