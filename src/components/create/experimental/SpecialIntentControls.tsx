@@ -35,6 +35,7 @@ import { Segmented } from '../ui/Segmented'
 import { Slider } from '../ui/Slider'
 import { cn } from '../ui/cn'
 import { useClickAway } from '../ui/useClickAway'
+import { Modal } from '../../ui/Modal'
 
 export function SpecialControls({ intent }: { intent: CreateIntent }) {
   switch (intent) {
@@ -257,6 +258,99 @@ function CharacterPanel() {
   )
 }
 
+// Das Trainer-Installationspfad-Feld des Erstsetup-Gates. `status` speist nur
+// `trainerRootHint`; Wert und Aenderungs-Handler gehoeren dem Aufrufer.
+//
+// A1-Korrektur (Final Review, 19.09.2026): dieses Feld war bis eben auch im
+// Reinstall-Dialog, mit demselben Ordner vorbelegt. Das war der Blocker: ein
+// Kunde, der bloss bestaetigt, schickte seinen bestehenden Standardordner als
+// nicht-leeren Pfad an install_character_trainer, und trainer_root_is_customized()
+// kippte auf true, obwohl sich nichts geaendert hatte -- die Cache-Migration
+// (apply_trainer_cache_env, trainer.rs:363) griff dann fuer einen Kunden, der
+// sie nie ausgeloest hatte, und liess pip/Torch mehrere GB neu laden, die
+// schon auf der Platte lagen. Der Reinstall-Dialog zeigt den Ordner jetzt nur
+// noch als Text (siehe TrainerReinstallModal) und schickt denselben leeren
+// bzw. vorbelegten Pfad wie vor dem Z5-Umbau.
+function TrainerPathField({
+  value,
+  onChange,
+  status,
+}: {
+  value: string
+  onChange: (v: string) => void
+  status: Pick<TrainerStatus, 'root' | 'customized' | 'suggestedRoot'>
+}) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={`e.g. ${trainerPathPlaceholder(isWindows(), isMacOS())}`}
+        className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
+      />
+      <span className="t-label text-gray-600">{trainerRootHint(status, value, status.suggestedRoot)}</span>
+    </div>
+  )
+}
+
+// Z5 (box-gruen/b, e2e Windows, 18.09.2026): "Reinstall trainer" hat bisher
+// install_character_trainer im selben Moment ausgeloest, in dem der Knopf
+// geklickt wurde, ohne Bestaetigung, ohne Chance, vorher zu sehen, was
+// passiert. Die Rust-Seite loescht `<root>` dabei NICHT (siehe Doc-Kommentar
+// von provision_trainer_env: `<root>/train` und `<root>/models` werden nie
+// angefasst), ersetzt aber die venv (Rebuild oder Torch/musubi neu
+// installieren, siehe `venv_action`), und genau das hat den Tester auf
+// box-gruen mitten im Klick ueberrascht. Dieser Dialog sagt das ehrlich und
+// ruft den Install-Befehl erst auf, wenn der Kunde "Reinstall" drueckt.
+//
+// A1/Blocker-Korrektur (Final Review, 19.09.2026): der Ordner ist hier nur
+// noch Text, nicht editierbar. Ein editierbares Feld, vorbelegt mit dem
+// bestehenden Ordner, hat jeden gewoehnlichen Reinstall (Kunde bestaetigt
+// ohne etwas zu aendern) zu einem "customized" Pfad gemacht und damit den
+// Cache-Migrationsschutz ausgeloest, den es hier nicht geben soll. Einen
+// anderen Ordner fuer den Trainer waehlen geht weiterhin nur ueber das
+// Erstsetup-Gate (TrainerPathField oben, bevor envReady zum ersten Mal wahr
+// wird); ein Weg, das nach der Erstinstallation zu aendern, existiert in der
+// App bisher nicht.
+function TrainerReinstallModal({
+  open,
+  onClose,
+  status,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  status: TrainerStatus
+  onConfirm: () => void
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title="Reinstall the trainer?">
+      <div className="space-y-4 text-sm text-gray-200">
+        <p className="t-body leading-relaxed text-gray-300">
+          This sets up the trainer's Python environment again: PyTorch and musubi-tuner get reinstalled. Your training photos and downloaded base models are not touched. Setup needs about 3 GB of downloads, same as the first install.
+        </p>
+        <p className="t-label text-gray-500 text-center">Trainer folder: {status.root}</p>
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            onClick={onConfirm}
+            data-destructive
+            className="w-full px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-200 text-sm font-medium transition-colors"
+          >
+            Reinstall
+          </button>
+          <button
+            onClick={onClose}
+            data-autofocus
+            className="w-full px-4 py-1.5 rounded-lg hover:bg-white/5 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // Local training readiness + inputs (2.5.8 A5). Three gates render in order:
 // trainer env (one-time musubi setup) -> Z-Image base files -> the actual
 // trigger/steps inputs. The Rust side is the source of truth for readiness.
@@ -285,6 +379,8 @@ function LocalTrainControls() {
   // field was pre-filled and they clear it on purpose), stop overwriting
   // their edit with the backend's current root on every poll.
   const [pathTouched, setPathTouched] = useState(false)
+  // Z5 (box-gruen/b): der Bestaetigungsdialog vor "Reinstall trainer".
+  const [reinstallOpen, setReinstallOpen] = useState(false)
 
   const refresh = useCallback(() => {
     characterTrainerStatus().then(setStatus).catch(() => setStatus(null))
@@ -367,6 +463,18 @@ function LocalTrainControls() {
       setBusy(null)
     }
   }
+  // Blocker-Korrektur (Final Review, 19.09.2026): der Reinstall-Dialog hat
+  // keinen eigenen Pfad mehr. Bestaetigen schickt GENAU das Argument, das der
+  // Knopf vor dem Z5-Umbau schickte -- `installPath.trim() || undefined`, der
+  // Zustand des Erstsetup-Gates oben, den ein Kunde, der das Feld nie
+  // angefasst hat, nie auf einen nicht-leeren Wert gebracht hat. Ohne diese
+  // Wiederverwendung wuerde jeder gewoehnliche Reinstall `trainer_root` auf
+  // einen nicht-leeren String setzen und `trainer_root_is_customized()`
+  // ungewollt auf true kippen.
+  const confirmReinstall = async () => {
+    setReinstallOpen(false)
+    await startInstall()
+  }
   const startBases = async () => {
     if (!status) return
     setBusy('bases')
@@ -402,15 +510,11 @@ function LocalTrainControls() {
           </Button>
         </div>
         {busy !== 'install' && (
-          <div className="flex flex-col items-center gap-0.5">
-            <input
-              value={installPath}
-              onChange={(e) => { setInstallPath(e.target.value); setPathTouched(true) }}
-              placeholder={`e.g. ${trainerPathPlaceholder(isWindows(), isMacOS())}`}
-              className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
-            />
-            <span className="t-label text-gray-600">{trainerRootHint(status, installPath, status.suggestedRoot)}</span>
-          </div>
+          <TrainerPathField
+            value={installPath}
+            onChange={(v) => { setInstallPath(v); setPathTouched(true) }}
+            status={status}
+          />
         )}
         {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
@@ -469,7 +573,7 @@ function LocalTrainControls() {
               build could not reach it (bob80817, D#102). */}
           <button
             type="button"
-            onClick={startInstall}
+            onClick={() => setReinstallOpen(true)}
             disabled={busy === 'install'}
             className="underline underline-offset-2 text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors"
           >
@@ -478,6 +582,12 @@ function LocalTrainControls() {
         </div>
       )}
       {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
+      <TrainerReinstallModal
+        open={reinstallOpen}
+        onClose={() => setReinstallOpen(false)}
+        status={status}
+        onConfirm={confirmReinstall}
+      />
     </div>
   )
 }

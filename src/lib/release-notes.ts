@@ -325,6 +325,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'Local Media now mentions that a Hugging Face token helps.',
             detail: 'The Local Media (Apple MLX) panel now mentions that a Hugging Face token can help its downloads, the same hint ComfyUI already gives for its own model downloads.',
           },
+          {
+            title: 'Reinstall trainer now confirms before it starts.',
+            detail: 'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder, instead of starting the reinstall the moment the button is clicked.',
+          },
         ],
       },
     ],
