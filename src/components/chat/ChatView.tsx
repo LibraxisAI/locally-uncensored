@@ -84,7 +84,15 @@ export function ChatView() {
   // one frame where it actually flips.
   const activeConvIsEmpty = useChatStore((s) => {
     const conv = s.conversations.find((c) => c.id === s.activeConversationId)
-    if (!conv || (conv.mode ?? 'lu') !== 'lu') return false
+    if (!conv) return false
+    // Auflage A3 (review-leer2-offload.md): 'remote' zaehlt jetzt mit. Ein
+    // dispatchter Remote-Chat ist bis zur ersten Mobil-Nachricht genauso
+    // leer wie ein frischer lokaler Chat, und lief vorher auf denselben
+    // leeren Hauptbereich wie das F1-Symptom oben, nur dass hier kein
+    // Reiterwechsel den Zustand zuruecksetzt. 'codex' bleibt aussen vor
+    // (eigene Ansicht, CodexView, siehe chatMode-Weiche oben); 'openclaw' hat
+    // keinen aktiven Einstiegspunkt in der UI und bleibt deshalb unberuehrt.
+    if (conv.mode !== 'lu' && conv.mode !== 'remote') return false
     return conv.messages.filter((m) => m.role !== 'system' && !m.hidden).length === 0
   })
   const activeModel = useModelStore((s) => s.activeModel)
@@ -478,29 +486,45 @@ export function ChatView() {
                       tief, exakt der Fehler der Eingangsseite, nur an einem
                       zweiten Ort mit demselben Rezept. */}
                   {activeConvIsEmpty && (
-                    <div
-                      data-testid="chat-landing"
-                      className="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-2 overflow-y-auto scrollbar-thin py-4 px-3"
-                    >
-                      <img
-                        src={MONOGRAM}
-                        alt=""
-                        width={56}
-                        height={56}
-                        className={`${MONOGRAM_INVERT} opacity-90`}
-                      />
-                      <h1 className="t-display text-gray-900 dark:text-gray-100">Ask LU anything</h1>
-                      <p className="t-body text-gray-500 max-w-[40ch]">{landing.subline}</p>
-                      {landing.note && (
-                        <p className="t-mono w-full truncate px-4 text-gray-400 dark:text-gray-500" title={landing.note}>
-                          {landing.note}
-                        </p>
-                      )}
-                      {!sidebarOpen && (
-                        <div className="w-full pt-3 flex flex-col items-center text-left">
-                          <RecentChats />
-                        </div>
-                      )}
+                    // Runde 2 (David, Auflage A1, review-leer2-offload.md):
+                    // `chat-landing` stand vorher auf DIESEM flex-1-Container
+                    // selbst, also der sichtbaren Flaeche selbst, nicht auf
+                    // dem Inhalt darin. `measureLanding` in
+                    // leerzustand-sitzt-mittig.spec.ts nimmt `block.parentElement`
+                    // als Flaeche, hier also den AEUSSEREN `motion.div key="chat"`
+                    // (PlanBar + dieser Block + Sitzungsleiste + Remote-Baender
+                    // zusammen), nicht die eigentliche Restflaeche zwischen
+                    // PlanBar und Composer. Fix: `chat-landing` auf den
+                    // INNEREN Inhalt (Zeichen, Ueberschrift, Modellname,
+                    // Recents), der aeussere `flex-1 justify-center`-Container
+                    // bleibt namenlos und ist jetzt die Flaeche, gegen die
+                    // gemessen wird, genau wie beim Block der Eingangsseite
+                    // oben (Zeile 355-362, dasselbe Rezept).
+                    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto scrollbar-thin py-4 px-3">
+                      <div
+                        data-testid="chat-landing"
+                        className="flex flex-col items-center text-center gap-2"
+                      >
+                        <img
+                          src={MONOGRAM}
+                          alt=""
+                          width={56}
+                          height={56}
+                          className={`${MONOGRAM_INVERT} opacity-90`}
+                        />
+                        <h1 className="t-display text-gray-900 dark:text-gray-100">Ask LU anything</h1>
+                        <p className="t-body text-gray-500 max-w-[40ch]">{landing.subline}</p>
+                        {landing.note && (
+                          <p className="t-mono w-full truncate px-4 text-gray-400 dark:text-gray-500" title={landing.note}>
+                            {landing.note}
+                          </p>
+                        )}
+                        {!sidebarOpen && (
+                          <div className="w-full pt-3 flex flex-col items-center text-left">
+                            <RecentChats />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 

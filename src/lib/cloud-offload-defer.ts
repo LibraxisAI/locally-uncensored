@@ -38,6 +38,21 @@
  * `runOffload` wird nie gerufen, der Offload entfaellt komplett, statt
  * verspaetet einzutreffen. Ohne aktiven lokalen Lauf laeuft `runOffload`
  * sofort, unveraendert zum bisherigen Verhalten.
+ *
+ * ── AUFLAGE B2 (review-leer2-offload.md): DER PREIS DES AUFSCHUBS ───────────
+ *
+ * Dieser Aufschub ist ein Tausch, kein reiner Gewinn. Haengt ein lokaler Lauf
+ * fest (Modell antwortet nicht mehr, Motor haengt, o.ae.), bucht er seine
+ * Spur in `generationStore.runs` weiter, bis der Nutzer selbst Stop drueckt
+ * oder der Lauf mit einem Fehler endet: `hasActiveLocalRun` sieht in diesem
+ * Fenster keinen Unterschied zwischen "arbeitet noch" und "haengt fest".
+ * Solange das so ist, laeuft `runOffload` nicht, das lokale Modell bleibt
+ * geladen, und der VRAM, den es haelt, bleibt belegt, obwohl der Nutzer
+ * laengst auf Cloud umgeschaltet hat. Das ist der bewusste Gegenwert zum
+ * Fix oben (kein stilles "Connection dropped" fuer einen echten Lauf mehr):
+ * ein haengender Lauf haelt jetzt VRAM fest statt eine fremde Unterhaltung
+ * zu toeten. Der einzige Ausweg aus diesem Zustand ist Stop auf dem
+ * haengenden Lauf selbst.
  */
 
 /** Die eine Tatsache, an der sich alles hier entscheidet. */

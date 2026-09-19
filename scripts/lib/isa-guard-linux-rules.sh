@@ -359,7 +359,15 @@ evaluate_module_asm() {
 # real binary" reasoning win-isa-guard.mjs's own --min-lines already uses,
 # see verify-sidecar-isa.sh:616), so a real Linux run tightening this
 # further is expected, not a sign this number was wrong.
-MIN_DISASM_LINES=20
+#
+# NACHARBEIT N1 (review-isalinux.md, Nachreview Runde 2): genau das ist
+# passiert. Der echte Linux-Lauf mass fuer das KLEINSTE Modul 761
+# disassemblierte Befehlszeilen, weit ueber der alten 20er-Schwelle. 20 war
+# nur eine grobe Untergrenze gegen einen kaputten Disassembler (siehe oben),
+# keine an echten Zahlen gemessene. 200 bleibt weit unter den 761 echten
+# und faengt trotzdem jeden Fall ab, in dem objdump nur ein paar Zeilen
+# Fehlermeldung statt einer echten Disassemblierung liefert.
+MIN_DISASM_LINES=200
 
 # Count objdump/llvm-objdump AT&T-syntax instruction lines: an address,
 # a colon, then a tab (the disassembled-instruction shape every fixture in

@@ -20,6 +20,11 @@
  * zugeklappter Seitenleiste (D-S06, siehe home-recent-chats.test.ts).
  *
  * Run: npx vitest run src/components/chat/__tests__/leer-aktive-unterhaltung.test.ts
+ *
+ * Auflage A3 (review-leer2-offload.md): dieselbe leere Flaeche traf auch
+ * einen dispatchten Remote-Chat vor der ersten Mobil-Nachricht, weil die
+ * Bedingung `conv.mode !== 'lu'` jeden anderen Modus ausschloss. `mode:
+ * 'remote'` zaehlt jetzt mit (Fix in ChatView.tsx, activeConvIsEmpty).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createElement } from 'react'
@@ -96,5 +101,30 @@ describe('F1: eine aktive, leere Unterhaltung zeigt nie einen komplett leeren Ha
     useChatStore.setState({ conversations: [], activeConversationId: null })
     render(createElement(ChatView))
     expect(screen.getByTestId('chat-landing')).toBeTruthy()
+  })
+
+  it('A3: ein dispatchter, noch leerer Remote-Chat zeigt denselben Leerzustand-Block, nicht eine leere Flaeche', () => {
+    useUIStore.setState({ sidebarOpen: true })
+    useChatStore.setState({
+      conversations: [{ ...conv('remote1', 'Remote', NOW), mode: 'remote' }],
+      activeConversationId: 'remote1',
+    })
+    render(createElement(ChatView))
+    expect(screen.getByTestId('chat-landing')).toBeTruthy()
+    expect(screen.getByText('Ask LU anything')).toBeTruthy()
+  })
+
+  it('A3-NEGATIVKONTROLLE: ein Remote-Chat mit der ersten Nachricht weicht dem Transkript, wie bei lu', () => {
+    useUIStore.setState({ sidebarOpen: true })
+    useChatStore.setState({
+      conversations: [{
+        ...conv('remote2', 'Remote', NOW),
+        mode: 'remote',
+        messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: NOW }],
+      }],
+      activeConversationId: 'remote2',
+    })
+    render(createElement(ChatView))
+    expect(screen.queryByTestId('chat-landing')).toBeNull()
   })
 })

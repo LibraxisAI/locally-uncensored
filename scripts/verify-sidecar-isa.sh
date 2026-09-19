@@ -850,7 +850,8 @@ for path in "${!module_role[@]}"; do
   # BLOCKER B1 (review-isalinux.md Runde 2): an empty or near-empty
   # disassembly must fail its OWN check before it ever reaches
   # evaluate_module_asm, not read as "no AVX found, so it passes". See
-  # check_min_disasm_lines's own header for why 20 and not a tighter bound.
+  # check_min_disasm_lines's own header, and N1 (Nachreview Runde 2), for
+  # why 200 and not a tighter or looser bound.
   if lines_verdict="$(check_min_disasm_lines "$asm" "$label")"; then
     vlog "$lines_verdict"
   else

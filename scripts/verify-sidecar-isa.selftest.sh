@@ -292,15 +292,18 @@ set +e
 out="$(check_min_disasm_lines "" "empty-module")"; status=$?
 set -e
 assert_eq "empty disassembly exits 1 (RED PROBE, the exact bug the review measured: evaluate_module_asm baseline \"\" used to exit 0)" "1" "$status"
-assert_eq "empty disassembly verdict text (RED PROBE)" 'FAIL: empty-module: only 0 disassembled instruction line(s) found (need >= 20); an empty or near-empty disassembly is not proof the module carries no AVX-or-above instruction, it means the disassembler produced nothing usable (crashed, printed an error, or was fed the wrong file) and every ISA verdict for this module is unproven' "$out"
+assert_eq "empty disassembly verdict text (RED PROBE)" 'FAIL: empty-module: only 0 disassembled instruction line(s) found (need >= 200); an empty or near-empty disassembly is not proof the module carries no AVX-or-above instruction, it means the disassembler produced nothing usable (crashed, printed an error, or was fed the wrong file) and every ISA verdict for this module is unproven' "$out"
 
 set +e
 out="$(check_min_disasm_lines "$clean_baseline" "too-short-module")"; status=$?
 set -e
-assert_eq "a too-short real-looking disassembly (7 lines, below MIN_DISASM_LINES=20) exits 1 (RED PROBE)" "1" "$status"
+assert_eq "a too-short real-looking disassembly (7 lines, below MIN_DISASM_LINES=200) exits 1 (RED PROBE)" "1" "$status"
 
+# N1 (Nachreview Runde 2): fixture grew from 21 to 234 instruction lines so
+# it still clears the raised MIN_DISASM_LINES=200 (the real Linux run's
+# smallest module measured 761).
 out="$(check_min_disasm_lines "$clean_baseline_realistic" "realistic-module")"; status=$?
-assert_eq "a realistically-sized disassembly (21 lines) exits 0" "0" "$status"
+assert_eq "a realistically-sized disassembly (234 lines) exits 0" "0" "$status"
 
 # The deliberately-tiny decision-logic fixtures above (5-7 lines each) are
 # legitimate inputs to evaluate_module_asm/has_avx*_or_above directly (they
