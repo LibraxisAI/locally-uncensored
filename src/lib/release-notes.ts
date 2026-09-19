@@ -267,6 +267,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'A brand new chat no longer shows a blank screen.',
             detail: 'Right after "+ New Chat", with the side panel open, the main area could stay completely empty: no greeting, no history, nothing, even after a full reload of the same still-empty chat. Only switching to another tab and back brought it around. The greeting now shows for that chat from the first frame, the same as before the first message is sent.',
           },
+          {
+            title: 'Switching to Cloud no longer drops a local generation running elsewhere.',
+            detail: 'Switching the app to Cloud used to free the local engine right away, even while another chat, agent, code or group run was still generating on it, and that run then ended with "Connection dropped". The switch to Cloud itself still happens right away; only that memory cleanup now waits until every local run in progress has ended (normally, by Stop, or by failing), and it is skipped entirely if you switch back to Local before that.',
+          },
         ],
       },
       {
