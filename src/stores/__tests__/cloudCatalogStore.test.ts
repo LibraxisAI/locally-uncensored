@@ -95,6 +95,22 @@ describe('cloudCatalogStore', () => {
     expect(defaultEditModel()?.id).toBe('flux-9')
   })
 
+  // R5-58: qwen-image-edit serves 'edit' through `ops: ['edit']`, not
+  // `edit: true`. isEditCapable and defaultEditModel used to check only the
+  // classic flag, so this model existed in the seed and was still
+  // unreachable from the edit picker and the submit-time fallback.
+  it('R5-58: isEditCapable recognises an ops-based edit model too', () => {
+    expect(isEditCapable('qwen-image-edit')).toBe(true)
+    expect(isEditCapable('qwen-image')).toBe(false) // plain generate-only model
+  })
+
+  it('R5-58: qwen-image-edit is in the seed with the maskless flag Web sets', () => {
+    const m = CLOUD_MODEL_SEED.find((x) => x.id === 'qwen-image-edit')
+    expect(m).toBeDefined()
+    expect(m?.ops).toContain('edit')
+    expect(m?.maskless).toBe(true)
+  })
+
   describe('runCredits', () => {
     it('falls back to the quota figure before any catalog fetch (seed has no prices)', () => {
       expect(runCredits('image', 'generate', 'flux-schnell', undefined, 300)).toBe(300)

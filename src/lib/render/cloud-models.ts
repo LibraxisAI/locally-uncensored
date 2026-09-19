@@ -12,6 +12,11 @@ export interface CloudModel {
   kind: RenderKind
   /** Supports the masked img2img 'edit' op (flux-dev only today). */
   edit?: boolean
+  /** R5-66: an instruction-based edit endpoint that takes prompt + image and
+   *  needs no mask at all (Web parity: apps/web/lib/render/cloud-models.ts,
+   *  qwen-image-edit). Only meaningful on an `ops: ['edit']` model; classic
+   *  `edit: true` models (flux-dev) are always mask-required. */
+  maskless?: boolean
   /** Video: renders text-to-video (the "Video" intent). Absent = yes; set false
    *  on an i2v-only model to keep it out of the Video picker. */
   t2v?: boolean
@@ -110,6 +115,12 @@ export const CLOUD_MODEL_SEED: CloudModel[] = [
   { id: 'flux-dev-lora-ultra-fast', label: 'Flux Dev Fast + Character', kind: 'image', ops: ['generate'], lora: true, cfg: true },
   { id: 'z-image-turbo-lora', label: 'Z-Image Turbo + Character', kind: 'image', ops: ['generate'], lora: true },
   { id: 'z-image-base-lora', label: 'Z-Image + Character', kind: 'image', ops: ['generate'], lora: true },
+  // R5-57/58: missing from this seed entirely, so the edit picker never
+  // offered it and the model was unreachable until the live catalog fetch
+  // landed. Label and maskless flag copied verbatim from uselu
+  // apps/web/lib/render/cloud-models.ts.
+  { id: 'qwen-image-lora', label: 'Qwen Image + Character', kind: 'image', ops: ['generate'], lora: true },
+  { id: 'qwen-image-edit', label: 'Qwen Image Edit (no mask needed)', kind: 'image', ops: ['edit'], maskless: true },
   { id: 'infinitetalk-fast', label: 'InfiniteTalk (photo avatar)', kind: 'video', ops: ['lipsync'], lipsync_source: 'image', t2v: false, i2v: false },
   { id: 'p-video-avatar', label: 'P-Video Avatar (photo, fast)', kind: 'video', ops: ['lipsync'], lipsync_source: 'image', t2v: false, i2v: false },
   { id: 'latentsync', label: 'LatentSync (resync a clip)', kind: 'video', ops: ['lipsync'], lipsync_source: 'video', t2v: false, i2v: false },
