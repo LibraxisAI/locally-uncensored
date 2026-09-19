@@ -336,7 +336,19 @@ export function useAgentChat() {
         const callbacks: WorkflowEngineCallbacks = {
           onStepStart: () => {},
           onStepComplete: (_i, r) => { results.push(r) },
-          onStepError: () => {},
+          // Same fix as Auflage 4, bau/review-wfgate.md (builtin-tools.ts's
+          // `executeRunWorkflow`): `runSteps` calls `onStepError` and then
+          // breaks WITHOUT calling `onComplete` or `onError`, so a no-op
+          // here left a rejected approval's chat turn with no message at
+          // all, the same silent-failure shape the review flagged for the
+          // `run_workflow` tool's return value.
+          onStepError: (_i, error) => {
+            if (convId) {
+              useChatStore.getState().addMessage(convId, {
+                id: uuid(), role: 'assistant', content: `Workflow error: ${error}`, timestamp: Date.now(),
+              })
+            }
+          },
           onWaitingForInput: () => {},
           onComplete: () => {
             const lastOutput = results.filter(r => r.output).pop()
@@ -362,6 +374,17 @@ export function useAgentChat() {
         // conversation-keyed approval queue and permission store the rest of
         // Agent mode uses, so the user sees the same "Requesting approval"
         // block, not a bespoke one for workflows.
+        //
+        // Auflage 8, bau/review-wfgate.md: without an `abortSignal` here, the
+        // abort listener inside `buildSubAgentGates`'s gate never fired, and
+        // this run was never registered in `activeAgentRuns`, so `stopAgent`
+        // had no handle to actually cancel the engine's own in-flight prompt
+        // step, only `drainApprovals` happened to also clear a QUEUED
+        // approval as an accident of being keyed on the same `convId`.
+        // Registering this run the same way every other agent turn does
+        // gives Stop both a real `abortSignal` to close the gate with and a
+        // live engine to call `cancel()` on.
+        const workflowAbort = new AbortController()
         const gates = await buildSubAgentGates({
           token: `workflow-trigger-${convId}`,
           chatId: null,
@@ -371,9 +394,21 @@ export function useAgentChat() {
           readOnlyShellTurn: false,
           mode: null,
           artifacts: [],
+          abortSignal: workflowAbort.signal,
         })
         const engine = new WorkflowEngine(workflow, convId, callbacks, gates.awaitApproval)
-        await engine.run()
+        workflowAbort.signal.addEventListener('abort', () => engine.cancel(), { once: true })
+        const workflowRunState: AgentRunState = { convId, content: '', thinking: '', blocks: [], abort: workflowAbort }
+        activeAgentRuns.set(convId, workflowRunState)
+        setIsAgentRunning(true)
+        try {
+          await engine.run()
+        } finally {
+          if (activeAgentRuns.get(convId) === workflowRunState) {
+            activeAgentRuns.delete(convId)
+            setIsAgentRunning(activeAgentRuns.size > 0)
+          }
+        }
         return
       }
     }

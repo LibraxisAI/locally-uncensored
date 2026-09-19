@@ -1574,12 +1574,31 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
 
   const results: StepResult[] = []
   let finalOutput = ''
+  // Auflage 4, bau/review-wfgate.md: a no-op `onStepError` (the old body)
+  // left `finalOutput` empty on a rejected approval, so `run_workflow`
+  // returned '' to the model, no sign the user said no, and it just tried
+  // again. `runSteps` (workflow-engine.ts) calls `onStepError` and BREAKS
+  // the step loop on a failure, but still calls `onComplete` afterward (it
+  // is not the same as `onError`, which fires only on a thrown exception),
+  // and that handler's own fallback ("Workflow completed with no output.")
+  // would otherwise silently overwrite the error message set here, since a
+  // failed step's own `output` is '' and gets filtered out by
+  // `results.filter(r => r.output)`. `hadStepError` keeps `onComplete` from
+  // clobbering it.
+  let hadStepError = false
   const callbacks = {
     onStepStart: () => {},
     onStepComplete: (_idx: number, result: StepResult) => { results.push(result) },
-    onStepError: () => {},
+    onStepError: (_idx: number, error: string) => {
+      hadStepError = true
+      // The step's own `error` is already the gate's English message
+      // ("Tool call rejected: ... was not approved.", `gatedApproval` in
+      // workflow-engine.ts).
+      finalOutput = `Workflow error: ${error}`
+    },
     onWaitingForInput: () => {},
     onComplete: () => {
+      if (hadStepError) return
       const lastOutput = results.filter(r => r.output).pop()
       finalOutput = lastOutput?.output || 'Workflow completed with no output.'
     },
@@ -1621,7 +1640,14 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
     // `confirm` tool inside the workflow still asks, on the same queue the
     // rest of Agent mode uses.
     const approve = buildWorkflowApprovalGate(run)
-    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, approve, initialVars, _workflowDepth, run?.heldLocalLane ?? null)
+    // `run` itself is also passed as `invokingRun` (Auflage 2,
+    // bau/review-wfgate.md): 'tool-execution' above is only a lane-booking
+    // placeholder, not a real conversation, so IF this workflow's own step
+    // calls `run_workflow` again, the nested engine needs the REAL outer
+    // `run` (its conversation, `abortSignal`, `mode`) to build that
+    // third-level call's context from, not this placeholder. See
+    // `effectiveOuterRun`/`effectiveConversationId` in workflow-engine.ts.
+    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, approve, initialVars, _workflowDepth, run?.heldLocalLane ?? null, run)
     await engine.run()
   } finally {
     _workflowDepth--

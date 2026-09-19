@@ -56,14 +56,23 @@ import type { ApprovalGate, ExecutionRequest, ExecutorToolDef } from '../api/age
 
 /**
  * Build a real `ApprovalGate` for a `run_workflow` tool call's nested engine
- * (builtin-tools.ts's `executeRunWorkflow`), synchronously wired (no dynamic
- * `import()`) so it never adds a tick the lane-timing tests do not expect.
- * Same decision table as `buildSubAgentGates` (sub-agent.ts): a `blocked`
- * category refuses outright, `auto` runs unattended, `confirm` enqueues into
- * the SAME conversation-keyed queue the rest of Agent mode reads
- * (`approval-queue.ts`), so the user sees the same "Requesting approval"
- * card. Fail closed: no conversation to ask in refuses a `confirm` tool
- * rather than running it.
+ * (builtin-tools.ts's `executeRunWorkflow`), synchronously wired (no
+ * top-level dynamic `import()`) so it never adds a tick the lane-timing
+ * tests do not expect. Same decision table as `buildSubAgentGates`
+ * (sub-agent.ts): a `blocked` category refuses outright, `auto` runs
+ * unattended, `confirm` asks on the surface that actually started this run
+ * (`sub-agent.ts:380-393`, same reasoning): the Code tab's own
+ * `codexConfirmStore` when `run.mode` is set (`run_workflow` sits in category
+ * 'workflow', reachable there via `CODEX_CATEGORIES`, and a sub-agent
+ * inherits its parent's `mode`, bau/review-wfgate.md Auflage 1), otherwise
+ * the SAME conversation-keyed chat queue the rest of Agent mode reads
+ * (`approval-queue.ts`). The dynamic imports for `codexConfirmStore` and
+ * `codexShellGate` only happen inside that rare `confirm`+`mode` branch, not
+ * at construction time, so the lane-timing tests this function was written
+ * to protect (see the header comment above) stay unaffected. Fail closed: no
+ * conversation to ask in, and no Code-tab surface either, refuses a
+ * `confirm` tool rather than running it or hanging on a question nobody can
+ * see.
  */
 export function buildWorkflowApprovalGate(run: AgentRunContext | undefined): ApprovalGate {
   const convId = run?.conversationId ?? null
@@ -79,13 +88,26 @@ export function buildWorkflowApprovalGate(run: AgentRunContext | undefined): App
     const level = resolveApprovalLevel(req.toolName, {
       categoryLevel,
       override: perm.perToolOverrides[req.toolName],
-      // A workflow is never a Code-tab surface: there is no preset to defer
-      // to, only the permission store above.
-      codexMode: null,
+      codexMode: run?.mode ?? null,
+      execConfirm: run?.execApproval?.confirmExec === true,
       readOnlyRun: run?.readOnlyShellTurn === true,
     })
     if (level === 'blocked') return false
     if (level === 'auto') return true
+    // Stufe 'confirm': ask on the surface that started this run. The Code
+    // tab's own dialog, not the chat queue, once `run.mode` is set, or the
+    // question ends up somewhere nobody is looking at it
+    // (bau/review-wfgate.md Auflage 1).
+    if (run?.mode) {
+      const { useCodexConfirmStore } = await import('../stores/codexConfirmStore')
+      const { renderApprovalPreview } = await import('../hooks/codexShellGate')
+      return useCodexConfirmStore.getState().ask({
+        toolName: req.toolName,
+        command: renderApprovalPreview(req.toolName, req.args),
+        args: req.args,
+        cloudReason: run.execApproval?.cloudReason === true,
+      }, abortSignal)
+    }
     if (!convId) return false
     return new Promise<boolean>((resolve) => {
       const toolCall: AgentToolCall = {
@@ -176,6 +198,33 @@ export class WorkflowEngine {
    * header, "DIE WEITERGABE DES ELTERNLAUF-TOKENS".
    */
   private heldLocalLane: HeldLocalLane | null = null
+  /**
+   * The REAL run this engine was started from, when one exists: the
+   * `run_workflow` tool's own `AgentRunContext` (builtin-tools.ts), carrying
+   * the actual conversation, `abortSignal`, `mode` and `readOnlyShellTurn` of
+   * whoever called `run_workflow`. `undefined` for a top-level workflow
+   * started from the "run workflow <name>" chat trigger, which already IS
+   * the real conversation (`this.conversationId` itself is real there).
+   * Without this, a nested `run_workflow` step used `this.conversationId`
+   * (the fabricated lane-booking string `'tool-execution'`, see the `run()`
+   * docstring below) as if it were a real conversation when building ITS OWN
+   * child run context, so a further-nested `run_workflow` or `delegate_task`
+   * step asked a question under a conversation id no window reads and lost
+   * the parent's `abortSignal` entirely, a queued approval nobody could ever
+   * answer or clean up (bau/review-wfgate.md Auflage 2). `effectiveOuterRun`
+   * and `effectiveConversationId` below read this field instead of
+   * hardcoding `this.conversationId` for that purpose.
+   */
+  private invokingRun?: AgentRunContext
+  /**
+   * A value for the FIRST `user_input` step to consume instead of waiting,
+   * taken from `initialVariables.user_input` (see the constructor). Set once
+   * at construction, consumed at most once, then cleared: only the first
+   * `user_input` step in a run is meant to read the caller's own argument, a
+   * second one still genuinely waits (bau/review-wfgate.md Auflage 6 /
+   * ZUSATZFRAGE, `executeUserInputStep` below).
+   */
+  private prefilledUserInput?: string
 
   constructor(
     workflow: AgentWorkflow,
@@ -202,7 +251,14 @@ export class WorkflowEngine {
      * the dead Settings play button was removed) is never nested, so it
      * leaves this at the default `null` and books its own slot from scratch.
      */
-    runsInHeldLane: HeldLocalLane | null = null
+    runsInHeldLane: HeldLocalLane | null = null,
+    /**
+     * See the `invokingRun` field doc above. Only a `run_workflow` tool step
+     * passes this (its own `AgentRunContext`, builtin-tools.ts); every other
+     * caller leaves it `undefined` and this run's own `conversationId` is
+     * already the real one.
+     */
+    invokingRun?: AgentRunContext,
   ) {
     if (!approve) {
       // Defense in depth behind the TS type: a caller reached from plain JS,
@@ -219,6 +275,54 @@ export class WorkflowEngine {
     this.abortController = new AbortController()
     this.depth = depth
     this.runsInHeldLane = runsInHeldLane
+    this.invokingRun = invokingRun
+    this.prefilledUserInput = initialVariables?.user_input
+  }
+
+  /**
+   * The `AgentRunContext` to hand to a NESTED `run_workflow`/`delegate_task`
+   * tool step (second-degree recursion). Built from `invokingRun` when this
+   * engine itself was started from a real outer run, so the real
+   * conversation, `mode`, `readOnlyShellTurn` and `abortSignal` reach a
+   * further-nested call instead of this run's own lane-booking
+   * `conversationId` (`'tool-execution'` on the `run_workflow` path, see the
+   * `run()` docstring) standing in for a conversation no window reads
+   * (bau/review-wfgate.md Auflage 2). Falls back to the pre-existing
+   * `this.conversationId`-based shape for a top-level engine (the chat
+   * trigger), where `this.conversationId` already IS the real conversation.
+   */
+  private effectiveOuterRun(): AgentRunContext {
+    const base = this.invokingRun
+    return {
+      token: base?.token ?? `workflow-${this.conversationId}`,
+      chatId: base?.chatId ?? null,
+      conversationId: base?.conversationId ?? this.conversationId,
+      workspace: base?.workspace ?? null,
+      artifactMode: base?.artifactMode ?? false,
+      readOnlyShellTurn: base?.readOnlyShellTurn ?? false,
+      mode: base?.mode ?? null,
+      execApproval: base?.execApproval,
+      artifacts: base?.artifacts ?? [],
+      // The real outer abortSignal when there is one, so Stop on the ORIGINAL
+      // run reaches a call two levels deep too; this run's own controller
+      // otherwise, so at least Stop on THIS run still reaches the child.
+      abortSignal: base?.abortSignal ?? this.abortController.signal,
+      heldLocalLane: this.heldLocalLane,
+    }
+  }
+
+  /**
+   * The conversation id to use for anything that should agree with the gate
+   * (`buildWorkflowApprovalGate`, constructed from the same `invokingRun` by
+   * `executeRunWorkflow`): the real outer conversation when this engine was
+   * started from one, this run's own id otherwise. Fixes the split Auflage 5
+   * describes: the prompt-step tool catalog used to read `this.conversationId`
+   * ('tool-execution' on the `run_workflow` path) while the gate itself
+   * already decided against the real conversation, so a per-conversation
+   * override applied to one and not the other.
+   */
+  private effectiveConversationId(): string {
+    return this.invokingRun?.conversationId ?? this.conversationId
   }
 
   /**
@@ -480,7 +584,12 @@ export class WorkflowEngine {
       // wfplay.md Teil B): `DEFAULT_PERMISSIONS` used to sit here, so a
       // category the user set to 'blocked' was invisible everywhere else in
       // the app yet still handed to the model in a workflow prompt step.
-      const permissions = usePermissionStore.getState().getEffectivePermissions(this.conversationId)
+      // `effectiveConversationId()`, not `this.conversationId` (Auflage 5,
+      // bau/review-wfgate.md): on the `run_workflow` path this run's own id
+      // is the fabricated lane-booking string, so a per-conversation
+      // override the user set on the REAL chat used to reach the gate's
+      // decision but not this catalog, or the reverse.
+      const permissions = usePermissionStore.getState().getEffectivePermissions(this.effectiveConversationId())
       const tools: ToolDefinition[] = toolRegistry.toOllamaTools(permissions)
       const allowedTools = step.allowedTools
         ? tools.filter(t => step.allowedTools!.includes(t.function.name))
@@ -578,31 +687,23 @@ export class WorkflowEngine {
     }
 
     // A tool step calling run_workflow OR delegate_task is second-degree
-    // nesting: hand it THIS run's own held-lane proof (null on a cloud lane,
-    // or before this run's own admission resolved), so a FOREGROUND nested
-    // run rides along instead of booking its own place behind this one and
-    // hanging (Nachpruefung, bau/review-w2lane.md, "Sub-Agent im Workflow":
-    // a workflow tool step calling a foreground `delegate_task` with its own
-    // local `model` got `run: undefined` here, so it always booked normally
-    // under a fresh identity while this engine's own step awaited it,
-    // deadlocking whenever this engine already held the one local slot).
+    // nesting: hand it the REAL outer run context (`effectiveOuterRun`, see
+    // its doc above), not a context built from this run's own
+    // `conversationId`, which is the fabricated lane-booking string
+    // `'tool-execution'` on the `run_workflow` path (bau/review-wfgate.md
+    // Auflage 2: a further-nested call used to ask under that fake id,
+    // unreachable by any window and never cleaned up on Stop, since it also
+    // carried no `abortSignal`). `effectiveOuterRun` still carries THIS run's
+    // own `heldLocalLane` proof (null on a cloud lane, or before this run's
+    // own admission resolved), so a FOREGROUND nested run rides along
+    // instead of booking its own place behind this one and hanging
+    // (Nachpruefung, bau/review-w2lane.md, "Sub-Agent im Workflow").
     // `delegate_task`'s BACKGROUND branch is `void`-fired and never awaited
-    // by this step, so it cannot deadlock this loop either way; giving it
-    // `this.conversationId` as well is a minor, harmless side effect, not a
-    // second bug. Every other tool keeps its long-standing `run: undefined`
-    // (unchanged scope: only these two recursive tools read `heldLocalLane`).
+    // by this step, so it cannot deadlock this loop either way. Every other
+    // tool keeps its long-standing `run: undefined` (unchanged scope: only
+    // these two recursive tools read `heldLocalLane`).
     const runForTool: AgentRunContext | undefined = step.toolName === 'run_workflow' || step.toolName === 'delegate_task'
-      ? {
-          token: `workflow-${this.conversationId}`,
-          chatId: null,
-          conversationId: this.conversationId,
-          workspace: null,
-          artifactMode: false,
-          readOnlyShellTurn: false,
-          mode: null,
-          artifacts: [],
-          heldLocalLane: this.heldLocalLane,
-        }
+      ? this.effectiveOuterRun()
       : undefined
 
     const gate = await this.gatedApproval(step.toolName, args, runForTool)
@@ -703,6 +804,32 @@ export class WorkflowEngine {
   // ── User Input Step ───────────────────────────────────────
 
   private async executeUserInputStep(step: WorkflowStep, stepIndex: number, startedAt: number): Promise<StepResult> {
+    // ZUSATZFRAGE / Auflage 6, bau/review-wfgate.md: all three built-in
+    // workflows (Research Topic, Summarize URL, Code Review) begin with a
+    // `user_input` step, and neither surviving caller ever calls
+    // `provideUserInput` below (`onWaitingForInput: () => {}` in both
+    // builtin-tools.ts's `executeRunWorkflow` and useAgentChat.ts's chat
+    // trigger), so every one of them used to hang here forever, waiting on a
+    // resolver nothing can reach except Stop. `run_workflow` already turns
+    // its own `input` argument into the `user_input` variable
+    // (builtin-tools.ts's `initialVars`), so the FIRST `user_input` step can
+    // read it directly instead of waiting. Consumed at most once: a second
+    // `user_input` step in a custom workflow still genuinely waits, since
+    // only one caller-supplied value exists.
+    if (this.prefilledUserInput !== undefined) {
+      const input = this.prefilledUserInput
+      this.prefilledUserInput = undefined
+      this.variables['user_input'] = input
+      this.variables['last_output'] = input
+      return {
+        stepId: step.id,
+        status: 'completed',
+        output: input,
+        startedAt,
+        completedAt: Date.now(),
+      }
+    }
+
     const prompt = interpolate(step.userInputPrompt || 'Enter input:', this.variables)
     this.callbacks.onWaitingForInput(stepIndex, prompt)
 
