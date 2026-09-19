@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { tauriMockInit, DEFAULT_ASSISTANT_REPLY, DEFAULT_MODEL_NAME } from './support/tauri-mock'
 import { seedOnboardingDone } from './support/cloud-mock'
-import { openNewChat } from './support/ui'
+import { openNewChat, oeffneSeitenleiste } from './support/ui'
 
 /**
  * David, 19.09.2026: "Ask LU anything" (der Leerzustand vor der ersten
@@ -116,22 +116,93 @@ test('New-Chat-Recents-Leerzustand sitzt mittig (Seitenleiste zu)', async ({ pag
   // Past the AnimatePresence exit/enter transition, sonst liest man noch den
   // alten "home"-Baum.
   await expect(page.getByTestId('chat-session-strip')).toBeVisible()
-  const m = await page.evaluate(() => {
-    const recents = document.querySelector('[data-testid="home-recent-chats"]') as HTMLElement | null
-    if (!recents) return null
-    const area = recents.parentElement as HTMLElement
-    const aRect = area.getBoundingClientRect()
-    const children = Array.from(area.children) as HTMLElement[]
-    const first = children[0].getBoundingClientRect()
-    const last = children[children.length - 1].getBoundingClientRect()
-    const blockCenterY = (first.top + last.bottom) / 2
-    const areaCenterY = (aRect.top + aRect.bottom) / 2
-    const areaHeight = aRect.height
-    const deviationPct = ((blockCenterY - areaCenterY) / areaHeight) * 100
-    return { blockCenterY, areaCenterY, areaHeight, deviationPct }
+  // F1-Fix (David, 19.09.2026, box-gruen/n2/BERICHT.md): der Block fuer eine
+  // aktive, leere Unterhaltung ist jetzt derselbe `chat-landing`-Block wie
+  // die Eingangsseite (Zeichen, "Ask LU anything", Modellname), nur MIT der
+  // Recents-Liste darunter statt ohne sie. Dieselbe `measureLanding`-Funktion
+  // wie fuer die anderen Faelle greift deshalb unveraendert.
+  await expect(page.getByTestId('home-recent-chats')).toBeVisible()
+  const m = await measureLanding(page)
+  expectMittig(m)
+})
+
+/**
+ * F2 (David, 19.09.2026, box-gruen/n2/BERICHT.md Teil A): der Remote-Reiter
+ * (Dispatch-Ansicht, noch keine dispatchte Unterhaltung) lief in der
+ * Windows-Feldsitzung 8,7 % von der Flaechenmitte weg statt der im
+ * Code-Reiter gemessenen 1,3 %. Quelltextlich ist es DERSELBE `!activeConversationId`-
+ * Zweig wie im Chat-Reiter (Sidebar.tsx setzt beim Klick auf "Remote"
+ * `setActiveConversation(dispatchedConversationId)`, und ohne vorherigen
+ * Dispatch ist das `undefined`/`null`), kein eigener Leerzustand-Code. Die
+ * Feldmessung stammt vermutlich von einem Bau vor dem `justify-center`-Fix
+ * dieser Datei. Live gemessen haelt dieser Test die Behauptung "denselben
+ * Codepfad, dieselbe Mitte" nach.
+ */
+for (const { label, width, height } of sizes) {
+  test(`Remote-Leerzustand (Dispatch) sitzt mittig bei ${label}`, async ({ page }) => {
+    await page.addInitScript(tauriMockInit, { assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME })
+    await seedOnboardingDone(page)
+    await page.setViewportSize({ width, height })
+    await page.goto('/')
+    await expect(page.getByTestId('chat-landing')).toBeVisible()
+    await page.getByRole('button', { name: 'Remote', exact: true }).first().click()
+    await expect(page.getByTestId('chat-landing')).toBeVisible()
+    const m = await measureLanding(page)
+    expectMittig(m)
   })
-  expect(m, '[data-testid="home-recent-chats"] not found').not.toBeNull()
-  expectMittig(m as Measurement)
+}
+
+/**
+ * F1 (David, 19.09.2026, box-gruen/n2/BERICHT.md Teil A, schwerer Nebenfund):
+ * "+ New Chat" legt sofort eine aktive, aber leere Unterhaltung an
+ * (`createConversation` setzt `activeConversationId` synchron, chatStore.ts).
+ * Die alte Bedingung fuer den Leerzustand-Block war `!activeConversationId`
+ * (traf auf diese Lage nie zu), plus ein zweiter Block NUR bei
+ * zugeklappter Seitenleiste. Bei AUFGEKLAPPTER Seitenleiste (die Windows-
+ * Feldsitzung stand so, siehe n2/shots/n9r-chat-blank1.png) rendert deshalb
+ * NICHTS: kein Leerzustand, kein Verlauf, auch nicht nach vollem
+ * `page.reload()`. Dieser Test stellt genau das nach und ist die Beweiskette
+ * fuer den Fix: der Block muss sofort da sein UND nach einem Neuladen
+ * WIEDER da sein, ohne einen Reiterwechsel als Umweg zu brauchen.
+ */
+test('F1: eine neue leere Unterhaltung bleibt sichtbar, auch aufgeklappt und nach Neuladen', async ({ page }) => {
+  await page.addInitScript(tauriMockInit, { assistantReply: DEFAULT_ASSISTANT_REPLY, modelName: DEFAULT_MODEL_NAME })
+  await seedOnboardingDone(page)
+  await page.setViewportSize({ width: 1100, height: 900 })
+  await page.goto('/')
+  // Erst auf die hydrierte Oberflaeche warten, sonst sieht `oeffneSeitenleiste`
+  // den "Expand sidebar"-Knopf noch nicht und tut nichts (dieselbe Rennlage,
+  // die openNewChat's Kommentar oben fuer den New-Chat-Knopf beschreibt).
+  await expect(page.getByRole('button', { name: 'New Chat' }).first()).toBeVisible()
+  await oeffneSeitenleiste(page)
+  await openNewChat(page)
+  // Erst abwarten, dass wirklich eine AKTIVE Unterhaltung steht (die
+  // Sitzungsleiste rendert nur dann), sonst faengt die naechste Zeile den
+  // kurzen Zwischenzustand VOR dem Store-Update ab, in dem die alte,
+  // unbetroffene "keine Unterhaltung"-Landing noch im DOM haengt, und
+  // beweist gar nichts. Das war die Falle, die diesen Test beim ersten
+  // Versuch auch gegen den alten, kaputten Stand gruen liess.
+  await expect(page.getByTestId('chat-session-strip')).toBeVisible()
+  // Sofort da, nicht erst nach einem Reiterwechsel.
+  await expect(page.getByTestId('chat-landing')).toBeVisible()
+  await expect(page.getByText('Ask LU anything')).toBeVisible()
+  // Bei aufgeklappter Seitenleiste keine zweite Chat-Liste im Hauptbereich
+  // (die Liste lebt schon in der Seitenleiste, D-S06).
+  await expect(page.getByTestId('home-recent-chats')).toHaveCount(0)
+
+  // Der eigentliche Fund: volles Neuladen derselben, weiterhin leeren
+  // Unterhaltung durfte den Block vorher zum Verschwinden bringen.
+  await page.reload()
+  await expect(page.getByTestId('chat-landing')).toBeVisible()
+  await expect(page.getByText('Ask LU anything')).toBeVisible()
+
+  // NEGATIVKONTROLLE: sobald die erste Nachricht da ist, weicht der Block
+  // dem echten Transkript (kein doppelter Leerzustand ueber einer Antwort).
+  const composer = page.locator('textarea').first()
+  await composer.fill('Hallo')
+  await composer.press('Enter')
+  await expect(page.getByText('Hallo', { exact: false }).first()).toBeVisible()
+  await expect(page.getByTestId('chat-landing')).toHaveCount(0)
 })
 
 test('kein Layoutsprung: der Composer bewegt sich nicht, wenn die erste Nachricht ankommt', async ({ page }) => {

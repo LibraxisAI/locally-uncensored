@@ -156,6 +156,12 @@ installs stop losing environment variables to it.
   area allowed the browser to scroll it into view when a clicked control sat
   partly off screen. That area no longer accepts a programmatic scroll, so it
   stays put.
+- **A brand new chat no longer shows a blank screen.** Right after "+ New
+  Chat", with the side panel open, the main area could stay completely empty:
+  no greeting, no history, nothing, even after a full reload of the same
+  still-empty chat. Only switching to another tab and back brought it
+  around. The greeting now shows for that chat from the first frame, the
+  same as before the first message is sent.
 
 ## [3.0.0] - 2026-09-13
 

@@ -175,9 +175,6 @@ export function ChatView() {
   const connectedDevices = useRemoteStore((s) => s.connectedDevices)
   const refreshDevices = useRemoteStore((s) => s.refreshDevices)
   const isRemoteChat = activeConvMode === 'remote'
-  // While the panel is collapsed and the open chat is still empty, the recent
-  // list belongs above the composer instead of nowhere at all.
-  const showRecentsAboveComposer = !sidebarOpen && activeConvIsEmpty
   const isThisRemoteActive = isRemoteChat && remoteEnabled && dispatchedConversationId === activeConversationId
   const isThisRemoteStopped = isRemoteChat && !isThisRemoteActive
   const mobileConnectedCount = connectedDevices.length
@@ -419,7 +416,7 @@ export function ChatView() {
                       diese Reihenfolge festnagelt.) */}
                   <PlanBar />
 
-                  {!showRecentsAboveComposer && (
+                  {!activeConvIsEmpty && (
                     <MessageList
                       isGenerating={isGenerating}
                       isThisChatGenerating={activeGenerating}
@@ -433,11 +430,36 @@ export function ChatView() {
                   )}
 
                   {/* Ein offener, aber noch leerer Chat bekommt an dieser
-                      Stelle die Liste der letzten Chats statt eines leeren
-                      Transkripts (David, 2026-09-02: nach „New Chat" stand der
-                      Hauptbereich blank da). Es ist DERSELBE Flex-Platz, den
-                      das Transkript sonst nimmt, also bleibt der Composer, wo
-                      er ist.
+                      Stelle DENSELBEN Leerzustand wie die Eingangsseite
+                      (Zeichen, Ueberschrift, Modellname), statt eines leeren
+                      Transkripts. Es ist DERSELBE Flex-Platz, den das
+                      Transkript sonst nimmt, also bleibt der Composer, wo er
+                      ist.
+
+                      FUND (David, 19.09.2026, N9-Nachtest Windows-Box,
+                      box-gruen/n2/BERICHT.md Teil A): die Bedingung war
+                      vorher NICHT `activeConvIsEmpty`, sondern
+                      `!sidebarOpen && activeConvIsEmpty`
+                      (`showRecentsAboveComposer`). Bei aufgeklappter
+                      Seitenleiste (dem Normalzustand) rendert dieser
+                      Zweig deshalb NIE, `!activeConvIsEmpty` oben aber sehr
+                      wohl (activeConversationId ist nach `+ New Chat`
+                      sofort gesetzt, `createConversation` in chatStore.ts
+                      setzt es synchron). Ergebnis: `<MessageList>` MIT
+                      null Nachrichten, die selbst keinen eigenen
+                      Leerzustand zeichnet (kein Platzhalter im Baum),
+                      ein vollstaendig leerer Hauptbereich, reproduzierbar
+                      auch nach vollem Neuladen, bis ein Wechsel auf einen
+                      anderen Reiter und zurueck `activeConversationId`
+                      ueber `Sidebar.tsx` (Klick auf „Chat") auf `null`
+                      zuruecksetzt und damit den ECHTEN Leerzustand weiter
+                      oben (`key="home"`) zeigt. Zwei verschiedene Zustaende
+                      sahen zufaellig gleich aus, was den Fehler wie ein
+                      Flackern wirken liess. Fix: dieselbe Bedingung wie fuer
+                      das Transkript, nur umgekehrt, kein `sidebarOpen`
+                      mehr davor. Die Liste der letzten Chats bleibt darin
+                      NUR bei zugeklappter Seitenleiste (Doppelung sonst,
+                      D-S06-Grund unveraendert).
 
                       Warum zwei bewachte Bloecke statt eines Ternaers, obwohl
                       genau eines von beiden rendert: `zwei-baender-sind-eine-
@@ -455,16 +477,30 @@ export function ChatView() {
                       Blockmitte 35 bis 42 Prozent der sichtbaren Flaeche zu
                       tief, exakt der Fehler der Eingangsseite, nur an einem
                       zweiten Ort mit demselben Rezept. */}
-                  {showRecentsAboveComposer && (
-                    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto scrollbar-thin py-4">
+                  {activeConvIsEmpty && (
+                    <div
+                      data-testid="chat-landing"
+                      className="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-2 overflow-y-auto scrollbar-thin py-4 px-3"
+                    >
                       <img
                         src={MONOGRAM}
                         alt=""
                         width={56}
                         height={56}
-                        className={`${MONOGRAM_INVERT} opacity-90 mb-5`}
+                        className={`${MONOGRAM_INVERT} opacity-90`}
                       />
-                      <RecentChats />
+                      <h1 className="t-display text-gray-900 dark:text-gray-100">Ask LU anything</h1>
+                      <p className="t-body text-gray-500 max-w-[40ch]">{landing.subline}</p>
+                      {landing.note && (
+                        <p className="t-mono w-full truncate px-4 text-gray-400 dark:text-gray-500" title={landing.note}>
+                          {landing.note}
+                        </p>
+                      )}
+                      {!sidebarOpen && (
+                        <div className="w-full pt-3 flex flex-col items-center text-left">
+                          <RecentChats />
+                        </div>
+                      )}
                     </div>
                   )}
 

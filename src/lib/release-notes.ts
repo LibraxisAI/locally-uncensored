@@ -263,6 +263,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'A draft no longer merges into the next chat after switching.',
             detail: 'A draft left in the message box no longer merges into the next thing you type after switching conversations, and the composer no longer gets stuck showing Stop after closing the window, signing out or quitting with a message still in flight.',
           },
+          {
+            title: 'A brand new chat no longer shows a blank screen.',
+            detail: 'Right after "+ New Chat", with the side panel open, the main area could stay completely empty: no greeting, no history, nothing, even after a full reload of the same still-empty chat. Only switching to another tab and back brought it around. The greeting now shows for that chat from the first frame, the same as before the first message is sent.',
+          },
         ],
       },
       {
