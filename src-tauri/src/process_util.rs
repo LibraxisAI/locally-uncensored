@@ -665,7 +665,9 @@ fn tree_snapshot(root: u32) -> Vec<(u32, u64)> {
 const KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// Recursive process-tree kill: SIGTERM the whole tree now, SIGKILL whatever
-/// is left after a grace. Windows delegates the walk to `taskkill /T /F`.
+/// is left after a grace. Windows hands the whole walk to
+/// `commands::shell::kill_tree`, the one sweep that also waits out a worker
+/// the tree starts while it is being felled.
 ///
 /// The Unix branch used to signal the process GROUP (`kill -- -PGID`). That
 /// only reaches a child that was made a group leader at spawn, and it is not
@@ -699,11 +701,11 @@ pub fn kill_tree(child: &mut Child) -> std::io::Result<()> {
     let pid = child.id();
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        // The same sweep the shell's cancel path uses, not a second copy of
+        // `taskkill /T`: a tunnel or a video job that is stopped while it is
+        // still starting up loses its worker to the identical race, and a
+        // second copy would have had to be found and fixed twice.
+        crate::commands::shell::kill_tree(pid);
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -760,11 +762,7 @@ pub fn kill_tree(child: &mut Child) -> std::io::Result<()> {
 pub fn kill_pid_tree(pid: u32) {
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        crate::commands::shell::kill_tree(pid);
     }
     #[cfg(unix)]
     {
@@ -865,6 +863,55 @@ mod libc {
     extern "C" {
         pub fn kill(pid: pid_t, sig: c_int) -> c_int;
         pub fn waitpid(pid: pid_t, status: *mut c_int, options: c_int) -> pid_t;
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_kill_tree_tests {
+    use super::*;
+    use crate::test_support::{is_alive, worker_descendants_of};
+    use std::time::{Duration, Instant};
+
+    /// NB4: this module's own tree kill had the identical Windows gap the
+    /// shell's had, and the tunnel and the video job cancel through it. The
+    /// state is reproduced the same way as in `commands::shell`: fell the
+    /// shell alone, which leaves a live worker under a dead parent, exactly
+    /// what a `CreateProcess` one instant behind the sweep produces. Whatever
+    /// this function does about it, it must not be a second answer to the
+    /// question the shell already answers.
+    #[test]
+    fn a_worker_left_under_a_dead_root_is_still_felled() {
+        let mut shell = Command::new("powershell.exe");
+        shell.args(["-NoProfile", "-NonInteractive", "-Command", "ping -n 31 127.0.0.1"]);
+        let mut shell = spawn_piped(shell).expect("start test shell");
+        let ready = Instant::now();
+        let workers = loop {
+            let workers = worker_descendants_of(shell.id());
+            if !workers.is_empty() { break workers; }
+            if ready.elapsed() >= Duration::from_secs(30) {
+                let _ = kill_tree(&mut shell);
+                panic!("test shell did not start its child");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        let mut lonely = Command::new("taskkill.exe");
+        lonely.args(["/PID", &shell.id().to_string(), "/F"])
+            .stdout(Stdio::null()).stderr(Stdio::null());
+        suppress_window(&mut lonely);
+        if let Ok(mut lonely) = lonely.spawn() {
+            let _ = lonely.wait();
+        }
+        assert!(
+            workers.iter().all(|pid| is_alive(*pid)),
+            "the worker was gone before the sweep was even asked: {workers:?}"
+        );
+
+        let _ = kill_tree(&mut shell);
+
+        let survivors: Vec<_> = workers.into_iter().filter(|pid| is_alive(*pid)).collect();
+        for pid in &survivors { crate::commands::shell::kill_tree(*pid); }
+        assert!(survivors.is_empty(), "a worker under a dead root survived the sweep: {survivors:?}");
     }
 }
 
