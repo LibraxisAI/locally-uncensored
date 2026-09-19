@@ -281,7 +281,7 @@ export function AppShell() {
       oweEngineResume()
       // Kill the local engine right under a running local generation and the
       // user sees "Connection dropped" in whichever OTHER chat, agent, code
-      // or group run (or Create job) was using it -- 3.0.1's promise that
+      // or group run was using it -- 3.0.1's promise that
       // Stop in one chat never touches another cuts both ways, a silent mode
       // switch must not touch it either (Fund F3, lu-301/bau/leer2.md).
       // `offloadWhenLocalLaneFree` (lib/cloud-offload-defer.ts) runs the
