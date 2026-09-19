@@ -71,11 +71,11 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
         expectedEntries = state.entries
         expectedBaselines = state.memorySyncBaselines
         expectedPending = state.memorySyncPending
-        await flushMemoryPersist(() => { try { guard(); return true } catch { return false } })
+        await flushMemoryPersist(guard)
         guard()
       }
       guard()
-      await flushMemoryPersist(() => { try { guard(); return true } catch { return false } })
+      await flushMemoryPersist(guard)
       guard()
       const remote = await session.pull()
       guard()

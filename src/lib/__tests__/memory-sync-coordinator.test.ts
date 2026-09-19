@@ -9,7 +9,7 @@ vi.mock('../../api/cloud/memory-sync', async importOriginal => ({ ...await impor
   withMemorySyncSession: async (_owner: string, work: (session: unknown) => Promise<unknown>) =>
   work({ assertCurrent: () => {}, pull: fixture.pull, write: fixture.write }) }))
 vi.mock('../memory-persistence', async importOriginal => ({
-  ...await importOriginal<typeof import('../memory-persistence')>(), flushMemoryPersist: (guard: () => boolean) => fixture.flush(guard),
+  ...await importOriginal<typeof import('../memory-persistence')>(), flushMemoryPersist: (guard: () => void) => fixture.flush(guard),
 }))
 const { synchronizeMemoryCollection } = await import('../memory-sync')
 const memory: MemoryFile = { id: 'one', type: 'user', title: 'Fact', content: 'Original fact', description: '', tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }
@@ -22,7 +22,10 @@ beforeEach(() => {
   useMemoryStore.getState().selectMemoryCollection('A')
   remote = []
   fixture.pull.mockReset().mockImplementation(async () => remote)
-  fixture.flush.mockReset().mockImplementation(async (guard: () => boolean) => { if (!guard()) throw new Error('Fixture stale'); return 'confirmed' })
+  // R2-38: `guard` throws its OWN specific error (assertCurrent/check) rather
+  // than returning false; the mock lets that error surface directly instead
+  // of converting it to a generic "Fixture stale" rejection.
+  fixture.flush.mockReset().mockImplementation(async (guard: () => void) => { guard(); return 'confirmed' })
   fixture.write.mockReset().mockImplementation(async (id: string, revision: number, payload: Record<string, unknown> | null) => {
     expect(Object.hasOwn(useMemoryStore.getState().memorySyncPending.A, id)).toBe(true)
     const saved = { memory_id: id, revision: revision + 1, payload, deleted: payload === null, updated_at: '2026-09-09T00:00:00Z' }

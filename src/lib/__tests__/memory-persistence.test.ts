@@ -14,7 +14,13 @@ beforeEach(() => {
   vi.resetModules()
   fixture.value = null
   fixture.write.mockReset().mockImplementation((value: string) => { fixture.value = value })
-  fixture.confirm.mockReset().mockImplementation((expected: string, _value: string, current: () => boolean) => fixture.value === expected && current())
+  // Mirrors idbStorage's real compareAndSetIdbItem, which swallows a throw from
+  // `current` inside its own try/catch (transaction abort) rather than letting
+  // it escape: a caller that hands over a THROWING isCurrent must not rely on
+  // this mock to pass it through for free.
+  fixture.confirm.mockReset().mockImplementation((expected: string, _value: string, current: () => boolean) => {
+    try { return fixture.value === expected && current() } catch { return false }
+  })
 })
 
 it('serializes normal writes and confirms the requested snapshot before a later write', async () => {
@@ -48,6 +54,12 @@ it('rejects a revoked confirmation without failing subsequent writes', async () 
   await expect(flushMemoryPersist(() => false)).rejects.toThrow('Memories changed while saving')
   memoryPersistence.setItem(KEY, 'later')
   expect(await flushMemoryPersist()).toBe('later')
+})
+it('R2-38: a thrown cancellation reason from isCurrent comes out of flushMemoryPersist, not a generic message', async () => {
+  const { memoryPersistence, flushMemoryPersist } = await import('../memory-persistence')
+  memoryPersistence.setItem(KEY, 'saved')
+  const cancelled = new Error('Memory synchronization cancelled. Some changes may already be saved.')
+  await expect(flushMemoryPersist(() => { throw cancelled })).rejects.toBe(cancelled)
 })
 it('rehydration accepts a new authoritative persisted snapshot without stale expectations', async () => {
   const { memoryPersistence, flushMemoryPersist } = await import('../memory-persistence')
