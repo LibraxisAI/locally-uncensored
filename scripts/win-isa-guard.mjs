@@ -283,7 +283,7 @@ function hexVA(n) {
 // A genuine isa-flag READ dereferences the address in memory (dumpbin prints
 // that as "... [<hex>h]", the bracket is the actual load); a line that merely
 // mentions the same hex digits as an immediate constant (e.g. "mov
-// rax,0000000180099898h", no brackets — Opus's fake-green pattern F in
+// rax,0000000180099898h", no brackets, Opus's fake-green pattern F in
 // review-waechter-windows.md N1) never touches the flag's value at all and
 // must not count.
 function isaBracketMatch(text, isaHexes) {
@@ -510,7 +510,7 @@ function main(argv) {
   // sense of at all (wrong dumpbin flags, an encoding surprise, a future
   // dumpbin/objdump output-format change, a parser regression) yields ZERO
   // parsed instruction lines and therefore zero VEX/EVEX hits, which the
-  // pre-existing checks read as "OK, no unprotected VEX/EVEX in own code" —
+  // pre-existing checks read as "OK, no unprotected VEX/EVEX in own code",
   // a clean pass for exactly the wrong reason. A real module's dumpbin
   // /disasm dump is hundreds of lines at minimum (the smallest real module
   // measured against the committed guard, the exe itself, parsed 868 disasm

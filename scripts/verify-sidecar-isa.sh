@@ -40,14 +40,14 @@
 # re-checked. To clear a red toolset-pin failure: re-run the Opus-style
 # manual disassembly review (dumpbin /disasm against the new toolset's
 # msvcprt:vector_algorithms.obj and wmemcmp/common.obj, unicode.obj,
-# ggml-backend-reg.obj, server-context.obj — the exact objects
+# ggml-backend-reg.obj, server-context.obj, the exact objects
 # win-isa-guard.mjs's isAllowlisted trusts, see WMEMCMP_MEMCMP_HOST_OBJECTS
 # there) to confirm the new toolset's CRT/STL fast paths are still
 # self-guarded by __isa_enabled/_Avx2WmemEnabled the same way, then add the
 # new linker Major.Minor to WINDOWS_REVIEWED_LINKER_VERSIONS. Realistically
 # this is not a rare event: windows-latest pulls a new MSVC patch release on
 # roughly a one-to-two-month cadence, so expect this pin to need bumping on
-# that cadence, most visibly in a release run — it is a planned, periodic
+# that cadence, most visibly in a release run; it is a planned, periodic
 # cost of trusting a hand-reviewed allowlist rather than a rare emergency,
 # and the sidecar build cache (keyed on hashFiles('scripts/build-llama.sh'))
 # only defers it, it does not remove it.
@@ -379,7 +379,7 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # fails RED, with a message asking a human to classify it, both when a
   # module in this list goes missing and when the companions directory
   # contains a Windows .dll that is neither in this list nor one of the
-  # excluded high-CPU-tier variants — an unclassified module could just as
+  # excluded high-CPU-tier variants: an unclassified module could just as
   # easily be a brand-new unconditional-AVX CPU tier (which MUST be
   # excluded) as an ordinary new base module (which MUST be
   # dominance-checked), and guessing either way defeats the point of this
@@ -563,7 +563,7 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   if [ "$neg_status" -eq 0 ] && grep -q 'OK (negative control):' "$neg_out_tmp"; then
     vlog "negative control: ggml-cpu-haswell.dll correctly shows at least one UNPROTECTED own-code hit (the rule still catches something)"
   else
-    vdie "negative control did NOT pass cleanly (exit=$neg_status, expected exit=0 with 'OK (negative control):' in stdout); this is either the allowlist/dominance rule having gone soft (review-k1-avx.md R4) or the check crashing for an unrelated reason (missing map, bad args, a win-isa-guard.mjs regression) — both must be treated as red rather than guessed apart. stdout:
+    vdie "negative control did NOT pass cleanly (exit=$neg_status, expected exit=0 with 'OK (negative control):' in stdout); this is either the allowlist/dominance rule having gone soft (review-k1-avx.md R4) or the check crashing for an unrelated reason (missing map, bad args, a win-isa-guard.mjs regression), both must be treated as red rather than guessed apart. stdout:
 $(cat "$neg_out_tmp")
 stderr:
 $(cat "$neg_err_tmp")"
@@ -582,7 +582,7 @@ $(cat "$neg_err_tmp")"
   # BLOCKER B2 (review-waechter-windows.md): the old check accepted ANY
   # nonzero exit code as "correctly came out RED", including exit 2 (bad
   # CLI usage) or a crash from a missing/moved fixture file (an uncaught
-  # readFileSync throw exits 1, same code as a deliberate FAIL) — exactly
+  # readFileSync throw exits 1, same code as a deliberate FAIL), exactly
   # the class of bug that let the entry-point regression this project
   # already hit once (lu-301/bau/waechter-windows.md) go unnoticed. Require
   # the EXACT expected exit code (1) AND grep stdout for the exact expected
@@ -603,7 +603,7 @@ $(cat "$neg_err_tmp")"
   if [ "$red_status" -eq 1 ] && grep -q 'UNPROTECTED' "$red_out_tmp"; then
     vlog "red probe: unprotected-own-code fixture correctly came out RED"
   else
-    vdie "red probe FAILED TO GO RED as expected (exit=$red_status, expected exit=1 with 'UNPROTECTED' in stdout): scripts/__fixtures__/win-isa/unprotected-own-code.* (an own-code VEX hit with no preceding isa check at all) either was accepted by the decision logic, or the check crashed for an unrelated reason (missing fixture, bad args) instead of actually running it — both are red. stdout:
+    vdie "red probe FAILED TO GO RED as expected (exit=$red_status, expected exit=1 with 'UNPROTECTED' in stdout): scripts/__fixtures__/win-isa/unprotected-own-code.* (an own-code VEX hit with no preceding isa check at all) either was accepted by the decision logic, or the check crashed for an unrelated reason (missing fixture, bad args) instead of actually running it, both are red. stdout:
 $(cat "$red_out_tmp")
 stderr:
 $(cat "$red_err_tmp")"
