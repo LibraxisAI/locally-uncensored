@@ -40,6 +40,19 @@ use tokio_util::sync::CancellationToken;
 /// matters for ids that were never going to be registered at all.
 const TOMBSTONE_TTL: Duration = Duration::from_secs(30);
 
+/// Hard cap on total entries, the backstop the TTL sweep alone did not
+/// provide (review 2026-09-18 Runde 2, "Rest, kein Blocker: keine
+/// Obergrenze"): the sweep only ran inside `register`, so a caller that
+/// fires `cancel(id)` for many ids that never register at all — a bogus or
+/// adversarial webview script, or just a flood of stray ids — grew the map
+/// for up to the whole `TOMBSTONE_TTL` window with no ceiling. 4096 is
+/// generous for any real chat session (each real call registers and
+/// unregisters within seconds, so the steady-state size is the number of
+/// requests actually in flight, not the historical total) while still
+/// bounding memory to a low number of megabytes even in the adversarial
+/// case (a String key plus an `Instant` per entry).
+const MAX_ENTRIES: usize = 4096;
+
 #[derive(Clone)]
 enum Entry {
     /// A live call is registered under this id; cancelling it fires this
@@ -101,11 +114,20 @@ impl CancelRegistry {
     /// Cancel `id`. If it is registered, its token fires immediately. If it
     /// is not (yet) registered, a tombstone is left so the `register` call
     /// that follows starts already-cancelled instead of losing the cancel.
+    ///
+    /// This is also where the map can grow purely from tombstones (a real
+    /// `Active` entry only ever comes from `register`, whose own growth is
+    /// bounded by actual concurrent calls), so this is where both halves of
+    /// the "Deckel plus Alterung" fix run: the same age-based sweep
+    /// `register` already ran, plus the hard `MAX_ENTRIES` cap as a
+    /// backstop for callers that never register at all.
     pub fn cancel(&self, id: &str) {
         let mut map = self.entries.lock().unwrap();
+        sweep_expired(&mut map);
         match map.get(id) {
             Some(Entry::Active(token)) => token.cancel(),
             _ => {
+                evict_oldest_tombstones_to_fit(&mut map);
                 map.insert(id.to_string(), Entry::Tombstone(Instant::now()));
             }
         }
@@ -130,6 +152,38 @@ impl CancelRegistry {
 fn sweep_expired(map: &mut HashMap<String, Entry>) {
     let now = Instant::now();
     map.retain(|_, v| !matches!(v, Entry::Tombstone(at) if now.duration_since(*at) > TOMBSTONE_TTL));
+}
+
+/// Evict tombstones oldest-first until inserting one more entry stays at or
+/// under `MAX_ENTRIES`. Only `Tombstone`s are ever evicted here, never
+/// `Active` ones: an in-flight call's own cancellation slot must never be
+/// dropped to make room for someone else's stray cancel, and the number of
+/// genuinely concurrent calls is bounded by how many requests a webview can
+/// have in flight at once, not by anything this cap needs to police.
+/// Oldest-first is what keeps the guarantee this module promises: under cap
+/// pressure, the most recently arrived tombstone (the one still likely to be
+/// matched by a `register` a few milliseconds behind it) survives, and only
+/// the stalest, most-likely-abandoned ones are dropped first.
+///
+/// No-op (and therefore cheap) in the overwhelmingly common case where the
+/// map is nowhere near the cap.
+fn evict_oldest_tombstones_to_fit(map: &mut HashMap<String, Entry>) {
+    if map.len() < MAX_ENTRIES {
+        return;
+    }
+    let mut tombstones: Vec<(String, Instant)> = map
+        .iter()
+        .filter_map(|(k, v)| match v {
+            Entry::Tombstone(at) => Some((k.clone(), *at)),
+            Entry::Active(_) => None,
+        })
+        .collect();
+    tombstones.sort_by_key(|(_, at)| *at);
+    // +1 to make room for the entry `cancel` is about to insert.
+    let over = map.len() + 1 - MAX_ENTRIES;
+    for (key, _) in tombstones.into_iter().take(over) {
+        map.remove(&key);
+    }
 }
 
 /// Removes this registration from its registry on drop, the success path,
@@ -312,5 +366,51 @@ mod tests {
         assert!(registry.contains("about-to-register"), "a tombstone well within its TTL must survive");
         let (token, _g2) = registry.register("about-to-register".to_string());
         assert!(token.is_cancelled());
+    }
+
+    // ── MAX_ENTRIES cap (review 2026-09-18 Runde 2, "keine Obergrenze") ─────
+
+    #[test]
+    fn many_stray_cancels_never_grow_the_map_past_the_cap() {
+        // Every one of these ids never registers, the exact shape the
+        // original finding described: no upper bound existed because the
+        // sweep only ran inside `register`.
+        let registry = CancelRegistry::new();
+        for i in 0..(MAX_ENTRIES * 2) {
+            registry.cancel(&format!("stray-{i}"));
+        }
+        let len = registry.entries.lock().unwrap().len();
+        assert!(len <= MAX_ENTRIES, "map grew to {len} entries, cap is {MAX_ENTRIES}");
+    }
+
+    #[test]
+    fn under_cap_pressure_the_most_recently_arrived_tombstone_survives() {
+        // Fill exactly to the cap with older stray cancels, then one more.
+        // The guarantee the module doc makes ("a late-arriving cancel for a
+        // recently-ended run is still recognised") only holds if eviction
+        // drops the STALEST entries, not an arbitrary one that might be the
+        // newest.
+        let registry = CancelRegistry::new();
+        for i in 0..MAX_ENTRIES {
+            registry.cancel(&format!("old-{i}"));
+        }
+        registry.cancel("newest");
+        assert!(registry.contains("newest"), "the most recently arrived cancel must survive eviction");
+        // And the id it registers under afterwards still starts pre-cancelled.
+        let (token, _g) = registry.register("newest".to_string());
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn a_live_active_call_survives_a_tombstone_flood_at_the_cap() {
+        // The cap must only ever cost tombstones, never a real in-flight
+        // call's own cancellation slot.
+        let registry = CancelRegistry::new();
+        let (token, _guard) = registry.register("live-call".to_string());
+        for i in 0..(MAX_ENTRIES * 2) {
+            registry.cancel(&format!("stray-{i}"));
+        }
+        assert!(registry.contains("live-call"), "a live Active entry must never be evicted");
+        assert!(!token.is_cancelled(), "flooding stray cancels must not reach an unrelated live call");
     }
 }
