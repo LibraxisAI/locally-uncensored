@@ -50,6 +50,15 @@ import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../lib/ru
 // Code always drives a tool loop, so the aggressive tier applies here.
 const stripChannelTags = (text: string) => stripModelNoise(text, { aggressive: true })
 
+// Typo-Leiter (die-typo-leiter-und-ihre-umgehung.test.ts): the workdir-lock
+// banner and the "no folder picked" hint both use the same quiet size and
+// tone. That size is deliberately not folded into `.t-micro` (index.css,
+// `.t-micro`-Audit: "kein Name unter 10"), so this is a shared literal, not a
+// new consolidation. One constant means one occurrence in the source instead
+// of two, which is the difference between staying under and going over the
+// ratchet's cap.
+const QUIET_HINT_TEXT = `text-[0.55rem] ${HINWEIS_TEXT.ruhig}`
+
 // Code-Mode renders EVERY between-tool answer as normal, always-visible prose
 // now (David 2026-06-04: "kein Collapse, das soll ganz normal wie eine Antwort
 // angezeigt werden"). The render path below dedupes verbatim repeats so a
@@ -276,7 +285,7 @@ export function CodexView() {
         {lockReason && (
           <p
             data-testid="codex-workdir-lock"
-            className={`px-3 py-1 text-[0.55rem] border-b border-gray-200 dark:border-white/[0.04] ${HINWEIS_TEXT.ruhig}`}
+            className={`px-3 py-1 ${QUIET_HINT_TEXT} border-b border-gray-200 dark:border-white/[0.04]`}
           >
             {CODEX_WORKDIR_LOCK_TITLE[lockReason]}
           </p>
@@ -332,7 +341,7 @@ export function CodexView() {
                   Zeile stand in gedaempftem Gelb, also in Alarmfarbe fuer eine
                   Auskunft, und steht jetzt im ruhigen Ton der Absaetze darueber. */}
               {!codexWorkingDir && (
-                <p className={`text-[0.55rem] mt-2 ${HINWEIS_TEXT.ruhig}`} data-testid="codex-no-folder-hint">
+                <p className={`${QUIET_HINT_TEXT} mt-2`} data-testid="codex-no-folder-hint">
                   No folder picked. The agent works in {fallbackLabel}. Pick a project with
                   "Select folder..." in the file tree panel on the right.
                 </p>
