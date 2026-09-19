@@ -19,8 +19,6 @@
 //! signierte App. Was sie eint, ist der Schluss — starten und warten, ob die
 //! API antwortet.
 
-#[cfg(target_os = "windows")]
-use std::process::Command;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
