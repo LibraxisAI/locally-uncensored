@@ -317,27 +317,32 @@ export function ChatView() {
               // Knopf, und er fuehrt an die einzige Stelle, die das aendert.
               //
               // Zur toten Flaeche: kein Layout entfernt Leere, nur Inhalt tut
-              // das. Der Block ist deshalb (a) inhaltlich gefuellt, (b) auf die
-              // Spaltenbreite `--lu-measure` gelegt und (c) im Chat UNTEN
-              // verankert, damit er mit dem Composer als ein Element liest
-              // statt als Fleck in einem Feld. Erfundene Beispiel-Prompts als
-              // Fuellmaterial habe ich bewusst nicht gebaut: sie waeren Inhalt,
-              // den niemand bestellt hat, und der Audit verlangt sie nicht.
+              // das. Der Block ist deshalb (a) inhaltlich gefuellt und (b) auf
+              // die Spaltenbreite `--lu-measure` gelegt. Erfundene
+              // Beispiel-Prompts als Fuellmaterial habe ich bewusst nicht
+              // gebaut: sie waeren Inhalt, den niemand bestellt hat, und der
+              // Audit verlangt sie nicht.
               //
-              // Im Code-Bereich steht er MITTIG, und das ist kein Widerspruch,
-              // sondern dieselbe Regel unter anderer Voraussetzung: dort
-              // rendert dieser Zweig ohne Composer (der Code-Composer haengt an
-              // CodexView und damit an einer offenen Unterhaltung, siehe
-              // `chatMode !== 'codex'` weiter unten). Der Block klebte deshalb
-              // am unteren Fensterrand, ohne dass etwas darunter stand, an das
-              // er sich haette anlehnen koennen. Gemessen am Windows-Bau
-              // (1296x808): Blockmitte y=699,9 gegen Bereichsmitte y=445,4,
-              // also 254,5 px zu tief. David, 05.09.2026: „genau mittig".
+              // David, 19.09.2026, AUFTRAG: der Block sitzt in beiden Lagen
+              // (Chat und Code) MITTIG, nicht mehr unten. Am 05.09.2026 stand
+              // hier noch die Regel „unten verankert im Chat, mittig im
+              // Code" (`justify-end` fuer Chat, `justify-center` fuer Code):
+              // das sollte den Block wie ein Element MIT dem Composer lesen
+              // lassen statt als Fleck in der Flaeche darueber. Gemessen am
+              // 19.09.2026 (Playwright, headless, Chromium, lokaler
+              // Vite-Server) zeigt genau diese Regel den eigentlichen Fehler:
+              // im lokalen wie im Cloud-Chat lag die Blockmitte 26 bis 38
+              // Prozent der sichtbaren Flaeche zu tief (1100x700 bis
+              // 1440x1080, mit und ohne Seitenleiste; die Zahl waechst mit der
+              // Fensterhoehe, weil `justify-end` den Block am Composer
+              // festnagelt statt an der Mitte). Der Code-Bereich stand mit
+              // `justify-center` schon richtig (-0,9 bis -1,5 Prozent, leicht
+              // ueber der Mitte). David: „er soll mittig sitzen." Die
+              // Bedingung faellt deshalb weg, beide Lagen bekommen dieselbe
+              // Regel.
               <motion.div
                 key="home"
-                className={`flex-1 flex flex-col items-center min-h-0 px-3 pb-4 ${
-                  chatMode === 'codex' ? 'justify-center' : 'justify-end'
-                }`}
+                className="flex-1 flex flex-col items-center justify-center min-h-0 px-3 pb-4"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0, y: -20 }}
@@ -429,13 +434,16 @@ export function ChatView() {
                       zaehlte als drittes Band, obwohl er auf dem Bildschirm
                       an der Stelle des Transkripts sitzt.
 
-                      Unten verankert und mit dem Zeichen aus `brand.ts`, aus
-                      demselben Grund wie die Eingangsseite selbst (D-S05): ein
-                      Block, der in der Mitte einer leeren Flaeche schwebt,
-                      liest als Fleck; unten am Composer liest er als ein
-                      Element mit ihm. */}
+                      Mittig, mit dem Zeichen aus `brand.ts`, aus demselben
+                      Grund wie die Eingangsseite selbst (D-S05, David
+                      19.09.2026): am 05.09.2026 stand hier noch „unten
+                      verankert ... wie am Composer". Gemessen am 19.09.2026
+                      (Playwright, headless): dieselbe Regel gab hier eine
+                      Blockmitte 35 bis 42 Prozent der sichtbaren Flaeche zu
+                      tief, exakt der Fehler der Eingangsseite, nur an einem
+                      zweiten Ort mit demselben Rezept. */}
                   {showRecentsAboveComposer && (
-                    <div className="flex-1 min-h-0 flex flex-col items-center justify-end overflow-y-auto scrollbar-thin py-4">
+                    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto scrollbar-thin py-4">
                       <img
                         src={MONOGRAM}
                         alt=""
