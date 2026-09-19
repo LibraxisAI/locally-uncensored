@@ -77,6 +77,17 @@ jobs:
       - name: Import cycles
         run: npm run cycles
 
+      # AUFLAGE a (review-isalinux.md Runde 2): the K1 ISA guard's own
+      # decision logic (scripts/lib/isa-guard-linux-rules.sh) had zero CI
+      # coverage -- it only ever ran once, by hand, on the Bauer's Mac. This
+      # needs no build, no ELF file and no objdump (it proves the pure
+      # classification/ceiling functions against checked-in fixture text,
+      # scripts/__fixtures__/linux-isa/*.disasm.txt), so it runs here on
+      # every commit, on the plain ubuntu-22.04 runner this job already
+      # has, well before the real per-platform run in release.yml.
+      - name: K1 ISA guard selftest (Linux decision logic)
+        run: bash scripts/verify-sidecar-isa.selftest.sh
+
       - name: Unit tests
         run: npx vitest run
 

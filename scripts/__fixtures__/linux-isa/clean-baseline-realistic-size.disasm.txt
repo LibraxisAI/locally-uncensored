@@ -1,0 +1,22 @@
+0000000000401200 <clean_baseline_fn_realistic_size>:
+  401200:	55                   	push   %rbp
+  401201:	48 89 e5             	mov    %rsp,%rbp
+  401204:	48 83 ec 20          	sub    $0x20,%rsp
+  401208:	0f 10 45 f0          	movups -0x10(%rbp),%xmm0
+  40120c:	66 0f 6f c1          	movdqa %xmm1,%xmm0
+  401210:	f3 0f b8 c0          	popcnt %eax,%eax
+  401214:	66 0f 3a 44 c1 00    	pclmulqdq $0x0,%xmm1,%xmm0
+  40121a:	0f 29 45 e0          	movaps %xmm0,-0x20(%rbp)
+  40121e:	8b 45 fc             	mov    -0x4(%rbp),%eax
+  401221:	83 c0 01             	add    $0x1,%eax
+  401224:	89 45 fc             	mov    %eax,-0x4(%rbp)
+  401227:	8b 45 fc             	mov    -0x4(%rbp),%eax
+  40122a:	3b 45 f8             	cmp    -0x8(%rbp),%eax
+  40122d:	7c e9                	jl     401218 <clean_baseline_fn_realistic_size+0x18>
+  40122f:	0f 28 45 e0          	movaps -0x20(%rbp),%xmm0
+  401233:	0f 11 45 f0          	movups %xmm0,-0x10(%rbp)
+  401237:	8b 45 f8             	mov    -0x8(%rbp),%eax
+  40123a:	48 8d 65 f8          	lea    -0x8(%rbp),%rsp
+  40123e:	5b                   	pop    %rbx
+  40123f:	5d                   	pop    %rbp
+  401240:	c3                   	ret
