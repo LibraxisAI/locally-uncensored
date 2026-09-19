@@ -62,7 +62,14 @@ export const INTENTS: IntentMeta[] = [
     examples: [],
   },
   {
-    id: 'upscale', label: 'Upscale', short: 'Upscale', icon: Maximize2,
+    // R5-67: label/short renamed to match apps/web/components/create/
+    // experimental/intents.ts ("Enhance Image" / "Enhance"). The id stays
+    // 'upscale' on purpose — a saved gallery result or a stored createStore
+    // state references intents by id, and renaming that too would strand
+    // them. Web's separate 'video_upscale' intent is a feature decision for
+    // David (does the Desktop get video upscaling at all), not a text fix,
+    // and is out of scope here.
+    id: 'upscale', label: 'Enhance Image', short: 'Enhance', icon: Maximize2,
     placeholder: '',
     needsSource: true, needsPrompt: false, allowsMask: false, isVideo: false,
     cloudOnly: true,
