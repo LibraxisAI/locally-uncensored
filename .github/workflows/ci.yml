@@ -436,4 +436,20 @@ jobs:
       # header. Deliberately the last word on whether this commit is shippable.
       - name: Tauri build (unsigned — exit code is the verdict)
         shell: bash
-        run: bash scripts/ci-tauri-build.sh
+        run: |
+          # K1-18 (lu-301/e2e/linux/BERICHT.md): release.yml's real, non-stub
+          # Linux build measured that linuxdeploy resolves lu-llama-server's
+          # NEEDED entries via the standard ld search path, not via the
+          # staged usr/lib/.../llama/ location, and fails without
+          # LD_LIBRARY_PATH pointed at it. This job stubs the sidecar as a
+          # zero-byte file (see "Stub llama-server sidecar" above), so
+          # whether linuxdeploy hits the identical failure here was NOT
+          # independently measured on that stub — this only mirrors the
+          # release-lane fix defensively, for the same reason, so this gate
+          # and the real release build cannot silently diverge on it. Empty
+          # on windows-latest, where LD_LIBRARY_PATH is meaningless.
+          if [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            triple="$(rustc -vV | awk '/^host:/{print $2}')"
+            export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/src-tauri/resources/llama/$triple${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          bash scripts/ci-tauri-build.sh

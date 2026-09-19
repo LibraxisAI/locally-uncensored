@@ -446,6 +446,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # K1-18 (lu-301/e2e/linux/BERICHT.md, section "K1-18"): measured on a
+          # real Ubuntu 24.04 box, `tauri build --bundles appimage` on this
+          # project's Linux config makes linuxdeploy resolve
+          # lu-llama-server's NEEDED entries (libllama-server-impl.so etc.)
+          # through the standard ld search path, NOT through the actual
+          # staged location (usr/lib/Locally Uncensored/llama/), and it fails
+          # hard: "ERROR: Could not find dependency: libllama-server-impl.so".
+          # With LD_LIBRARY_PATH pointed at the staged companions directory,
+          # the identical linuxdeploy invocation succeeds and bundles every
+          # ggml-* companion. tauri-action's own `tauri build` invocation does
+          # not set this by itself, so this step (which is where linuxdeploy
+          # actually runs, on GitHub's real release lane) needs it set
+          # explicitly. Empty on windows-latest: LD_LIBRARY_PATH has no
+          # meaning there and an empty env var is harmless.
+          LD_LIBRARY_PATH: ${{ matrix.platform == 'ubuntu-22.04' && format('{0}/src-tauri/resources/llama/{1}', github.workspace, matrix.sidecar_triple) || '' }}
         with:
           tagName: ${{ github.event.release.tag_name || github.event.inputs.tag || 'v1.3.0' }}
           releaseName: 'LU ${{ github.event.release.tag_name || github.event.inputs.tag }}'
@@ -484,6 +499,50 @@ jobs:
           # (a0030ad2, the exit-1-after-bundling defect of v2.6.7). The overlay
           # is merged on top of the checked-in config by `tauri build`.
           args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
+
+      # K1-18 (lu-301/e2e/linux/BERICHT.md): the LD_LIBRARY_PATH fix above
+      # only proves linuxdeploy did not hard-fail; K1-18 itself measured that
+      # linuxdeploy's SECOND error ("Failed to deploy dependencies for
+      # existing files") is NOT fatal, it still exits 0, which is the
+      # suspected reason the real 3.0.0 AppImage shipped once with no
+      # CPU-dispatch companions at all despite a green build. Nothing in
+      # this workflow inspected the BUILT artifact before this step existed
+      # — the boot-smoke step above only checks the pre-bundle staging
+      # directory, never what linuxdeploy actually packed. If linuxdeploy
+      # ever silently drops a companion again, this is what turns that red:
+      # extract the real .AppImage this run just produced and diff its
+      # bundled companions against what build-llama.sh staged.
+      - name: Verify built AppImage carries every sidecar companion (K1-18)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          appimage_rel="$(find src-tauri/target -type f -iname '*.AppImage' -print -quit)"
+          [ -n "$appimage_rel" ] || { echo "FAIL: no .AppImage found under src-tauri/target after the build (K1-18)" >&2; exit 1; }
+          appimage="$(realpath "$appimage_rel")"
+          chmod +x "$appimage"
+          workdir="$RUNNER_TEMP/appimage-extract"
+          rm -rf "$workdir"
+          mkdir -p "$workdir"
+          # --appimage-extract needs no FUSE (unlike running the AppImage
+          # normally), which a bare Actions runner does not reliably have.
+          ( cd "$workdir" && "$appimage" --appimage-extract >/dev/null )
+          extracted_llama_dir="$(find "$workdir/squashfs-root/usr/lib" -mindepth 1 -maxdepth 3 -type d -iname 'llama' -print -quit)"
+          if [ -z "$extracted_llama_dir" ]; then
+            echo "FAIL: no .../usr/lib/.../llama directory inside the extracted AppImage at all; linuxdeploy dropped the whole sidecar companions directory (K1-18, lu-301/e2e/linux/BERICHT.md)" >&2
+            exit 1
+          fi
+          missing=0
+          for f in "src-tauri/resources/llama/${{ matrix.sidecar_triple }}"/*; do
+            base="$(basename "$f")"
+            if [ ! -e "$extracted_llama_dir/$base" ]; then
+              echo "FAIL: $base is staged in src-tauri/resources/llama/${{ matrix.sidecar_triple }} but MISSING from the built AppImage ($extracted_llama_dir); linuxdeploy can drop a companion silently and still exit 0 (K1-18)" >&2
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "OK: every staged sidecar companion is present inside the built AppImage ($extracted_llama_dir)"
 
   # The promise above, made real for every trigger. Runs after the binaries are
   # attached, so a release published as a full release is put back before
