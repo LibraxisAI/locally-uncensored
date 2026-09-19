@@ -562,6 +562,12 @@ pub(crate) struct TrainerGpuChoice {
     pub(crate) name: String,
     pub(crate) memory_mib: Option<u64>,
     pub(crate) source: &'static str,
+    /// The card's `GPU-<uuid>` when `detect_gpus()` could name it (never for
+    /// the "CUDA_VISIBLE_DEVICES already set" branch, whose card may not be
+    /// in `nvidia` at all). GPU-UUID Nachzug, review 2026-09-18 Runde 2 "UUID
+    /// statt Index": `pin_trainer_gpu` prefers this over `index` the same
+    /// way `gpu.rs::cuda_visible_devices_value` does for Ollama/ComfyUI.
+    pub(crate) uuid: Option<String>,
 }
 
 /// Narrow `nvidia` down to the one card every trainer child runs on. Pure on
@@ -597,18 +603,37 @@ pub(crate) fn choose_trainer_gpu(
                 index: g.index,
                 name: g.name.clone(),
                 memory_mib: g.memory_mib,
+                uuid: g.uuid.clone(),
                 source: "the Hardware tab's GPU selection",
             });
         }
     }
     if let Some(existing) = existing_cuda_visible_devices {
-        let indices: Vec<u32> = existing.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        // Tokens may be plain indices OR `GPU-<uuid>` forms -- a user who set
+        // this themselves outside LU is just as entitled to the UUID form
+        // this module now prefers internally (GPU-UUID Nachzug, review
+        // 2026-09-18 Runde 2). Try a uuid match per token first, then a
+        // numeric index, so either spelling of the user's own choice is
+        // honoured the same way.
+        let indices: Vec<u32> = existing
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|tok| {
+                nvidia
+                    .iter()
+                    .find(|g| g.uuid.as_deref() == Some(tok))
+                    .map(|g| g.index)
+                    .or_else(|| tok.parse::<u32>().ok())
+            })
+            .collect();
         if !indices.is_empty() {
             if let Some(g) = best_of(&indices) {
                 return Some(TrainerGpuChoice {
                     index: g.index,
                     name: g.name.clone(),
                     memory_mib: g.memory_mib,
+                    uuid: g.uuid.clone(),
                     source: "the CUDA_VISIBLE_DEVICES already set for this process",
                 });
             }
@@ -618,6 +643,7 @@ pub(crate) fn choose_trainer_gpu(
                 index: indices[0],
                 name: format!("device {}", indices[0]),
                 memory_mib: None,
+                uuid: None,
                 source: "the CUDA_VISIBLE_DEVICES already set for this process",
             });
         }
@@ -626,6 +652,7 @@ pub(crate) fn choose_trainer_gpu(
         index: g.index,
         name: g.name.clone(),
         memory_mib: g.memory_mib,
+        uuid: g.uuid.clone(),
         source: "the card with the most memory",
     })
 }
@@ -655,9 +682,21 @@ pub(crate) fn resolve_trainer_gpu(selection: &crate::commands::gpu::GpuSelection
 /// index is matched against `detect_gpus()`'s PCI-order list, so the index
 /// this function writes back out needs the same ordering to mean what it
 /// says.
+///
+/// GPU-UUID Nachzug (review 2026-09-18 Runde 2, "UUID statt Index"): prefers
+/// `choice.uuid` (a `GPU-<uuid>` string `detect_gpus()` could name) over the
+/// bare index whenever it is known, the same env var value NVIDIA's own
+/// CUDA_VISIBLE_DEVICES documentation and `nvidia-smi -L` both describe, and
+/// identical on Windows and Linux. This survives a driver renumbering cards
+/// between detection and launch, the PCI-order/FASTEST_FIRST mismatch
+/// `CUDA_DEVICE_ORDER` only patches over for the index form. `CUDA_DEVICE_
+/// ORDER=PCI_BUS_ID` is still set unconditionally as the fallback net for
+/// whenever `choice.uuid` is `None` (an old driver, a MIG-enabled card, or
+/// the "stale index, probe did not run" branch of `choose_trainer_gpu`).
 fn pin_trainer_gpu(cmd: &mut Command, choice: &TrainerGpuChoice) {
+    let selector = choice.uuid.clone().unwrap_or_else(|| choice.index.to_string());
     cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-    cmd.env("CUDA_VISIBLE_DEVICES", choice.index.to_string());
+    cmd.env("CUDA_VISIBLE_DEVICES", selector);
 }
 
 /// Every site-packages of the trainer venv. Windows puts one at
@@ -3360,6 +3399,7 @@ mod tests {
             index: 1,
             name: "RTX 3090 Ti".to_string(),
             memory_mib: Some(24564),
+            uuid: None,
             source: "the Hardware tab's GPU selection",
         };
         super::pin_trainer_gpu(&mut cmd, &choice);
@@ -3372,6 +3412,37 @@ mod tests {
             envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
             "BLOCKER B2 (Runde 2): without this, CUDA's own FASTEST_FIRST default \
              can pin a different physical card than the index promises: {envs:?}",
+        );
+    }
+
+    /// GPU-UUID Nachzug (review 2026-09-18 Runde 2, "UUID statt Index"): when
+    /// `detect_gpus()` could name the chosen card's uuid, the child must see
+    /// THAT, not the bare index -- the whole point being independence from
+    /// detection order, which a plain index re-introduces the moment
+    /// anything hotplugs or gets renumbered between detection and launch.
+    /// `CUDA_DEVICE_ORDER` stays set regardless, as the fallback net.
+    #[test]
+    fn pin_trainer_gpu_prefers_the_uuid_over_the_index_when_known() {
+        let mut cmd = std::process::Command::new("python");
+        let choice = super::TrainerGpuChoice {
+            index: 1,
+            name: "RTX 3090 Ti".to_string(),
+            memory_mib: Some(24564),
+            uuid: Some("GPU-3eb045fd-0000-0000-0000-000000000000".to_string()),
+            source: "the Hardware tab's GPU selection",
+        };
+        super::pin_trainer_gpu(&mut cmd, &choice);
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&(
+                "CUDA_VISIBLE_DEVICES".into(),
+                Some("GPU-3eb045fd-0000-0000-0000-000000000000".into())
+            )),
+            "the uuid form must win over the bare index: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "CUDA_DEVICE_ORDER must stay set even when a uuid is used: {envs:?}",
         );
     }
 
@@ -3402,6 +3473,7 @@ mod tests {
             index: 1,
             name: "RTX 3090 Ti".to_string(),
             memory_mib: Some(24564),
+            uuid: None,
             source: "the Hardware tab's GPU selection",
         };
         super::pin_trainer_gpu(&mut cmd, &choice);
@@ -3546,6 +3618,7 @@ mod tests {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             },
             crate::commands::gpu::DetectedGpu {
                 index: 1,
@@ -3556,6 +3629,7 @@ mod tests {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             },
         ];
         let selection = crate::commands::gpu::GpuSelection { vendor: "nvidia".into(), indices: vec![1] };
@@ -3579,6 +3653,7 @@ mod tests {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             },
             crate::commands::gpu::DetectedGpu {
                 index: 1,
@@ -3589,12 +3664,70 @@ mod tests {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             },
         ];
         let selection = crate::commands::gpu::GpuSelection::default();
         let choice = super::choose_trainer_gpu(&cards, &selection, Some("1")).expect("a card was chosen");
         assert_eq!(choice.index, 1);
         assert_eq!(choice.source, "the CUDA_VISIBLE_DEVICES already set for this process");
+    }
+
+    /// GPU-UUID Nachzug: a user who set `CUDA_VISIBLE_DEVICES` to a
+    /// `GPU-<uuid>` themselves (outside LU) is honoured exactly the same as
+    /// one who used a plain index -- the uuid form is not a second, unread
+    /// spelling.
+    #[test]
+    fn choose_trainer_gpu_matches_an_existing_cuda_visible_devices_given_as_a_uuid() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "Tesla P100 (display)".into(),
+                memory_mib: Some(4096),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: Some("GPU-aaaa".into()),
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "Tesla P100".into(),
+                memory_mib: Some(16384),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: Some("GPU-bbbb".into()),
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection::default();
+        let choice = super::choose_trainer_gpu(&cards, &selection, Some("GPU-bbbb")).expect("a card was chosen");
+        assert_eq!(choice.index, 1);
+        assert_eq!(choice.uuid.as_deref(), Some("GPU-bbbb"));
+        assert_eq!(choice.source, "the CUDA_VISIBLE_DEVICES already set for this process");
+    }
+
+    /// The normal (no existing env var, no user override) priority also
+    /// carries the uuid through, so `pin_trainer_gpu` can prefer it.
+    #[test]
+    fn choose_trainer_gpu_carries_the_uuid_through_on_the_hardware_tab_pick() {
+        let cards = vec![crate::commands::gpu::DetectedGpu {
+            index: 0,
+            vendor: "nvidia".into(),
+            name: "RTX 3060".into(),
+            memory_mib: Some(12288),
+            source: "nvidia-smi".into(),
+            note: None,
+            note_severity: None,
+            arch: None,
+            uuid: Some("GPU-cccc".into()),
+        }];
+        let selection = crate::commands::gpu::GpuSelection { vendor: "nvidia".into(), indices: vec![0] };
+        let choice = super::choose_trainer_gpu(&cards, &selection, None).expect("a card was chosen");
+        assert_eq!(choice.uuid.as_deref(), Some("GPU-cccc"));
     }
 
     /// Neither a Hardware-tab pick nor an existing env var: the card with the
@@ -3612,6 +3745,7 @@ mod tests {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             },
             crate::commands::gpu::DetectedGpu {
                 index: 1,
@@ -3622,6 +3756,7 @@ mod tests {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             },
         ];
         let selection = crate::commands::gpu::GpuSelection::default();

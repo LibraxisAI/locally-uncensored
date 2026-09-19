@@ -18,6 +18,7 @@
 
 use crate::state::AppState;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::process::Command;
 use tauri::State;
 
@@ -57,6 +58,19 @@ pub struct DetectedGpu {
     /// name: the mapping from marketing name to gfx target is AMD's to publish
     /// and ours to read, never to guess.
     pub arch: Option<String>,
+    /// NVIDIA's own `GPU-<uuid>` identifier (from `nvidia-smi -L` / the
+    /// `--query-gpu=uuid` field), when a second, best-effort probe could read
+    /// it. `None` on every non-NVIDIA card, on a driver too old to report it,
+    /// and on a card whose MIG mode is enabled (its physical-GPU UUID does
+    /// not select a MIG instance the way `CUDA_VISIBLE_DEVICES` needs, see
+    /// `parse_nvidia_uuid_csv`). Consumers that want a stable device selector
+    /// use this over `index` when it is `Some` (GPU-UUID Nachzug, review
+    /// 2026-09-18 Runde 2 "UUID statt Index"): `index` is only meaningful
+    /// together with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and only for as long as
+    /// nothing reorders or hotplugs a card between detection and launch,
+    /// whereas the UUID names one physical card independent of enumeration
+    /// order.
+    pub uuid: Option<String>,
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
@@ -83,7 +97,8 @@ fn detect_nvidia() -> Vec<DetectedGpu> {
         Some(s) => s,
         None => return vec![],
     };
-    raw.lines()
+    let mut gpus: Vec<DetectedGpu> = raw
+        .lines()
         .filter_map(|line| {
             let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
             if parts.len() < 3 { return None }
@@ -99,9 +114,127 @@ fn detect_nvidia() -> Vec<DetectedGpu> {
                 note: None,
                 note_severity: None,
                 arch: None,
+                uuid: None,
             })
         })
-        .collect()
+        .collect();
+
+    // Second, separate best-effort probe for GPU-UUID Nachzug (review
+    // 2026-09-18 Runde 2, "UUID statt Index"). Kept apart from the query
+    // above on purpose: if a driver too old to know `uuid` or
+    // `mig.mode.current` rejects the whole `--query-gpu` list (some very old
+    // nvidia-smi builds fail the entire call on one unrecognised field
+    // rather than returning "N/A" for it), the base detection above --
+    // index, name, memory, the fields the picker has relied on since v2.5.0
+    // -- must keep working exactly as before. A failed or partial second
+    // probe just leaves `uuid: None` on every card, which is the documented,
+    // already-handled fallback to `index`.
+    if !gpus.is_empty() {
+        if let Some(uuid_raw) = run_cmd(
+            "nvidia-smi",
+            &["--query-gpu=index,uuid,mig.mode.current", "--format=csv,noheader,nounits"],
+        ) {
+            let by_index = parse_nvidia_uuid_csv(&uuid_raw);
+            for g in gpus.iter_mut() {
+                if let Some(info) = by_index.get(&g.index) {
+                    // MIG mode enabled: a physical GPU's `GPU-<uuid>` does not
+                    // select a specific MIG instance the way a MIG-mode
+                    // `CUDA_VISIBLE_DEVICES` needs (that wants `MIG-<uuid>`,
+                    // a different id this probe does not attempt to build).
+                    // Leaving `uuid: None` here falls back to `index` for
+                    // exactly this card, same as an old driver would.
+                    if !info.mig_enabled {
+                        g.uuid = Some(info.uuid.clone());
+                    }
+                }
+            }
+        }
+    }
+    gpus
+}
+
+/// One `nvidia-smi --query-gpu=index,uuid,mig.mode.current` line's UUID and
+/// MIG state.
+#[derive(Debug)]
+struct NvidiaUuidInfo {
+    uuid: String,
+    mig_enabled: bool,
+}
+
+/// Pure parse of the UUID-enrichment probe, kept separate from `detect_nvidia`
+/// so a fabricated `nvidia-smi` line (this file's usual style for GPU
+/// probes, see `parse_nvidia_vram_csv` / `parse_rocm_smi_csv`) can drive it
+/// directly without a real card or a real driver.
+///
+/// Tolerant of both the modern three-column form and an older driver's
+/// two-column one (no `mig.mode.current` support at all — `mig_enabled`
+/// then defaults to `false`), and treats `N/A` / an empty uuid field the
+/// same as a missing one: skip that index rather than storing a value that
+/// is not a real `GPU-<uuid>`.
+fn parse_nvidia_uuid_csv(raw: &str) -> HashMap<u32, NvidiaUuidInfo> {
+    let mut out = HashMap::new();
+    for line in raw.lines() {
+        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+        if parts.len() < 2 { continue }
+        let Ok(index) = parts[0].parse::<u32>() else { continue };
+        let uuid = parts[1];
+        if uuid.is_empty() || uuid.eq_ignore_ascii_case("n/a") || !uuid.starts_with("GPU-") {
+            continue;
+        }
+        let mig_enabled = parts
+            .get(2)
+            .map(|s| s.eq_ignore_ascii_case("enabled"))
+            .unwrap_or(false);
+        out.insert(index, NvidiaUuidInfo { uuid: uuid.to_string(), mig_enabled });
+    }
+    out
+}
+
+/// Build a `CUDA_VISIBLE_DEVICES` value for a set of vendor-scoped NVIDIA
+/// indices, preferring each card's `GPU-<uuid>` form over its bare index
+/// wherever `nvidia` names that index with a known, non-MIG UUID (GPU-UUID
+/// Nachzug, review 2026-09-18 Runde 2 "UUID statt Index").
+///
+/// NVIDIA's own CUDA Programming Guide, section "CUDA Environment
+/// Variables" (docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/
+/// environment-variables.html, checked 2026-09-18), states `CUDA_VISIBLE_
+/// DEVICES` accepts a comma-separated list of device ordinals OR "GPU UUID
+/// strings", and that these "should follow the same format as given by
+/// `nvidia-smi -L`, such as `GPU-8932f937-d72c-4106-c12f-20bd9faed9f6`"
+/// (even abbreviated prefixes are accepted, as long as they stay unique on
+/// the box). The guide does not carve out a Windows/Linux difference: this
+/// is a CUDA runtime setting the driver parses identically everywhere, so
+/// torch/CUDA under native Windows, WSL, or Linux all accept the same
+/// `GPU-xxxxxxxx-...` string. The UUID form identifies one physical card
+/// independent of enumeration order -- exactly the property an index only
+/// has together with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and even then only for
+/// as long as nothing reorders or hotplugs a card between detection and
+/// launch.
+///
+/// The same page documents MIG instances as a DIFFERENT id shape,
+/// `MIG-<GPU-UUID>/<GPU instance ID>/<compute instance ID>`, not the plain
+/// `GPU-<uuid>` this function builds -- confirming why `parse_nvidia_
+/// uuid_csv` deliberately excludes MIG-enabled cards from `uuid` rather
+/// than sending a physical-GPU UUID a MIG-mode setup would not accept as a
+/// single-instance selector.
+///
+/// Falls back to the bare index per-card when that card's UUID is unknown
+/// (an old driver, or a MIG-enabled card, see `parse_nvidia_uuid_csv`) --
+/// `CUDA_DEVICE_ORDER=PCI_BUS_ID` stays set unconditionally alongside this
+/// by every caller as the fallback net for exactly that case.
+fn cuda_visible_devices_value(indices: &[u32], nvidia: &[DetectedGpu]) -> String {
+    indices
+        .iter()
+        .map(|i| {
+            nvidia
+                .iter()
+                .find(|g| g.index == *i)
+                .and_then(|g| g.uuid.as_deref())
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| i.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn detect_amd() -> Vec<DetectedGpu> {
@@ -183,6 +316,7 @@ fn parse_rocm_smi_csv(raw: &str) -> Vec<DetectedGpu> {
                 note: None,
                 note_severity: None,
                 arch,
+                uuid: None,
             });
         }
     }
@@ -310,6 +444,7 @@ fn detect_other_via_lspci_from(
             note: note_for(vendor),
             note_severity: note_for(vendor).map(|_| "warn".to_string()),
             arch: None,
+            uuid: None,
         });
         *index += 1;
     }
@@ -610,6 +745,7 @@ fn detect_macos() -> Vec<DetectedGpu> {
         note: None,
         note_severity: None,
         arch: None,
+        uuid: None,
     }]
 }
 
@@ -703,6 +839,7 @@ fn detect_other_via_registry_from(
             note: note_for(vendor),
             note_severity: note_for(vendor).map(|_| "warn".to_string()),
             arch: None,
+            uuid: None,
         });
         *index += 1;
     }
@@ -829,6 +966,7 @@ fn detect_other_via_wmic_from(
             note: note_for(vendor),
             note_severity: note_for(vendor).map(|_| "warn".to_string()),
             arch: None,
+            uuid: None,
         });
         *index += 1;
     }
@@ -1263,6 +1401,7 @@ fn apply_rocm_facts(gpus: &mut Vec<DetectedGpu>, facts: Option<&RocmFacts>) {
             note: rocm_note(version, arch.as_deref()),
             note_severity: Some("info".to_string()),
             arch,
+            uuid: None,
         });
     }
 }
@@ -1492,7 +1631,25 @@ pub fn apply_gpu_env(cmd: &mut Command, selection: &GpuSelection) {
         // CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA's own FASTEST_FIRST default can
         // read this index against a different physical card than
         // nvidia-smi's PCI-order list promised for Ollama and ComfyUI.
-        "nvidia" => { cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID"); cmd.env("CUDA_VISIBLE_DEVICES", &csv); }
+        //
+        // GPU-UUID Nachzug (review 2026-09-18 Runde 2 "UUID statt Index"):
+        // re-detecting here and preferring `cuda_visible_devices_value`'s
+        // UUID form over the bare index closes the same ordering class of
+        // bug PCI_BUS_ID only mitigates, for Ollama/ComfyUI too, not just
+        // the trainer. `CUDA_DEVICE_ORDER` stays set unconditionally as the
+        // fallback net for whichever index this could not resolve to a UUID
+        // (no NVIDIA card detected here at all -- e.g. AMD/Intel-only box,
+        // an old driver, or a MIG-enabled card falls back to its index).
+        "nvidia" => {
+            let nvidia: Vec<DetectedGpu> = detect_gpus()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|g| g.vendor == "nvidia")
+                .collect();
+            let value = cuda_visible_devices_value(&selection.indices, &nvidia);
+            cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+            cmd.env("CUDA_VISIBLE_DEVICES", &value);
+        }
         "amd" => {
             // HIP_VISIBLE_DEVICES is the official ROCm name; ROCR_VISIBLE_DEVICES
             // is the lower-level Runtime equivalent that some older builds
@@ -1760,6 +1917,104 @@ End of search: 3 match(es) found.
         let rocr = cmd.get_envs().any(|(k, v)| k == "ROCR_VISIBLE_DEVICES" && v.map(|s| s == "0").unwrap_or(false));
         assert!(hip, "HIP_VISIBLE_DEVICES should be set");
         assert!(rocr, "ROCR_VISIBLE_DEVICES should be set");
+    }
+
+    // ── GPU-UUID Nachzug: parse_nvidia_uuid_csv, mocked nvidia-smi output ────
+
+    #[test]
+    fn uuid_csv_parses_a_normal_two_card_line() {
+        let raw = "0, GPU-aaaaaaaa-0000-0000-0000-000000000000, Disabled\n\
+                    1, GPU-bbbbbbbb-0000-0000-0000-000000000000, Disabled\n";
+        let by_index = parse_nvidia_uuid_csv(raw);
+        assert_eq!(by_index.get(&0).map(|i| i.uuid.as_str()), Some("GPU-aaaaaaaa-0000-0000-0000-000000000000"));
+        assert_eq!(by_index.get(&1).map(|i| i.uuid.as_str()), Some("GPU-bbbbbbbb-0000-0000-0000-000000000000"));
+        assert!(!by_index[&0].mig_enabled);
+    }
+
+    #[test]
+    fn uuid_csv_tolerates_an_old_driver_with_no_mig_column() {
+        // Pre-MIG nvidia-smi builds never had a `mig.mode.current` field.
+        let raw = "0, GPU-cccccccc-0000-0000-0000-000000000000\n";
+        let by_index = parse_nvidia_uuid_csv(raw);
+        assert_eq!(by_index.get(&0).map(|i| i.uuid.as_str()), Some("GPU-cccccccc-0000-0000-0000-000000000000"));
+        assert!(!by_index[&0].mig_enabled, "missing column must default to false, not panic");
+    }
+
+    #[test]
+    fn uuid_csv_marks_a_mig_enabled_card() {
+        let raw = "0, GPU-dddddddd-0000-0000-0000-000000000000, Enabled\n";
+        let by_index = parse_nvidia_uuid_csv(raw);
+        assert!(by_index[&0].mig_enabled);
+    }
+
+    #[test]
+    fn uuid_csv_skips_an_unsupported_or_blank_uuid() {
+        let raw = "0, N/A, Disabled\n1, , Disabled\n2, [Unknown Error], Disabled\n";
+        let by_index = parse_nvidia_uuid_csv(raw);
+        assert!(by_index.is_empty(), "N/A / blank / non-GPU- uuid must never be stored: {by_index:?}");
+    }
+
+    // ── GPU-UUID Nachzug: cuda_visible_devices_value ─────────────────────────
+
+    fn nvidia_card(index: u32, uuid: Option<&str>) -> DetectedGpu {
+        DetectedGpu {
+            index,
+            vendor: "nvidia".into(),
+            name: format!("card {index}"),
+            memory_mib: Some(8192),
+            source: "nvidia-smi".into(),
+            note: None,
+            note_severity: None,
+            arch: None,
+            uuid: uuid.map(|u| u.to_string()),
+        }
+    }
+
+    #[test]
+    fn cuda_value_prefers_uuid_over_index_when_known() {
+        let nvidia = vec![
+            nvidia_card(0, Some("GPU-aaaa")),
+            nvidia_card(1, Some("GPU-bbbb")),
+        ];
+        assert_eq!(cuda_visible_devices_value(&[0, 1], &nvidia), "GPU-aaaa,GPU-bbbb");
+    }
+
+    /// The two-card, swapped-order case the review named explicitly:
+    /// nvidia-smi's list order (here, the slice `nvidia` is built in) must
+    /// not matter -- only the `index` field decides which card an entry in
+    /// `indices` names, so a selection or a detection sweep that returns
+    /// its cards in a different order than they were requested still maps
+    /// each index to ITS OWN uuid, never its neighbour's.
+    #[test]
+    fn cuda_value_maps_by_index_not_by_list_position_when_order_is_swapped() {
+        // Detection lists card 1 BEFORE card 0 -- e.g. FASTEST_FIRST changed
+        // nvidia-smi's own enumeration on this box, or the two GPUs were
+        // hot-plugged in the other order.
+        let nvidia = vec![
+            nvidia_card(1, Some("GPU-bbbb")),
+            nvidia_card(0, Some("GPU-aaaa")),
+        ];
+        // The selection still asks for [0, 1] in THAT order.
+        assert_eq!(
+            cuda_visible_devices_value(&[0, 1], &nvidia),
+            "GPU-aaaa,GPU-bbbb",
+            "index 0 must resolve to card 0's own uuid regardless of list position"
+        );
+    }
+
+    #[test]
+    fn cuda_value_falls_back_to_index_when_uuid_is_unknown() {
+        // Card 1 has no uuid (old driver, or excluded as MIG-enabled) --
+        // only that one card falls back, card 0 still gets its uuid.
+        let nvidia = vec![nvidia_card(0, Some("GPU-aaaa")), nvidia_card(1, None)];
+        assert_eq!(cuda_visible_devices_value(&[0, 1], &nvidia), "GPU-aaaa,1");
+    }
+
+    #[test]
+    fn cuda_value_falls_back_to_index_when_the_card_is_not_detected_at_all() {
+        // Empty nvidia list: no nvidia-smi, or a non-NVIDIA box. Must behave
+        // exactly like the pre-UUID code, a bare index CSV.
+        assert_eq!(cuda_visible_devices_value(&[0, 2], &[]), "0,2");
     }
 
     #[test]
