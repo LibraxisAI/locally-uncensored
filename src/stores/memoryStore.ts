@@ -794,7 +794,9 @@ export const useMemoryStore = create<MemoryState>()(
           .filter(({ score }) => score > 0)
           .sort((a, b) => b.score - a.score)
 
-        const limit = options?.limit || 20
+        // R2-39: `|| 20` turned an explicit limit of 0 into 20, since 0 is
+        // falsy. `??` only falls back when the caller left it unset.
+        const limit = options?.limit ?? 20
         return scored.slice(0, limit).map(({ entry }) => entry)
       },
 
