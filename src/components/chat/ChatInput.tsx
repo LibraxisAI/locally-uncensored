@@ -563,9 +563,25 @@ export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, l
               (`focus-within:border-*` weiter oben), der Ring lag als zweiter,
               staerkerer Rahmen darin. Die Begruendung samt Messung steht an
               der Regel in index.css; `focus:outline-none` unten allein reicht
-              nicht, es verliert gegen sie. */}
+              nicht, es verliert gegen sie.
+
+              `key={conversationId}`: der Gespraechswechsel oben raeumt `input`
+              ueber React (den kontrollierten Wert), aber das DOM-Textfeld
+              selbst behaelt ohne eigenen Schluessel denselben Knoten, samt
+              seiner eigenen Selektion/Cursorposition, ueber den Wechsel
+              hinweg. Ein Tastenereignis, das der Browser noch gegen den ALTEN
+              Knoten in der Warteschlange hat (eine reale Maus- oder
+              CDP-Eingabe, die kurz vor dem Wechsel begann), landet dann an der
+              alten Cursorposition MITTEN im gerade abgelegten Entwurf, bevor
+              Reacts Leerung überhaupt sichtbar wird - genau das Muster aus der
+              Box-Messung (BERICHT.md Z2: neuer Text mitten im alten,
+              Endstueck haengt hinten dran). Ein neuer Schluessel zwingt einen
+              WIRKLICH neuen DOM-Knoten pro Unterhaltung: es gibt dann keinen
+              alten Knoten mehr, an dem ein verspaetetes Ereignis noch landen
+              koennte. */}
           <textarea
             data-lu-quiet-focus
+            key={conversationId ?? 'none'}
             ref={textareaRef}
             value={input}
             onChange={(e) => updateInput(e.target.value)}

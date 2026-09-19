@@ -158,6 +158,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'Dismissing the stale model notice in the chat header now actually dismisses it, instead of it reappearing on the very next update.',
           'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
           'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
+          'A draft left in the message box no longer merges into the next thing you type after switching conversations, and the composer no longer gets stuck showing Stop after closing the window, signing out or quitting with a message still in flight.',
         ],
       },
     ],

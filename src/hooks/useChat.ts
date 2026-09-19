@@ -401,6 +401,10 @@ export function useChat() {
     const facts = currentLaneFacts()
     const lane = models.some((model) => laneOf(model, facts) === 'local') ? 'local' : 'cloud'
     const abort = new AbortController()
+    // Runs this hook-global `isGenerating` boolean unconditionally down to
+    // (see Ghost-Stop-Fix note above `activeChatRuns`): registered/removed by
+    // its OWN identity, independent of `generationStore.aborters`.
+    const myRunToken = Symbol(convId)
     await runInLane({ conversationId: convId, lane, abort: () => abort.abort() }, async () => {
       // The generationStore aborter map IS the run register, keyed by convId,
       // see the ChatRun doc comment above sendMessage. Nothing else needs to
@@ -409,6 +413,7 @@ export function useChat() {
       // overwrite.
       const myAborter = () => abort.abort()
       useGenerationStore.getState().registerAborter(convId, myAborter)
+      activeChatRuns.set(convId, myRunToken)
       setIsGenerating(true)
       useGenerationStore.getState().setGenerating(convId, true)
       try {
@@ -425,13 +430,30 @@ export function useChat() {
         if (stillOwnsSlot) {
           useGenerationStore.getState().clearAborter(convId)
         }
+        if (activeChatRuns.get(convId) === myRunToken) {
+          activeChatRuns.delete(convId)
+        }
         // The round is over, so it goes on disk BEFORE the app says so. Same
         // contract as the single-model turn below and as the Agent and Coding
         // runs; see stores/durability.ts for the measurement that made the
         // order matter.
         await endTurnDurably(() => {
+          // Ghost-Stop-Fix (G31 Nachbesserung, 3.0.1): `isGenerating` is
+          // recomputed from the live run registry (`activeChatRuns.size`),
+          // NOT gated on `stillOwnsSlot` the way `generationStore`'s OWN
+          // per-conversation flag still is below. An external abort (Stop
+          // button on ANOTHER conversation never reaches here, but sign-out,
+          // window close and app quit all call
+          // `generationStore.abortConversation(convId)` directly, see
+          // lib/background-shutdown.ts) clears `aborters[convId]` WITHOUT
+          // starting a replacement round, so `stillOwnsSlot` is false here,
+          // and nothing else was ever going to flip this hook's global flag
+          // back to false. `activeChatRuns` has its own, independent identity
+          // check just above and is authoritative for "is a plain-chat or
+          // group round still actually running", exactly like
+          // `activeAgentRuns.size > 0` in useAgentChat.ts.
+          setIsGenerating(activeChatRuns.size > 0)
           if (stillOwnsSlot) {
-            setIsGenerating(false)
             useGenerationStore.getState().setGenerating(convId, false)
           }
         })
@@ -1351,12 +1373,27 @@ export function useChat() {
       // The answer itself is already painted, so what waits here is the Stop
       // button turning back into Send, not the text.
       await endTurnDurably(() => {
-        // Review-lanes.md point 1: same asymmetry as Blocker 2. Only THIS
-        // run flipping the hook's own flag back to false when it still owns
-        // the slot keeps a still-running resend on the same conversation
-        // from being reported as idle while it is not.
+        // Ghost-Stop-Fix (G31 Nachbesserung, 3.0.1 box test Z2/Nebenfund 3):
+        // `isGenerating` used to be gated on `stillOwnsSlot`, same as
+        // `generationStore`'s per-conversation flag below. That is right for
+        // the STORE flag (review-lanes.md point 1: a still-running resend on
+        // the same conversation must not be reported idle), but wrong for
+        // THIS hook-global boolean: `generationStore.abortConversation`
+        // (called by the Stop button, sign-out, window close and app quit,
+        // lib/background-shutdown.ts) clears `aborters[run.convId]`
+        // synchronously and WITHOUT starting a replacement run, so
+        // `stillOwnsSlot` is false here even though nobody else will ever
+        // flip this flag back to false. The composer then reads `isGenerating`
+        // (hooks/useChat.ts's return value, fed into `composerBusy`) as
+        // permanently "Stop", with no run in sight, measured on the box
+        // after a window-close (BERICHT.md Nebenfund 3). `activeChatRuns` is
+        // cleared by its OWN identity check just above, independent of
+        // `generationStore`, so its size is authoritative for "is a plain
+        // chat send still actually running", same pattern as
+        // `activeAgentRuns.size > 0` in useAgentChat.ts, which never had
+        // this bug.
+        setIsGenerating(activeChatRuns.size > 0)
         if (stillOwnsSlot) {
-          setIsGenerating(false)
           useGenerationStore.getState().setGenerating(run.convId, false)
         }
       })

@@ -136,6 +136,10 @@ installs stop losing environment variables to it.
   shows.
 - **ltx-2 LoRA renders in the desktop app now carry a credit cost**, matching
   the web catalog, instead of pricing as free.
+- **A draft left in the message box no longer merges into the next thing you
+  type after switching conversations**, and the composer no longer gets stuck
+  showing Stop after closing the window, signing out or quitting with a
+  message still in flight.
 
 ## [3.0.0] - 2026-09-13
 
