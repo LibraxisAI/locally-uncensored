@@ -63,12 +63,79 @@
  * `admit`/`release` weitergereicht wird (siehe deren Kopf in `run-lanes.ts`).
  * Ein neuer Lauf derselben Unterhaltung bekommt eine NEUE Identitaet und
  * stellt sich damit hinter dem noch abwickelnden alten an, statt ihn zu
- * ersetzen. Taucht eines Tages ein echter verschachtelter Aufrufer wieder
- * auf, muss er sein Elternlauf-Token EXPLIZIT weiterreichen, nie stillschweigend
- * ueber die blosse `conversationId` erschliessen lassen.
+ * ersetzen.
+ *
+ * ── DIE WEITERGABE DES ELTERNLAUF-TOKENS, JETZT WIRKLICH GEPRUEFT ───────────
+ *
+ * (Nachbesserung 3, Runde 3 der 3.0.1-Pruefung; Nachbesserung Runde 4,
+ * bau/review-w2lane.md) Ein echter verschachtelter Aufrufer ist inzwischen
+ * da, gleich zwei: `workflow-engine.ts`s eigener `run_workflow`-Aufruf
+ * (`api/mcp/builtin-tools.ts`, verschachtelt in einen schon laufenden
+ * Werkzeugaufruf) und der VORDERGRUND-Sub-Agent (`sub-agent.ts`, `return
+ * await runner(...)`, der Elternzug wartet auf ihn). Beide reichen ihr
+ * Elternlauf-Token EXPLIZIT weiter, ueber `runsInHeldLane` unten, statt es
+ * stillschweigend ueber die blosse `conversationId` erschliessen zu lassen.
+ *
+ * Runde 4 hat gemessen, dass "explizit weitergereicht" allein nichts wert
+ * ist, wenn niemand es nachpruefft: `runsInHeldLane: true` war ein reiner
+ * Vertrauensbeweis, ein Aufrufer konnte den Marker setzen, OHNE dass
+ * irgendein Elternlauf die Spur wirklich haelt, und der Rumpf lief dann
+ * neben einem FREMDEN Halter, ohne Platz, ohne Buchung, ohne Abbruchgriff,
+ * unsichtbar fuer `stopAllBackgroundWork` (drei erreichbare Wege genannt:
+ * ein Vordergrund-Sub-Agent mit eigenem lokalem `model` unter einem
+ * Cloud-Elternzug, ein Modellwechsel mitten im Zug, ein Sprachkanal ohne
+ * Zug ueberhaupt). Deshalb ist `runsInHeldLane` jetzt kein Boolean mehr,
+ * sondern die `HeldLocalLane`-Identitaet, die `runInLane` seinem eigenen
+ * Rumpf mitgibt (zweiter Parameter von `body`), und die diese Funktion
+ * gegen `holdsLocalLane()` prueft, BEVOR sie `admit`/`release` uebergeht:
+ * nur wenn GENAU dieser Elternlauf die lokale Spur heute noch haelt, faehrt
+ * der innere Aufruf in dessen Platz mit UND haengt sich an dessen
+ * Abbruchgriff (Stop auf die Elternunterhaltung bricht dann beide ab).
+ * Stimmt der Beweis nicht (der Marker ist veraltet, falsch gesetzt, oder der
+ * Elternlauf ist gar keiner), bucht der Aufruf ganz normal wie ein
+ * eigenstaendiger Lauf.
+ *
+ * DAS IST NUR DANN KEIN HAENGER, WENN DER AUFRUFER SEINEN EIGENEN, ECHTEN
+ * BEWEIS WEITERGIBT, NIE EINEN GEERBTEN.
+ *
+ * (Nachpruefung, bau/review-w2lane.md, Blocker 1 der Runde nach `1c9d8043`)
+ * Der Satz stand hier vorher ohne diese Bedingung, unbedingt: "haelt niemand
+ * aus derselben Kette die Spur, kann sich niemand aus derselben Kette selbst
+ * blockieren". Das gilt nur, wenn wirklich niemand aus der Kette haelt. Ein
+ * HALTENDER Lauf, der einen ZWEITEN abwartet (Werkzeugausfuehrung,
+ * `run_workflow`, ein weiterer verschachtelter Agent), MUSS diesem zweiten
+ * seinen EIGENEN, aktuellen Beweis mitgeben. Gemessen wurde das Gegenteil:
+ * ein Hintergrund-Sub-Agent bucht die Spur unter seiner eigenen Aufgaben-Id,
+ * sein `run_workflow`-Schritt bekam aber per `{ ...run }` den laengst
+ * freigegebenen Beweis des ELTERNZUGS durchgereicht (nicht den eigenen), der
+ * Beweis war damit garantiert ungueltig, der Werkzeugschritt fiel auf
+ * normales Buchen unter `'tool-execution'` zurueck und wartete dort auf
+ * einen Platz, den der Sub-Agent selbst haelt: derselbe Halter wartet auf
+ * sich selbst, fuer immer, bis zum naechsten Appstart. `sub-agent.ts` reicht
+ * seither `held` (den zweiten Parameter des eigenen `body`) weiter statt des
+ * geerbten Werts.
+ *
+ * Ein ABGEWARTETES `runInLane` verschachtelt in einem anderen, OHNE einen
+ * gueltigen Beweis fuer GENAU den Lauf, der wirklich haelt, haengt weiterhin
+ * hart: der innere Aufruf stellt sich hinter dem aeusseren an, der aeussere
+ * wartet auf den inneren, beide fuer immer (gemessen, siehe
+ * `__tests__/run-slot-nested-in-held-lane.test.ts` und
+ * `__tests__/heldLocalLane-wird-immer-weitergereicht.test.ts`).
+ * `runsInHeldLane` mit dem echten, EIGENEN Beweis jedes wartenden Laufs ist
+ * der einzige Weg, das zu vermeiden.
+ *
+ * Der HINTERGRUND-Sub-Agent (`sub-agent.ts`, `void runner(...)`) ist die
+ * Gegenprobe: er wird vom Elternzug NICHT abgewartet, ueberlebt dessen Ende
+ * und braucht deshalb seine EIGENE Buchung unter einer eigenen Identitaet
+ * (die Aufgaben-Id, nicht die `conversationId` der sichtbaren Unterhaltung),
+ * damit `stopAllBackgroundWork` ihn erreicht und er sich in dieselbe lokale
+ * Spur einreiht wie jeder andere Lauf. `runsInHeldLane` bleibt fuer ihn
+ * `undefined` (der Vorgabewert).
  */
-import { admit, release, type RunLane } from './run-lanes'
+import { admit, release, holdsLocalLane, type RunLane, type HeldLocalLane } from './run-lanes'
 import { useGenerationStore } from '../stores/generationStore'
+
+export type { HeldLocalLane }
 
 export interface RunSlotOptions {
   /** Der sichtbare Lauf. Dieselbe Kennung, die der Stop-Knopf benennt. */
@@ -84,6 +151,19 @@ export interface RunSlotOptions {
    * selbst: dort wird nichts abgebrochen, sondern ausgereiht.
    */
   abort?: () => void
+  /**
+   * Der Beweis, dass ein Elternlauf die lokale Spur haelt und dieser Rumpf
+   * in dessen Platz mitfahren darf (der `held`-Wert, den `runInLane` seinem
+   * EIGENEN `body` als zweites Argument mitgibt). Siehe Dateikopf, Abschnitt
+   * "DIE WEITERGABE DES ELTERNLAUF-TOKENS". Wird zur Laufzeit gegen
+   * `holdsLocalLane()` geprueft: nur wenn GENAU dieser Elternlauf die Spur
+   * heute noch haelt, ruft diese Funktion `admit`/`release` gar nicht auf,
+   * sondern fuehrt `body()` direkt im Platz des Elternlaufs aus und haengt
+   * sich an dessen Abbruchgriff. Stimmt der Beweis nicht mehr (oder war er
+   * nie echt), bucht dieser Aufruf ganz normal, als eigenstaendiger Lauf.
+   * Vorgabe `undefined`: ein eigenstaendiger Lauf bucht immer selbst.
+   */
+  runsInHeldLane?: HeldLocalLane | null
 }
 
 /**
@@ -111,16 +191,55 @@ type Weckgrund = 'drangekommen' | 'ausgereiht'
  */
 export async function runInLane(
   options: RunSlotOptions,
-  body: () => Promise<void>,
+  body: (held: HeldLocalLane | null) => Promise<void>,
 ): Promise<RunSlotOutcome> {
-  const { conversationId, lane, abort } = options
+  const { conversationId, lane, abort, runsInHeldLane } = options
+
+  // Der Beweis wird nachgemessen, nicht geglaubt (Opus-Review Runde 4,
+  // bau/review-w2lane.md). Nur wenn GENAU der genannte Elternlauf die lokale
+  // Spur JETZT noch haelt, faehrt dieser Rumpf in dessen Platz mit. Ein
+  // zweites `admit` fuer dieselbe `conversationId` waere sonst die
+  // Verklemmung aus dem Dateikopf, weil der aeussere Lauf auf genau diesen
+  // Rumpf wartet. Fehler kommen unveraendert heraus, wie beim normalen Weg.
+  if (runsInHeldLane && holdsLocalLane(runsInHeldLane.conversationId, runsInHeldLane.identity)) {
+    const store = useGenerationStore.getState()
+    // An den Abbruchgriff des Elternlaufs anhaengen: Stop auf die
+    // Elternunterhaltung muss diesen inneren Rumpf mit erreichen, sonst
+    // waere ein Vordergrund-Sub-Agent oder ein verschachtelter Arbeitsablauf
+    // ueber den Stop-Knopf der Unterhaltung, die ihn gestartet hat, nicht
+    // mehr abbrechbar. Der alte Griff wird danach exakt wiederhergestellt,
+    // damit das `finally` des Elternlaufs (das seinen EIGENEN Griff per
+    // Referenz wiedererkennt) unveraendert weiterfunktioniert.
+    const elternGriff = store.aborters[runsInHeldLane.conversationId]
+    const griffFuerBeide = (): void => { elternGriff?.(); abort?.() }
+    if (abort) store.registerAborter(runsInHeldLane.conversationId, griffFuerBeide)
+    try {
+      await body(runsInHeldLane)
+      return 'ran'
+    } finally {
+      if (abort && useGenerationStore.getState().aborters[runsInHeldLane.conversationId] === griffFuerBeide) {
+        useGenerationStore.getState().registerAborter(runsInHeldLane.conversationId, elternGriff ?? (() => {}))
+      }
+    }
+  }
+  if (runsInHeldLane && lane === 'local') {
+    // Der Marker war gesetzt, aber der genannte Elternlauf haelt die Spur
+    // nicht (mehr): veraltet, falsch gesetzt, oder gar keiner. Normal buchen
+    // ist hier sicher, kein Haenger, denn haelt niemand aus derselben Kette
+    // die Spur, kann sich niemand aus derselben Kette selbst blockieren; nur
+    // geloggt, damit ein falsch gesetzter Marker nicht lautlos bleibt.
+    console.warn(
+      '[run-slot] runsInHeldLane was set, but the named parent run does not hold the local lane. ' +
+      'Booking normally instead.',
+    )
+  }
 
   // Ein Lauf ohne Kennung nimmt keinen Platz, dieselbe Entscheidung wie in
   // `admit`: er koennte ihn nie zurueckgeben, weil `release` ihn ueber genau
   // diese Kennung findet. Zwei lokale Laeufe nebeneinander sind langsam, eine
   // fuer immer besetzte Spur ist tot.
   if (!conversationId) {
-    await body()
+    await body(null)
     return 'ran'
   }
 
@@ -132,6 +251,11 @@ export async function runInLane(
   // heute; kommt so ein Aufrufer zurueck, ist das die einzige Stelle, die er
   // aendern muss.
   const identity = Symbol(conversationId)
+  // Der Beweis, den DIESER Lauf einem eigenen verschachtelten Aufruf mitgeben
+  // kann, siehe Dateikopf. Nur fuer `lane === 'local'`: die Wolke haelt gar
+  // keine exklusive Spur, ein Beweis dafuer waere nichts wert und
+  // `holdsLocalLane` liefert fuer ihn ohnehin immer `false`.
+  const held: HeldLocalLane | null = lane === 'local' ? { conversationId, identity } : null
 
   let zustand: 'wartend' | 'laeuft' | 'ausgereiht' = 'wartend'
   let wecken: ((grund: Weckgrund) => void) | null = null
@@ -157,8 +281,31 @@ export async function runInLane(
     abort?.()
   }
 
+  // Den VORGEFUNDENEN Griff dieser Kennung merken, bevor er ueberschrieben
+  // wird (BLOCKER 3, Nachpruefung 2 von review-w2lane.md, gemessen).
+  //
+  // Diese Kennung gehoert nicht zwingend diesem Lauf: sie kann die eines
+  // laufenden Chat-Zugs sein (`WorkflowEngine.run()` bucht unter
+  // `this.conversationId`, und aus dem Ablauf-Fenster ist das die gerade
+  // sichtbare Unterhaltung, ohne jede Sperre gegen einen dort laufenden
+  // Zug), oder allgemein die eines beliebigen anderen Halters, der zufaellig
+  // dieselbe Kennung traegt. Ohne dieses Merken registrierte die naechste
+  // Zeile ihren eigenen Griff rueckhaltlos ueber den vorgefundenen, und
+  // `aufraeumen` loeschte ihn am Ende ersatzlos: Stop auf diese Kennung
+  // erreichte danach nur noch DIESEN Lauf, nie mehr den, der vorher da war,
+  // und `stopAllBackgroundWork` traf ihn ebenso wenig.
+  //
+  // Der gehaltene (mitfahrende) Weg oben macht das schon richtig
+  // (`elternGriff`/`griffFuerBeide`); dieser normale Buchungsweg bekommt
+  // jetzt denselben Mechanismus, an der Wurzel, statt dass jede
+  // Aufrufstelle (Sub-Agent, Arbeitsablauf, jede kuenftige) selbst daran
+  // denken muss.
   const store = useGenerationStore.getState()
-  store.registerAborter(conversationId, abbruchgriff)
+  const vorgefundenerGriff = store.aborters[conversationId]
+  const kombinierterGriff = vorgefundenerGriff
+    ? (): void => { vorgefundenerGriff(); abbruchgriff() }
+    : abbruchgriff
+  store.registerAborter(conversationId, kombinierterGriff)
   store.bookRun(conversationId, lane, identity)
 
   const urteil = admit(lane, conversationId, () => {
@@ -194,15 +341,15 @@ export async function runInLane(
   }
 
   if (grund === 'ausgereiht') {
-    aufraeumen(conversationId, abbruchgriff, identity)
+    aufraeumen(conversationId, kombinierterGriff, vorgefundenerGriff, identity)
     return 'cancelled-while-queued'
   }
 
   try {
-    await body()
+    await body(held)
     return 'ran'
   } finally {
-    aufraeumen(conversationId, abbruchgriff, identity)
+    aufraeumen(conversationId, kombinierterGriff, vorgefundenerGriff, identity)
     // DIE PFLICHT AUS DEM KOPF VON run-lanes.ts, an ihrer einzigen Stelle.
     // Der Platz ist beim Zurueckkehren aus `release` schon an den Naechsten
     // vergeben; wer den Rueckgabewert verwirft, laesst die Spur haengen.
@@ -211,20 +358,41 @@ export async function runInLane(
 }
 
 /**
- * Buchung weg, eigener Abbruchgriff weg.
+ * Buchung weg, eigener Abbruchgriff weg, VORGEFUNDENER Griff wiederhergestellt.
  *
- * Beides nur, wenn es noch UNSERES ist (`identity`). Der Sendeweg
- * registriert im Rumpf seinen eigenen Abbruchgriff und ueberschreibt diesen
- * dabei; ihn danach blind wegzuraeumen, naehme dem Nutzer den Stop-Knopf fuer
- * einen Lauf, der noch ausrollt. Dieselbe Frage gilt seit Blocker A fuer die
- * Buchung selbst: ein spaet kommendes `finally` eines abgeloesten Laufs
- * (Stop, sofort neu gesendet) darf `generationStore.runs` nicht loeschen,
- * wenn der NEUE Lauf die Unterhaltung inzwischen uebernommen hat.
+ * Beides nur, wenn der registrierte Griff noch UNSERER ist (`eigenerGriff`,
+ * per Referenz verglichen). Der Sendeweg registriert im Rumpf seinen eigenen
+ * Abbruchgriff und ueberschreibt diesen dabei; ihn danach blind wegzuraeumen,
+ * naehme dem Nutzer den Stop-Knopf fuer einen Lauf, der noch ausrollt.
+ * Dieselbe Frage gilt seit Blocker A fuer die Buchung selbst: ein spaet
+ * kommendes `finally` eines abgeloesten Laufs (Stop, sofort neu gesendet)
+ * darf `generationStore.runs` nicht loeschen, wenn der NEUE Lauf die
+ * Unterhaltung inzwischen uebernommen hat.
+ *
+ * `vorgefundenerGriff` (BLOCKER 3, Nachpruefung 2 von review-w2lane.md):
+ * WIRD ZURUECKGESCHRIEBEN statt geloescht, wenn es einen gab. Ohne diese
+ * Zeile endete jeder normal buchende Lauf, dessen Kennung schon einen
+ * fremden Griff trug (ein laufender Chat-Zug in derselben Unterhaltung, ein
+ * Arbeitsablauf, der sie sich teilt), damit, dass der Fremde seinen
+ * Abbruchgriff fuer immer verliert, auch wenn dieser Lauf hier laengst
+ * fertig ist und niemand mehr Stop darauf druecken kann: `endet false, dann
+ * still nie wieder erreichbar`. Gemessen an `WorkflowEngine.run()`, das aus
+ * dem Ablauf-Fenster unter der gerade sichtbaren Unterhaltung bucht und sich
+ * dabei anstellt, waehrend dort ein Chat laeuft.
  */
-function aufraeumen(conversationId: string, eigenerGriff: () => void, identity: unknown): void {
+function aufraeumen(
+  conversationId: string,
+  eigenerGriff: () => void,
+  vorgefundenerGriff: (() => void) | undefined,
+  identity: unknown,
+): void {
   const store = useGenerationStore.getState()
   store.endRun(conversationId, identity)
   if (useGenerationStore.getState().aborters[conversationId] === eigenerGriff) {
-    store.clearAborter(conversationId)
+    if (vorgefundenerGriff) {
+      store.registerAborter(conversationId, vorgefundenerGriff)
+    } else {
+      store.clearAborter(conversationId)
+    }
   }
 }

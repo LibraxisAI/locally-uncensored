@@ -20,6 +20,7 @@
  */
 
 import type { AgentWorkspace } from '../types/agent-workspace'
+import type { HeldLocalLane } from '../lib/run-lanes'
 
 /**
  * Duplication-proof state carrier (v2.5.3 live E2E find, 2026-06-11).
@@ -104,6 +105,17 @@ export interface AgentRunContext {
    * thread yet; those simply cannot be interrupted mid-delegation.
    */
   abortSignal?: AbortSignal
+  /**
+   * Der Beweis fuer `run-slot.ts`s `runsInHeldLane` (Opus-Review Runde 4,
+   * bau/review-w2lane.md): gesetzt, sobald DIESER Lauf die lokale Spur
+   * wirklich haelt (`null` fuer einen Cloud-Lauf, der keine haelt). Ein
+   * verschachtelter Aufruf, der in diesem Platz mitfahren will (der
+   * `run_workflow`-Werkzeugaufruf, der Vordergrund-Sub-Agent), reicht genau
+   * dieses Feld an `runInLane` weiter, statt zu behaupten, es gebe einen
+   * Platz. `undefined` auf Flaechen, die noch nicht threaden (siehe
+   * `abortSignal`): so ein Aufruf kann nur normal buchen, nie mitfahren.
+   */
+  heldLocalLane?: HeldLocalLane | null
 }
 
 interface AgentCtxState {

@@ -297,6 +297,36 @@ export function localLaneHolder(): string | null {
   return halter?.convId ?? null
 }
 
+/**
+ * Der Beweis, den ein Elternlauf einem verschachtelten Aufruf mitgibt, um
+ * ihm zu sagen "du darfst in meinem Platz mitfahren". Siehe `run-slot.ts`s
+ * `runsInHeldLane` und `holdsLocalLane` unten.
+ */
+export interface HeldLocalLane {
+  conversationId: string
+  identity: unknown
+}
+
+/**
+ * Haelt GENAU dieser Lauf (diese `identity`, nicht nur diese `conversationId`)
+ * die lokale Spur gerade wirklich?
+ *
+ * Opus-Review (bau/review-w2lane.md, Runde 4): `run-slot.ts`s
+ * `runsInHeldLane` war bis hierher ein reiner Vertrauensbeweis, ein Aufrufer
+ * konnte den Marker setzen, OHNE dass ein Elternlauf irgendetwas haelt, und
+ * lief dann neben einem FREMDEN Halter, ohne Platz, ohne Buchung, ohne
+ * Abbruchgriff, unsichtbar fuer `stopAllBackgroundWork`. Diese Funktion ist
+ * die Gegenprobe dazu: sie beantwortet nicht "traegt der Aufrufer denselben
+ * Namen", sondern "ist der HALTER heute buchstaeblich dasselbe Objekt, das
+ * der Aufrufer als Beweis vorzeigt". Eine `identity` kann niemand faelschen,
+ * ohne sie vom echten Halter bekommen zu haben (`run-slot.ts` gibt sie nur an
+ * den eigenen Rumpf weiter), also ist ein Treffer hier ein echter Beweis,
+ * keine Namensgleichheit.
+ */
+export function holdsLocalLane(conversationId: string, identity: unknown): boolean {
+  return halter !== null && halter.convId === conversationId && halter.identity === identity
+}
+
 /** Die Wartenden in ihrer Reihenfolge. Fuer Tests und Diagnose. */
 export function queuedRunIds(): string[] {
   return warteschlange.map((w) => w.convId)

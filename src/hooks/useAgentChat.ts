@@ -430,7 +430,7 @@ export function useAgentChat() {
     const lane = laneOf(activeModel, currentLaneFacts())
     const laneOutcome = await runInLane(
       { conversationId: convId, lane, abort: () => abort.abort() },
-      async () => {
+      async (heldLocalLane) => {
 
     // Z36 finding 2: an agent turn carries the tool catalogue and outgrows
     // the built-in engine's 8192 start default, and llama-server's ctx is a
@@ -794,6 +794,11 @@ export function useAgentChat() {
     // a delegate_task sub-agent runs (audit AGT-1). Assigned here rather than
     // in beginAgentRun because the controller does not exist that early.
     run.abortSignal = abort.signal
+    // The proof `run-slot.ts`s `runsInHeldLane` checks (Opus-Review Runde 4,
+    // bau/review-w2lane.md): a nested run_workflow or a foreground
+    // delegate_task threads this straight back into runInLane instead of
+    // guessing it holds the lane.
+    run.heldLocalLane = heldLocalLane
     // Bind the generating flag to THIS conversation so the typing indicator
     // shows only in the chat whose turn is in flight (David 2026-06-12).
     useGenerationStore.getState().setGenerating(convId, true)

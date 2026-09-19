@@ -10,7 +10,7 @@
 // while something runs instead of holding progress in React.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Cpu, Download, Trash2, Loader2, Check, AlertTriangle, Film, Image as ImageIcon } from 'lucide-react'
+import { Cpu, Download, Trash2, Loader2, Check, AlertTriangle, Film, Image as ImageIcon, KeyRound } from 'lucide-react'
 import {
   mlxStatus,
   listMlxImageModels,
@@ -261,6 +261,22 @@ export function MlxMediaSettings({ only }: { only?: 'image' | 'video' } = {}) {
           <div className="text-[0.65rem] leading-relaxed break-words">{error}</div>
         </div>
       )}
+
+      {/* F4 (301-Liste): the models below download from huggingface.co, and
+          nothing on this install path said a token helps before the fix. The
+          Hub itself is slower and rate-limited for anonymous requests; four
+          fresh comparison numbers were the ask, but measuring those needs a
+          real Hugging Face token, which this build did not create (no
+          credential is read or entered here). So this line stays without a
+          number, true and short, and the numbers are tracked as open in the
+          build report instead of invented. */}
+      <div className="flex items-start gap-2 p-2.5 rounded-lg border border-gray-200 dark:border-white/8 bg-gray-50 dark:bg-white/[0.03]">
+        <KeyRound size={13} className="mt-0.5 shrink-0 text-gray-500" />
+        <div className="t-micro leading-relaxed text-gray-600 dark:text-gray-400">
+          These models download from Hugging Face. Anonymous downloads can be slower or rate limited;
+          a free Hugging Face token avoids that. Add one under Hugging Face token in AI Backends.
+        </div>
+      </div>
 
       {/* ── Image ─────────────────────────────────────────── */}
       {showImage && (<>

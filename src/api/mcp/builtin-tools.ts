@@ -1530,7 +1530,7 @@ async function executeGetCurrentTime(_args: ToolArgs): Promise<string> {
 
 let _workflowDepth = 0
 
-async function executeRunWorkflow(args: ToolArgs): Promise<string> {
+async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promise<string> {
   const workflowName = argString(args, 'name')
   if (!workflowName) return 'Error: No workflow name provided'
   if (_workflowDepth >= 5) return 'Error: Maximum workflow nesting depth (5) exceeded'
@@ -1564,7 +1564,21 @@ async function executeRunWorkflow(args: ToolArgs): Promise<string> {
     : {}
   _workflowDepth++
   try {
-    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth)
+    // `runsInHeldLane` (run-slot.ts header, "DIE WEITERGABE DES
+    // ELTERNLAUF-TOKENS"): this call is AWAITED here, from inside a tool
+    // step of a turn that may or may not hold the local lane. It used to be
+    // a bare `true`, on the claim that the calling turn "already booked the
+    // local lane", false in general, a cloud turn never books one (Opus
+    // review, bau/review-w2lane.md Runde 4). What actually made the old
+    // code safe was a narrower fact: a workflow step reads the same
+    // `activeModel` as its caller, so a cloud caller's nested run is cloud
+    // too and there was nothing to serialize against, not that this engine
+    // itself never books. `run?.heldLocalLane` carries the real proof now
+    // (`null` when the caller holds no local lane), and `runInLane` checks
+    // it against the actual holder at run time before skipping its own
+    // booking, so a stale or absent proof falls back to booking normally
+    // instead of silently trusting the marker.
+    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth, run?.heldLocalLane ?? null)
     await engine.run()
   } finally {
     _workflowDepth--

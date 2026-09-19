@@ -14,6 +14,8 @@
 import { settleThinking } from '../../lib/thinking-stripper'
 import { toolResultIsFailure } from '../../lib/tool-result-failure'
 import { isRunStopped } from '../../lib/run-stop'
+import { runInLane } from '../../lib/run-slot'
+import { laneOf, currentLaneFacts, type RunLane } from '../../lib/run-lane-of-model'
 // M7 / Audit W-T2: hier stand zweimal `await import('../mcp')`. Gesplittet hat
 // das nie, die Tonne mcp/index.ts hängt über useAgentChat, useCodex und
 // api/tool-registry.ts ohnehin statisch im Graph, also meldete Rolldown
@@ -668,6 +670,26 @@ export async function defaultSubAgentRunner(
 }
 
 /**
+ * Auf welcher Spur wuerde dieser Sub-Agent rechnen, aufgeloest genau wie in
+ * `defaultSubAgentRunner`: ein explizites `model`-Argument gewinnt, sonst
+ * das aktive Modell. Geteilt zwischen dem Vordergrund- und dem
+ * Hintergrundzweig von `buildDelegateExecutor`, damit beide dieselbe
+ * Antwort auf "welches Modell rechnet wirklich" geben, statt sie zweimal
+ * getrennt zu erraten.
+ */
+async function resolveSubAgentLane(model: string | undefined): Promise<RunLane> {
+  const { useModelStore } = await import('../../stores/modelStore')
+  const { resolveRequestedModel } = await import('../../lib/agent-fanout')
+  const modelStoreState = useModelStore.getState()
+  let subAgentModel = modelStoreState.activeModel
+  if (model) {
+    const treffer = resolveRequestedModel(model, modelStoreState.models)
+    if (treffer) subAgentModel = treffer.name
+  }
+  return subAgentModel ? laneOf(subAgentModel, currentLaneFacts()) : 'cloud'
+}
+
+/**
  * Build a tool executor suitable for toolRegistry.registerBuiltin. The
  * runner is injectable so tests can stub the whole LLM round-trip.
  */
@@ -708,7 +730,48 @@ export function buildDelegateExecutor(
 
     if (!background) {
       try {
-        return await runner(goal, context, { budget, run, model })
+        // "Runs in the parent's held lane" (run-slot.ts header, "DIE
+        // WEITERGABE DES ELTERNLAUF-TOKENS"), but the proof is checked now,
+        // not assumed (Opus-Review Runde 4, bau/review-w2lane.md): a bare
+        // `true` here used to ride along even when the parent turn held NO
+        // local lane at all (a cloud parent, or a parent whose lane had
+        // already been given up), so a sub-agent pinned to its OWN local
+        // `model` ran unbooked next to a foreign local run. `run.abortSignal`
+        // is Stop for a run that books normally here; a run that rides along
+        // instead reaches the parent's own abort handle (run-slot.ts wires
+        // that up when the proof checks out).
+        const lane = await resolveSubAgentLane(model)
+        let output = ''
+        // NIE `run?.conversationId` fuer die eigene Buchung (Blocker 2,
+        // Nachpruefung von review-w2lane.md, gemessen): wenn der Beweis oben
+        // nicht sticht, faellt `runInLane` auf normales Buchen zurueck, und
+        // das registriert `generationStore.aborters[conversationId]`
+        // rueckhaltlos neu und LOESCHT ihn am Ende ersatzlos, ohne
+        // wiederherzustellen, was vorher da war. Unter der Kennung des
+        // ELTERNZUGS gebucht heisst das: dieser Sub-Agent nimmt dem
+        // Elternzug seinen Abbruchgriff weg, und `stopAllBackgroundWork`
+        // (Abmelden, Fenster schliessen, App beenden) erreicht ihn danach
+        // nicht mehr. Der gehaltene Weg oben braucht diesen Wert ohnehin
+        // nicht (er schlaegt unter `runsInHeldLane.conversationId` nach,
+        // nicht unter der hier uebergebenen Kennung), eine eigene, private
+        // Kennung aendert an ihm also nichts und behebt nur den Rueckfall.
+        await runInLane(
+          { conversationId: makeTaskId(_taskSeq++), lane, runsInHeldLane: run?.heldLocalLane ?? null },
+          async (held) => {
+            // `held` ist der EIGENE, gerade gueltige Beweis DIESES Sub-
+            // Agenten (mitgeritten oder frisch selbst gebucht), nicht der
+            // geerbte des Elternzugs (Blocker 1, Nachpruefung von
+            // review-w2lane.md): ein Werkzeugschritt dieses Sub-Agenten, der
+            // seinerseits `run_workflow` ruft, braucht GENAU diesen Wert,
+            // sonst legt er den laengst ungueltigen Beweis des Elternzugs
+            // vor und verklemmt sich hinter der eigenen Buchung dieses
+            // Sub-Agenten (dieselbe Fehlerform wie im Hintergrundzweig
+            // unten, nur eine Ebene hoeher).
+            const kindLauf: AgentRunContext | undefined = run ? { ...run, heldLocalLane: held } : undefined
+            output = await runner(goal, context, { budget, run: kindLauf, model })
+          },
+        )
+        return output
       } catch (err) {
         return `Error: ${err instanceof Error ? err.message : String(err)}`
       } finally {
@@ -729,6 +792,16 @@ export function buildDelegateExecutor(
     const { useAgentTaskStore } = await import('../../stores/agentTaskStore')
     const id = makeTaskId(_taskSeq++)
     const controller = new AbortController()
+
+    // Eigene Buchung unter der Aufgaben-Id, nicht der `conversationId` der
+    // sichtbaren Unterhaltung (run-slot.ts header, "DIE WEITERGABE DES
+    // ELTERNLAUF-TOKENS"): dieser Lauf ueberlebt seinen Elternzug, also
+    // kann er nicht in dessen Platz mitfahren. Ohne eigene Buchung raeumt
+    // der Elternlauf beim Fertigwerden seine Spur weg, waehrend dieser
+    // Hintergrundagent noch unbebucht gegen denselben Motor rechnet: zwei
+    // echte lokale Anfragen nebeneinander, dieselbe Klasse Fehler wie
+    // Blocker A.
+    const lane = await resolveSubAgentLane(model)
     // ── Stopp auf die Hauptantwort laesst Hintergrundagenten LAUFEN ─────────
     //
     // Hier wurde das Abbruchsignal des Elternzugs durchgereicht. Fuer einen
@@ -759,6 +832,12 @@ export function buildDelegateExecutor(
       // gemeldet: `cancel` gibt bei fehlendem Griff still `false` zurueck.
       // Gefunden, weil der Store ihn seither als Pflicht fuehrt.
       id, convId, goal, context, background: true, startedAt: Date.now(), controller,
+      // 'queued' (Folgeauftrag, bau/review-w2lane.md Runde 4): diese Zeile
+      // entsteht VOR der Buchung bei `lib/run-slot.ts` weiter unten, also
+      // bevor irgendetwas rechnet. Ohne dieses Feld meldete `check_tasks`
+      // die Aufgabe sofort als laufend, mit einer Uhr, die schon seit hier
+      // zaehlte, waehrend sie in Wahrheit noch auf die lokale Spur wartet.
+      status: 'queued',
     })
 
     // B1 Nachbesserung 2 (Opus-Review): Wettlauf Stop gegen Start. Zwischen
@@ -783,15 +862,32 @@ export function buildDelegateExecutor(
       return `Task ${id} was cancelled before it started (Stop was pressed).`
     }
 
-    // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des Elternzugs:
-    // sonst liesse sich eine einzelne Aufgabe nicht abbrechen, ohne den
-    // ganzen Zug mitzunehmen.
-    const kindLauf: AgentRunContext | undefined = run
-      ? { ...run, abortSignal: controller.signal }
-      : undefined
-
-    void runner(goal, context, { budget, run: kindLauf, taskId: id, model })
-      .then((output) => {
+    void runInLane(
+      { conversationId: id, lane, abort: () => controller.abort() },
+      async (held) => {
+        // Drangekommen: erst JETZT ist "laufend" wahr, und erst ab jetzt
+        // zaehlt `taskElapsedSeconds` (siehe `runStartedAt` in agent-tasks.ts).
+        useAgentTaskStore.getState().update(id, { status: 'running', runStartedAt: Date.now() })
+        // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des
+        // Elternzugs: sonst liesse sich eine einzelne Aufgabe nicht
+        // abbrechen, ohne den ganzen Zug mitzunehmen. Und `heldLocalLane`
+        // ist der EIGENE Beweis DIESES Laufs (`held`, oben von `runInLane`
+        // an den eigenen Rumpf gereicht), nicht der geerbte des Elternzugs
+        // (Blocker 1, Nachpruefung von review-w2lane.md, gemessen): ein
+        // `{ ...run }` liesse den Beweis des Elternzugs stehen, der zu
+        // diesem Zeitpunkt laengst freigegeben ist (der Elternzug ist ein
+        // abgeschlossener Werkzeugaufruf, dieser Lauf hier ueberlebt ihn).
+        // Ein Werkzeugschritt dieses Agenten, der `run_workflow` ruft,
+        // reichte dann einen garantiert ungueltigen Beweis weiter, fiel auf
+        // normales Buchen unter 'tool-execution' zurueck und wartete dort
+        // auf einen Platz, den DIESER Lauf selbst haelt (unter `id`): eine
+        // Verklemmung, die erst der App-Neustart aufloest. Mit dem eigenen
+        // `held` faehrt ein solcher verschachtelter Ablauf stattdessen im
+        // Platz DIESES Hintergrundagenten mit, genau wie im Vordergrundfall.
+        const kindLauf: AgentRunContext | undefined = run
+          ? { ...run, abortSignal: controller.signal, heldLocalLane: held }
+          : undefined
+        const output = await runner(goal, context, { budget, run: kindLauf, taskId: id, model })
         const abgebrochen = controller.signal.aborted
         useAgentTaskStore.getState().finish(id, {
           status: abgebrochen ? 'cancelled' : 'done',
@@ -799,6 +895,16 @@ export function buildDelegateExecutor(
           endedAt: Date.now(),
         })
         void meldeInDenVerlauf(convId, id, goal, abgebrochen ? 'cancelled' : 'done', output)
+      },
+    )
+      .then((outcome) => {
+        if (outcome !== 'cancelled-while-queued') return
+        // Stop zog die Aufgabe aus der lokalen Schlange, bevor sie je
+        // anlief: kein Token, keine Ausgabe, nichts aufzuraeumen, dieselbe
+        // Lesart wie `run-slot.ts`s `'cancelled-while-queued'`.
+        const grund = 'Cancelled before it could start: Stop was pressed while it was waiting for the local lane.'
+        useAgentTaskStore.getState().finish(id, { status: 'cancelled', output: grund, endedAt: Date.now() })
+        void meldeInDenVerlauf(convId, id, goal, 'cancelled', grund)
       })
       .catch((err) => {
         const grund = err instanceof Error ? err.message : String(err)
@@ -813,7 +919,8 @@ export function buildDelegateExecutor(
       // genau darin lag die zweite Falle, die eine Entwurfskritik am
       // 02.09.2026 aufgedeckt hat. Das urspruengliche try/finally umschloss
       // `await runner(...)`. Eine Hintergrundaufgabe kehrt sofort zurueck,
-      // also waere der Platz freigegeben, waehrend der Agent noch rechnet,       // SUB_AGENT_MAX_PARALLEL waere fuer genau den Pfad tot gewesen, der ihn
+      // also waere der Platz freigegeben, waehrend der Agent noch rechnet,
+      // SUB_AGENT_MAX_PARALLEL waere fuer genau den Pfad tot gewesen, der ihn
       // am noetigsten braucht. Der Zaehler gehoert an das Leben der AUFGABE.
       .finally(() => { _inFlight-- })
 
