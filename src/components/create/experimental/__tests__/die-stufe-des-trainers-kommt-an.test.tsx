@@ -40,6 +40,14 @@ vi.mock('../../../../api/trainer', async () => {
     characterTrainerStatus: vi.fn(async () => ({
       envReady: true,
       basesReady: true,
+      // N4 (Opus review of `3ef38668`): the only mock in the tree still
+      // missing the two K5 fields every other `TrainerStatus` mock carries.
+      // Harmless here (this gate never reaches the install-path field once
+      // `envReady` is true), but kept in step so a future field added next
+      // to these two does not silently skip this file too.
+      root: '/data/lu/musubi',
+      customized: false,
+      suggestedRoot: null,
       install: { status: 'done', step: '', percent: 100 },
     })),
     installCharacterTrainer: vi.fn(async () => undefined),

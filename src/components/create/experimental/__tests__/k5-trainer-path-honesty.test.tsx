@@ -131,11 +131,55 @@ describe('K5 Nachbesserung: Blocker 3, ehrliche Zielangabe', () => {
   })
 })
 
-describe('K5 Nachbesserung: Punkt 5, Vorschlag statt stillem Umzug', () => {
-  it('THE FIX: ein Vorschlagsordner erscheint als Platzhalter, nicht als Wert', async () => {
+describe('Teil 10, Punkt 3: der Vorschlag fuellt das Feld sichtbar vor, statt nur ein Platzhalter zu sein', () => {
+  it('THE FIX: kein Trainer, kein eigener Ordner, ein Vorschlag -- das Feld traegt den echten, editierbaren Wert', async () => {
     mockedStatus = baseStatus({ suggestedRoot: '/mnt/e/LU-Trainer' })
     render(<SpecialControls intent="character" />)
-    const feld = (await screen.findByPlaceholderText('e.g. /mnt/e/LU-Trainer')) as HTMLInputElement
+    const feld = (await screen.findByDisplayValue('/mnt/e/LU-Trainer')) as HTMLInputElement
+    expect(feld.value).toBe('/mnt/e/LU-Trainer')
+  })
+
+  it('THE FIX: darunter steht der Grund fuer den Vorschlag', async () => {
+    mockedStatus = baseStatus({ suggestedRoot: '/mnt/e/LU-Trainer' })
+    render(<SpecialControls intent="character" />)
+    await screen.findByDisplayValue('/mnt/e/LU-Trainer')
+    expect(screen.getByText(/Your model folder is on another drive/)).toBeTruthy()
+  })
+
+  it('THE FIX: das vorbelegte Feld ist editierbar und leerbar', async () => {
+    mockedStatus = baseStatus({ suggestedRoot: '/mnt/e/LU-Trainer' })
+    render(<SpecialControls intent="character" />)
+    const feld = (await screen.findByDisplayValue('/mnt/e/LU-Trainer')) as HTMLInputElement
+    fireEvent.change(feld, { target: { value: '' } })
     expect(feld.value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Set up trainer' }))
+    expect(installCharacterTrainer).toHaveBeenCalledWith(undefined)
+  })
+
+  it('GEGENPROBE: ein eigener, bereits angepasster Ordner uebersteuert den Vorschlag', async () => {
+    // Punkt (b) der Bedingung: ein gesetzter eigener Trainer-Ordner ist
+    // wichtiger als ein Vorschlag, der auf ComfyUI zeigt.
+    mockedStatus = baseStatus({ root: 'E:\\LU-Trainer', customized: true, suggestedRoot: '/mnt/e/LU-Trainer' })
+    render(<SpecialControls intent="character" />)
+    const feld = (await screen.findByDisplayValue('E:\\LU-Trainer')) as HTMLInputElement
+    expect(feld.value).toBe('E:\\LU-Trainer')
+    expect(screen.queryByDisplayValue('/mnt/e/LU-Trainer')).toBeNull()
+  })
+
+  it('GEGENPROBE: kein Vorschlag bekannt, das Feld bleibt leer wie zuvor', async () => {
+    mockedStatus = baseStatus({ suggestedRoot: null })
+    render(<SpecialControls intent="character" />)
+    await screen.findByRole('button', { name: 'Set up trainer' })
+    const feld = screen.getByPlaceholderText(/^e\.g\. \//) as HTMLInputElement
+    expect(feld.value).toBe('')
+  })
+
+  it('GEGENPROBE: eine bestehende Installation ausser Sicht bleibt unangetastet -- kein stilles Umziehen', async () => {
+    // Bedingung (a): ist envReady wahr, rendert dieses Tor ueberhaupt nicht,
+    // also gibt es kein Feld, das den Vorschlag je vorbelegen koennte.
+    mockedStatus = baseStatus({ envReady: true, basesReady: true, dit: 'x', textEncoder: 'x', vae: 'x', suggestedRoot: '/mnt/e/LU-Trainer' })
+    render(<SpecialControls intent="character" />)
+    expect(screen.queryByDisplayValue('/mnt/e/LU-Trainer')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Set up trainer' })).toBeNull()
   })
 })

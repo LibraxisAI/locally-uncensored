@@ -166,7 +166,7 @@ fn starts_with_tilde(p: &str) -> bool {
 /// quoted back in its own rejection messages, one per platform family so the
 /// example is never impossible on the machine reading it (same reasoning as
 /// `comfy_path_placeholder.ts` on the frontend, kept in sync by
-/// `k5-trainer-root-validation.test.ts`/`k5-trainer-path-honesty.test.tsx`).
+/// `trainer-path-placeholder.test.ts`/`k5-trainer-path-honesty.test.tsx`).
 fn example_trainer_path() -> &'static str {
     if cfg!(target_os = "windows") {
         "D:\\LU-Trainer"
@@ -1503,6 +1503,45 @@ pub fn parse_step_counter(line: &str) -> Option<(u64, u64)> {
 
 // ── one-time environment install ─────────────────────────────────────────────
 
+/// RAII claim on `state.trainer_install`'s "installing" slot. N2 (Opus review
+/// of `3ef38668`): the check ("is one already running?") and the set ("mark
+/// one as running") used to share a single lock, but the K5 validation step
+/// added between them (`validate_trainer_root_candidate`, real disk IO) was
+/// pulled OUT from under that lock, so the check and the set became two
+/// separate locks with a window in between. Two concurrent calls could both
+/// see `status != "installing"`, both pass, and both go on to start
+/// `provision_trainer_env` against the same venv.
+///
+/// The fix moves the set back next to the check (claim the slot first, while
+/// still holding the one lock, before any IO), and this guard is what makes a
+/// failed claim reversible: validation runs AFTER the slot is claimed, so a
+/// rejection has to hand the slot back rather than leave it stuck on
+/// "installing" forever. `defuse()` disarms it once the install has
+/// genuinely started (the spawned thread's own `set_status` calls own the
+/// status from there); an undefused guard resets to "idle" on drop, which
+/// covers every early return in between, including the `?` on validation
+/// failure and on a poisoned `gpu_selection` lock.
+struct InstallClaim<'a> {
+    install: &'a Arc<Mutex<crate::state::InstallState>>,
+    active: bool,
+}
+
+impl<'a> InstallClaim<'a> {
+    fn defuse(mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for InstallClaim<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            if let Ok(mut st) = self.install.lock() {
+                st.status = "idle".to_string();
+            }
+        }
+    }
+}
+
 #[allow(non_snake_case)]
 #[tauri::command]
 pub fn install_character_trainer(
@@ -1510,12 +1549,18 @@ pub fn install_character_trainer(
     state: State<'_, AppState>,
     installPath: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    {
-        let st = state.trainer_install.lock().unwrap();
+    // Check-and-set under ONE lock, held only long enough to claim the slot,
+    // never across the validation below (sysinfo disk lookup, create_dir_all,
+    // a probe write). See `InstallClaim` for why a failed validation still
+    // has to release the slot it just claimed.
+    let claim = {
+        let mut st = state.trainer_install.lock().unwrap();
         if st.status == "installing" {
             return Ok(serde_json::json!({"status": "already_installing"}));
         }
-    }
+        st.status = "installing".to_string();
+        InstallClaim { install: &state.trainer_install, active: true }
+    };
 
     // K5 Blocker 2/3 (Opus review of `4fda5a0a`): validated and persisted
     // BEFORE the install starts, not after, and an empty field is the way
@@ -1532,7 +1577,6 @@ pub fn install_character_trainer(
 
     {
         let mut st = state.trainer_install.lock().unwrap();
-        st.status = "installing".to_string();
         st.logs.clear();
         st.logs.push("Setting up the local character trainer...".to_string());
     }
@@ -1554,6 +1598,9 @@ pub fn install_character_trainer(
     // later, see `resolve_trainer_gpu`.
     let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
+    // The slot stays claimed from here on; the thread's own set_status calls
+    // take over reporting the status.
+    claim.defuse();
 
     std::thread::spawn(move || {
         let device = resolve_trainer_gpu(&gpu_selection);
@@ -3815,12 +3862,100 @@ mod tests {
     /// and a background thread.
     #[test]
     fn install_character_trainer_validates_before_it_persists() {
+        // N3 (Opus review of `3ef38668`): this used to cut a fixed 1800-byte
+        // window out of the function body, which would have broken from the
+        // wrong cause (an out-of-bounds slice, or a `write_at` that quietly
+        // stops matching) the day the function grows or a comment shifts the
+        // cut point. Both needles below are unique in the whole file (checked
+        // via grep), so searching the rest of the file after `body_start`
+        // instead of a fixed window finds them exactly as reliably and never
+        // goes stale as the function's body changes size.
         let src = include_str!("trainer.rs");
         let body_start = src.find("pub fn install_character_trainer(").expect("install_character_trainer");
-        let body = &src[body_start..body_start + 1800];
+        let body = &src[body_start..];
         let validate_at = body.find("validate_trainer_root_candidate(trimmed)?").expect("validation call");
         let write_at = body.find("write_config_value(\"trainer_root\", &validated").expect("persist call");
         assert!(validate_at < write_at, "the candidate must be validated before it is written to config.json");
+    }
+
+    /// N2 (Opus review of `3ef38668`): the check ("already installing?") and
+    /// the set ("claim the slot") used to be two separate locks with the
+    /// expensive path validation running unlocked in between, so two
+    /// concurrent calls could both see an idle status and both go on to
+    /// start `provision_trainer_env`. This drives the exact race against
+    /// `InstallClaim`, the primitive `install_character_trainer` now claims
+    /// the slot through (the full command needs a live `AppHandle` this
+    /// module's tests do not build, same reason as the two tests above).
+    ///
+    /// Both threads are held at a `Barrier` until they can both attempt the
+    /// claim in the same instant, and the "expensive check" is a real sleep
+    /// AFTER the slot is claimed and the lock released, so if the claim were
+    /// still split into two separate locks (the bug) a second thread timed
+    /// to land inside that sleep would see "idle" and wrongly win too.
+    #[test]
+    fn only_one_of_two_concurrent_installs_claims_the_slot() {
+        let install: Arc<Mutex<crate::state::InstallState>> = Arc::new(Mutex::new(crate::state::InstallState::default()));
+        let barrier = std::sync::Barrier::new(2);
+
+        let attempt = |install: &Arc<Mutex<crate::state::InstallState>>| -> &'static str {
+            barrier.wait();
+            let claim = {
+                let mut st = install.lock().unwrap();
+                if st.status == "installing" {
+                    return "already_installing";
+                }
+                st.status = "installing".to_string();
+                super::InstallClaim { install, active: true }
+            };
+            // Stands in for `validate_trainer_root_candidate`'s real disk IO:
+            // long enough that a still-racy check-and-set would let a second
+            // thread's check land inside this window and see "idle".
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            claim.defuse();
+            "installing"
+        };
+
+        let (a, b) = std::thread::scope(|scope| {
+            let t1 = scope.spawn(|| attempt(&install));
+            let t2 = scope.spawn(|| attempt(&install));
+            (t1.join().unwrap(), t2.join().unwrap())
+        });
+
+        let outcomes = [a, b];
+        assert_eq!(
+            outcomes.iter().filter(|o| **o == "installing").count(),
+            1,
+            "exactly one of the two concurrent attempts must claim the slot: got {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes.iter().filter(|o| **o == "already_installing").count(),
+            1,
+            "the loser must see already_installing, not a second successful claim: got {outcomes:?}"
+        );
+    }
+
+    /// N2, negative control: a claim that is dropped WITHOUT `defuse()` (the
+    /// shape of a failed `validate_trainer_root_candidate`) must hand the
+    /// slot back, not leave it stuck on "installing" forever. Without this,
+    /// N2's own fix would trade a rare double-install race for a guaranteed
+    /// permanent lockout on the very first rejected path.
+    #[test]
+    fn a_claim_dropped_without_defusing_releases_the_slot_for_the_next_attempt() {
+        let install: Arc<Mutex<crate::state::InstallState>> = Arc::new(Mutex::new(crate::state::InstallState::default()));
+        {
+            let mut st = install.lock().unwrap();
+            st.status = "installing".to_string();
+        }
+        let claim = super::InstallClaim { install: &install, active: true };
+        assert_eq!(install.lock().unwrap().status, "installing", "the claim starts out holding the slot");
+        drop(claim); // simulates `validate_trainer_root_candidate(trimmed)?` returning Err
+
+        assert_eq!(install.lock().unwrap().status, "idle", "an undefused claim must reset the slot, not leave it stuck on installing");
+
+        // And a fresh attempt can now claim it, proving the slot is really free.
+        let mut st = install.lock().unwrap();
+        assert_ne!(st.status, "installing");
+        st.status = "installing".to_string();
     }
 
     /// The priority order the review asked for: the Hardware tab's own pick

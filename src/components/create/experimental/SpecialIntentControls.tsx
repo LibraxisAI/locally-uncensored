@@ -296,8 +296,19 @@ function LocalTrainControls() {
   // (the old bug behind Blocker 2 -- a broken customized install re-showed
   // this gate with an empty field and a caption that still claimed the app
   // data default). Runs once per status load, before the customer edits.
+  //
+  // Teil 10, point 3 (Opus review of `3ef38668`): a customer who never opens
+  // this gate never learns that `suggestedRoot` exists at all -- it used to
+  // sit only in the grayed-out placeholder, invisible the moment the field
+  // has focus and gone the instant anything is typed. Nothing here moves an
+  // EXISTING install: this only pre-fills the field, with a real, editable,
+  // clearable value, and only while there is no trainer yet (this whole
+  // gate only renders before `envReady`) and no customized root of the
+  // customer's own to preserve.
   useEffect(() => {
-    if (!pathTouched && status?.customized) setInstallPath(status.root)
+    if (pathTouched) return
+    if (status?.customized) setInstallPath(status.root)
+    else if (status?.suggestedRoot) setInstallPath(status.suggestedRoot)
   }, [status, pathTouched])
 
   // A base-file download outlives this panel. Leave the tab and come back and
@@ -395,10 +406,10 @@ function LocalTrainControls() {
             <input
               value={installPath}
               onChange={(e) => { setInstallPath(e.target.value); setPathTouched(true) }}
-              placeholder={`e.g. ${status.suggestedRoot ?? trainerPathPlaceholder(isWindows(), isMacOS())}`}
+              placeholder={`e.g. ${trainerPathPlaceholder(isWindows(), isMacOS())}`}
               className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
             />
-            <span className="t-label text-gray-600">{trainerRootHint(status, installPath)}</span>
+            <span className="t-label text-gray-600">{trainerRootHint(status, installPath, status.suggestedRoot)}</span>
           </div>
         )}
         {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
