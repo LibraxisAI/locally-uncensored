@@ -91,6 +91,42 @@ assert_eq "an unrelated new .so is unknown (fail closed, the skeptic's actual fi
 assert_eq "a plain typo/near-miss name is unknown, not fuzzy-matched" "unknown" \
   "$(classify_linux_module libggml-cpu-haswel.so lib so || true)"
 
+# BLOCKER B2 (review-isalinux.md Runde 2): a versioned-looking suffix that
+# is NOT purely digits-and-dots (a loadable ".so" tacked back on the end,
+# or arbitrary text after the first digit) must never be trusted as a
+# SONAME sibling -- it is exactly the shape ggml's own loader (prefix
+# "libggml-cpu-", extension exactly ".so") would happily dlopen.
+assert_eq "libggml-cpu-haswell.so.0.so is unknown, NOT a sibling (loadable by ggml, must be disassembled, RED PROBE)" "unknown" \
+  "$(classify_linux_module libggml-cpu-haswell.so.0.so lib so || true)"
+assert_eq "libggml-base.so.1evil.so is unknown, NOT a sibling (RED PROBE)" "unknown" \
+  "$(classify_linux_module libggml-base.so.1evil.so lib so || true)"
+assert_eq "libggml-base.so.1 is still correctly a sibling (pure digit suffix, not regressed)" "sibling:libggml-base.so" \
+  "$(classify_linux_module libggml-base.so.1 lib so)"
+assert_eq "libggml-cpu-x64.so.1.2.3 is still correctly a sibling (multi-part digit suffix, not regressed)" "sibling:libggml-cpu-x64.so" \
+  "$(classify_linux_module libggml-cpu-x64.so.1.2.3 lib so)"
+
+echo "== verify_sibling_identical_bytes (B2, second half: bytes, not just filenames) =="
+sibling_scratch="$(mktemp -d)"
+printf 'identical-bytes' > "$sibling_scratch/canonical.so"
+printf 'identical-bytes' > "$sibling_scratch/sibling-same.so.1"
+printf 'DIFFERENT-bytes!' > "$sibling_scratch/sibling-different.so.1"
+if verify_sibling_identical_bytes "$sibling_scratch/sibling-same.so.1" "$sibling_scratch/canonical.so"; then
+  printf '  ok   byte-identical sibling verified via cmp -s\n'; pass_count=$((pass_count + 1))
+else
+  printf '  FAIL byte-identical sibling should have verified\n' >&2; fail_count=$((fail_count + 1))
+fi
+if verify_sibling_identical_bytes "$sibling_scratch/sibling-different.so.1" "$sibling_scratch/canonical.so"; then
+  printf '  FAIL a sibling with DIFFERENT bytes must NOT verify (RED PROBE)\n' >&2; fail_count=$((fail_count + 1))
+else
+  printf '  ok   a sibling with different bytes correctly fails verification (RED PROBE)\n'; pass_count=$((pass_count + 1))
+fi
+if verify_sibling_identical_bytes "$sibling_scratch/does-not-exist.so.1" "$sibling_scratch/canonical.so"; then
+  printf '  FAIL a missing sibling file must NOT verify (RED PROBE)\n' >&2; fail_count=$((fail_count + 1))
+else
+  printf '  ok   a missing sibling file correctly fails verification (RED PROBE)\n'; pass_count=$((pass_count + 1))
+fi
+rm -rf "$sibling_scratch"
+
 echo "== has_avx_or_above / has_avx512_or_above / has_avx2_marker =="
 clean_baseline="$(fixture clean-baseline.disasm.txt)"
 avx_hit_baseline="$(fixture avx-hit-baseline.disasm.txt)"
@@ -141,6 +177,76 @@ else
   printf '  FAIL positive control: haswell-style fixture shows NO AVX hit, has_avx_or_above is broken\n' >&2; fail_count=$((fail_count + 1))
 fi
 
+echo "== has_avx512_or_above: AUFLAGE c, freestanding opmask/k0/AVX512VL on ymm/xmm =="
+avx512vl_mnemonic_ymm="$(fixture avx512vl-mnemonic-on-ymm.disasm.txt)"
+avx512_opmask_freestanding="$(fixture avx512-opmask-freestanding-leak-in-avx2.disasm.txt)"
+avx512_extended_register="$(fixture avx512-extended-register-leak-in-avx2.disasm.txt)"
+if has_avx512_or_above "$avx512vl_mnemonic_ymm"; then
+  printf '  ok   an AVX-512-exclusive mnemonic (vpternlogd) on %%ymm, no zmm/mask in sight, IS caught (AVX512VL)\n'; pass_count=$((pass_count + 1))
+else
+  printf '  FAIL vpternlogd on %%ymm should be caught by has_avx512_or_above\n' >&2; fail_count=$((fail_count + 1))
+fi
+if has_avx512_or_above "$avx512_opmask_freestanding"; then
+  printf '  ok   a freestanding opmask operand (kmovw %%eax,%%k1, no braces) IS caught\n'; pass_count=$((pass_count + 1))
+else
+  printf '  FAIL freestanding %%k1 opmask operand should be caught by has_avx512_or_above\n' >&2; fail_count=$((fail_count + 1))
+fi
+if has_avx512_or_above "kmovw %eax,%k0"; then
+  printf '  ok   k0 specifically (previously excluded, k1-7 only) IS caught\n'; pass_count=$((pass_count + 1))
+else
+  printf '  FAIL k0 should be caught by has_avx512_or_above\n' >&2; fail_count=$((fail_count + 1))
+fi
+if has_avx512_or_above "$avx512_extended_register"; then
+  printf '  ok   an extended EVEX-only register (%%ymm16-%%ymm31) with no mask/mnemonic hint IS caught\n'; pass_count=$((pass_count + 1))
+else
+  printf '  FAIL %%ymm16.. register should be caught by has_avx512_or_above (VEX cannot address it at all)\n' >&2; fail_count=$((fail_count + 1))
+fi
+if has_avx512_or_above "$clean_avx2"; then
+  printf '  FAIL clean-avx2 fixture must still NOT trip the widened has_avx512_or_above\n' >&2; fail_count=$((fail_count + 1))
+else
+  printf '  ok   clean-avx2 fixture still does not trip the widened has_avx512_or_above (not over-firing)\n'; pass_count=$((pass_count + 1))
+fi
+
+echo "== has_avx2_marker: AUFLAGE d, precise vp*-integer-on-ymm detection =="
+avx2_integer_ymm_leak="$(fixture avx2-integer-ymm-leak-in-avx-only.disasm.txt)"
+clean_avx_only_vp_exceptions="$(fixture clean-avx-only-vp-exceptions.disasm.txt)"
+if has_avx2_marker "$avx2_integer_ymm_leak"; then
+  printf '  ok   a plain vp*-integer mnemonic (vpaddd, not in the curated AVX2_ONLY_MNEMONICS list) on %%ymm IS caught\n'; pass_count=$((pass_count + 1))
+else
+  printf '  FAIL vpaddd on %%ymm should be caught by has_avx2_marker (plain AVX defines no 256-bit integer op at all)\n' >&2; fail_count=$((fail_count + 1))
+fi
+if has_avx2_marker "$clean_avx_only_vp_exceptions"; then
+  printf '  FAIL vpermilps/vptest on %%ymm are legal under plain AVX and must NOT trip has_avx2_marker (over-firing)\n' >&2; fail_count=$((fail_count + 1))
+else
+  printf '  ok   vpermilps/vptest on %%ymm (the documented float/permute exceptions) do not trip has_avx2_marker\n'; pass_count=$((pass_count + 1))
+fi
+if has_avx2_marker "  401000:	c5 f9 fe c1          	vpaddd %xmm1,%xmm0,%xmm0"; then
+  printf '  FAIL vpaddd on %%xmm (legal under plain AVX at 128 bits) must NOT trip has_avx2_marker\n' >&2; fail_count=$((fail_count + 1))
+else
+  printf '  ok   vpaddd on %%xmm does not trip has_avx2_marker (128-bit vp* is plain AVX, not AVX2)\n'; pass_count=$((pass_count + 1))
+fi
+
+echo "== evaluate_module_asm: the new detection wired into the actual ceiling decision =="
+set +e
+out="$(evaluate_module_asm avx2 "$avx512vl_mnemonic_ymm" "avx512vl-leak")"; status=$?
+set -e
+assert_eq "avx2/avx512vl-mnemonic-on-ymm exits 1 (RED PROBE, AUFLAGE c wired in)" "1" "$status"
+assert_eq "avx2/avx512vl-mnemonic-on-ymm verdict text (RED PROBE)" "FAIL: avx512vl-leak contains an AVX-512 instruction; this tier (AVX2 at most) must never reach AVX-512" "$out"
+
+set +e
+out="$(evaluate_module_asm avx2 "$avx512_opmask_freestanding" "opmask-leak")"; status=$?
+set -e
+assert_eq "avx2/opmask-freestanding-leak exits 1 (RED PROBE)" "1" "$status"
+
+set +e
+out="$(evaluate_module_asm avx-only "$avx2_integer_ymm_leak" "vp-ymm-leak")"; status=$?
+set -e
+assert_eq "avx-only/vp-integer-on-ymm-leak exits 1 (RED PROBE, AUFLAGE d wired in)" "1" "$status"
+assert_eq "avx-only/vp-integer-on-ymm-leak verdict text (RED PROBE)" "FAIL: vp-ymm-leak contains an AVX2-only instruction; this tier (SSE42 AVX F16C FMA at most) must never reach AVX2" "$out"
+
+out="$(evaluate_module_asm avx-only "$clean_avx_only_vp_exceptions" "clean-vp-exceptions")"; status=$?
+assert_eq "avx-only/clean-vp-exceptions (vpermilps, vptest) still exits 0 (not over-firing)" "0" "$status"
+
 echo "== evaluate_module_asm (the actual per-tier ceiling decision) =="
 out="$(evaluate_module_asm baseline "$clean_baseline" "clean-baseline")"; status=$?
 assert_eq "baseline/clean exits 0" "0" "$status"
@@ -178,6 +284,50 @@ out="$(evaluate_module_asm made-up-role "$clean_baseline" "some-module")"; statu
 set -e
 assert_eq "unrecognised role fails closed (RED PROBE)" "1" "$status"
 assert_eq "unrecognised role verdict text (RED PROBE)" 'FAIL: some-module has an unrecognised ISA role "made-up-role", refusing to guess a ceiling (fail closed)' "$out"
+
+echo "== check_min_disasm_lines (BLOCKER B1: empty/near-empty disassembly must be RED) =="
+clean_baseline_realistic="$(fixture clean-baseline-realistic-size.disasm.txt)"
+
+set +e
+out="$(check_min_disasm_lines "" "empty-module")"; status=$?
+set -e
+assert_eq "empty disassembly exits 1 (RED PROBE, the exact bug the review measured: evaluate_module_asm baseline \"\" used to exit 0)" "1" "$status"
+assert_eq "empty disassembly verdict text (RED PROBE)" 'FAIL: empty-module: only 0 disassembled instruction line(s) found (need >= 20); an empty or near-empty disassembly is not proof the module carries no AVX-or-above instruction, it means the disassembler produced nothing usable (crashed, printed an error, or was fed the wrong file) and every ISA verdict for this module is unproven' "$out"
+
+set +e
+out="$(check_min_disasm_lines "$clean_baseline" "too-short-module")"; status=$?
+set -e
+assert_eq "a too-short real-looking disassembly (7 lines, below MIN_DISASM_LINES=20) exits 1 (RED PROBE)" "1" "$status"
+
+out="$(check_min_disasm_lines "$clean_baseline_realistic" "realistic-module")"; status=$?
+assert_eq "a realistically-sized disassembly (21 lines) exits 0" "0" "$status"
+
+# The deliberately-tiny decision-logic fixtures above (5-7 lines each) are
+# legitimate inputs to evaluate_module_asm/has_avx*_or_above directly (they
+# test the CLASSIFICATION rule, not module size), so check_min_disasm_lines
+# takes an explicit lower bound here the same way win-isa-guard.mjs's own
+# red probe passes --min-lines 0 for the same reason
+# (verify-sidecar-isa.sh:616-619).
+out="$(check_min_disasm_lines "$clean_baseline" "tiny-logic-fixture" 5)"; status=$?
+assert_eq "the same 7-line fixture passes with an explicit min of 5 (tiny logic fixtures are not themselves the bug)" "0" "$status"
+
+echo "== check_base_module_coverage (BLOCKER A2: a missing expected base module must be RED) =="
+full_base_csv="$(printf '%s\n' "${EXPECTED_BASE_LINUX_MODULES[@]}")"
+out="$(check_base_module_coverage "$full_base_csv")"; status=$?
+assert_eq "all 7 expected base modules present exits 0" "0" "$status"
+
+missing_mtmd_csv="$(printf '%s\n' ggml ggml-base ggml-vulkan llama llama-common llama-server-impl)"
+set +e
+out="$(check_base_module_coverage "$missing_mtmd_csv")"; status=$?
+set -e
+assert_eq "mtmd missing (e.g. dropped by a stage bug) exits 1 (RED PROBE, AUFLAGE b)" "1" "$status"
+assert_eq "mtmd missing verdict text (RED PROBE)" "FAIL: expected base Linux module(s) missing from the companions directory: mtmd (EXPECTED_BASE_LINUX_MODULES); a partial build or a stage step silently dropping a file must turn this guard red, not pass on whatever happened to be there" "$out"
+
+duplicate_csv="$(printf '%s\n' ggml ggml ggml-base ggml-vulkan llama llama-common llama-server-impl mtmd)"
+set +e
+out="$(check_base_module_coverage "$duplicate_csv")"; status=$?
+set -e
+assert_eq "a name matched twice (count mismatch) exits 1 (RED PROBE)" "1" "$status"
 
 echo
 echo "$pass_count passed, $fail_count failed"

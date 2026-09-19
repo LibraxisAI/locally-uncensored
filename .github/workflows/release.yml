@@ -257,6 +257,16 @@ jobs:
         with:
           arch: x64
 
+      # AUFLAGE a (review-isalinux.md Runde 2): prove the Linux half's pure
+      # decision logic (scripts/lib/isa-guard-linux-rules.sh) against
+      # checked-in text fixtures before trusting it against a real build on
+      # this runner. Needs no ELF file or objdump, runs identically on every
+      # matrix platform (ci.yml already runs it on every commit too; kept
+      # here as well so a release build is never gated on a real run alone).
+      - name: K1 ISA guard selftest (Linux decision logic)
+        shell: bash
+        run: bash scripts/verify-sidecar-isa.selftest.sh
+
       # K1 (3.0.1): the guard against shipping a fixed x86-64-v3 binary again.
       # Runs on the real build this lane just produced, on the real runner
       # architecture (not emulated), so a regression here is the same failure

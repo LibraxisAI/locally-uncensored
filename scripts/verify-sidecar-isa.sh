@@ -641,6 +641,50 @@ fi
 
 # --- The disassembler (Linux only from here on) -----------------------------
 
+# AUFLAGE e (review-isalinux.md Runde 2): objdump's `-D` disassembles EVERY
+# section, including .rodata/.data, and will happily print an instruction
+# mnemonic for whatever data bytes happen to live there -- a false alarm
+# that has nothing to do with the code this guard actually cares about.
+# `-d` (used below, both for objdump and llvm-objdump) is the deliberate
+# choice against that: it only disassembles sections objdump's own ELF
+# section-flag reading considers executable (SHF_EXECINSTR: .text, .plt,
+# .init, .fini, ...), so a constant table or string literal placed in
+# .rodata is never fed to the classifier at all. That is a real, structural
+# narrowing, not a guess.
+#
+# It does not fully retire the risk, and this guard does not pretend it
+# does: a linear disassembler walking an EXECUTABLE section can still
+# print a "false" instruction out of padding bytes, alignment NOPs, or an
+# inlined jump/lookup table placed inside .text next to real code -- the
+# exact class of finding review-k1-avx.md's "Zusatzbefund" hit on the
+# Windows side (dumpbin decoded verr/verw/vmread/vmwrite/vmcall/vmfunc out
+# of data bytes; win-isa-guard.mjs's fix was ownership resolution via the
+# linker .map, ordinary Linux objdump output has no equivalent). This
+# script's own header already explains why Linux does not need that
+# specific allowlist machinery (no statically-linked, runtime-dispatched
+# CRT/STL the way MSVC ships): the modules this guard checks are gcc-built
+# ggml/llama.cpp code with no comparable runtime-dispatch fast path, so an
+# UNCONDITIONAL AVX mnemonic anywhere in a baseline/sub-ceiling module's
+# executable section is already the K1 shape, not a legitimate self-guarded
+# fast path that needs dominance-checking to clear.
+#
+# How to tell a genuine hit from a data-byte misread if this guard ever
+# does go red on a real Linux build: the FAIL diagnostic below prints the
+# first 5 matching lines with their addresses. For each address, run
+# `objdump -d --no-show-raw-insn "$file" | grep -B5 -A2 '^  <addr>:'` (or
+# `nm -D "$file"` / `objdump -t "$file"` to find which symbol's range that
+# address falls in) and read the surrounding lines: real code disassembles
+# into a coherent instruction stream (a function prologue nearby, sane
+# operands, a `ret`/jump that makes sense as control flow); a data-byte
+# misread typically appears right after a function's actual `ret` -- inside
+# padding, an alignment NOP run, or a jump table -- and the "instructions"
+# immediately before/after it will themselves look like nonsense (odd
+# byte-length encodings, operands that reference nothing). If in doubt,
+# cross-check against the same file's .rodata contents (`objdump -s -j
+# .rodata "$file"`) for the same byte pattern -- data that legitimately
+# belongs in .rodata occasionally gets placed in a read-only .text-adjacent
+# section by the linker, and finding the exact bytes there settles it.
+#
 # Every call site captures this function's stdout via `$(disassemble ...)`
 # to get the disassembly text, so a diagnostic printed with plain vlog (which
 # writes to stdout) would be silently swallowed INTO that captured text
@@ -651,21 +695,48 @@ fi
 # substitution.
 log_disassembler_choice() { printf '\033[1;36m[verify-sidecar-isa]\033[0m %s\n' "$*" >&2; }
 
+# BLOCKER B1 (review-isalinux.md Runde 2): this used to run every
+# disassembler with `2>/dev/null`, so a failing invocation (wrong flag,
+# unreadable file, a disassembler that does not understand this ELF at all)
+# printed NOTHING on stdout, the caller read that as "no AVX-or-above
+# instruction found", and the whole module passed vacuously green -- the
+# doctrine this very script states two lines above the old code ("a guard
+# that silently skips its own check when its tool is missing is worse than
+# no guard") violated by the one disassembler call that actually runs the
+# check. Fixed the same way R5 already fixed the Windows half of this
+# script (dumpbin, no `2>/dev/null`, see verify-sidecar-isa.sh:342-348): a
+# nonzero exit is captured explicitly (never left to `set -e` abort the
+# whole script silently mid-command-substitution, the same
+# find_variant_file trap documented above) and turns into a vdie carrying
+# the disassembler's own stderr, not a quiet pass.
 DISASSEMBLER_LOGGED=""
 disassemble() {
   local file="$1"
+  local err_tmp; err_tmp="$(mktemp)"
+  local out="" status=0 tool=""
   if command -v objdump >/dev/null 2>&1; then
-    [ -n "$DISASSEMBLER_LOGGED" ] || { log_disassembler_choice "disassembler: objdump ($(command -v objdump))"; DISASSEMBLER_LOGGED=1; }
-    objdump -d "$file" 2>/dev/null
+    tool="objdump ($(command -v objdump))"
+    [ -n "$DISASSEMBLER_LOGGED" ] || { log_disassembler_choice "disassembler: $tool"; DISASSEMBLER_LOGGED=1; }
+    out="$(objdump -d "$file" 2>"$err_tmp")" || status=$?
   elif command -v llvm-objdump >/dev/null 2>&1; then
-    [ -n "$DISASSEMBLER_LOGGED" ] || { log_disassembler_choice "disassembler: llvm-objdump ($(command -v llvm-objdump))"; DISASSEMBLER_LOGGED=1; }
-    llvm-objdump -d "$file" 2>/dev/null
+    tool="llvm-objdump ($(command -v llvm-objdump))"
+    [ -n "$DISASSEMBLER_LOGGED" ] || { log_disassembler_choice "disassembler: $tool"; DISASSEMBLER_LOGGED=1; }
+    out="$(llvm-objdump -d "$file" 2>"$err_tmp")" || status=$?
   elif command -v dumpbin >/dev/null 2>&1; then
-    [ -n "$DISASSEMBLER_LOGGED" ] || { log_disassembler_choice "disassembler: dumpbin ($(command -v dumpbin))"; DISASSEMBLER_LOGGED=1; }
-    dumpbin /disasm "$file" 2>/dev/null
+    tool="dumpbin ($(command -v dumpbin))"
+    [ -n "$DISASSEMBLER_LOGGED" ] || { log_disassembler_choice "disassembler: $tool"; DISASSEMBLER_LOGGED=1; }
+    out="$(dumpbin /disasm "$file" 2>"$err_tmp")" || status=$?
   else
+    rm -f "$err_tmp"
     vdie "no disassembler found (need objdump, llvm-objdump or dumpbin), cannot prove the ISA claims on this runner"
   fi
+  if [ "$status" -ne 0 ]; then
+    local err_text; err_text="$(cat "$err_tmp")"
+    rm -f "$err_tmp"
+    vdie "$tool failed to disassemble $file (exit $status): ${err_text:-<no stderr output>}. A failed disassembler run is not the same as 'no AVX found' and must not be read as a pass (BLOCKER B1, review-isalinux.md Runde 2)"
+  fi
+  rm -f "$err_tmp"
+  printf '%s' "$out"
 }
 
 # has_avx_or_above and the tier-ceiling rules live in one shared file
@@ -711,6 +782,7 @@ done < <(find "$COMPANIONS_DIR" -maxdepth 1 -type f -iname '*.so*' | sort)
 declare -A module_role=()   # full path -> baseline|avx-only|avx2|avx512
 declare -A module_label=()  # full path -> human label for messages
 unclassified=()
+found_base_names=()
 for base in "${staged_files[@]}"; do
   cls="$(classify_linux_module "$base" "$LIB_PREFIX" "$LIB_EXT" || true)"
   case "$cls" in
@@ -718,6 +790,7 @@ for base in "${staged_files[@]}"; do
       name="${cls#base:}"
       module_role["$COMPANIONS_DIR/$base"]="baseline"
       module_label["$COMPANIONS_DIR/$base"]="$name"
+      found_base_names+=("$name")
       ;;
     variant:*)
       rest="${cls#variant:}"
@@ -727,7 +800,25 @@ for base in "${staged_files[@]}"; do
       module_label["$COMPANIONS_DIR/$base"]="ggml-cpu-$name"
       ;;
     sibling:*)
-      vlog "$base: SONAME sibling of ${cls#sibling:}, identical bytes already checked under that name, not disassembled again"
+      # BLOCKER B2, second half (review-isalinux.md Runde 2): a filename
+      # that LOOKS like a SONAME sibling is not proof it IS one. Measure
+      # it: the sibling must be byte-identical (cmp -s) to the canonical
+      # file this guard is about to disassemble under its own name. A
+      # sibling whose canonical file never got staged, or whose bytes
+      # differ, is exactly the case this guard exists to catch (a crafted
+      # or corrupted "sibling" that ggml's loader would happily dlopen)
+      # and must be treated the same as any other unrecognised module, not
+      # silently trusted on filename alone.
+      canonical="${cls#sibling:}"
+      canonical_path="$COMPANIONS_DIR/$canonical"
+      sibling_path="$COMPANIONS_DIR/$base"
+      if [ ! -e "$canonical_path" ]; then
+        unclassified+=("$base (claims to be a SONAME sibling of $canonical, but $canonical is not staged in $COMPANIONS_DIR, cannot verify identical bytes)")
+      elif verify_sibling_identical_bytes "$sibling_path" "$canonical_path"; then
+        vlog "$base: SONAME sibling of $canonical, bytes verified identical (cmp -s), not disassembled again"
+      else
+        unclassified+=("$base (claims to be a SONAME sibling of $canonical but its bytes DIFFER, cmp -s failed; refusing to trust an unverified sibling)")
+      fi
       ;;
     *)
       unclassified+=("$base")
@@ -735,7 +826,20 @@ for base in "${staged_files[@]}"; do
   esac
 done
 if [ "${#unclassified[@]}" -gt 0 ]; then
-  vdie "unrecognised module(s) staged in $COMPANIONS_DIR: ${unclassified[*]}. Neither a known base module (EXPECTED_BASE_LINUX_MODULES in scripts/lib/isa-guard-linux-rules.sh) nor a known CPU-tier variant (EXPECTED_VARIANTS) nor a SONAME-versioned sibling of one. Classify it before this guard can trust it: add it to EXPECTED_BASE_LINUX_MODULES if it is a new base module that must stay ISA-neutral like the rest of own code, or to the appropriate tier array if it is a new CPU-tier variant"
+  vdie "unrecognised module(s) staged in $COMPANIONS_DIR: ${unclassified[*]}. Neither a known base module (EXPECTED_BASE_LINUX_MODULES in scripts/lib/isa-guard-linux-rules.sh) nor a known CPU-tier variant (EXPECTED_VARIANTS) nor a byte-verified SONAME sibling of one. Classify it before this guard can trust it: add it to EXPECTED_BASE_LINUX_MODULES if it is a new base module that must stay ISA-neutral like the rest of own code, or to the appropriate tier array if it is a new CPU-tier variant"
+fi
+
+# BLOCKER A2 (review-isalinux.md Runde 2): the classification loop above
+# only proves every STAGED file is recognised; it says nothing about a
+# module that is simply ABSENT (an absent file classifies nothing, so it
+# never reaches the loop at all). check_base_module_coverage closes that,
+# the Linux equivalent of the Windows branch's checked_base_modules
+# presence-and-count check above.
+found_base_csv="$(printf '%s\n' "${found_base_names[@]}")"
+if verdict="$(check_base_module_coverage "$found_base_csv")"; then
+  vlog "$verdict"
+else
+  vdie "$verdict"
 fi
 
 fail_count=0
@@ -743,11 +847,22 @@ for path in "${!module_role[@]}"; do
   role="${module_role[$path]}"
   label="${module_label[$path]} ($path)"
   asm="$(disassemble "$path")"
+  # BLOCKER B1 (review-isalinux.md Runde 2): an empty or near-empty
+  # disassembly must fail its OWN check before it ever reaches
+  # evaluate_module_asm, not read as "no AVX found, so it passes". See
+  # check_min_disasm_lines's own header for why 20 and not a tighter bound.
+  if lines_verdict="$(check_min_disasm_lines "$asm" "$label")"; then
+    vlog "$lines_verdict"
+  else
+    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$lines_verdict" >&2
+    fail_count=$((fail_count + 1))
+    continue
+  fi
   if verdict="$(evaluate_module_asm "$role" "$asm" "$label")"; then
     vlog "$verdict"
   else
     printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$verdict" >&2
-    grep -E '%[yz]mm[0-9]+|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
+    grep -E '%[xyz]mm[0-9]+|%k[0-7]\b|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)|[[:space:]]k[a-z]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
     fail_count=$((fail_count + 1))
   fi
 done
@@ -756,11 +871,18 @@ exe_name="$(out_name_for "$TRIPLE")"
 exe_path="$BIN_DIR/$exe_name"
 if [ -f "$exe_path" ]; then
   asm="$(disassemble "$exe_path")"
-  if verdict="$(evaluate_module_asm baseline "$asm" "$exe_name ($exe_path)")"; then
-    vlog "$verdict"
+  exe_label="$exe_name ($exe_path)"
+  if lines_verdict="$(check_min_disasm_lines "$asm" "$exe_label")"; then
+    vlog "$lines_verdict"
+    if verdict="$(evaluate_module_asm baseline "$asm" "$exe_label")"; then
+      vlog "$verdict"
+    else
+      printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$verdict" >&2
+      grep -E '%[xyz]mm[0-9]+|%k[0-7]\b|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)|[[:space:]]k[a-z]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
+      fail_count=$((fail_count + 1))
+    fi
   else
-    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$verdict" >&2
-    grep -E '%[yz]mm[0-9]+|[[:space:]]v[a-z0-9]{2,}([[:space:]]|$)' <<<"$asm" | head -5 >&2 || true
+    printf '\033[1;31m[verify-sidecar-isa] FAIL:\033[0m %s\n' "$lines_verdict" >&2
     fail_count=$((fail_count + 1))
   fi
 else
