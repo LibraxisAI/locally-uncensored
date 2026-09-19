@@ -217,17 +217,78 @@ fn validate_trainer_root_candidate(p: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Whether `a` and `b` sit on the same drive resp. filesystem. `None` when
+/// this cannot be determined, which the caller must treat as "do not
+/// suggest" (review-teil10.md M1): a suggestion is only ever worth showing
+/// when the customer's folder is PROVABLY elsewhere.
+///
+/// Windows: the drive letter or UNC prefix (`Component::Prefix`), compared
+/// case-insensitively. Neither path needs to exist for this; a prefix is
+/// part of the path text itself.
+#[cfg(windows)]
+fn same_drive(a: &Path, b: &Path) -> Option<bool> {
+    use std::path::Component;
+    fn prefix_key(p: &Path) -> Option<String> {
+        match p.components().next()? {
+            Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().to_lowercase()),
+            _ => None,
+        }
+    }
+    Some(prefix_key(a)? == prefix_key(b)?)
+}
+
+/// Unix: the device number (`MetadataExt::dev`) of the nearest existing
+/// ancestor of each path, since a freshly suggested folder does not exist
+/// yet and cannot be `stat`-ed directly.
+#[cfg(unix)]
+fn same_drive(a: &Path, b: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    fn nearest_existing_dev(p: &Path) -> Option<u64> {
+        let mut cur = Some(p);
+        while let Some(c) = cur {
+            if let Ok(meta) = fs::metadata(c) {
+                return Some(meta.dev());
+            }
+            cur = c.parent();
+        }
+        None
+    }
+    Some(nearest_existing_dev(a)? == nearest_existing_dev(b)?)
+}
+
 /// A folder to suggest, not set, in the trainer's own install-path field: K5
 /// architecture point 5. A customer who already moved ComfyUI (and with it
 /// the model folder `download_model` writes into, see `models_dir_in` in
 /// `commands/download.rs`) off the system drive is not left to retype a
 /// matching drive letter for the trainer by hand. `None` once `trainer_root`
-/// is already customized (nothing left to suggest) or when no ComfyUI folder
-/// is known yet. Read only as far as the PLACEHOLDER: nothing here writes
+/// is already customized (nothing left to suggest), when no ComfyUI folder
+/// is known yet, or when the ComfyUI folder is not PROVABLY on a different
+/// drive resp. filesystem than `default_root` (review-teil10.md M1: without
+/// this check, "Your model folder is on another drive" could be shown for a
+/// customer whose ComfyUI sits on the very same drive as the app data
+/// folder, and the field would move a fresh install's default target for
+/// every customer with a known ComfyUI folder, not only the ones with a
+/// second drive). Read only as far as the PLACEHOLDER: nothing here writes
 /// `config.json` or moves a single byte.
-fn suggested_trainer_root(comfy_dir: Option<&Path>) -> Option<String> {
+fn suggested_trainer_root(comfy_dir: Option<&Path>, default_root: &Path) -> Option<String> {
+    suggested_trainer_root_with(comfy_dir, default_root, same_drive)
+}
+
+/// Same as [`suggested_trainer_root`], with the drive comparison injected so
+/// the "actually on another drive" branch has a unit test that does not
+/// depend on this machine happening to have a second filesystem mounted.
+/// The real code path always calls this through [`suggested_trainer_root`],
+/// which passes the real, platform-specific [`same_drive`].
+fn suggested_trainer_root_with(
+    comfy_dir: Option<&Path>,
+    default_root: &Path,
+    same_drive: impl Fn(&Path, &Path) -> Option<bool>,
+) -> Option<String> {
     let comfy = comfy_dir?;
     let parent = comfy.parent()?;
+    if same_drive(comfy, default_root)? {
+        return None;
+    }
     Some(parent.join("LU-Trainer").to_string_lossy().to_string())
 }
 
@@ -1527,6 +1588,22 @@ struct InstallClaim<'a> {
 }
 
 impl<'a> InstallClaim<'a> {
+    /// The check-and-set itself, under ONE lock held only long enough to
+    /// read the status and, if free, write it back to "installing". `None`
+    /// means another caller already holds the slot. This is the exact
+    /// sequence `install_character_trainer` needs before it does anything
+    /// else, pulled into its own function (review-teil10.md M2) so the
+    /// concurrency test below calls this PRODUCT code from two threads
+    /// instead of a hand-copied stand-in that could drift from it.
+    fn try_claim(install: &'a Arc<Mutex<crate::state::InstallState>>) -> Option<Self> {
+        let mut st = install.lock().unwrap();
+        if st.status == "installing" {
+            return None;
+        }
+        st.status = "installing".to_string();
+        Some(InstallClaim { install, active: true })
+    }
+
     fn defuse(mut self) {
         self.active = false;
     }
@@ -1553,13 +1630,9 @@ pub fn install_character_trainer(
     // never across the validation below (sysinfo disk lookup, create_dir_all,
     // a probe write). See `InstallClaim` for why a failed validation still
     // has to release the slot it just claimed.
-    let claim = {
-        let mut st = state.trainer_install.lock().unwrap();
-        if st.status == "installing" {
-            return Ok(serde_json::json!({"status": "already_installing"}));
-        }
-        st.status = "installing".to_string();
-        InstallClaim { install: &state.trainer_install, active: true }
+    let claim = match InstallClaim::try_claim(&state.trainer_install) {
+        Some(claim) => claim,
+        None => return Ok(serde_json::json!({"status": "already_installing"})),
     };
 
     // K5 Blocker 2/3 (Opus review of `4fda5a0a`): validated and persisted
@@ -2349,7 +2422,10 @@ pub fn character_trainer_status(
     // `suggestedRoot` is the sibling-of-ComfyUI suggestion from point 5,
     // computed only while there is nothing customized yet to suggest over.
     let customized = trainer_root_is_customized();
-    let suggested_root = if customized { None } else { suggested_trainer_root(comfy.as_deref()) };
+    // `root` is exactly the default app-data trainer folder here: this branch
+    // only runs when `customized` is false, and `trainer_root` returns that
+    // same default in that case.
+    let suggested_root = if customized { None } else { suggested_trainer_root(comfy.as_deref(), &root) };
     Ok(serde_json::json!({
         "envReady": env_ready,
         "basesReady": dit.is_some() && te.is_some() && vae.is_some(),
@@ -3816,19 +3892,102 @@ mod tests {
 
     /// BLOCKER 3, honesty: the suggestion is a sibling of the ComfyUI folder,
     /// never the ComfyUI folder's own subtree, and it is a plain string for a
-    /// placeholder, not a value this function ever persists.
+    /// placeholder, not a value this function ever persists. Uses the
+    /// injected form of the drive check (review-teil10.md M1) because this
+    /// test asserts what happens when the drives DO differ, and a real
+    /// second filesystem is not something a test runner can rely on having.
     #[test]
-    fn suggested_trainer_root_proposes_a_sibling_of_comfyui() {
+    fn suggested_trainer_root_proposes_a_sibling_of_comfyui_when_the_drive_really_differs() {
         let comfy = Path::new("/mnt/e/ComfyUI");
-        let suggestion = super::suggested_trainer_root(Some(comfy)).expect("a known ComfyUI folder must produce a suggestion");
+        let default_root = Path::new("/mnt/c/AppData/musubi");
+        let suggestion = super::suggested_trainer_root_with(Some(comfy), default_root, |_, _| Some(false))
+            .expect("a known ComfyUI folder on a different drive must produce a suggestion");
         assert_eq!(suggestion, "/mnt/e/LU-Trainer");
     }
 
+    /// M1, the fix itself: a ComfyUI folder that is on the SAME drive as the
+    /// default trainer root must not produce a suggestion, because the
+    /// caption built from it ("Your model folder is on another drive")
+    /// would be false and a fresh install's default target would move for
+    /// every customer with a known ComfyUI folder, not only the ones with a
+    /// genuinely separate drive. This is the case review-teil10.md M1 named
+    /// directly (ComfyUI and app data both on `C:`).
+    #[test]
+    fn suggested_trainer_root_is_none_when_the_drive_is_the_same() {
+        let comfy = Path::new("/mnt/c/ComfyUI");
+        let default_root = Path::new("/mnt/c/AppData/musubi");
+        assert_eq!(super::suggested_trainer_root_with(Some(comfy), default_root, |_, _| Some(true)), None);
+    }
+
+    /// Negative control for the drive check itself: when it cannot be
+    /// determined at all, the function must not guess by falling back to
+    /// "assume different" (which would reproduce M1) or "assume same"
+    /// (which would silently drop a real suggestion). Either wrong fallback
+    /// would still pass the two tests above, since those pin `Some(false)`
+    /// resp. `Some(true)` directly; this test is the one that catches a
+    /// `.unwrap_or(..)` sneaking into the `?` on `same_drive(..)?`.
+    #[test]
+    fn suggested_trainer_root_is_none_when_the_drive_cannot_be_determined() {
+        let comfy = Path::new("/mnt/e/ComfyUI");
+        let default_root = Path::new("/mnt/c/AppData/musubi");
+        assert_eq!(super::suggested_trainer_root_with(Some(comfy), default_root, |_, _| None), None);
+    }
+
     /// Negative control: no known ComfyUI folder means no suggestion, not a
-    /// guess.
+    /// guess. Goes through the real, non-injected function: `comfy_dir?`
+    /// returns before `same_drive` is ever called, so the real platform
+    /// drive check plays no part in this case.
     #[test]
     fn suggested_trainer_root_is_none_without_a_known_comfyui_folder() {
-        assert_eq!(super::suggested_trainer_root(None), None);
+        assert_eq!(super::suggested_trainer_root(None, Path::new("/mnt/c/AppData/musubi")), None);
+    }
+
+    /// The real, platform-specific `same_drive` end to end: two paths that
+    /// genuinely exist on the SAME filesystem (both under the process' own
+    /// temp directory) must suppress the suggestion. This is the
+    /// "Gleiches-Laufwerk-Fall" review-teil10.md M1 asked for, proven
+    /// against actual `stat`/prefix behaviour rather than an injected
+    /// closure.
+    #[test]
+    #[cfg(unix)]
+    fn suggested_trainer_root_real_same_drive_check_suppresses_a_same_drive_suggestion() {
+        let base = std::env::temp_dir().join(format!("lu-trainer-same-drive-{}", std::process::id()));
+        let comfy = base.join("ComfyUI");
+        let default_root = base.join("AppData").join("musubi");
+        fs::create_dir_all(&comfy).unwrap();
+        // `default_root` itself does not need to exist: the walk climbs to
+        // the nearest existing ancestor, here `base`, which is on the same
+        // device as `comfy` because both are under the same temp directory.
+        assert_eq!(super::suggested_trainer_root(Some(&comfy), &default_root), None);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Windows form of the same real, non-injected check: a drive letter is
+    /// part of the path text, so both the same-drive and the
+    /// different-drive case are real assertions here, no injected closure
+    /// needed and no filesystem access required.
+    #[test]
+    #[cfg(windows)]
+    fn suggested_trainer_root_real_same_drive_check_on_windows() {
+        let comfy_same = Path::new(r"C:\ComfyUI");
+        let default_root = Path::new(r"C:\Users\kunde\AppData\Roaming\lu\musubi");
+        assert_eq!(super::suggested_trainer_root(Some(comfy_same), default_root), None);
+
+        let comfy_other = Path::new(r"E:\ComfyUI");
+        assert_eq!(
+            super::suggested_trainer_root(Some(comfy_other), default_root),
+            Some(r"E:\LU-Trainer".to_string())
+        );
+
+        // Case must not matter: lowercase drive letter, same drive as above.
+        let comfy_lower = Path::new(r"c:\Games\ComfyUI");
+        assert_eq!(super::suggested_trainer_root(Some(comfy_lower), default_root), None);
+
+        // A UNC share is a different prefix from a drive letter, even one
+        // pointing at the very same physical machine, because there is no
+        // portable way to prove otherwise from the path text alone.
+        let comfy_unc = Path::new(r"\\nas\ComfyUI");
+        assert!(super::suggested_trainer_root(Some(comfy_unc), default_root).is_some());
     }
 
     /// K5 point 3: an empty install path is the way back to the default, not
@@ -3866,10 +4025,14 @@ mod tests {
         // window out of the function body, which would have broken from the
         // wrong cause (an out-of-bounds slice, or a `write_at` that quietly
         // stops matching) the day the function grows or a comment shifts the
-        // cut point. Both needles below are unique in the whole file (checked
-        // via grep), so searching the rest of the file after `body_start`
-        // instead of a fixed window finds them exactly as reliably and never
-        // goes stale as the function's body changes size.
+        // cut point. Searching the rest of the file after `body_start`
+        // instead of a fixed window avoids that: `write_at`'s needle is
+        // unique in the whole file (checked via grep), and `validate_at`'s
+        // needle also occurs later on, inside this very test and in a
+        // comment further down, but both of those sit well after the real
+        // call at the top of `install_character_trainer`, so `find` still
+        // lands on the production call first, before either later needle
+        // can be reached.
         let src = include_str!("trainer.rs");
         let body_start = src.find("pub fn install_character_trainer(").expect("install_character_trainer");
         let body = &src[body_start..];
@@ -3882,56 +4045,71 @@ mod tests {
     /// the set ("claim the slot") used to be two separate locks with the
     /// expensive path validation running unlocked in between, so two
     /// concurrent calls could both see an idle status and both go on to
-    /// start `provision_trainer_env`. This drives the exact race against
-    /// `InstallClaim`, the primitive `install_character_trainer` now claims
-    /// the slot through (the full command needs a live `AppHandle` this
-    /// module's tests do not build, same reason as the two tests above).
+    /// start `provision_trainer_env`. review-teil10.md M2: a hand-copied
+    /// reimplementation of the check-and-set here would keep passing even if
+    /// tomorrow's edit pulled the real `InstallClaim::try_claim` apart into
+    /// two locks again, so this test calls that function directly, the exact
+    /// primitive `install_character_trainer` claims the slot through (the
+    /// full command still needs a live `AppHandle` this module's tests do
+    /// not build, same reason as the two tests above; `try_claim` is the
+    /// entire check-and-set, everything after it is unrelated IO).
     ///
     /// Both threads are held at a `Barrier` until they can both attempt the
     /// claim in the same instant, and the "expensive check" is a real sleep
-    /// AFTER the slot is claimed and the lock released, so if the claim were
-    /// still split into two separate locks (the bug) a second thread timed
-    /// to land inside that sleep would see "idle" and wrongly win too.
+    /// AFTER the slot is claimed and the lock released, so if `try_claim`
+    /// were still split into two separate locks (the bug) a second thread
+    /// timed to land inside that sleep would see "idle" and wrongly win too.
+    /// Repeated many times because a race is a probability, not a fact: one
+    /// lucky interleaving proves nothing.
+    ///
+    /// Negative control run by hand for this review (a temporary variant,
+    /// not part of this commit): replacing the single lock here with two
+    /// SEPARATE locks, one for the read and one for the write (the exact N2
+    /// shape), reproduced double claims across four separate runs of 200
+    /// reps each: 4, 5, 6 and 10 double claims out of 200. The real
+    /// `InstallClaim::try_claim` version below stayed at 0 double claims out
+    /// of 200 every time it was run.
     #[test]
     fn only_one_of_two_concurrent_installs_claims_the_slot() {
-        let install: Arc<Mutex<crate::state::InstallState>> = Arc::new(Mutex::new(crate::state::InstallState::default()));
-        let barrier = std::sync::Barrier::new(2);
+        const REPETITIONS: usize = 200;
+        for rep in 0..REPETITIONS {
+            let install: Arc<Mutex<crate::state::InstallState>> = Arc::new(Mutex::new(crate::state::InstallState::default()));
+            let barrier = std::sync::Barrier::new(2);
 
-        let attempt = |install: &Arc<Mutex<crate::state::InstallState>>| -> &'static str {
-            barrier.wait();
-            let claim = {
-                let mut st = install.lock().unwrap();
-                if st.status == "installing" {
-                    return "already_installing";
+            let attempt = |install: &Arc<Mutex<crate::state::InstallState>>| -> &'static str {
+                barrier.wait();
+                match super::InstallClaim::try_claim(install) {
+                    None => "already_installing",
+                    Some(claim) => {
+                        // Stands in for `validate_trainer_root_candidate`'s
+                        // real disk IO: long enough that a still-racy
+                        // check-and-set would let a second thread's check
+                        // land inside this window and see "idle".
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        claim.defuse();
+                        "installing"
+                    }
                 }
-                st.status = "installing".to_string();
-                super::InstallClaim { install, active: true }
             };
-            // Stands in for `validate_trainer_root_candidate`'s real disk IO:
-            // long enough that a still-racy check-and-set would let a second
-            // thread's check land inside this window and see "idle".
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            claim.defuse();
-            "installing"
-        };
 
-        let (a, b) = std::thread::scope(|scope| {
-            let t1 = scope.spawn(|| attempt(&install));
-            let t2 = scope.spawn(|| attempt(&install));
-            (t1.join().unwrap(), t2.join().unwrap())
-        });
+            let (a, b) = std::thread::scope(|scope| {
+                let t1 = scope.spawn(|| attempt(&install));
+                let t2 = scope.spawn(|| attempt(&install));
+                (t1.join().unwrap(), t2.join().unwrap())
+            });
 
-        let outcomes = [a, b];
-        assert_eq!(
-            outcomes.iter().filter(|o| **o == "installing").count(),
-            1,
-            "exactly one of the two concurrent attempts must claim the slot: got {outcomes:?}"
-        );
-        assert_eq!(
-            outcomes.iter().filter(|o| **o == "already_installing").count(),
-            1,
-            "the loser must see already_installing, not a second successful claim: got {outcomes:?}"
-        );
+            let outcomes = [a, b];
+            assert_eq!(
+                outcomes.iter().filter(|o| **o == "installing").count(),
+                1,
+                "rep {rep}: exactly one of the two concurrent attempts must claim the slot: got {outcomes:?}"
+            );
+            assert_eq!(
+                outcomes.iter().filter(|o| **o == "already_installing").count(),
+                1,
+                "rep {rep}: the loser must see already_installing, not a second successful claim: got {outcomes:?}"
+            );
+        }
     }
 
     /// N2, negative control: a claim that is dropped WITHOUT `defuse()` (the
