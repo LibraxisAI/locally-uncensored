@@ -172,7 +172,7 @@ export const SHORTCUT_ACTIONS: Readonly<Record<ShortcutId, () => void>> = {
  * Auflage 1 (Review composer, 19.09.2026): "new-conversation" wechselt ohne
  * Mausklick, der Cursor lag also mit hoher Wahrscheinlichkeit noch im
  * Composer-Feld. `key={conversationId}` (ChatInput.tsx) montiert das Feld
- * beim Wechsel neu, und ein frischer DOM-Knoten hat nie von selbst Fokus —
+ * beim Wechsel neu, und ein frischer DOM-Knoten hat nie von selbst Fokus,
  * der naechste Tastendruck ginge sonst gegen `body` ins Leere.
  *
  * Dieses Modul haelt dafuer EINE einschuessige Fahne, kein React-State und
