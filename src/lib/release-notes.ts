@@ -263,6 +263,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'A draft no longer merges into the next chat after switching.',
             detail: 'A draft left in the message box no longer merges into the next thing you type after switching conversations, and the composer no longer gets stuck showing Stop after closing the window, signing out or quitting with a message still in flight.',
           },
+          {
+            title: 'Switching to Cloud no longer drops a local generation running elsewhere.',
+            detail: 'Switching the app to Cloud used to free the local engine right away, even while another chat, agent, code or group run (or a Create job) was still generating on it, and that run then ended with "Connection dropped". The switch to Cloud itself still happens right away; only that memory cleanup now waits until every local run in progress has ended (normally, by Stop, or by failing), and it is skipped entirely if you switch back to Local before that.',
+          },
         ],
       },
       {

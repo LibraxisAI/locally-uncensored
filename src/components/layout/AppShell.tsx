@@ -21,6 +21,8 @@ import { useCompareStore } from '../../stores/compareStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { mayEnableFromWizard } from '../../lib/onboarding-provider-gate'
 import { useChatStore } from '../../stores/chatStore'
+import { useGenerationStore } from '../../stores/generationStore'
+import { offloadWhenLocalLaneFree } from '../../lib/cloud-offload-defer'
 import { useModelStore } from '../../stores/modelStore'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { useRemoteRecovery } from '../../hooks/useRemoteRecovery'
@@ -273,22 +275,36 @@ export function AppShell() {
   const warInDerCloud = useRef(false)
   useEffect(() => {
     if (!isTauri()) return
+
     if (appMode === 'cloud') {
       warInDerCloud.current = true
       oweEngineResume()
-      // Level (a): silent on purpose, both of them. These free memory the user
-      // is no longer using; they are not the switch itself, which has already
-      // happened by the time they run. The LM Studio one in particular REJECTS
-      // by design on every machine without LM Studio installed
-      // ("lms CLI not found", install.rs:3511) — reporting that would put an
-      // error in front of the majority of users every time they go to Cloud,
-      // about a program they never installed. If a model really does stay
-      // resident, it shows up where the user can act on it: the backend panel
-      // in Settings.
-      backendCall('offload_local_models').catch(() => {})
-      backendCall('lmstudio_unload_model', { model: '--all' }).catch(() => {})
-      return
+      // Kill the local engine right under a running local generation and the
+      // user sees "Connection dropped" in whichever OTHER chat, agent, code
+      // or group run (or Create job) was using it -- 3.0.1's promise that
+      // Stop in one chat never touches another cuts both ways, a silent mode
+      // switch must not touch it either (Fund F3, lu-301/bau/leer2.md).
+      // `offloadWhenLocalLaneFree` (lib/cloud-offload-defer.ts) runs the
+      // offload now if the local lane is free, otherwise defers it until
+      // generationStore.runs says the last local run has ended, and hands
+      // back an unsubscribe the cleanup below calls if the mode flips back
+      // to Local first.
+      const cancelDeferredOffload = offloadWhenLocalLaneFree(useGenerationStore, () => {
+        // Level (a): silent on purpose, both of them. These free memory the
+        // user is no longer using; they are not the switch itself, which has
+        // already happened by the time they run. The LM Studio one in
+        // particular REJECTS by design on every machine without LM Studio
+        // installed ("lms CLI not found", install.rs:3511) -- reporting that
+        // would put an error in front of the majority of users every time
+        // they go to Cloud, about a program they never installed. If a model
+        // really does stay resident, it shows up where the user can act on
+        // it: the backend panel in Settings.
+        backendCall('offload_local_models').catch(() => {})
+        backendCall('lmstudio_unload_model', { model: '--all' }).catch(() => {})
+      })
+      return cancelDeferredOffload
     }
+
     // Der Start der App ist kein Rueckweg: dort holt die erste Runde die
     // Modelliste ohnehin, und eine zweite waere reine Arbeit.
     if (!warInDerCloud.current) return

@@ -146,6 +146,14 @@ installs stop losing environment variables to it.
   type after switching conversations**, and the composer no longer gets stuck
   showing Stop after closing the window, signing out or quitting with a
   message still in flight.
+- **Switching the app to Cloud no longer drops a local generation running
+  elsewhere.** It used to free the local engine right away, even while
+  another chat, agent, code or group run (or a Create job) was still
+  generating on it, and that run then ended with "Connection dropped". The
+  switch to Cloud itself still happens right away; only that memory cleanup
+  now waits until every local run in progress has ended (normally, by Stop, or
+  by failing), and it is skipped entirely if you switch back to Local before
+  that.
 - **Reinstall trainer in Character Studio now opens a confirmation dialog
   first**, showing the current trainer folder, instead of starting the
   reinstall the moment the button is clicked.
