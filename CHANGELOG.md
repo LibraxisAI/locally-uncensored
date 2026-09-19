@@ -136,6 +136,9 @@ installs stop losing environment variables to it.
   shows.
 - **ltx-2 LoRA renders in the desktop app now carry a credit cost**, matching
   the web catalog, instead of pricing as free.
+- **The "Memory sources" note under every AI answer is gone.** The purple
+  brain icon in the top bar already shows when memory is active, so repeating
+  it under each reply only added clutter.
 
 ## [3.0.0] - 2026-09-13
 
