@@ -429,10 +429,17 @@ pub async fn system_health(
     let comfy_url = comfy_probe_url(&state);
     let lm_studio_url = lm_studio_probe_url(lm_studio_base.as_deref());
 
-    // Probe all three backends concurrently, each bounded by
-    // PROBE_TIMEOUT, so worst case is ~PROBE_TIMEOUT total instead of 3x
-    // serial. Async client (see probe_http note); never reqwest::blocking
-    // here.
+    // Probe all three backends concurrently, each bounded by PROBE_TIMEOUT,
+    // instead of 3x serial. review-winfix.md A1: this is no longer
+    // "~PROBE_TIMEOUT total" for every target. connect_window_for resolves
+    // the hostname BEFORE building the client, i.e. before PROBE_TIMEOUT
+    // starts counting, and that resolution carries no timeout of its own; a
+    // configured hostname whose DNS server is unreachable hangs for however
+    // long the OS resolver takes (several seconds, possibly more on
+    // Windows) before the 1.5s window even begins. Only a target that needs
+    // no resolution (an IP literal, or a name already sitting on loopback)
+    // still bounds at ~PROBE_TIMEOUT. Async client (see probe_http note);
+    // never reqwest::blocking here.
     let (ollama, comfyui, lm_studio) = tokio::join!(
         probe_http(&ollama_url, PROBE_TIMEOUT),
         probe_http(&comfy_url, PROBE_TIMEOUT),

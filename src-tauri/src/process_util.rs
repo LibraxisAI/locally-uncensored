@@ -692,11 +692,20 @@ const KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
 /// callers hand over an unreaped `Child` and drop it afterwards without
 /// waiting, which is exactly right.
 ///
-/// Nothing here blocks the caller: `video_cancel` holds the `video_process`
-/// mutex across this call and the UI polls that same mutex, so the old
-/// 800 ms sleep froze the window for the whole grace. The tunnel path has the
-/// same shape on quit. The grace, the escalation and the final reap run on a
-/// detached thread instead.
+/// On Unix, nothing here blocks the caller: `video_cancel` holds the
+/// `video_process` mutex across this call and the UI polls that same mutex,
+/// so the old 800 ms sleep froze the window for the whole grace. The tunnel
+/// path has the same shape on quit. The grace, the escalation and the final
+/// reap run on a detached thread instead.
+///
+/// review-winfix.md A2: on Windows the caller now waits. The `#[cfg(windows)]`
+/// branch below calls `commands::shell::kill_tree` (its own doc comment has
+/// the measurement and the reason) synchronously, no detached thread; the
+/// bauer measured 120 to 248 ms for the ordinary case, and up to
+/// `shell::TREE_KILL_SETTLE` (1.5 s) in the worst one. For `video_cancel` that
+/// wait sits UNDER the held `video_process` mutex the UI polls, so a Windows
+/// cancel can freeze that window for the same span the old 800 ms sleep did;
+/// `shutdown_tunnel` pays the same cost on the program's quit path instead.
 pub fn kill_tree(child: &mut Child) -> std::io::Result<()> {
     let pid = child.id();
     #[cfg(windows)]
