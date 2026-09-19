@@ -88,11 +88,24 @@ it('preserves malformed saved metadata and refuses network work rather than trea
   expect(fixture.pull).not.toHaveBeenCalled()
   expect(fixture.write).not.toHaveBeenCalled()
 })
-it('requires extra consent before sending sensitive payloads', async () => {
+it('R2-37: leaves a sensitive memory out of the upload instead of blocking the whole sync', async () => {
   useMemoryStore.setState({ entries: [{ ...memory, sensitive: true }] })
-  await expect(synchronizeMemoryCollection('A')).rejects.toThrow('Sensitive memories need explicit permission')
+  const result = await synchronizeMemoryCollection('A')
+  expect(result.uploaded).toBe(0)
+  expect(result.omittedSensitive).toBe(1)
   expect(fixture.write).not.toHaveBeenCalled()
-  expect((await synchronizeMemoryCollection('A', true)).uploaded).toBe(1)
+  // With consent, the same write goes up after all.
+  const withConsent = await synchronizeMemoryCollection('A', true)
+  expect(withConsent.uploaded).toBe(1)
+  expect(withConsent.omittedSensitive).toBe(0)
+})
+it('R2-37: a harmless pull still lands even when a sensitive push is held back', async () => {
+  useMemoryStore.setState({ entries: [{ ...memory, sensitive: true }] })
+  remote = [{ memory_id: 'two', revision: 1, payload: { id: 'two', type: 'user', title: 'Other', content: 'Pulled fact', description: '', tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }, deleted: false, updated_at: '2026-09-09T00:00:00Z' }]
+  const result = await synchronizeMemoryCollection('A')
+  expect(result.downloaded).toBe(1)
+  expect(result.omittedSensitive).toBe(1)
+  expect(useMemoryStore.getState().entries.some(e => e.id === 'two')).toBe(true)
 })
 it('preserves intent after an uncertain accepted first upload and propagates intervening deletion', async () => {
   useMemoryStore.setState({ entries: [memory] })

@@ -113,8 +113,16 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
         plan.conflicts = plan.conflicts.filter(item => item.id !== choice.id)
       }
       for (const [id, expectedRevision] of forcedDeletes) plan.push.push({ id, expectedRevision, payload: null })
-      if (!allowSensitive && plan.push.some(write => write.payload?.sensitive)) {
-        throw new MemorySyncError('invalid', 'Sensitive memories need explicit permission for cloud storage before this collection can synchronize')
+      // R2-37: this used to throw and abort the WHOLE plan (including the pull
+      // half, which never touches a sensitive record) whenever a single
+      // sensitive write needed upload permission. A sensitive memory now just
+      // stays local: it is dropped from the push list, the rest of the sync
+      // proceeds, and the caller is told how many were left out.
+      let omittedSensitive = 0
+      if (!allowSensitive) {
+        const before = plan.push.length
+        plan.push = plan.push.filter(write => !write.payload?.sensitive)
+        omittedSensitive = before - plan.push.length
       }
       const incoming = new Map(plan.pull.map(item => [item.memory.id, item.memory]))
       const removed = new Set([...plan.remove.map(item => item.id), ...forcedDeletes.keys()])
@@ -155,7 +163,7 @@ export async function synchronizeMemoryCollection(owner: string, allowSensitive 
         } }
       }))
       guard()
-      return { downloaded: plan.pull.length, uploaded, removed: plan.remove.length, conflicts }
+      return { downloaded: plan.pull.length, uploaded, removed: plan.remove.length, conflicts, omittedSensitive }
     }, signal)
   } finally { running = false }
 }
