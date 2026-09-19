@@ -20,6 +20,7 @@
  */
 
 import type { AgentWorkspace } from '../types/agent-workspace'
+import { pathKey } from '../lib/dev-fs-jail'
 
 /**
  * Duplication-proof state carrier (v2.5.3 live E2E find, 2026-06-11).
@@ -319,14 +320,21 @@ export function normalizeWorkspace(ws: AgentWorkspace | null | undefined): Agent
     // Defensive: filter out blanks + dedupe extras + drop the primary if
     // a caller accidentally listed it as both. Keeps the public shape
     // stable for downstream readers (system prompt + chatCtx).
+    //
+    // R2-41: the dedupe used to compare raw strings, so `D:\code` and
+    // `d:/CODE/` counted as two different paths. `pathKey` (dev-fs-jail.ts)
+    // is the same normalization the actual containment check uses.
+    const primaryKey = pathKey(ws.path)
+    const seenKeys = new Set<string>()
     const cleanedExtras = Array.isArray(ws.extraPaths)
-      ? Array.from(
-          new Set(
-            ws.extraPaths
-              .filter((p): p is string => typeof p === 'string' && p.length > 0)
-              .filter((p) => p !== ws.path),
-          ),
-        )
+      ? ws.extraPaths
+          .filter((p): p is string => typeof p === 'string' && p.length > 0)
+          .filter((p) => {
+            const key = pathKey(p)
+            if (key === primaryKey || seenKeys.has(key)) return false
+            seenKeys.add(key)
+            return true
+          })
       : []
     return {
       kind: 'folder',

@@ -7,6 +7,7 @@ import { backendCall } from '../../api/backend'
 import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import type { AgentWorkspace } from '../../types/agent-workspace'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { pathKey } from '../../lib/dev-fs-jail'
 
 interface Props {
   open: boolean
@@ -134,7 +135,12 @@ export function AgentWorkspaceDialog({
       setDraft((d) => {
         if (!d || d.kind !== 'folder') return d
         const extras = d.extraPaths ?? []
-        if (extras.includes(res) || res === d.path) return d
+        // R2-41: a raw string compare missed the same folder picked with a
+        // different case or trailing slash on Windows (`D:\code` vs
+        // `d:/CODE/`); `pathKey` is the same normalization the workspace
+        // dedup in agent-context.ts uses.
+        const key = pathKey(res)
+        if (extras.some((p) => pathKey(p) === key) || (d.path && key === pathKey(d.path))) return d
         return { ...d, extraPaths: [...extras, res] }
       })
     } catch (e) {
