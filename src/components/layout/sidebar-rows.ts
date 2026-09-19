@@ -10,6 +10,7 @@
  * store selector hand back the identical array and React skip the render.
  */
 import { formatDate } from '../../lib/formatters'
+import { conversationMode } from '../../lib/conversation-mode'
 import type { Conversation } from '../../types/chat'
 
 export interface SidebarRow {
@@ -22,7 +23,7 @@ export interface SidebarRow {
 }
 
 export function toSidebarRow(c: Conversation): SidebarRow {
-  return { id: c.id, title: c.title, mode: c.mode || 'lu', date: formatDate(c.updatedAt) }
+  return { id: c.id, title: c.title, mode: conversationMode(c), date: formatDate(c.updatedAt) }
 }
 
 /** Field-wise equality over two projections. The store selector returns the
