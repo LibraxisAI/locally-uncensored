@@ -27,22 +27,40 @@
 //      in a .map file contains a space).
 //   3. Decide per hit:
 //      - Lib:Object is msvcprt:vector_algorithms.obj, or starts with
-//        "MSVCRT:", or the owning symbol is wmemcmp/memcmp: ALLOWED (CRT/STL
-//        allowlist, R3.1). These carry their own runtime dispatch, verified
-//        by hand in review-k1-avx.md; a naive "well it also needs a guard in
-//        this function" rule would wrongly flag __std_find_trivial_impl
-//        (checked in its OWN body) as fine but flag _Dispatch_pos /
-//        _Make_bitmap (checked in their CALLER) as unprotected, which they
-//        are not.
+//        "MSVCRT:", or the owning symbol is EXACTLY wmemcmp/memcmp AND the
+//        owning object is one of the specific objects that match was hand
+//        verified against (WMEMCMP_MEMCMP_HOST_OBJECTS, see isAllowlisted
+//        below): ALLOWED (CRT/STL allowlist, R3.1). These carry their own
+//        runtime dispatch, verified by hand in review-k1-avx.md; a naive
+//        "well it also needs a guard in this function" rule would wrongly
+//        flag __std_find_trivial_impl (checked in its OWN body) as fine but
+//        flag _Dispatch_pos / _Make_bitmap (checked in their CALLER) as
+//        unprotected, which they are not. (review-waechter-windows.md BL3:
+//        a bare substring/regex match on the symbol name alone, without the
+//        object condition, let an unrelated own-code symbol that merely
+//        contains "memcmp" in a mangled name through as ALLOWED_CRT; fixed
+//        by requiring both conditions together.)
 //      - Anything else ("own code": ggml-*.obj, llama-*.obj, common.obj,
 //        server-*.obj, ggml-vulkan.obj) is ALLOWED only if, within the
 //        owning function's address range, there is a read of
 //        __isa_available / __isa_enabled / _Avx2WmemEnabled at an address
 //        BEFORE the hit, and a conditional jump (any j-mnemonic except jmp)
-//        between that read and the hit whose target lands AFTER the hit and
-//        still inside the function (the block-skip shape the MSVC
-//        auto-vectorizer and the STL dispatcher both emit). Anything else
-//        is UNPROTECTED, RED.
+//        sitting IMMEDIATELY after a cmp/test instruction that is itself
+//        bound to that same read (same memory location, or the register the
+//        read just loaded), whose target lands AFTER the hit and still
+//        inside the function (the block-skip shape the MSVC auto-vectorizer
+//        and the STL dispatcher both emit; see checkDominance below).
+//        Anything else is UNPROTECTED, RED. (review-waechter-windows.md N1:
+//        an earlier version only asked for "some isa-flag read before the
+//        hit" and "some conditional jump landing past it", with no
+//        requirement that the jump actually evaluate that read; that let an
+//        unrelated read plus an unrelated jump wave a real unconditional AVX
+//        block through. Closed by binding the jump to the read via an
+//        immediately-adjacent cmp/test, at the cost of also rejecting some
+//        real, correctly-guarded MSVC code whose scheduler put other
+//        instructions between the cmp and the jump; see checkDominance's own
+//        comment and its UNPROTECTED message for the known false-red forms
+//        A-D this costs.)
 //
 // This is an approximation of a real control-flow graph, not one (R3,
 // "Bewertung der Regel, ehrlich"): it cannot see a function that reads the
@@ -317,6 +335,37 @@ function firstOperandIsRegister(text, reg) {
 // [isa] / cmp ecx,5 / jl) in the fixtures and the unit tests below; the two
 // fake-green shapes are checked-in fixtures that must come out UNPROTECTED
 // (scripts/__fixtures__/win-isa/fake-*-own-code.*).
+//
+// review-waechter-windows.md Final Review Runde 2, section 3 (Auflage A2):
+// this closes real holes, but it is stricter than some genuinely protected
+// MSVC code, and rot is the direction that costs a human an hour, not the
+// direction that costs a customer a crash, so that trade was made
+// deliberately. Four forms are KNOWN to come out UNPROTECTED (false red)
+// even though they are correctly guarded; if the address flagged UNPROTECTED
+// matches one of these when disassembled by hand, it is a known codegen
+// pattern, not a K1 regression:
+//   (i)   the exact real shape shipped in wmemcmp (ggml.dll): "cmp [isa],eax
+//         / mov rbx,rcx / mov r9,rcx / mov r10,rdx / je <past-the-hit>" -
+//         the MSVC scheduler put three unrelated movs between the cmp and
+//         the jump instead of emitting them back to back;
+//   (ii)  a cached comparison register: "mov eax,[isa] / mov ecx,eax /
+//         cmp ecx,6 / jl <past-the-hit>" - the load and the compare use
+//         different registers, linked through a copy checkDominance does
+//         not trace;
+//   (iii) a partial-register test: "movzx eax,byte ptr [isa] / test al,al /
+//         je <past-the-hit>" - the compare's first operand is a sub-register
+//         (al) of the register the load wrote (eax), which the current
+//         word-bounded register match treats as a different register;
+//   (iv)  a bit-test form: "bt dword ptr [isa],5 / jae <past-the-hit>" - the
+//         STL's "__isa_enabled & (1 << N)" expressed as bt/jae instead of a
+//         masked cmp/test, which is not a cmp/test mnemonic at all.
+// None of these are exploitable the way the two fake-green shapes above
+// were (they can only make real, guarded code fail RED, never let
+// unguarded code through GREEN), so they are named here as an accepted,
+// documented gap rather than fixed. If checkDominance is ever loosened to
+// cover one of these, it needs its own checked-in fixture the way the two
+// fake-green shapes above do, so the loosening cannot silently re-open N1's
+// original hole.
 export function checkDominance(linesSortedByAddr, isaVAs, functionStart, functionEnd, hitAddr) {
   if (isaVAs.length === 0) {
     return { protected: false, reason: 'no __isa_available/__isa_enabled/_Avx2WmemEnabled symbol found in this map at all' };
@@ -373,7 +422,7 @@ export function checkDominance(linesSortedByAddr, isaVAs, functionStart, functio
 
   return {
     protected: false,
-    reason: `an isa-flag read exists before the hit, but no conditional jump immediately following a cmp/test bound to that same read lands past the hit inside the function (review-waechter-windows.md N1)`,
+    reason: `an isa-flag read exists before the hit, but no conditional jump immediately following a cmp/test bound to that same read lands past the hit inside the function (review-waechter-windows.md N1). Disassemble this address by hand before treating it as a build regression: check whether an __isa_available/__isa_enabled/_Avx2WmemEnabled check with a jump over this instruction actually exists in the real disassembly. If it does and only misses this rule's shape (e.g. the scheduler put other instructions between the compare and the jump, the compare uses a cached or partial register, or the guard is a bt/jae bit test - see the four known false-red forms documented above checkDominance), that is a known codegen pattern, not a regression: add a fixture reproducing the exact shape and extend checkDominance with a justification tying it to that fixture, the same way the two fake-green shapes above are fixtured. If no such check exists at all, this is a genuine K1 AVX regression and must be treated as one, not allowlisted away.`,
   };
 }
 
@@ -463,10 +512,13 @@ function main(argv) {
   // parsed instruction lines and therefore zero VEX/EVEX hits, which the
   // pre-existing checks read as "OK, no unprotected VEX/EVEX in own code" —
   // a clean pass for exactly the wrong reason. A real module's dumpbin
-  // /disasm dump is thousands of lines at minimum (the smallest real module
-  // measured on the box, the exe itself, still produced far more than this);
-  // 40 is deliberately far below any real module and only meant to catch
-  // "the parser understood nothing", not to be a tight bound. Fixtures for
+  // /disasm dump is hundreds of lines at minimum (the smallest real module
+  // measured against the committed guard, the exe itself, parsed 868 disasm
+  // line(s) on the box; review-waechter-windows.md U2 caught an earlier,
+  // uncorroborated version of this comment that claimed "thousands", which
+  // the guard's own measured output on that same run never supported); 40
+  // is deliberately far below any real module and only meant to catch "the
+  // parser understood nothing", not to be a tight bound. Fixtures for
   // the decision logic itself (crt-allowed, protected-own-code, the red
   // probe) are deliberately tiny and pass --min-lines 0 explicitly, see
   // verify-sidecar-isa.sh.
