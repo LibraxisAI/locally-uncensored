@@ -15,8 +15,8 @@ import { openNewChat } from './support/ui'
  * Bewohner der Composer ist (`<ChatInput>`, direkt danach, ausserhalb der
  * AnimatePresence). Der Block selbst ist also GENAU die sichtbare Flaeche
  * zwischen der Kopfleiste (ausserhalb dieser Datei) und der Composer-
- * Oberkante — `justify-center` auf ihm zentriert den Inhalt in exakt dieser
- * Flaeche, keine externe Referenz noetig. Bis zum 05.09.2026
+ * Oberkante, `justify-center` auf ihm zentriert den Inhalt also in exakt
+ * dieser Flaeche, keine externe Referenz noetig. Bis zum 05.09.2026
  * (`b1ccb3a5c`) stand hier fuer den Chat-Zweig `justify-end`: der Block
  * sollte "wie ein Element mit dem Composer lesen". Gemessen (Playwright,
  * headless Chromium, `LU_DEV_PORT`, 19.09.2026):
@@ -38,7 +38,7 @@ import { openNewChat } from './support/ui'
  * nicht Code-Revert: ein zweiter Server-Start mit dem alten Stand waere ein
  * zweites Playwright-Projekt fuer eine einzige Zahl) und prueft LIVE, dass
  * die heutige Blockmitte innerhalb von 4 Prozent der Flaechenmitte liegt
- * und nie DARUNTER — genau die Regel aus dem Auftrag. Wird `justify-end`
+ * und nie DARUNTER, genau die Regel aus dem Auftrag. Wird `justify-end`
  * (oder ein Aequivalent) wieder eingefuehrt, faellt dieser Test, weil die
  * Live-Messung wieder ueber 25 Prozent liegt.
  */
@@ -149,7 +149,7 @@ test('kein Layoutsprung: der Composer bewegt sich nicht, wenn die erste Nachrich
   expect(before).not.toBeNull()
   expect(after).not.toBeNull()
   // Die Box darf durch neuen Inhalt (Modellmarken, Notiz) leicht wachsen,
-  // ihre OBERKANTE darf sich aber nicht mehr als ein paar Pixel verschieben
-  // — das Eingabefeld haengt am Fensterrand, nicht am Transkript.
+  // ihre OBERKANTE darf sich aber nicht mehr als ein paar Pixel verschieben:
+  // das Eingabefeld haengt am Fensterrand, nicht am Transkript.
   expect(Math.abs((after as { y: number }).y - (before as { y: number }).y)).toBeLessThanOrEqual(4)
 })
