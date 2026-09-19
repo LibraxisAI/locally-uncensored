@@ -75,9 +75,11 @@ installs stop losing environment variables to it.
   in the OS keychain instead of dropping it**, and gives it back if you switch
   back to that backend or remove the one that replaced it. The warning that a
   key will be lost only shows on a device with no keychain to park it in.
-- **Setting an install location for the Character Trainer now also redirects
-  pip, Hugging Face and torch's own caches there**, so moving the trainer off a
-  small system drive keeps those caches off it too. The field itself now
+- **Setting an install location for the Character Trainer during first setup
+  now also redirects pip, Hugging Face and torch's own caches there**, so
+  choosing a folder off a small system drive keeps those caches off it too.
+  This applies at first setup only; there is no way in the app yet to move an
+  already installed trainer to a different folder. The field itself now
   rejects a path it cannot actually use, always shows the folder it will
   really install to, and an emptied field goes back to the default; the Z Image
   base model downloads always follow your configured model folder in Settings,

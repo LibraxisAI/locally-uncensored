@@ -75,7 +75,7 @@ describe('Chat (Einzelmodell + Gruppenrunde): isGenerating haengt jetzt auch an 
     expect(davor).not.toMatch(/if \(stillOwnsSlot\)\s*{\s*(\/\/[^\n]*\n\s*)*$/)
   })
 
-  it('alle vier Fundstellen sind vorhanden: einzelner Chat, Gruppenrunde (zweimal) UND /compact bekamen den Fix, nicht nur einer', () => {
+  it('alle fuenf Fundstellen sind vorhanden: einzelner Chat (zweimal), Gruppenrunde (zweimal) UND /compact bekamen den Fix', () => {
     // Auflage 2 (Review composer, 19.09.2026): `/compact` reihte sich in
     // dieselbe Invariante ein, seitdem sind es drei statt zwei Fundstellen.
     // Auflage 8 (Review composer Runde 2, 19.09.2026): `runGroupRound` bekam
@@ -84,8 +84,13 @@ describe('Chat (Einzelmodell + Gruppenrunde): isGenerating haengt jetzt auch an 
     // bei einem Wurf VOR `runInLane` dieselbe Neuberechnung noch einmal
     // ausfuehrt - im Normalfall ist es ein No-op, weil das innere `finally`
     // schon geraeumt hat. Seitdem sind es vier statt drei Fundstellen.
+    // Auflage 1 (Review Teil 13, 19.09.2026): `sendMessage` bekam dasselbe
+    // AEUSSERE `finally` um den ganzen Rumpf (schliesst die Luecke zwischen
+    // dem Claim und dem ersten inneren `try`, u.a. den ungeschuetzten
+    // `ragState.loadChunksFromDB`-Aufruf), ebenfalls ein No-op im Normalfall.
+    // Seitdem sind es fuenf statt vier Fundstellen.
     const treffer = useChatSrc.split('setIsGenerating(activeChatRuns.size > 0)').length - 1
-    expect(treffer).toBe(4)
+    expect(treffer).toBe(5)
   })
 
   it('generationStore.aborters bleibt der Massstab fuer die STORE-eigene Fahne (review-lanes.md Punkt 1) - der Fix aendert daran nichts', () => {

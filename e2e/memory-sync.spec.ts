@@ -98,8 +98,15 @@ test('explicit UI sync uploads, downloads, preserves conflicts and persists shar
   await page.getByLabel('Allow cloud storage for this account collection', { exact: true }).check()
   await page.getByLabel('Sensitive: exclude from AI requests', { exact: true }).check()
   await sync.click()
-  await expect(page.getByRole('status')).toHaveText('Sensitive memories need explicit permission for cloud storage before this collection can synchronize')
+  // R2-37 (ed57f1d1, shipped 3.0.1): a sensitive memory without explicit
+  // upload consent no longer aborts the whole sync. It is left out of the
+  // push, the harmless pull half still runs, and the count of skipped
+  // entries shows up in the status line. The entry itself stays local, it
+  // is not uploaded and not deleted.
+  await expect(page.getByRole('status')).toHaveText('Synced 0 uploads and 0 downloads. 0 conflicting memories left unchanged. 1 sensitive memory was left out (not uploaded).')
   expect(writes).toBe(0)
+  expect(records).toHaveLength(0)
+  await expect(page.getByText('Account preference', { exact: true })).toBeVisible()
   await page.getByLabel('Sensitive: exclude from AI requests', { exact: true }).uncheck()
   await sync.click()
   await expect(page.getByRole('status')).toHaveText('Synced 1 uploads and 0 downloads. 0 conflicting memories left unchanged.')
