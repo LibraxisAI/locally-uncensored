@@ -50,6 +50,7 @@ import {
   codexFallbackLabel,
 } from '../../lib/codex-workdir'
 import { resolveWorkspacePath } from '../../api/agents/workspace-resolve'
+import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import { backendCall, isTauri, isMacOS } from '../../api/backend'
 import {
   EMPTY_LISTING,
@@ -160,13 +161,32 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   }
 
   // A new root is a new tree: nothing expanded, nothing previewed.
+  //
+  // R2-20: `root` (codexStore.workingDirectory) is a THIRD path that sets a
+  // remembered folder without a dialog, next to "Use last folder" and
+  // settings.defaultWorkspace (see api/agents/workspace-validate.ts). It
+  // survives an app restart in the browser's own storage, so a fresh install,
+  // cleared data, or a moved allowlist file can leave it pointing at a folder
+  // Rust no longer accepts, the very same "pick it again to allow it" dead end
+  // Fehler D closed for the picker itself. `rememberedFolderRefusal` asks
+  // BEFORE the first `fs_list` of a session, so the header shows the real
+  // reason instead of a bare "Failed to read directory".
   useEffect(() => {
     setListings({})
     setExpanded([])
     setSelected(null)
     setError(null)
     setPickError(null)
-    if (root) load(root)
+    if (root) {
+      void (async () => {
+        const refusal = await rememberedFolderRefusal(root)
+        if (refusal) {
+          setError(refusal)
+          return
+        }
+        load(root)
+      })()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root])
 
