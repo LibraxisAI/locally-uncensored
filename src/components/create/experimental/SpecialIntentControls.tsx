@@ -21,6 +21,7 @@ import {
 import { startModelDownload, getDownloadProgress } from '../../../api/discover'
 import { useDownloadStore } from '../../../stores/downloadStore'
 import { getLoraModels } from '../../../api/comfyui'
+import { isWindows } from '../../../api/backend'
 import { musicTakesLyrics, musicHowtoLines } from '../../../lib/render/music-ui'
 import { TRAIN_PRESETS, trainStepsNote } from '../../../lib/trainer-presets'
 import { useCreateExp } from './CreateContext'
@@ -267,6 +268,17 @@ function LocalTrainControls() {
   const [status, setStatus] = useState<TrainerStatus | null>(null)
   const [busy, setBusy] = useState<'install' | 'bases' | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // K5 (DIE-301-LISTE, Discord "Storage", x_guestieco_x): the trainer's
+  // venv, torch and its pip/HF/torch caches all follow `trainer_root`
+  // (see apply_trainer_cache_env in commands/trainer.rs), but nothing ever
+  // let a customer set `trainer_root` in the first place, so the redirect
+  // never fired for anyone. This is the smallest honest fix: the same
+  // "type a path, it becomes the install target" control Settings > ComfyUI
+  // already uses for install_comfyui, reused here for the one other local
+  // installer that downloads multiple GB. Left empty, install_character_trainer
+  // keeps its existing default (the app data folder), so this changes
+  // nothing for a customer who never touches it.
+  const [installPath, setInstallPath] = useState('')
 
   const refresh = useCallback(() => {
     characterTrainerStatus().then(setStatus).catch(() => setStatus(null))
@@ -324,7 +336,7 @@ function LocalTrainControls() {
   const startInstall = async () => {
     setBusy('install')
     setNote('Setting up the trainer...')
-    try { await installCharacterTrainer() } catch (e) {
+    try { await installCharacterTrainer(installPath.trim() || undefined) } catch (e) {
       setNote(e instanceof Error ? e.message : 'Install could not start.')
       setBusy(null)
     }
@@ -357,12 +369,23 @@ function LocalTrainControls() {
   if (!status.envReady || (busy === 'install' && status.install.status === 'installing')) {
     return (
       <div className="flex flex-col items-center gap-1.5">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-center">
           <span className="t-label text-gray-500">Trains fully on your GPU. One time setup, about 3 GB.</span>
           <Button size="sm" variant="secondary" icon={Download} loading={busy === 'install'} disabled={busy === 'install'} onClick={startInstall}>
             {busy === 'install' ? 'Setting up…' : 'Set up trainer'}
           </Button>
         </div>
+        {busy !== 'install' && (
+          <div className="flex flex-col items-center gap-0.5">
+            <input
+              value={installPath}
+              onChange={(e) => setInstallPath(e.target.value)}
+              placeholder={isWindows() ? 'e.g. D:\\LU-Trainer' : 'e.g. ~/LU-Trainer'}
+              className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
+            />
+            <span className="t-label text-gray-600">Installs to your app data folder by default. Set a path above to use another drive.</span>
+          </div>
+        )}
         {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
