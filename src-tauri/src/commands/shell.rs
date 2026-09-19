@@ -230,6 +230,18 @@ const TREE_KILL_POLL: Duration = Duration::from_millis(50);
 /// mlx_video job and an adopted ComfyUI get the same sweep the shell gets.
 #[cfg(windows)]
 pub(crate) fn kill_tree(root: u32) {
+    kill_tree_with(root, start_time_of(root));
+}
+
+/// Same as [`kill_tree`], with the root's start time injected.
+///
+/// The real code path always comes through [`kill_tree`], which reads the
+/// token itself while the root is still alive. It is separated so the sweep
+/// can be tested against the state it exists for, a live worker under a dead
+/// root, which cannot be reached any other way: producing that state means
+/// felling the root first, and after that its start time is unreadable.
+#[cfg(windows)]
+pub(crate) fn kill_tree_with(root: u32, root_start: Option<u64>) {
     if root == 0 { return; }
     // sysinfo0.33 kills each snapshot member with a separate taskkill /PID.
     // During shell startup a new child can appear between those calls and
@@ -250,7 +262,6 @@ pub(crate) fn kill_tree(root: u32) {
     // is already dead, which is why each leftover is felled as a root of its
     // own. The loop ends as soon as nothing is left, and otherwise after
     // TREE_KILL_SETTLE, for as long as taskkill itself returns.
-    let root_start = start_time_of(root);
     taskkill_tree(root);
     let deadline = Instant::now() + TREE_KILL_SETTLE;
     loop {
@@ -449,7 +460,12 @@ mod windows_stop_tests {
             std::thread::sleep(Duration::from_millis(20));
         };
 
-        // The shell only. Nothing walks the tree, so the worker stays.
+        // Read while the shell is alive, exactly as `kill_tree` reads it, and
+        // before the incomplete kill below makes it unreadable.
+        let root_start = start_time_of(shell.id());
+
+        // The shell only. Nothing walks the tree, so the worker stays: this
+        // is the sweep that missed a worker started one instant behind it.
         let mut lonely = Command::new("taskkill.exe");
         lonely.args(["/PID", &shell.id().to_string(), "/F"])
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -465,7 +481,7 @@ mod windows_stop_tests {
             "the worker was gone before the sweep was even asked: {workers:?}"
         );
 
-        kill_tree(shell.id());
+        kill_tree_with(shell.id(), root_start);
 
         let _ = shell.wait();
         settle(&out_done, &err_done, Duration::from_millis(1500));
