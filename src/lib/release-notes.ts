@@ -150,6 +150,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           'The composer lock during a send now only affects that one conversation, not every open chat, Stop in one chat no longer cancels an image or video render running in another, and picking a third remembered agent folder now asks for confirmation like the first two do.',
           'The first click into the Models folders tab is faster, since it asks the running engine directly instead of falling back to a stale cache, and the onboarding VRAM hint asks LU\'s own probe first so it works before ComfyUI is installed.',
           'Settings now says when Ollama is reachable but switched off, instead of just Reachable, which read as if it were actually being used.',
+          'On Windows, the Troubleshoot panel now says Not running for a backend that is switched off, instead of Reachable, slow to answer, which read as if the backend were alive and merely busy.',
+          'On Windows, pressing Stop on a command that had only just started now also ends the worker the shell launches a moment later, so a build or install cancelled at the very beginning stops instead of running on and writing files in the background.',
           'A Cloud chat request that hits its own four minute limit is now treated as finished right away instead of being retried up to three more times with the same four minute wait on each try.',
           'The Local Media (Apple MLX) panel now mentions that a Hugging Face token can help its downloads, the same hint ComfyUI already gives for its own model downloads.',
           'The No refusals mark in the desktop model picker now carries an icon and bolder text so it is actually noticeable, instead of blending into the smallest text on the row.',

@@ -113,6 +113,13 @@ installs stop losing environment variables to it.
   installed.
 - **Settings now says when Ollama is reachable but switched off**, instead of
   just Reachable, which read as if it were actually being used.
+- **On Windows, the Troubleshoot panel now says Not running for a backend that
+  is switched off**, instead of Reachable, slow to answer, which read as if the
+  backend were alive and merely busy.
+- **On Windows, pressing Stop on a command that had only just started now also
+  ends the worker the shell launches a moment later**, so a build or install
+  cancelled at the very beginning stops instead of running on and writing files
+  in the background.
 - **A Cloud chat request that hits its own four minute limit is now treated as
   finished right away** instead of being retried up to three more times with
   the same four minute wait on each try.
