@@ -109,15 +109,69 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// opposite case, pointing the other way: the panel told people a backend
 /// they had never started was alive.
 ///
-/// A third of the window is generous for what the connect phase actually
-/// does here. Two of the three endpoints are on this machine, where a
-/// handshake either completes in microseconds or is never going to complete;
-/// the third, a customer-configured Ollama base, can sit on the LAN, and
-/// 500 ms of the production window is far more than a handshake needs there.
-/// What remains of the window still belongs to the question the timeout was
-/// raised for: a server that ACCEPTED the connection and is slow to answer.
+/// A third of the window is generous for what the connect phase does on THIS
+/// machine, where a handshake either completes in microseconds or is never
+/// going to complete. What remains of the window still belongs to the question
+/// the timeout was raised for: a server that ACCEPTED the connection and is
+/// slow to answer.
+///
+/// It is not generous for anything further away, which is why
+/// [`connect_window_for`] hands it out only for a loopback target.
 fn connect_window(timeout: Duration) -> Duration {
     timeout / 3
+}
+
+/// The connect window this URL may use, or `None` when the whole probe window
+/// has to stay available for the handshake.
+///
+/// Ollama's and LM Studio's addresses are customer-configured
+/// (`ollama_probe_url`, `lm_studio_probe_url`), so one of the three probes can
+/// point at another machine. There the short window is wrong, and not because
+/// a handshake needs longer: a SINGLE LOST SYN does. Windows only retransmits
+/// after about a second, which is what the two seconds measured for a refused
+/// connection are made of, so on a lossy WLAN a 500 ms window would expire
+/// before the retransmission even goes out and a RUNNING Ollama would be
+/// reported as "Not running". That is a worse answer than the one this whole
+/// fix removed, so a remote host keeps the full window, and the verdict for a
+/// remote backend that is genuinely off stays `Timeout` as it was before.
+///
+/// "Loopback" is answered by resolution, not by spelling: `127.0.0.1`, any
+/// other `127.0.0.0/8` address, `::1`, and every name that resolves to
+/// loopback only, which is the usual case for `localhost` and for a name a
+/// customer put in their own hosts file. Anything that cannot be parsed or
+/// cannot be resolved counts as remote, because the short window is the one
+/// that has to be earned.
+async fn connect_window_for(url: &str, timeout: Duration) -> Option<Duration> {
+    if targets_loopback(url).await {
+        Some(connect_window(timeout))
+    } else {
+        None
+    }
+}
+
+/// Does every address behind this URL's host sit on loopback?
+async fn targets_loopback(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else { return false };
+    let Some(host) = parsed.host_str().map(|h| h.to_string()) else { return false };
+    // An IPv6 host is serialized with its brackets; `IpAddr` does not want them.
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    match tokio::net::lookup_host((host, port)).await {
+        Ok(addrs) => {
+            let mut any = false;
+            for addr in addrs {
+                any = true;
+                if !addr.ip().is_loopback() {
+                    return false;
+                }
+            }
+            any
+        }
+        Err(_) => false,
+    }
 }
 
 // NOTE: this is `async` and uses the ASYNC reqwest client on purpose.
@@ -130,11 +184,11 @@ fn connect_window(timeout: Duration) -> Duration {
 // shares the existing runtime and has no such problem.
 async fn probe_http(url: &str, timeout: Duration) -> BackendProbe {
     let endpoint = url.to_string();
-    let client = match reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(connect_window(timeout))
-        .build()
-    {
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    if let Some(connect) = connect_window_for(url, timeout).await {
+        builder = builder.connect_timeout(connect);
+    }
+    let client = match builder.build() {
         Ok(c) => c,
         Err(e) => {
             return BackendProbe {
@@ -523,7 +577,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let port = hang_stub(Duration::from_secs(5)).await;
-            let short = Duration::from_millis(200);
+            // Short enough to prove the probe respects its own window, long
+            // enough that the connect window derived from it (a third, so
+            // 200 ms) cannot be missed by a loaded machine's `accept`.
+            let short = Duration::from_millis(600);
             let start = std::time::Instant::now();
             let probe = probe_http(&format!("http://127.0.0.1:{}/api/tags", port), short).await;
             let elapsed = start.elapsed();
@@ -558,8 +615,55 @@ mod tests {
         );
         assert!(
             connect >= Duration::from_millis(250),
-            "a handshake to a configured Ollama on the LAN needs more room than {connect:?}"
+            "even a loopback handshake deserves more room than {connect:?}"
         );
+    }
+
+    /// Every spelling of "this machine" earns the short window, including a
+    /// NAME that resolves to loopback: `localhost` is what `ollama_probe_url`
+    /// falls back to, so a check on the text alone would have missed the
+    /// default case entirely.
+    #[test]
+    fn the_short_connect_window_is_given_to_loopback_targets() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            for url in [
+                "http://127.0.0.1:11434/api/tags",
+                "http://127.99.1.5:1234/v1/models",
+                "http://[::1]:8188/system_stats",
+                "http://localhost:11434/api/tags",
+            ] {
+                assert_eq!(
+                    connect_window_for(url, PROBE_TIMEOUT).await,
+                    Some(connect_window(PROBE_TIMEOUT)),
+                    "{url} is this machine and must get the short connect window"
+                );
+            }
+        });
+    }
+
+    /// The other side of NB1, and the reason the window is not simply always
+    /// short: a configured Ollama on another machine keeps the whole probe
+    /// window, so a single lost SYN (Windows retransmits only after about a
+    /// second) cannot turn a RUNNING backend into "Not running". Anything
+    /// unparseable or unresolvable counts as remote for the same reason.
+    #[test]
+    fn a_remote_or_unknown_host_keeps_the_whole_probe_window() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            for url in [
+                "http://192.0.2.10:11434/api/tags",
+                "http://[2001:db8::1]:11434/api/tags",
+                "http://no-such-host.invalid:11434/api/tags",
+                "not even a url",
+            ] {
+                assert_eq!(
+                    connect_window_for(url, PROBE_TIMEOUT).await,
+                    None,
+                    "{url} is not this machine and must keep the full window for the handshake"
+                );
+            }
+        });
     }
 
     /// The other half of the same split: nothing listening at all is still
