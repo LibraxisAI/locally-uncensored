@@ -220,3 +220,48 @@ describe('memory markdown import: Rueckwaertskompatibilitaet (Opus-Review Nachbe
     expect(useMemoryStore.getState().entries[0].content).toBe(multiline)
   })
 })
+
+// ── R5-23: a file exported by the other app must not lose tags/source/date ──
+//
+// apps/web/stores/memoryStore.ts writes a different separator pair: a colon
+// after the title and a middle dot before the date, instead of Desktop's
+// comma. Desktop's own export format is unchanged (that half of R5-23 is
+// Desktop's to set), but the import side now reads every separator either
+// app writes, so a memory file that crossed apps once is not the one that
+// gets silently truncated.
+describe('memory markdown import: liest auch Webs Trenner (R5-23)', () => {
+  beforeEach(reset)
+
+  it('a line written the way Web writes it survives import with tag, source and date', () => {
+    // The middle dot (·) before the date is Web's own separator,
+    // written as a code point for the same house-rule reason MD_ITEM's own
+    // dashes are: this is not a banned em/en dash, but no separator this
+    // file matches against belongs in the source as a literal character.
+    const md =
+      '# Memory\n\n## User\n\n'
+      + '- **Web Titel**: web content here [tag-eins, tag-zwei] *(web-export)*' + '·' + ' 2026-05-01\n\n'
+
+    const result = useMemoryStore.getState().importFromMarkdown(md)
+
+    expect(result.added).toBe(1)
+    const back = useMemoryStore.getState().entries[0]
+    expect(back.title).toBe('Web Titel')
+    expect(back.content).toBe('web content here')
+    expect(back.tags).toEqual(['tag-eins', 'tag-zwei'])
+    expect(back.source).toBe('web-export')
+  })
+
+  it('the colon-only title separator (no source, no date) also parses', () => {
+    const md = '# Memory\n\n## User\n\n- **Nur Titel**: nur Inhalt, ohne Quelle\n\n'
+    const result = useMemoryStore.getState().importFromMarkdown(md)
+    expect(result.added).toBe(1)
+    expect(useMemoryStore.getState().entries[0].title).toBe('Nur Titel')
+    expect(useMemoryStore.getState().entries[0].content).toBe('nur Inhalt, ohne Quelle')
+  })
+
+  it('NEGATIVE CONTROL: a bare comma in the content is untouched, as before', () => {
+    const md = '# Memory\n\n## User\n\n- **x**, content, with a comma\n\n'
+    useMemoryStore.getState().importFromMarkdown(md)
+    expect(useMemoryStore.getState().entries[0].content).toBe('content, with a comma')
+  })
+})

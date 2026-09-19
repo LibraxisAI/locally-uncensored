@@ -548,6 +548,16 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  * two are written as code points on purpose: the house rule bans the characters
  * themselves from this tree, and a character class is no exception.
  *
+ * R5-23 (3.0.1): apps/web/stores/memoryStore.ts writes a different pair of
+ * separators again (`**title**: content ... *(source)* · date`, a colon and a
+ * middle dot, plus the same two dashes as an accepted read variant). A memory
+ * exported by one app and imported into the other silently dropped tags,
+ * source and date exactly the way the 2.5.9 regression above did, just with a
+ * different separator pair. Desktop's own EXPORT keeps writing comma and the
+ * `isoTag` date format (that half of R5-23 is Desktop's to set), but the READ
+ * side now accepts every separator either app has ever written, so a file
+ * that crossed apps is never the one that gets silently truncated.
+ *
  * The trailing date is only stripped when it follows the `*(source)*` group. A
  * bare `content, with a comma` keeps its comma, because there is no source to
  * anchor a date to.
@@ -566,7 +576,7 @@ export function migrateMemoryState(persistedState: unknown, version: number): Me
  * group accepts an EMPTY body.
  */
 const MD_ITEM =
-  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|[\u2013\u2014])\s*(.+?))?)?$/
+  /^-\s+(?:\*\*(.+?)\*\*\s*(?:,|:|[\u2013\u2014])\s*)?(.+?)(?:(?:\s+\[([^\]]*)\])?\s+\*\(([^)]+)\)\*(?:\s*(?:,|\u00b7|[\u2013\u2014])\s*(.+?))?)?$/
 
 /**
  * R2-25 (Logikkontrolle, 3.0.1): a multi-line memory (several paragraphs, a
