@@ -160,8 +160,7 @@ function MemorySettingsPanel() {
     } catch (error) {
       if (syncController.current !== controller) return
       if (quelle === 'finalize') { setLegacyReview(null); setConfirmLegacyRemoval(false) }
-      const messages = ['Sensitive memories need explicit permission for cloud storage before this collection can synchronize',
-        'This conflict changed. Sync again before choosing a version.',
+      const messages = ['This conflict changed. Sync again before choosing a version.',
         'Memory synchronization cancelled. Some changes may already be saved.',
         'Memories changed. Review the previous cloud copy again.',
         'Import and synchronize every previous memory before finalizing.']
