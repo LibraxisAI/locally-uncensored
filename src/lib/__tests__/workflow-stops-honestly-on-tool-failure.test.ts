@@ -202,4 +202,54 @@ describe('a prompt step with no output is a failed step, not a completed one wit
     expect(results[0].status).toBe('completed')
     expect(messages[0]).toContain('a real answer')
   })
+
+  // R2-1 (lu-301/bau/review-offload2.md, Runde 2): executePromptStep checks
+  // only for empty output, never a prefix, so a real model answer that
+  // happens to start with "Error:" or "Web search failed" must NOT be
+  // treated as a failed step. Guards against a future "unifier" that widens
+  // the tool-step error detector to also cover prompt steps.
+  it('a non-empty model answer that merely starts with "Error:" still completes', async () => {
+    vi.mocked(resolveToolCallingStrategy).mockResolvedValue({
+      strategy: 'native',
+      modelToUse: 'claude',
+      modelId: 'claude',
+      providerId: 'anthropic',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      provider: { chatStream: async function* () { yield { content: 'Error: the user asked me to write this exact sentence', done: true } }, chatWithTools: vi.fn() } as any,
+    })
+    const workflow: AgentWorkflow = {
+      id: 'wf4', name: 'test', description: '', icon: 'Zap',
+      steps: [{ id: 'p', type: 'prompt', label: 'p', prompt: 'say something', allowedTools: [] }],
+      variables: {}, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+    }
+    const { callbacks, messages } = productionShapedCallbacks(workflow)
+    const engine = new WorkflowEngine(workflow, 'conv-e', callbacks, APPROVE_ALL)
+    const results = await engine.run()
+
+    expect(results[0].status).toBe('completed')
+    expect(messages[0]).toContain('Workflow complete')
+    expect(messages[0]).toContain('Error: the user asked me to write this exact sentence')
+  })
+
+  it('a non-empty model answer that starts with "Web search failed" still completes', async () => {
+    vi.mocked(resolveToolCallingStrategy).mockResolvedValue({
+      strategy: 'native',
+      modelToUse: 'claude',
+      modelId: 'claude',
+      providerId: 'anthropic',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      provider: { chatStream: async function* () { yield { content: 'Web search failed to turn up anything, the model said, so let me answer from memory instead.', done: true } }, chatWithTools: vi.fn() } as any,
+    })
+    const workflow: AgentWorkflow = {
+      id: 'wf5', name: 'test', description: '', icon: 'Zap',
+      steps: [{ id: 'p', type: 'prompt', label: 'p', prompt: 'say something', allowedTools: [] }],
+      variables: {}, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+    }
+    const { callbacks, messages } = productionShapedCallbacks(workflow)
+    const engine = new WorkflowEngine(workflow, 'conv-f', callbacks, APPROVE_ALL)
+    const results = await engine.run()
+
+    expect(results[0].status).toBe('completed')
+    expect(messages[0]).toContain('Workflow complete')
+  })
 })
