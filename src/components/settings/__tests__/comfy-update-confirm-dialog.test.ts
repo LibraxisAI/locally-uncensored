@@ -15,6 +15,12 @@
  * button calls `update_comfyui`. Separately, a ComfyUI this app did not
  * start blocks the click before the dialog even opens.
  *
+ * Final review 19.09.2026 added two more cases: `ownedByApp` (not
+ * `processAlive`, which lies about LU's own ComfyUI after an app restart,
+ * B2) decides ownership, the dialog text says LU stops its own ComfyUI
+ * first (B4), and a fast double click on the dialog's own Update button
+ * fires the backend only once (K2).
+ *
  * Run: npx vitest run src/components/settings/__tests__/comfy-update-confirm-dialog.test.ts
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -40,12 +46,12 @@ const { useComfyInstallStore } = await import('../../../stores/comfyInstallStore
 
 /** What `comfyui_status` answers next. Own, idle ComfyUI by default. */
 let comfyStatus: Record<string, unknown> = {
-  running: false, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, processAlive: false,
+  running: false, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: false,
 }
 
 beforeEach(() => {
   useComfyInstallStore.getState().reset()
-  comfyStatus = { running: false, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, processAlive: false }
+  comfyStatus = { running: false, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: false }
   backendCall.mockReset()
   backendCall.mockImplementation(async (cmd: string) => {
     if (cmd === 'comfyui_status') return comfyStatus
@@ -70,11 +76,13 @@ describe('the Update ComfyUI confirmation dialog', () => {
     expect(backendCall.mock.calls.some(([cmd]) => cmd === 'update_comfyui')).toBe(false)
   })
 
-  it('names the folder as read-only text and says ComfyUI must not be running', async () => {
+  it('names the folder as read-only text and says LU stops its own ComfyUI first (B4)', async () => {
     await mountPanel()
     await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
 
-    expect(screen.getByText(/must not be running/)).toBeTruthy()
+    // B4: the old wording ("ComfyUI must not be running") hid the fact that
+    // LU itself kills a running, own ComfyUI as part of the update.
+    expect(screen.getByText(/it will be stopped first/)).toBeTruthy()
     expect(screen.getByText(/C:\\ComfyUI/)).toBeTruthy()
     // Read-only: no textbox for the folder, unlike the Path field above it.
     expect(screen.queryByRole('textbox', { name: /ComfyUI folder/ })).toBeNull()
@@ -121,11 +129,25 @@ describe('the Update ComfyUI confirmation dialog', () => {
     await waitFor(() => expect(backendCall.mock.calls.some(([cmd]) => cmd === 'update_comfyui')).toBe(true))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /Update ComfyUI\?/ })).toBeNull())
   })
+
+  it('K2: two fast clicks on the dialog Update button call the backend only once', async () => {
+    await mountPanel()
+    await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
+
+    const updateButton = screen.getByRole('button', { name: 'Update' })
+    // Both clicks fire before any state update is flushed, exactly the race
+    // the ref guard in `handleConfirmUpdate` exists to close.
+    fireEvent.click(updateButton)
+    fireEvent.click(updateButton)
+
+    await waitFor(() => expect(backendCall.mock.calls.some(([cmd]) => cmd === 'update_comfyui')).toBe(true))
+    expect(backendCall.mock.calls.filter(([cmd]) => cmd === 'update_comfyui').length).toBe(1)
+  })
 })
 
 describe('a ComfyUI this app did not start blocks the click, negative control included', () => {
   it('a foreign, running ComfyUI shows a message instead of opening the dialog', async () => {
-    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, processAlive: false }
+    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: false }
     await mountPanel()
 
     await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
@@ -133,14 +155,14 @@ describe('a ComfyUI this app did not start blocks the click, negative control in
     expect(screen.queryByRole('dialog', { name: /Update ComfyUI\?/ })).toBeNull()
     expect(screen.getByText(/did not start is using this folder/)).toBeTruthy()
     expect(backendCall.mock.calls.some(([cmd]) => cmd === 'update_comfyui')).toBe(false)
-    // The status line itself says so too (processAlive: false while running).
+    // The status line itself says so too (ownedByApp: false while running).
     expect(screen.getByText('Running (started outside LU)')).toBeTruthy()
   })
 
   it('GEGENPROBE: the app\'s own running ComfyUI opens the dialog like any other case', async () => {
     // Negative control for the guard above: same `running: true`, but this
-    // time LU holds the child handle. Must NOT be treated as foreign.
-    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, processAlive: true }
+    // time the backend says it is ours.
+    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: true }
     await mountPanel()
 
     await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
@@ -148,5 +170,12 @@ describe('a ComfyUI this app did not start blocks the click, negative control in
     expect(screen.getByRole('dialog', { name: /Update ComfyUI\?/ })).toBeTruthy()
     expect(screen.queryByText(/did not start is using this folder/)).toBeNull()
     expect(screen.getByText('Running')).toBeTruthy()
+    // Final review 19.09.2026, B2: `ownedByApp: true` is exactly the answer
+    // the backend now gives for BOTH a live handle from this run AND an
+    // orphan adopted from an earlier one (`find_orphaned_comfyui`) -- the
+    // frontend cannot and must not tell those two apart on its own, it only
+    // reads the one shared verdict. The Rust-side distinction itself is
+    // proven in `process.rs`'s `comfy_adoption_tests` (`classify_comfyui_ownership`).
+    expect(screen.queryByText('Running (started outside LU)')).toBeNull()
   })
 })

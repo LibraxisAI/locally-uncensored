@@ -717,12 +717,20 @@ interface ComfyStatusResponse {
   port?: number
   host?: string
   isLocal?: boolean
-  /** T-68/ENG-18: true only while THIS app holds a live child process handle
-   *  for ComfyUI. `running` alone cannot tell an instance LU started from
-   *  one merely answering on the configured port, and box-gruen/n9 punkt 87
-   *  found real damage in that gap: a foreign ComfyUI read as plain
-   *  "Running", and "Update ComfyUI" started on it with no warning. */
-  processAlive?: boolean
+  /** Final review 19.09.2026 (B2): whether THIS app may treat the ComfyUI on
+   *  the configured port as its own, per the one shared decision
+   *  (`classify_comfyui_ownership` in `process.rs`) the status panel and
+   *  Update's confirm dialog both read. `running` alone cannot tell an
+   *  instance LU started from one merely answering on the port, and a plain
+   *  "is there a live child handle from THIS run" is not enough either: a
+   *  ComfyUI LU started in an earlier session and never lost track of
+   *  (T-68's orphan, exactly what a live ComfyUI looks like after every app
+   *  restart) still counts as ours. box-gruen/n9 punkt 87 found real damage
+   *  in the first gap (a foreign ComfyUI read as plain "Running") and the
+   *  final review found the second one (an own, orphaned ComfyUI wrongly
+   *  read as foreign after a restart, blocking Update on the customer's own
+   *  process). */
+  ownedByApp?: boolean
 }
 
 /** Antwort von `comfyui_last_output` (`process.rs`). Alle vier Schluessel
@@ -761,7 +769,7 @@ function ComfyUpdateConfirmModal({
     <Modal open={open} onClose={onClose} title="Update ComfyUI?">
       <div className="space-y-4 text-sm text-gray-200">
         <p className="t-body leading-relaxed text-gray-300">
-          This pulls the latest ComfyUI and reinstalls its Python packages. It can take a few minutes, and ComfyUI must not be running while it happens.
+          This pulls the latest ComfyUI and reinstalls its Python packages. It can take a few minutes. If ComfyUI is running and this app started it, it will be stopped first; a ComfyUI this app did not start blocks the update instead.
         </p>
         {path && <p className="t-label text-gray-500 text-center">ComfyUI folder: {path}</p>}
         <div className="flex flex-col gap-2 pt-1">
@@ -806,6 +814,14 @@ export function ComfyUISettings() {
   // ComfyUI". Closed by default; opened only by the button below, and the
   // backend call itself only ever runs from the dialog's own Update button.
   const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false)
+  // K2 (final review 19.09.2026): two fast clicks on the dialog's own Update
+  // button, before React re-renders it away, could otherwise fire
+  // `runUpdate()` twice. `COMFY_JOB`'s lock in Rust would answer the second
+  // one with "already_installing" and cause no real harm, but a ref that
+  // reset only when the dialog re-opens is one line cheaper than relying on
+  // that. A ref, not state: the guard must take effect on the very first
+  // click, before any re-render.
+  const updateConfirmedRef = useRef(false)
   // A13 (Windows counter-check 2026-09-02): install, update and repair used to
   // keep their phase, their log lines and their byte counters in this
   // component. Switching to another settings section threw all of it away
@@ -984,15 +1000,26 @@ export function ComfyUISettings() {
   // backend (`update_comfyui`) checks the same thing again and is the real
   // gate (defense in depth), since the status here is only ever a mirror of
   // the last 5 s poll.
+  //
+  // Final review 19.09.2026 (B2): this used to ask `processAlive === false`,
+  // which only answers for a live handle from THIS run. A ComfyUI LU started
+  // in an earlier session (T-68's orphan, exactly what a live ComfyUI looks
+  // like after every app restart) then read as foreign, blocking Update on
+  // the customer's own process with an untrue message. `ownedByApp` asks the
+  // one question that actually matters: would the backend's own guard
+  // (`ensure_comfyui_stopped_for_update`) stop this, or refuse it.
   const handleUpdateClick = () => {
-    if (status?.running && status?.processAlive === false) {
+    if (status?.running && status?.ownedByApp === false) {
       setStartError('A ComfyUI this app did not start is using this folder. Close that ComfyUI first, then try Update ComfyUI again.')
       return
     }
+    updateConfirmedRef.current = false
     setUpdateConfirmOpen(true)
   }
 
   const handleConfirmUpdate = () => {
+    if (updateConfirmedRef.current) return
+    updateConfirmedRef.current = true
     setUpdateConfirmOpen(false)
     setStartError('')
     void useComfyInstallStore.getState().runUpdate()
@@ -1054,14 +1081,19 @@ export function ComfyUISettings() {
           <div className={`w-1.5 h-1.5 rounded-full ${status?.running ? PUNKT_FARBE.an : status?.stalled ? PUNKT_FARBE.kaputt : PUNKT_FARBE.aus}`} />
           <span className="text-[0.65rem] text-gray-500">
             {/* box-gruen/n9 Punkt 87 (ENG-18): "Running" alone does not say
-                WHOSE ComfyUI is on the port. `processAlive === false` while
-                `running` is true means the port answers but this app holds
-                no child handle for it -- a copy started outside LU, exactly
+                WHOSE ComfyUI is on the port. `ownedByApp === false` while
+                `running` is true means a copy started outside LU, exactly
                 the shape a foreign "Update ComfyUI" click damaged for real
                 on a Windows box. Kept to the strict `=== false` check so a
                 path that simply never sends the field (undefined) still
-                reads as plain "Running", not a false alarm. */}
-            {status?.running ? (status?.processAlive === false ? 'Running (started outside LU)' : 'Running')
+                reads as plain "Running", not a false alarm.
+
+                Final review 19.09.2026 (B2): this used to key off
+                `processAlive`, which only answers for a live handle from
+                THIS run and reads LU's own orphaned ComfyUI from an earlier
+                session as foreign after every app restart.
+                `ownedByApp` is the backend's one shared answer instead. */}
+            {status?.running ? (status?.ownedByApp === false ? 'Running (started outside LU)' : 'Running')
               : status?.stalled ? 'Not responding'
               : status?.starting ? 'Starting'
               : status?.found ? 'Stopped' : 'Not Installed'}

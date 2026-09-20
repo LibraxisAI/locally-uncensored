@@ -654,18 +654,61 @@ fn foreign_comfyui_blocks_update(port: u16) -> String {
     )
 }
 
+/// What the customer is told when Update refuses to interrupt a render.
+/// box-gruen/n9 punkt 87, final review (B3): an own or adoptable ComfyUI used
+/// to be killed on the spot, mid-render or not, and the work was gone with
+/// nothing on screen to say so.
+const COMFYUI_BUSY_REFUSAL: &str =
+    "ComfyUI is generating something right now. Wait for it to finish, or stop the render \
+     yourself, then run Update ComfyUI again. Nothing was changed.";
+
+/// Whether ComfyUI's own `/queue` response (`{"queue_running": [...],
+/// "queue_pending": [...]}`, the same shape `isPromptQueued` in
+/// `comfyui.ts` reads) names any work at all. Pure and separate from the
+/// HTTP call below so both directions are provable with a literal
+/// `serde_json::Value`, no server required.
+fn queue_has_work(body: &serde_json::Value) -> bool {
+    let non_empty = |key: &str| {
+        body.get(key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    };
+    non_empty("queue_running") || non_empty("queue_pending")
+}
+
+/// Is ComfyUI on `port` doing anything right now? Read straight from its own
+/// `/queue` endpoint, because Update is about to stop this process and a
+/// customer mid-render has no other warning that the run is about to die.
+///
+/// Errs on the side of caution: a `/queue` that cannot be reached or parsed
+/// answers `Err`, and the caller refuses the update rather than risk killing
+/// a render it could not see.
+fn comfyui_queue_busy(port: u16) -> Result<bool, String> {
+    let resp = reqwest::blocking::get(format!("http://localhost:{port}/queue"))
+        .map_err(|e| format!("could not reach ComfyUI's queue: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("ComfyUI's queue endpoint answered with {}", resp.status()));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("could not read ComfyUI's queue: {e}"))?;
+    Ok(queue_has_work(&body))
+}
+
 /// Stop whatever ComfyUI this app itself is responsible for before Update
 /// touches the checkout, and refuse outright if the port is held by anything
-/// else.
+/// else or by a render in progress.
 ///
-/// Three shapes, the same ones Stop (`stop_comfyui_blocking`) already tells
-/// apart:
-/// * a live tracked child from this run, killed and reaped, same as Stop;
-/// * an orphan on the configured port this app started in an earlier run and
-///   lost the handle to (`find_orphaned_comfyui`), adopted and killed, same
-///   as Stop;
-/// * anything else answering on the port, left running, with the update
-///   refused instead.
+/// The own-vs-foreign line is `classify_comfyui_ownership`, the exact
+/// question `comfyui_status`'s `ownedByApp` field answers for the panel, so
+/// the two cannot disagree about the same ComfyUI (box-gruen/n9 punkt 87,
+/// final review B2). The actual stop, once the ComfyUI is confirmed to be
+/// ours, is `stop_comfyui_blocking` itself, the same function the Stop
+/// button calls (final review B1): a bare `child.kill()` only signals the
+/// direct child, and on Windows that can leave the real ComfyUI process
+/// (a grandchild through a launcher) holding the port while the checkout
+/// underneath it is rewritten. After the stop, the port is probed again: a
+/// ComfyUI that refuses to die is not silently worked around.
 ///
 /// Remote hosts are not this function's concern: `comfyui_status` never
 /// offers the Update button once `isLocal` is false, and this app manages no
@@ -676,10 +719,13 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
         return Ok(());
     }
     let port = *state.comfy_port.lock().unwrap();
+    if !crate::commands::process::is_comfyui_running_on_port(port) {
+        return Ok(());
+    }
 
-    // Our own tracked child, if this run's Start ever produced one and it is
-    // still alive. `try_wait` also reaps a child that already exited on its
-    // own, so this never lingers on a stale handle.
+    // Peeked, never taken: the actual stop happens inside
+    // `stop_comfyui_blocking` below, in its own single lock. Reading the
+    // handle here decides only whether this ComfyUI is ours to stop at all.
     let own_child_alive = {
         let mut proc = state.comfy_process.lock().unwrap();
         match proc.as_mut() {
@@ -694,32 +740,52 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
             None => false,
         }
     };
-    if own_child_alive {
-        let mut proc = state.comfy_process.lock().unwrap();
-        if let Some(mut child) = proc.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        drop(proc);
-        *state.comfy_start_at.lock().unwrap() = None;
-        info!(port = port, "update_comfyui stopped its own tracked ComfyUI before updating");
-        return Ok(());
-    }
+    let orphan_pid = if own_child_alive {
+        None
+    } else {
+        crate::commands::process::find_orphaned_comfyui(port)
+    };
 
-    if !crate::commands::process::is_comfyui_running_on_port(port) {
-        return Ok(());
-    }
-    match crate::commands::process::find_orphaned_comfyui(port) {
-        Some(pid) => {
-            println!("[Update] Adopting orphan pid {pid} on port {port} and stopping it before updating");
-            info!(pid = pid, port = port, "update_comfyui adopted and stopped an orphaned ComfyUI");
-            crate::process_util::kill_pid_tree(pid);
-            *state.comfy_start_at.lock().unwrap() = None;
-            Ok(())
-        }
-        None => {
+    match crate::commands::process::classify_comfyui_ownership(true, own_child_alive, orphan_pid) {
+        crate::commands::process::ComfyOwnership::NotRunning => Ok(()),
+        crate::commands::process::ComfyOwnership::Foreign => {
             println!("[Update] Refusing: port {port} is served by a ComfyUI this app did not start");
             Err(foreign_comfyui_blocks_update(port))
+        }
+        crate::commands::process::ComfyOwnership::Own => {
+            match comfyui_queue_busy(port) {
+                Ok(true) => {
+                    println!("[Update] Refusing: ComfyUI on port {port} is generating something");
+                    Err(COMFYUI_BUSY_REFUSAL.to_string())
+                }
+                Err(e) => {
+                    println!("[Update] Refusing: could not check ComfyUI's queue on port {port}: {e}");
+                    Err(format!(
+                        "Could not check whether ComfyUI is generating something right now, so the \
+                         update was refused rather than risk interrupting a render ({e}). Nothing \
+                         was changed."
+                    ))
+                }
+                Ok(false) => {
+                    let result = crate::commands::process::stop_comfyui_blocking(state)?;
+                    let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                    if status == "not_ours" {
+                        // A race between the classify above and the stop: the
+                        // handle exited and something else grabbed the port
+                        // in between. Rare, and refused exactly like a plain
+                        // foreign ComfyUI would be.
+                        return Err(foreign_comfyui_blocks_update(port));
+                    }
+                    info!(port = port, status = status, "update_comfyui stopped its own ComfyUI before updating");
+                    if crate::commands::process::is_comfyui_running_on_port(port) {
+                        return Err(format!(
+                            "ComfyUI on port {port} did not stop, so the update was not started. Try \
+                             Stop in Settings, then run Update ComfyUI again. Nothing was changed."
+                        ));
+                    }
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -892,8 +958,8 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         // dirty checkout would erase whatever the customer changed by hand,
         // and that is worse than refusing the update outright and saying
         // why, so a dirty tree never gets this far.
-        let old_commit = match git_working_tree_clean(&comfy_dir) {
-            Ok(true) => match git_current_commit(&comfy_dir) {
+        let old_commit = match git_dirty_lines(&comfy_dir) {
+            Ok(dirty) if dirty.is_empty() => match git_current_commit(&comfy_dir) {
                 Ok(commit) => commit,
                 Err(e) => {
                     update(
@@ -907,12 +973,21 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
                     return;
                 }
             },
-            Ok(false) => {
+            Ok(dirty) => {
+                // box-gruen/n9 punkt 87, final review (B5): `dirty` already
+                // excludes LU's own venv rebuild siblings
+                // (`venv.lu-old-*`/`venv.lu-new-*`/`venv.lu-failed-*`), so
+                // whatever is left here is genuinely the customer's, and the
+                // message names it instead of a blanket "you changed
+                // something".
                 update(
                     "error",
-                    "The ComfyUI folder has local changes, so a failed or cancelled update could \
-                     not be rolled back safely without erasing them. Commit or discard those \
-                     changes, then retry. Nothing was changed.",
+                    &format!(
+                        "The ComfyUI folder has local changes, so a failed or cancelled update could \
+                         not be rolled back safely without erasing them. Commit or discard these, \
+                         then retry. Nothing was changed.\n\n{}",
+                        dirty.join("\n"),
+                    ),
                 );
                 return;
             }
@@ -1048,14 +1123,38 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
     Ok(serde_json::json!({"status": "installing"}))
 }
 
-/// Whether `dir`'s working tree has nothing to lose: no staged or unstaged
-/// changes and no untracked files, i.e. `git status --porcelain` prints
-/// nothing. `update_comfyui` records a rollback point (`git_current_commit`)
-/// and pulls only when this is true: a `git reset --hard` after a cancelled
-/// or failed dependency install would otherwise erase whatever the customer
-/// changed by hand inside the checkout, which is worse than refusing the
-/// update outright.
-fn git_working_tree_clean(dir: &Path) -> Result<bool, String> {
+/// LU's own throwaway siblings inside a ComfyUI checkout, none of them named
+/// in ComfyUI's own `.gitignore`.
+///
+/// box-gruen/n9 punkt 87, final review (B5): `retire_venv` (`venv.rs`) parks
+/// the previous venv at `venv.lu-old-<stamp>` right next to the checkout
+/// while the new one is built, and a rebuild that fails leaves a half-built
+/// one at `venv.lu-failed-<stamp>` until a background thread deletes it
+/// (`restore_after_failed_rebuild`); `venv.lu-new-*` is the same idea during
+/// a build that has not yet been renamed to plain `venv`. A crash or a
+/// cancelled Repair can leave one of these sitting in the checkout, and
+/// without this list `git status --porcelain` sees it as a local change:
+/// Update would then refuse every single time afterwards and blame the
+/// customer for LU's own leftovers, on exactly the boxes where something
+/// already went wrong once.
+const LU_VENV_SCRATCH_PREFIXES: [&str; 3] = ["venv.lu-old-", "venv.lu-new-", "venv.lu-failed-"];
+
+/// Does this one `git status --porcelain` line belong to one of LU's own
+/// venv rebuild siblings? Porcelain lines are two status characters, a
+/// space, then the path (`"?? venv.lu-old-171.../"` for an untracked
+/// directory), so the path starts at byte 3; that slice is always a valid
+/// UTF-8 boundary because the status characters and the separator are ASCII.
+fn is_lu_venv_scratch_status_line(line: &str) -> bool {
+    let path = line.get(3..).unwrap_or("").trim_start();
+    LU_VENV_SCRATCH_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+}
+
+/// The `git status --porcelain` lines that count as "dirty" for Update's
+/// rollback safety check: every real line except LU's own venv rebuild
+/// siblings (`LU_VENV_SCRATCH_PREFIXES`), which Update and Repair produce
+/// themselves and must never blame on the customer. Empty means the tree is
+/// safe to pull and, if needed later, safe to `git reset --hard` back out of.
+fn git_dirty_lines(dir: &Path) -> Result<Vec<String>, String> {
     let mut cmd = crate::process_util::foreign_system_command("git");
     cmd.args(["status", "--porcelain"])
         .current_dir(dir)
@@ -1067,7 +1166,12 @@ fn git_working_tree_clean(dir: &Path) -> Result<bool, String> {
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
-    Ok(out.stdout.iter().all(u8::is_ascii_whitespace))
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !is_lu_venv_scratch_status_line(line))
+        .map(str::to_string)
+        .collect())
 }
 
 /// The commit `dir` is on right now, as `git rev-parse HEAD` reports it.
@@ -1093,10 +1197,10 @@ fn git_current_commit(dir: &Path) -> Result<String, String> {
 /// Move `dir` back to `commit` with `git reset --hard`.
 ///
 /// Only ever called from `update_comfyui`, and only on a checkout
-/// `git_working_tree_clean` found clean right before the pull that moved it
-/// away from `commit`: a hard reset otherwise destroys uncommitted work,
-/// which is exactly what recording the commit only on a clean tree exists to
-/// prevent.
+/// `git_dirty_lines` found empty (LU's own venv scratch siblings aside)
+/// right before the pull that moved it away from `commit`: a hard reset
+/// otherwise destroys uncommitted work, which is exactly what recording the
+/// commit only on a clean tree exists to prevent.
 fn git_reset_hard(dir: &Path, commit: &str) -> Result<(), String> {
     let mut cmd = crate::process_util::foreign_system_command("git");
     cmd.args(["reset", "--hard", commit])
@@ -1470,18 +1574,45 @@ mod tests {
     }
 
     #[test]
-    fn git_working_tree_clean_tells_a_clean_checkout_from_a_dirty_one() {
+    fn git_dirty_lines_tells_a_clean_checkout_from_a_dirty_one() {
         let (_tmp, dir, _a, _b) = two_commit_repo();
-        assert!(git_working_tree_clean(&dir).expect("status failed"), "a freshly committed checkout is not clean");
+        assert!(git_dirty_lines(&dir).expect("status failed").is_empty(), "a freshly committed checkout is not clean");
 
         // An untracked file counts as dirty: it is exactly what a hard reset
         // would erase.
         std::fs::write(dir.join("a_new_file.txt"), "custom node config").unwrap();
-        assert!(!git_working_tree_clean(&dir).expect("status failed"), "an untracked file was not seen as a local change");
+        let dirty = git_dirty_lines(&dir).expect("status failed");
+        assert!(!dirty.is_empty(), "an untracked file was not seen as a local change");
+        assert!(dirty.iter().any(|l| l.contains("a_new_file.txt")), "the dirty file is not named: {dirty:?}");
 
         // Negative control the other way: removing it restores clean.
         std::fs::remove_file(dir.join("a_new_file.txt")).unwrap();
-        assert!(git_working_tree_clean(&dir).expect("status failed"), "clean again after the untracked file is gone");
+        assert!(git_dirty_lines(&dir).expect("status failed").is_empty(), "clean again after the untracked file is gone");
+    }
+
+    #[test]
+    fn lu_own_venv_scratch_siblings_never_count_as_dirty() {
+        // box-gruen/n9 punkt 87, final review (B5): a crashed or cancelled
+        // Repair can leave one of these next to the checkout. Update must
+        // treat the tree as clean anyway, or it refuses forever afterwards
+        // and blames the customer for LU's own leftovers.
+        let (_tmp, dir, _a, _b) = two_commit_repo();
+        for name in ["venv.lu-old-1737400000", "venv.lu-new-1737400001", "venv.lu-failed-1737400002"] {
+            std::fs::create_dir(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("marker"), "x").unwrap();
+        }
+
+        let dirty = git_dirty_lines(&dir).expect("status failed");
+        assert!(dirty.is_empty(), "LU's own venv rebuild siblings were treated as customer changes: {dirty:?}");
+
+        // Gegenprobe: a look-alike name that is NOT one of the three exact
+        // prefixes still counts as dirty, so the filter is not accidentally
+        // matching every "venv.*" folder. (git does not track empty
+        // directories at all, hence the marker file, same as the three above.)
+        std::fs::create_dir(dir.join("venv.customer-backup")).unwrap();
+        std::fs::write(dir.join("venv.customer-backup").join("marker"), "x").unwrap();
+        let dirty = git_dirty_lines(&dir).expect("status failed");
+        assert!(dirty.iter().any(|l| l.contains("venv.customer-backup")), "an unrelated venv.* folder was wrongly exempted: {dirty:?}");
     }
 
     #[test]
@@ -1495,7 +1626,7 @@ mod tests {
         assert_eq!(git_current_commit(&dir).unwrap(), commit_a, "reset did not move HEAD back");
         let contents = std::fs::read_to_string(dir.join("requirements.txt")).unwrap();
         assert_eq!(contents, "a\n", "the working tree still shows the newer commit's content after reset");
-        assert!(git_working_tree_clean(&dir).unwrap(), "a hard reset should leave a clean tree");
+        assert!(git_dirty_lines(&dir).unwrap().is_empty(), "a hard reset should leave a clean tree");
     }
 
     #[test]
@@ -1537,7 +1668,7 @@ mod tests {
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
         let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
-        let clean_check = needle("match git_working_tree_cl", "ean(&comfy_dir) {");
+        let clean_check = needle("match git_dirty_l", "ines(&comfy_dir) {");
         let pull_start = needle("Pulling the latest Comfy", "UI...");
         let cancelled_pip = needle("rollback_after_cancelled_update(&comfy_d", "ir, &old_commit, \"the requirements install\")");
         let cancelled_verify = needle("rollback_after_cancelled_update(&comfy_d", "ir, &old_commit, \"the environment check\")");
@@ -1579,11 +1710,44 @@ mod tests {
     }
 
     #[test]
+    fn the_queue_is_checked_before_anything_is_stopped() {
+        // box-gruen/n9 punkt 87, final review (B3): a check that runs AFTER
+        // the kill is not a guard, it is a post-mortem. `stop_comfyui_blocking`
+        // must not be called until `comfyui_queue_busy` has already answered.
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let guard_fn_start = src.find("fn ensure_comfyui_stopped_for_update(").expect("the running-instance guard is gone");
+        let queue_check = needle("comfyui_queue_bus", "y(port)");
+        let stop_call = needle("process::stop_comfyui_bloc", "king(state)?;");
+
+        let at_queue_check = src[guard_fn_start..].find(&queue_check).map(|i| i + guard_fn_start)
+            .expect("the guard no longer checks whether ComfyUI is busy");
+        let at_stop_call = src[guard_fn_start..].find(&stop_call).map(|i| i + guard_fn_start)
+            .expect("the guard no longer stops ComfyUI through stop_comfyui_blocking");
+
+        assert!(at_queue_check < at_stop_call, "the queue must be checked before anything is stopped");
+    }
+
+    #[test]
     fn foreign_comfyui_message_names_the_port_and_refuses_without_a_close_command() {
         let msg = foreign_comfyui_blocks_update(8188);
         assert!(msg.contains("8188"), "the port is not named: {msg}");
         assert!(msg.contains("did not start it"), "does not say the app never started it: {msg}");
         assert!(msg.contains("Close that ComfyUI first"), "does not tell the customer what to do: {msg}");
         assert!(msg.contains("Nothing was changed"), "does not say nothing was touched: {msg}");
+    }
+
+    // ── box-gruen/n9 Punkt 87, final review (B3): the queue-busy guard's
+    //    JSON-parsing half, kept pure and provable with literal values ─────
+
+    #[test]
+    fn queue_has_work_reads_comfyuis_own_shape() {
+        assert!(!queue_has_work(&serde_json::json!({"queue_running": [], "queue_pending": []})));
+        assert!(queue_has_work(&serde_json::json!({"queue_running": [[0, "abc"]], "queue_pending": []})));
+        assert!(queue_has_work(&serde_json::json!({"queue_running": [], "queue_pending": [[0, "abc"]]})));
+        // A shape ComfyUI has never actually sent, kept as the honest
+        // fallback: neither key present reads as no work, not as an error.
+        assert!(!queue_has_work(&serde_json::json!({})));
     }
 }
