@@ -315,13 +315,41 @@ export function useAgentChat() {
     // R2, bau/review-wfgate.md klein 1: "run workflow <name>: <input>" lets
     // the text after the FIRST colon answer the workflow's first
     // `user_input` step, the same convention `run_workflow`'s own `input`
-    // argument uses (builtin-tools.ts). Optional and non-greedy on the name
-    // so a colon-free name still matches unchanged.
-    const workflowMatch = userContent.match(/^run\s+workflow\s+([^:]+?)\s*(?::\s*([\s\S]*))?$/i)
-    if (workflowMatch) {
-      const workflowName = workflowMatch[1].trim()
-      const workflowInput = workflowMatch[2]?.trim()
+    // argument uses (builtin-tools.ts).
+    //
+    // Nachtrag 1, Runde 3 (bau/review-wfgate.md): a workflow name is a free
+    // text field (WorkflowBuilder.tsx), so it can itself contain a colon.
+    // Splitting at the FIRST colon unconditionally broke that case
+    // silently: "run workflow Deploy: staging" against a workflow actually
+    // named "Deploy: staging" used to look for name "Deploy" instead, find
+    // nothing, and fall through to an ordinary chat message. Fix: look up
+    // the LONGEST workflow name (from the store, case-insensitive like the
+    // rest of this match) that the text after "run workflow" starts with,
+    // and only take whatever follows it as the ": <input>" answer. Only
+    // when no stored name matches at all does this fall back to the old
+    // split-at-first-colon behaviour (whose result then simply won't be
+    // found below either, same as an unrecognised name always was).
+    const runWorkflowMatch = userContent.match(/^run\s+workflow\s+([\s\S]+)$/i)
+    let workflowName = ''
+    let workflowInput: string | undefined
+    if (runWorkflowMatch) {
+      const rest = runWorkflowMatch[1].trim()
       const wfStore = useAgentWorkflowStore.getState()
+      const byLongestName = [...wfStore.workflows].sort((a, b) => b.name.length - a.name.length)
+      const nameMatch = byLongestName.find(w => {
+        if (rest.length < w.name.length) return false
+        if (rest.slice(0, w.name.length).toLowerCase() !== w.name.toLowerCase()) return false
+        const after = rest.slice(w.name.length).trimStart()
+        return after === '' || after.startsWith(':')
+      })
+      if (nameMatch) {
+        workflowName = nameMatch.name
+        workflowInput = rest.slice(nameMatch.name.length).trimStart().replace(/^:\s*/, '').trim() || undefined
+      } else {
+        const fallback = rest.match(/^([^:]+?)\s*(?::\s*([\s\S]*))?$/)
+        workflowName = fallback?.[1]?.trim() ?? rest
+        workflowInput = fallback?.[2]?.trim()
+      }
       const workflow = wfStore.workflows.find(
         w => w.name.toLowerCase() === workflowName.toLowerCase()
       )

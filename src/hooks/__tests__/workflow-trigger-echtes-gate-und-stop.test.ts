@@ -204,3 +204,86 @@ describe('klein 1: "run workflow <name>: <input>" beantwortet den ersten user_in
     expect(lastAssistant.content).toMatch(/Saved to memory: quantum computing/)
   })
 })
+
+describe('Nachtrag 1, bau/review-wfgate.md Runde 3: ein Ablaufname MIT Doppelpunkt', () => {
+  /** Zwei Ablaeufe, deren Namen sich nur durch den Doppelpunkt-Teil
+   *  unterscheiden: "Deploy" (fragt nach der Umgebung) und "Deploy: staging"
+   *  (fuehrt direkt ein blockiertes Werkzeug aus). Vor dem Fix waere
+   *  "run workflow Deploy: staging" am ERSTEN Doppelpunkt gesplittet worden,
+   *  haette Name "Deploy" und Eingabe "staging" ergeben und damit den
+   *  falschen (oder bei einem echten Doppelpunkt-Namen: GAR keinen) Ablauf
+   *  getroffen. */
+  function deployWorkflow() {
+    return {
+      id: 'guard-wf-deploy',
+      name: 'Deploy',
+      description: '',
+      icon: 'Zap',
+      steps: [{ id: 's1', type: 'user_input' as const, label: 'Ask', userInputPrompt: 'Which environment?' }],
+      variables: {},
+      isBuiltIn: false,
+      createdAt: 0,
+      updatedAt: 0,
+    }
+  }
+  function deployStagingWorkflow() {
+    return {
+      id: 'guard-wf-deploy-staging',
+      name: 'Deploy: staging',
+      description: '',
+      icon: 'Zap',
+      steps: [{ id: 's1', type: 'tool' as const, label: 'run it', toolName: 'shell_execute', toolArgs: { command: 'echo hi' } }],
+      variables: {},
+      isBuiltIn: false,
+      createdAt: 0,
+      updatedAt: 0,
+    }
+  }
+
+  it('"run workflow Deploy: staging" trifft den Ablauf "Deploy: staging", nicht "Deploy" mit Eingabe "staging"', async () => {
+    useAgentWorkflowStore.setState((s) => ({ workflows: [...s.workflows, deployWorkflow(), deployStagingWorkflow()] }))
+    usePermissionStore.getState().setGlobalPermission('terminal', 'blocked')
+    const execSpy = vi.spyOn(toolRegistry, 'execute')
+
+    const { result } = renderHook(() => useAgentChat())
+    const convId = seed()
+
+    await act(async () => {
+      await result.current.sendAgentMessage('run workflow Deploy: staging')
+      await tick()
+    })
+
+    // Negativkontrolle: der falsche Treffer waere "Deploy" mit Eingabe
+    // "staging" gewesen, dessen einziger Schritt sofort fertig ist und NIE
+    // nach der Umgebung fragt und NIE ein Werkzeug ausfuehrt.
+    expect(execSpy.mock.calls.map((c) => c[0])).not.toContain('memory_save')
+    const conv = useChatStore.getState().conversations.find((c) => c.id === convId)!
+    const lastAssistant = [...conv.messages].reverse().find((m) => m.role === 'assistant')!
+    expect(lastAssistant.content).not.toMatch(/Which environment\?/)
+    // Positivkontrolle: "Deploy: staging" wurde erkannt und sein blockiertes
+    // Werkzeug lief nie, meldet aber den Ablehnungsfehler statt zu haengen.
+    expect(execSpy.mock.calls.map((c) => c[0])).not.toContain('shell_execute')
+    expect(lastAssistant.content).toMatch(/Workflow error/)
+  })
+
+  it('Negativkontrolle: ohne den passenden Namen "Deploy: staging" im Store faellt der alte Doppelpunkt-Split wieder zum kuerzeren Namen zurueck', async () => {
+    useAgentWorkflowStore.setState((s) => ({ workflows: [...s.workflows, deployWorkflow()] }))
+
+    const { result } = renderHook(() => useAgentChat())
+    const convId = seed()
+
+    await act(async () => {
+      await result.current.sendAgentMessage('run workflow Deploy: staging')
+      await tick()
+      await tick()
+    })
+
+    // Ohne den laengeren Namen im Store greift der Fallback (Split am ersten
+    // Doppelpunkt): Name "Deploy", Eingabe "staging" fuellt den einzigen
+    // user_input-Schritt vor, der Ablauf laeuft durch statt zu fragen.
+    expect(__activeAgentRunConvIdsForTests()).not.toContain(convId)
+    const conv = useChatStore.getState().conversations.find((c) => c.id === convId)!
+    const lastAssistant = [...conv.messages].reverse().find((m) => m.role === 'assistant')!
+    expect(lastAssistant.content).not.toMatch(/Which environment\?/)
+  })
+})
