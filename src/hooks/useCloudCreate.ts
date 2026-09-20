@@ -531,6 +531,28 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
           studio_options: studioOptionsFiltered ?? {},
           ...quoteFields,
         })
+        // Review A kleiner Punkt 1 (Runde 3, 20.09.2026): the cap is the
+        // SERVER's confirmed number, not the number the customer actually
+        // saw before pressing Create. That protects LU (never books more
+        // than the provider confirms) but not the customer (a quote that
+        // came back higher than the shown price would still book, silently,
+        // just like the bug this whole mechanism exists to close). Compare
+        // against `s.cloudStudioCredits`, the same value CreditsMeter/the
+        // Composer meter rendered at the moment this run started: a HIGHER
+        // confirmed number is treated exactly like a 409 quote_changed (new
+        // price shown, a second click required, nothing booked this time). A
+        // LOWER or equal confirmed number books directly, same as before,
+        // since the customer never sees a bill bigger than what was shown.
+        // `cloudStudioCredits` can be null in the narrow race before the
+        // meter's first paint; nothing to compare against there, so that
+        // case books as before rather than blocking on nothing.
+        if (s.cloudStudioCredits !== null && quote.credits > s.cloudStudioCredits) {
+          throw new StudioQuoteChangedError(
+            'The price changed. Review the new quote before starting.',
+            quote.credits,
+            quote.seconds,
+          )
+        }
         params.max_credits = quote.credits
       }
 

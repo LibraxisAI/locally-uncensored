@@ -64,6 +64,25 @@ export interface StudioPrice {
   error?: string
 }
 
+// Review B4 (Runde 3, 20.09.2026): the price key used to carry the prompt's
+// LIVE length, so every single keystroke changed `key`, restarted the (only
+// 500ms) debounce, and fired a fresh studioQuote() once typing paused for
+// half a second, word by word. Measured: a slow but ordinary typist (600ms
+// per character) triggered one call per character, 48 calls for a 48-char
+// prompt, against a server limit of 20/minute.
+//
+// The length genuinely belongs in the price for `price.mode: 'characters'`
+// models (studio-contract.ts's `studioCredits`, `seconds = promptLength/100`
+// for that mode only; checked against the server worker's own
+// `studioCredits()`, same formula). It cannot simply be dropped from the
+// key. What it needs is its OWN, much longer debounce, separate from the
+// 500ms the other fields (model/options/seconds) already have: a real pause
+// in typing, not a half-second gap between characters. `debouncedPromptLen`
+// only updates 1800ms after the prompt stops changing, so continuous typing
+// (even a slow, sustained 600ms/char rhythm with no individual gap that
+// long) never touches `key` until the customer actually stops.
+const PROMPT_DEBOUNCE_MS = 1800
+
 export function useStudioPrice(
   model: string | undefined,
   options: Record<string, unknown>,
@@ -73,7 +92,12 @@ export function useStudioPrice(
   const [live, setLive] = useState<{ key: string; credits: number } | null>(null)
   const [error, setError] = useState<{ key: string; message: string } | null>(null)
   const abort = useRef<AbortController | null>(null)
-  const key = model ? JSON.stringify([model, options, prompt.length, seconds]) : ''
+  const [debouncedPromptLen, setDebouncedPromptLen] = useState(prompt.length)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedPromptLen(prompt.length), PROMPT_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [prompt.length])
+  const key = model ? JSON.stringify([model, options, debouncedPromptLen, seconds]) : ''
 
   useEffect(() => {
     abort.current?.abort()
@@ -95,6 +119,24 @@ export function useStudioPrice(
           // 409 quote_changed: zeigt den neuen Preis, statt still weiter die
           // alte Formel zu zeigen oder gar neu zu buchen.
           setLive({ key, credits: err.credits })
+          setError(null)
+          return
+        }
+        // Review B4: only a genuine version gap (404 "no route yet", or 0
+        // "could not reach the server at all", studio.ts's OLDER_SERVER_MESSAGE
+        // mapping) locks the start button, the case this hook was built to
+        // guard (Portplan Abschnitt 5/7). A 429 (the quote rate limit,
+        // "Please wait before requesting another quote") is not a version
+        // gap and not a money risk any more: useCloudCreate's generate()
+        // reconfirms a fresh quote right before booking regardless (Review
+        // A1/B3, Runde 2), so a missing LIVE number here costs nothing but
+        // the live badge. It falls back to the same formula preview every
+        // price.mode 'input'/'both' model already shows, quietly, and
+        // leaves Generate enabled. Any other status (401, 400, ...) is
+        // unexpected here and keeps the old blocking behavior rather than
+        // guess it is safe.
+        if (err instanceof CloudJobError && err.status === 429) {
+          setLive(null)
           setError(null)
           return
         }

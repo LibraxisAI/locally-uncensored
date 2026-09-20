@@ -672,6 +672,17 @@ function LaneControls() {
             options={cloudVideoDurations.map((secs) => ({ value: String(secs), label: `${secs}s` }))}
           />
         </LabeledControl>
+      ) : backend === 'cloud' && kind === 'video' && !specialOp ? (
+        // Review A kleiner Punkt 2 (Runde 2 report): an empty durations list
+        // (no live catalog entry AND no video-durations.json fallback) used
+        // to fall through to the LOCAL Frames slider here, which writes
+        // `frames`, while the cloud booking (bookedVideoSeconds) reads
+        // `cloudFrames` and throws on an empty allowed list regardless of
+        // what that field holds. Unreachable with today's data (every
+        // generating video model in the catalog carries a durations list),
+        // but showing a working-looking slider for a cloud pick that can
+        // only ever fail books nothing, so a plain notice is honest instead.
+        <span className="t-label text-gray-600">clip length is not available for this model yet</span>
       ) : showFrames ? (
         <div className="w-44">
           <Slider label="Frames" min={9} max={121} step={4} value={frames} onChange={setFrames} format={(v) => `${v}f · ${(v / (fps || 16)).toFixed(1)}s`} />
