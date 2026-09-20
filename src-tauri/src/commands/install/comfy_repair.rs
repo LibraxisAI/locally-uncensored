@@ -1715,6 +1715,14 @@ mod tests {
             assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q"]);
+        // Make this repo's line-ending behaviour independent of the user's
+        // (or CI machine's) global git config. On Windows, a global
+        // core.autocrlf=true rewrites "a\n" to "a\r\n" on checkout, which
+        // breaks the exact string comparisons below even though the
+        // product's own git handling is unaffected. Pin both settings
+        // before the first commit so the test is self-contained.
+        git(&["config", "core.autocrlf", "false"]);
+        git(&["config", "core.eol", "lf"]);
         std::fs::write(dir.join("requirements.txt"), "a\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "a"]);
