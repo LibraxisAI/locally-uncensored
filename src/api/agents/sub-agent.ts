@@ -696,8 +696,16 @@ async function resolveSubAgentLane(model: string | undefined): Promise<RunLane> 
  */
 export function buildDelegateExecutor(
   runner: SubAgentRunner = defaultSubAgentRunner
-): (args: ToolArgs, run?: AgentRunContext) => Promise<string> {
-  return async (args: ToolArgs, run?: AgentRunContext) => {
+): (args: ToolArgs, run?: AgentRunContext, abort?: AbortSignal) => Promise<string> {
+  // `abort` is the merged signal toolRegistry.execute() hands every
+  // executor: the run's own Stop AND (klaerung-n5a Fix 2) the JS timeout
+  // race's own controller, aborted the moment the cap fires. Foreground
+  // delegation now has no realistic cap of its own (tool-timeout.ts,
+  // AGENT_LOOP_TOOLS), but the race still exists as a formality and its
+  // signal has to reach the nested loop for the same reason Stop does:
+  // otherwise a timed-out call would still orphan the sub-agent, holding
+  // its local lane, exactly the bug this fix closes.
+  return async (args: ToolArgs, run?: AgentRunContext, abort?: AbortSignal) => {
     const kappe = effectiveParallelCap(run?.conversationId)
     if (_inFlight >= kappe) {
       return `Error: Maximum sub-agent concurrency (${kappe}) reached. Wait for a running sub-agent to finish, or continue the task yourself.`
@@ -768,7 +776,16 @@ export function buildDelegateExecutor(
             // vor und verklemmt sich hinter der eigenen Buchung dieses
             // Sub-Agenten (dieselbe Fehlerform wie im Hintergrundzweig
             // unten, nur eine Ebene hoeher).
-            const kindLauf: AgentRunContext | undefined = run ? { ...run, heldLocalLane: held } : undefined
+            // `abort` (the race's own signal, klaerung-n5a Fix 2) wins over
+            // `run.abortSignal` because it is the SUPERSET: toolRegistry.
+            // execute() already merges the run's Stop into it before this
+            // executor ever sees it (see useAgentChat.ts/useCodex.ts's
+            // `raceWithToolTimeout` call). Falling back to `run.abortSignal`
+            // only covers a caller that predates the fourth argument (a
+            // test stubbing this executor directly).
+            const kindLauf: AgentRunContext | undefined = run
+              ? { ...run, abortSignal: abort ?? run.abortSignal, heldLocalLane: held }
+              : undefined
             output = await runner(goal, context, { budget, run: kindLauf, model })
           },
         )

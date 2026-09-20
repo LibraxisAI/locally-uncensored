@@ -2198,11 +2198,14 @@ export function useAgentChat() {
           // wedged the whole run with no way out but a restart.
           execute: (name: string, args: ToolArgs, callRun?: AgentRunContext, signal?: AbortSignal) =>
             raceWithToolTimeout(
-              // The run's Stop travels into the tool itself (audit M1), not
-              // just to the batch scheduler.
-              toolRegistry.execute(name, args, 1, callRun, signal ?? abort.signal),
               name,
               toolCallCapMs(name, args, settings),
+              // The run's Stop travels into the tool itself (audit M1), not
+              // just to the batch scheduler. `raced` also carries the race's
+              // OWN timeout abort now (klaerung-n5a Fix 2), so a timed-out
+              // call is cancelled for real instead of left running orphaned.
+              (raced) => toolRegistry.execute(name, args, 1, callRun, raced),
+              signal ?? abort.signal,
             ),
           lookupCache: convId ? makeInTurnCacheLookup({ convId, turnStartMs }) : undefined,
           explainError: (toolName, err) => explainToolError(toolName, err),

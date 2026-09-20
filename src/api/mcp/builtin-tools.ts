@@ -1560,7 +1560,7 @@ async function executeGetCurrentTime(_args: ToolArgs): Promise<string> {
 
 let _workflowDepth = 0
 
-async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promise<string> {
+async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?: AbortSignal): Promise<string> {
   const workflowName = argString(args, 'name')
   if (!workflowName) return 'Error: No workflow name provided'
   if (_workflowDepth >= 5) return 'Error: Maximum workflow nesting depth (5) exceeded'
@@ -1659,7 +1659,26 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
     // third-level call's context from, not this placeholder. See
     // `effectiveOuterRun`/`effectiveConversationId` in workflow-engine.ts.
     const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, approve, initialVars, _workflowDepth, run?.heldLocalLane ?? null, run)
-    await engine.run()
+    // klaerung-n5a Fix 2: `abort` is the merged signal toolRegistry.execute()
+    // hands every executor now (the run's Stop AND, since run_workflow sits
+    // in tool-timeout.ts's AGENT_LOOP_TOOLS, the JS race's own timeout
+    // controller). WorkflowEngine already has everything needed to react:
+    // `cancel()` flips its internal AbortController, checked at the top of
+    // every step and threaded into every provider call, so this executor
+    // just has to call it. Without this wire, a timed-out or Stop-hit
+    // `run_workflow` kept its engine running underneath, orphaned, holding
+    // the local lane `runInLane` had booked for it, the same failure class
+    // measured for delegate_task.
+    const onAbort = () => engine.cancel()
+    if (abort) {
+      if (abort.aborted) onAbort()
+      else abort.addEventListener('abort', onAbort, { once: true })
+    }
+    try {
+      await engine.run()
+    } finally {
+      abort?.removeEventListener('abort', onAbort)
+    }
   } finally {
     _workflowDepth--
   }
