@@ -89,7 +89,7 @@ describe('truncateForProgress: Kuerzung fuer die Chat-Anzeige', () => {
 
   it('NEGATIVKONTROLLE: ohne Kuerzung stuende der volle Text in der Stufenliste', () => {
     // Same assembly renderWorkflowStepList does, but skipping truncateForProgress
-    // entirely — the shape a regression would take if someone inlined the
+    // entirely: the shape a regression would take if someone inlined the
     // field instead of calling the helper.
     const long = 'y'.repeat(5000)
     const untouched = `  result: ${long}`

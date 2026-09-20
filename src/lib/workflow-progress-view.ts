@@ -9,7 +9,7 @@
  * live text. This module builds that text; the caller (useAgentChat.ts) only
  * has to keep a `WorkflowStepView[]` current and hand it to
  * `renderWorkflowStepList`, which becomes the SAME `AgentToolCall.result` a
- * real tool call already renders in its collapsible details pane — no new
+ * real tool call already renders in its collapsible details pane; no new
  * component, no new expand pattern.
  *
  * Kept a separate leaf module (no React, no store) so the step-list text and
@@ -23,7 +23,7 @@ export interface WorkflowStepView {
   status: StepStatus
   /** Tool-step args (from `StepResult.toolCalls[0].args`), when known. */
   args?: Record<string, unknown>
-  /** Step output — the model's answer for a prompt step, or the tool
+  /** Step output: the model's answer for a prompt step, or the tool
    *  result for a tool step. Updated LIVE while a prompt step streams
    *  (`onStepProgress`), then finalised on completion. */
   output?: string
@@ -33,7 +33,7 @@ export interface WorkflowStepView {
 /**
  * Long tool output already gets a head+tail truncation for the MODEL's own
  * context (`truncateToolResult`, lib/truncate-tool-result.ts). This is a
- * separate, much smaller budget for the CHAT TRANSCRIPT's own display only —
+ * separate, much smaller budget for the CHAT TRANSCRIPT's own display only.
  * "lange Ausgaben kuerzen, damit der Chat nicht explodiert, und nichts davon
  * zusaetzlich in den Modellkontext schieben" (the Eigner's own wording): this
  * value never reaches a prompt, so it stays independent of the model-facing
