@@ -29,11 +29,11 @@ describe('the mask instruction', () => {
     expect(COMPOSER).not.toMatch(/text-amber-\d00 dark:text-amber/)
   })
 
-  // P8-Notiz: dieser Fall gehoert inhaltlich zu Paket P7 (Composer.tsx ist dort
-  // exklusiv, hier nicht angefasst). Im P8-Zweig hat der Desktop-Composer die
-  // Studio-Anbindung noch nicht, darum fehlt der Ersatztext fuer den Radiergummi
-  // noch. P9 fuehrt P7 und P8 zusammen; dort greift dieser Fall wieder.
-  it.skip('still says something for a run that has no prompt field at all', () => {
+  // P8-Notiz: dieser Fall gehoerte inhaltlich zu Paket P7 (Composer.tsx war dort
+  // exklusiv). P7s Bericht bestaetigt, dass der Ersatztext fuer den Radiergummi
+  // inzwischen in Composer.tsx steht. P9 fuehrt P7 und P8 zusammen, hier
+  // scharfgeschaltet.
+  it('still says something for a run that has no prompt field at all', () => {
     // Sonst stuende beim Radiergummi ein leerer Kasten ueber der Leiste.
     expect(COMPOSER).toContain('Mask ready. Hit Create.')
     expect(COMPOSER).toContain('Paint over what should go, then hit Create.')

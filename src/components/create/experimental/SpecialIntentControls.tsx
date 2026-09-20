@@ -23,6 +23,7 @@ import { useDownloadStore } from '../../../stores/downloadStore'
 import { getLoraModels } from '../../../api/comfyui'
 import { isWindows, isMacOS } from '../../../api/backend'
 import { musicTakesLyrics, musicHowtoLines } from '../../../lib/render/music-ui'
+import { galleryLabelShort } from '../../../lib/render/gallery-label'
 import { TRAIN_PRESETS, trainStepsNote } from '../../../lib/trainer-presets'
 import { trainerPathPlaceholder } from '../../../lib/trainer-path-placeholder'
 import { trainerRootHint } from '../../../lib/trainer-root-hint'
@@ -1204,14 +1205,22 @@ function CloudExtendControls() {
                     setExtendSource({
                       jobId: g.jobId as string,
                       url: g.remoteUrl ?? '',
-                      label: g.prompt.slice(0, 40) || 'Cloud video',
+                      // P9: 'Cloud video' was the old blanket notname
+                      // gallery-label.ts's own header comment names as the
+                      // problem it fixes (David, 19.09.2026: "everything
+                      // after that is just Cloud videos"). A prompt-less
+                      // entry here is routinely a Studio step (sharpen,
+                      // extend, a preset step) — galleryLabelShort names
+                      // those from their model/label instead of a blank
+                      // notname.
+                      label: galleryLabelShort(g, 40),
                     })
                     setOpen(false)
                   }}
                   className="w-full flex items-center gap-2 t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06]"
                 >
                   <Film size={12} />
-                  <span className="truncate">{g.prompt || 'Cloud video'}</span>
+                  <span className="truncate">{galleryLabelShort(g, 60)}</span>
                 </button>
               ))}
             </motion.div>

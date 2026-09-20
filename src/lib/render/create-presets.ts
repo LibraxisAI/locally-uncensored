@@ -1,7 +1,7 @@
 import { STUDIO_MODELS, studioBaseCredits } from './studio-contract'
 import { runCredits } from '../../stores/cloudCatalogStore'
-import { type PresetOp, type StepRole } from './preset-models'
-import type { RenderKind } from './cloud-jobs'
+import { type StepRole } from './preset-models'
+import type { RenderKind, RenderOp } from './cloud-jobs'
 // `role` is what the step DOES. The model named here is the preset's
 // suggestion; the role decides which other models the customer may pick
 // instead. See lib/render/preset-models.ts.
@@ -9,7 +9,7 @@ import type { RenderKind } from './cloud-jobs'
 // ein. 19.09.2026, Entscheid von David: bei Horror passen Prefect Pony und
 // Neta Lumina nicht, auch wenn sie offen sind. Die Rolle bleibt, was sie ist;
 // der Schritt sagt, welche ihrer Mitglieder er wirklich verantworten kann.
-export interface PresetStep { model: string; kind: RenderKind; op: PresetOp; title: string; role: StepRole; models?: string[] }
+export interface PresetStep { model: string; kind: RenderKind; op: RenderOp; title: string; role: StepRole; models?: string[] }
 export interface CreatePreset { id: string; title: string; summary: string; category: 'Character'|'Horror'|'Product'|'Video'|'Audio'; adult: boolean; accent: string; steps: PresetStep[]; note?: string }
 const image = (model:string,models?:string[]): PresetStep => ({model:'preset-'+model,kind:'image',op:'studio',title:'Create the image',role:'image',...(models?{models}:{})})
 const animate = (model:string): PresetStep => ({model:'preset-'+model,kind:'video',op:'studio',title:'Bring it to life',role:'animate'})

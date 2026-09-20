@@ -8,7 +8,8 @@ import { humanRuntime, type ModelRuntime } from '../../../lib/render/runtime-for
 import { selectedVideoSeconds, videoDurations } from '../../../lib/render/video-duration'
 import { studioQuote, modelRuntimes, StudioQuoteChangedError } from '../../../api/cloud/studio'
 import { uploadInput, submitCloudJob, pollJob, getJob, cancelJob, QuoteChangedError, type CloudJob, type CloudJobParams } from '../../../api/cloud/jobs'
-import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
+import { galleryItemFromJob } from '../../../lib/render/cloud-jobs'
+import { useCreateStore } from '../../../stores/createStore'
 import { useCreateExp } from './CreateContext'
 import { SchemaControl, baseFieldClass as fieldClass } from './SchemaControl'
 import { Select } from '../ui/Select'
@@ -16,36 +17,6 @@ import { galleryLabelShort } from '../../../lib/render/gallery-label'
 import { errorText } from '../../../types/json-guards'
 
 const label = (s: string) => s.replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase())
-
-/** Web-Aequivalent `galleryItemFromJob` (lib/render/cloud-jobs.ts) wurde von
- *  P5 nicht mitportiert — Desktop-`useCloudCreate.ts` (P7) baut Galerie-
- *  Eintraege bisher selbst inline, dort ebenfalls ohne gemeinsame Funktion
- *  (siehe studio-p5.md, "Offen fuer P9"). Dieselbe Bauart hier: ein fertiger
- *  `CloudJob` traegt keine der lokalen Render-Felder (Sampler, Steps, ...),
- *  die bleiben auf ihren neutralen Nullwerten. */
-function galleryItemFromJob(job: CloudJob): Omit<GalleryItem, 'prompt' | 'label'> {
-  return {
-    id: job.id,
-    type: job.kind,
-    filename: '',
-    subfolder: '',
-    negativePrompt: '',
-    model: job.model,
-    modelType: 'unknown',
-    seed: 0,
-    steps: 0,
-    cfgScale: 0,
-    sampler: '',
-    scheduler: '',
-    width: 0,
-    height: 0,
-    batchSize: 1,
-    createdAt: Date.now(),
-    remoteUrl: job.result_url ?? undefined,
-    attestation: job.attestation,
-    jobId: job.id,
-  }
-}
 
 export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;onClose:()=>void;onGenerate:()=>void}) {
   const [index,setIndex]=useState(0),[prompt,setPrompt]=useState(''),[options,setOptions]=useState<Record<string,unknown>>({})
