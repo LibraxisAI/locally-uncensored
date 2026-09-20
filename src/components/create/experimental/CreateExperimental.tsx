@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertTriangle, Cloud, Cpu } from 'lucide-react'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
@@ -20,6 +20,21 @@ import { Hinweis } from '../../ui/Hinweis'
 import { BannerText } from './BannerText'
 import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
+import { PresetShelf } from './PresetShelf'
+import type { CreatePreset } from '../../../lib/render/create-presets'
+import { Modal } from '../../ui/Modal'
+
+// `provider-schemas.json` (P1) ist 256 KB. `PresetShelf` haengt schon
+// synchron an `studio-contract.ts` (fuer `STUDIO_MODELS` in der
+// Einzelmodell-Auswahl der Schiene), zieht das Schema also ohnehin in den
+// Hauptbaum — nur die WERKSTATT selbst, die `SchemaControl`/`AvatarPicker`
+// und damit `studioSchema()` fuer jedes einzelne Feld aufruft, laesst sich
+// ohne Vertragsaenderung an `PresetShelf`/`studio-contract.ts` (P1/P3, fremde
+// Dateien) aus dem ersten Ladevorgang heraushalten: sie oeffnet sich erst auf
+// einen Klick, der Import darf also warten.
+const PresetWorkshop = lazy(() =>
+  import('./PresetWorkshop').then((m) => ({ default: m.PresetWorkshop })),
+)
 import { INTENT_MAP, isIntentAvailable } from './intents'
 import { modelForOp } from '../../../stores/cloudCatalogStore'
 import { stageShowsSetupCard, laneModelCount } from './stageGate'
@@ -63,6 +78,19 @@ function CreateExperimentalInner() {
   const [lightbox, setLightbox] = useState<GalleryItem | null>(null)
   const [panelOpen, setPanelOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
+
+  // Die gefuehrte Preset-Werkstatt (P6, Portplan Abschnitt 5): eine Schiene
+  // rechts neben Buehne/Galerie, ein Fenster obendrauf. `presetsOpen` haelt
+  // nur, ob die Schiene aufgeklappt ist; die Werkstatt selbst bleibt offen,
+  // solange ein Lauf darin arbeitet (`presetDialogOpen` schliesst nur die
+  // SICHTBARE Flaeche, `selectedPreset` bleibt fuer den Continue-Knopf
+  // stehen). Auf `Modal` statt eines eigenen Fokus-/Escape-Baus: dieselbe
+  // Sperrklinke wie jedes andere Fenster im Haus (X, Escape,
+  // e2e/escape-closes-overlays.spec.ts).
+  const [presetsOpen, setPresetsOpen] = useState(false)
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false)
+  const [selectedPreset, setSelectedPreset] = useState<CreatePreset | null>(null)
+  const [presetStarted, setPresetStarted] = useState(false)
 
   // One-click CORS fix (David 2026-07-17): restart the user-managed ComfyUI
   // under LU's management so it carries --enable-cors-header. On success the
@@ -375,6 +403,12 @@ function CreateExperimentalInner() {
           onFullscreen={(it) => setLightbox(it)}
         />
         <CreatePanel open={panelOpen} onOpenChange={setPanelOpen} activeId={shownId} onSelect={openGalleryItem} />
+        <PresetShelf
+          open={presetsOpen}
+          onOpenChange={setPresetsOpen}
+          onSelect={(p) => { setSelectedPreset(p); setPresetStarted(false); setPresetDialogOpen(true) }}
+          resume={selectedPreset && presetStarted && !presetDialogOpen ? { title: selectedPreset.title, onResume: () => setPresetDialogOpen(true) } : null}
+        />
       </div>
 
       {/* Prompt window — full width, beneath the viewer + gallery. */}
@@ -386,6 +420,31 @@ function CreateExperimentalInner() {
       <AdvancedDrawer open={advancedOpen} onClose={() => setAdvancedOpen(false)} />
       <WorkflowsModal open={workflowsOpen} onClose={() => setWorkflowsOpen(false)} />
       <MaskEditor open={maskOpen} onClose={() => setMaskOpen(false)} />
+
+      {/* Preset-Werkstatt (P6): ein Popup mit X und Escape, dieselbe Sperrklinke
+          wie jedes andere Fenster (Modal, siehe src/components/ui/Modal.tsx).
+          Die Generation laeuft IM Fenster weiter, auch wenn niemand es zulaesst
+          — geschlossen wird nur von Hand (Portplan Abschnitt 5/7). */}
+      {selectedPreset && backend === 'cloud' && (
+        <Modal
+          open={presetDialogOpen}
+          onClose={() => setPresetDialogOpen(false)}
+          title={selectedPreset.title}
+          maxWidth="max-w-4xl"
+          panelPad="p-0"
+        >
+          <div className="flex h-[min(600px,90vh)] flex-col overflow-hidden">
+            <Suspense fallback={<div className="flex flex-1 items-center justify-center t-control text-gray-500">Loading…</div>}>
+              <PresetWorkshop
+                key={selectedPreset.id}
+                preset={selectedPreset}
+                onGenerate={() => setPresetStarted(true)}
+                onClose={() => { setPresetDialogOpen(false); setSelectedPreset(null) }}
+              />
+            </Suspense>
+          </div>
+        </Modal>
+      )}
 
       <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
       <VhsInstallModal />
