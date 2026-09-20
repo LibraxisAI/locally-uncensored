@@ -527,6 +527,13 @@ export function registerComfyInstallRoutes(routes: RouteMount, comfy: ComfyLaunc
       path: comfyPath,
       logs: comfy.recentLogs(),
       processAlive,
+      // The dev server has no cross-session orphan case (Rust's
+      // `find_orphaned_comfyui`, box-gruen/n9 punkt 87 final review B2): a
+      // Node process here either holds the child handle or it does not, so
+      // this is always the same value as `processAlive`. Sent anyway so the
+      // panel's ownership label and Update's confirm-dialog guard behave the
+      // same in browser dev mode as in the real app.
+      ownedByApp: processAlive,
     }))
   })
 }

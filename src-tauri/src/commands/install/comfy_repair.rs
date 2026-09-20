@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use tauri::State;
+use tauri::{Manager, State};
 use tracing::{error, info};
 
 use crate::state::AppState;
@@ -642,15 +642,270 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
     Ok(serde_json::json!({"status": "installing"}))
 }
 
+/// What the customer is told when Update finds a ComfyUI on the configured
+/// port that this app never started: not the tracked child from this run,
+/// and not an earlier one it can still identify as its own (T-68's
+/// `find_orphaned_comfyui`). Pulled out so the wording used to refuse the
+/// update and the wording a test checks for cannot drift apart.
+fn foreign_comfyui_blocks_update(port: u16) -> String {
+    format!(
+        "ComfyUI is running on port {port}, but this app did not start it. Close that ComfyUI \
+         first, then run Update ComfyUI again. Nothing was changed."
+    )
+}
+
+/// What the customer is told when Update refuses to interrupt a render.
+/// box-gruen/n9 punkt 87, final review (B3): an own or adoptable ComfyUI used
+/// to be killed on the spot, mid-render or not, and the work was gone with
+/// nothing on screen to say so.
+const COMFYUI_BUSY_REFUSAL: &str =
+    "ComfyUI is generating something right now. Wait for it to finish, or stop the render \
+     yourself, then run Update ComfyUI again. Nothing was changed.";
+
+/// Whether ComfyUI's own `/queue` response (`{"queue_running": [...],
+/// "queue_pending": [...]}`, the same shape `isPromptQueued` in
+/// `comfyui.ts` reads) names any work at all. Pure and separate from the
+/// HTTP call below so both directions are provable with a literal
+/// `serde_json::Value`, no server required.
+fn queue_has_work(body: &serde_json::Value) -> bool {
+    let non_empty = |key: &str| {
+        body.get(key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    };
+    non_empty("queue_running") || non_empty("queue_pending")
+}
+
+/// Is ComfyUI on `port` doing anything right now? Read straight from its own
+/// `/queue` endpoint, because Update is about to stop this process and a
+/// customer mid-render has no other warning that the run is about to die.
+///
+/// Errs on the side of caution: a `/queue` that cannot be reached or parsed
+/// answers `Err`, and the caller refuses the update rather than risk killing
+/// a render it could not see.
+fn comfyui_queue_busy(port: u16) -> Result<bool, String> {
+    comfyui_queue_busy_with_timeout(port, std::time::Duration::from_secs(3))
+}
+
+/// Same check, with the HTTP timeout as a parameter so a test can hand it a
+/// server that never answers without waiting out the real 3 s (final review
+/// Runde 2, R2-2). `reqwest::blocking::get` has no deadline of its own; the
+/// house pattern everywhere else that calls a local model server
+/// (`engine_sanity.rs`, `mlx.rs`, `trainer.rs`, `ollama.rs`, `lmstudio.rs`,
+/// `torch.rs`, `process.rs`) builds a `Client` with `.timeout(...)` instead,
+/// and this does the same. A ComfyUI that holds the port but stopped
+/// answering ("Not responding" in this same panel) used to hang this call,
+/// and with it the whole `COMFY_JOB` lock, forever. A timed-out or failed
+/// request is still an `Err` here, which the caller already turns into a
+/// refusal, so a stalled ComfyUI fails closed exactly like an unreadable one.
+fn comfyui_queue_busy_with_timeout(port: u16, timeout: std::time::Duration) -> Result<bool, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("could not build an HTTP client to check ComfyUI's queue: {e}"))?;
+    let resp = client
+        .get(format!("http://localhost:{port}/queue"))
+        .send()
+        .map_err(|e| format!("could not reach ComfyUI's queue: {}", crate::os_error::english(&e)))?;
+    if !resp.status().is_success() {
+        return Err(format!("ComfyUI's queue endpoint answered with {}", resp.status()));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("could not read ComfyUI's queue: {}", crate::os_error::english(&e)))?;
+    Ok(queue_has_work(&body))
+}
+
+/// Poll `is_occupied` every `interval` until it reports the port free or
+/// `cap` has passed, whichever comes first. Returns whether the port ended up
+/// free.
+///
+/// Pure of any real I/O of its own (final review Runde 2, R2-1): the probe is
+/// a closure, so both directions -- a port that frees up partway through the
+/// wait, and one that never does -- are provable with a counting closure and
+/// millisecond-scale durations, no real ComfyUI and no real 10 s wait in the
+/// test suite.
+fn wait_for_port_free(
+    interval: std::time::Duration,
+    cap: std::time::Duration,
+    mut is_occupied: impl FnMut() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + cap;
+    loop {
+        if !is_occupied() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(interval);
+    }
+}
+
+/// Stop whatever ComfyUI this app itself is responsible for before Update
+/// touches the checkout, and refuse outright if the port is held by anything
+/// else or by a render in progress.
+///
+/// The own-vs-foreign line is `classify_comfyui_ownership`, the exact
+/// question `comfyui_status`'s `ownedByApp` field answers for the panel, so
+/// the two cannot disagree about the same ComfyUI (box-gruen/n9 punkt 87,
+/// final review B2). The actual stop, once the ComfyUI is confirmed to be
+/// ours, is `stop_comfyui_blocking` itself, the same function the Stop
+/// button calls (final review B1): a bare `child.kill()` only signals the
+/// direct child, and on Windows that can leave the real ComfyUI process
+/// (a grandchild through a launcher) holding the port while the checkout
+/// underneath it is rewritten. After the stop, the port is probed again: a
+/// ComfyUI that refuses to die is not silently worked around.
+///
+/// Remote hosts are not this function's concern: `comfyui_status` never
+/// offers the Update button once `isLocal` is false, and this app manages no
+/// process there either way.
+fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), String> {
+    let host = state.comfy_host.lock().unwrap().clone();
+    if !crate::commands::process::is_local_host(&host) {
+        return Ok(());
+    }
+    let port = *state.comfy_port.lock().unwrap();
+    let port_occupied = crate::commands::process::is_comfyui_running_on_port(port);
+
+    // Peeked, never taken: the actual stop happens inside
+    // `stop_comfyui_blocking` below, in its own single lock. Reading the
+    // handle here decides only whether this ComfyUI is ours to stop at all.
+    // Skipped outright when nothing is even on the port, so the process-table
+    // scan `find_orphaned_comfyui` only ever costs anything when it can
+    // actually change the answer.
+    let own_child_alive = port_occupied && {
+        let mut proc = state.comfy_process.lock().unwrap();
+        match proc.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(None) => true,
+                Ok(Some(_)) => {
+                    *proc = None;
+                    false
+                }
+                Err(_) => true,
+            },
+            None => false,
+        }
+    };
+    let orphan_pid = if !port_occupied || own_child_alive {
+        None
+    } else {
+        crate::commands::process::find_orphaned_comfyui(port)
+    };
+
+    // The real `port_occupied` goes into the classification (final review
+    // Runde 2, R2-k3): a hardcoded `true` here, kept alive by the early
+    // return that used to sit above this block, made the `NotRunning` arm
+    // below dead code that only LOOKED like a check.
+    match crate::commands::process::classify_comfyui_ownership(port_occupied, own_child_alive, orphan_pid) {
+        crate::commands::process::ComfyOwnership::NotRunning => Ok(()),
+        crate::commands::process::ComfyOwnership::Foreign => {
+            println!("[Update] Refusing: port {port} is served by a ComfyUI this app did not start");
+            Err(foreign_comfyui_blocks_update(port))
+        }
+        crate::commands::process::ComfyOwnership::Own => {
+            match comfyui_queue_busy(port) {
+                Ok(true) => {
+                    println!("[Update] Refusing: ComfyUI on port {port} is generating something");
+                    Err(COMFYUI_BUSY_REFUSAL.to_string())
+                }
+                Err(e) => {
+                    println!("[Update] Refusing: could not check ComfyUI's queue on port {port}: {e}");
+                    Err(format!(
+                        "Could not check whether ComfyUI is generating something right now, so the \
+                         update was refused rather than risk interrupting a render ({e}). Nothing \
+                         was changed."
+                    ))
+                }
+                Ok(false) => {
+                    let result = crate::commands::process::stop_comfyui_blocking(state)?;
+                    let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                    if status == "not_ours" {
+                        // A race between the classify above and the stop: the
+                        // handle exited and something else grabbed the port
+                        // in between. Rare, and refused exactly like a plain
+                        // foreign ComfyUI would be.
+                        return Err(foreign_comfyui_blocks_update(port));
+                    }
+                    info!(port = port, status = status, "update_comfyui stopped its own ComfyUI before updating");
+                    // final review Runde 2, R2-1: a single check right here
+                    // used to fire before the kill had actually landed.
+                    // `stop_comfyui_blocking`'s own-child path reaps with
+                    // `child.wait()`, but the adopted-orphan path
+                    // (`process_util::kill_pid_tree`) sends SIGTERM and
+                    // returns immediately on Unix, with the SIGKILL only
+                    // following `KILL_GRACE` (800 ms) later on a background
+                    // thread; `shell::kill_tree` on Windows likewise does not
+                    // wait for the tree to actually exit. The immediate check
+                    // therefore caught a ComfyUI LU had just killed a moment
+                    // before, still mid-shutdown, and told the customer it
+                    // "did not stop" -- untrue, and it pointed them at a Stop
+                    // button with nothing left to stop. Poll instead, capped
+                    // a little past the grace period.
+                    if !wait_for_port_free(
+                        std::time::Duration::from_millis(400),
+                        std::time::Duration::from_secs(10),
+                        || crate::commands::process::is_comfyui_running_on_port(port),
+                    ) {
+                        return Err(format!(
+                            "ComfyUI on port {port} did not stop, so the update was not started. Try \
+                             Stop in Settings, then run Update ComfyUI again. Nothing was changed."
+                        ));
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// Clear `install_status` back to its startup shape before a new run's
+/// worker thread is even spawned.
+///
+/// final review Runde 4, R4-1: without this, `install_status` keeps
+/// whatever the previous install/repair/update run left in it (`idle` is
+/// only ever set once, in `InstallState::default`) for as long as the
+/// running-instance guard is still deciding whether this run gets to start
+/// at all -- up to 13s (R2-1/R2-2) before the worker thread writes anything
+/// of its own. A poll landing in that window reads the STALE status as this
+/// run's own outcome: a leftover `complete` reads as "already finished",
+/// a leftover `error` or `cancelled` reads as this run having failed or
+/// been cancelled before it even started, and every one of those three
+/// stops the store's poll for good, so a genuine refusal the guard produces
+/// afterward is never shown. `idle` is deliberately not a stop condition for
+/// the poll (only `complete`/`error`/`cancelled` are), so watching carries
+/// on right through the guard's wait until the worker writes "installing" or
+/// its own refusal.
+fn reset_install_status_for_new_run(state: &AppState) {
+    let mut install = state.install_status.lock().unwrap();
+    install.status = "idle".to_string();
+    install.logs.clear();
+    install.notice.clear();
+    install.notice_kind.clear();
+}
+
 /// Update an existing ComfyUI install in place: `git pull --ff-only` plus a
 /// venv-aware `pip install -r requirements.txt`. The 2.5.8 local Create lanes
 /// (music / talking character / extend / motion) need node classes that ship
-/// with current ComfyUI cores, and the UI gates on node PRESENCE — when the
+/// with current ComfyUI cores, and the UI gates on node PRESENCE, so when the
 /// nodes are missing this command is the one-click "Update ComfyUI" path.
 /// Progress streams through the same `install_status` channel the installer
 /// uses, so the existing `install_comfyui_status` polling UI works unchanged.
+// final review Runde 3, R3-1: this stays a plain, synchronous
+// `#[tauri::command]`, NOT `#[tauri::command(async)]`. The running-instance
+// guard below (`ensure_comfyui_stopped_for_update`) and the git/pip work
+// after it are all `reqwest::blocking`/`std::process::Command`, and running
+// those on a Tokio async worker panics (`lmstudio.rs:320`'s note on the same
+// trap); this repo has no `#[tauri::command(async)]` that calls
+// `reqwest::blocking`, and this function does not become the first. `app` is
+// only here so the worker thread below can re-resolve `AppState` for itself,
+// the same pattern `fix_comfyui_cors`/`cancel_character_training` use to
+// cross into `spawn_blocking`. See `ensure_comfyui_stopped_for_update_runs_
+// inside_the_worker_thread_not_on_the_main_thread` for the guard that pins
+// this.
 #[tauri::command]
-pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+pub fn update_comfyui(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     // OI-5: same lock as install and repair. This command's old guard was the
     // strictest of the three ("installing" OR "downloading"), which is exactly
     // why the inconsistency was invisible from here — it was the other two
@@ -660,87 +915,148 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         Err(ComfyJob::Update) => return Ok(serde_json::json!({"status": "already_installing"})),
         Err(running) => return Err(comfy_job_busy_message(ComfyJob::Update, running)),
     };
-    {
-        let mut install = state.install_status.lock().unwrap();
-        install.status = "installing".to_string();
-        install.logs.clear();
-        install.notice.clear();
-        install.notice_kind.clear();
-        install.logs.push("Updating ComfyUI...".to_string());
-    }
 
-    info!("comfyui update start");
-
-    let comfy_dir = {
-        let p = state.comfy_path.lock().unwrap().clone();
-        p.or_else(crate::commands::process::find_comfyui_path)
-            .map(PathBuf::from)
-    };
-    let fail = |state: &State<'_, AppState>, msg: &str| -> Result<serde_json::Value, String> {
-        let mut install = state.install_status.lock().unwrap();
-        install.status = "error".to_string();
-        install.logs.push(msg.to_string());
-        error!("comfyui update aborted: {}", msg);
-        Err(msg.to_string())
-    };
-    let Some(comfy_dir) = comfy_dir else {
-        return fail(&state, "ComfyUI not found. Install ComfyUI first.");
-    };
-    if !comfy_dir.join(".git").exists() {
-        // Portable / zip installs carry no git metadata — nothing to pull.
-        return fail(
-            &state,
-            "This ComfyUI was not installed from git, so it can't be updated in place. \
-             Update it with its own updater, or reinstall from Settings.",
-        );
-    }
-
-    // Runde 6, F12: same reasoning as install_comfyui's call. Without this,
-    // an Update pressed after a Repair that crashed mid rebuild reads
-    // `comfy_venv_state` below as `Absent` (the retired `venv.lu-old-*`
-    // sibling is not named `venv`), falls back to the system Python, and
-    // never notices the several-gigabyte orphan sitting right next to it.
-    // A no-op once a usable `venv` already exists.
-    restore_orphaned_venv_if_needed(&comfy_dir);
-
-    // Prefer the install's venv Python (same preference the launcher uses);
-    // refuse without a usable interpreter — a pulled core with stale
-    // requirements is worse than no update (frontend package pins move often).
-    // P3: the same third answer the launcher has. Updating into the system
-    // Python while ComfyUI can only ever start out of this venv leaves the
-    // hole exactly where it was, one git pull further along.
-    let python_bin = match crate::python::comfy_venv_state(&comfy_dir) {
-        crate::python::ComfyVenv::Usable(p) => p,
-        crate::python::ComfyVenv::Broken { venv_dir, interpreter } => {
-            return fail(
-                &state,
-                &crate::commands::process::comfy_broken_venv_message(&venv_dir, &interpreter),
-            );
-        }
-        crate::python::ComfyVenv::Absent => state.python_bin.lock().unwrap().clone(),
-    };
-    if python_bin.is_empty() || !crate::python::is_real_python(&python_bin) {
-        return fail(
-            &state,
-            "No usable Python found for this ComfyUI. Install Python first, then retry the update.",
-        );
-    }
-
-    let install_status = state.install_status.clone();
     // The update runs through the same status slot, the same panel and the
     // same Cancel button as the install, so it gets the same flag. Reset
     // first, for the reason install_comfyui resets it (Bug #1): a previously
-    // cancelled run would otherwise abort this one on the first poll.
+    // cancelled run would otherwise abort this one on the first poll. Cheap
+    // (an atomic store plus an Arc clone), so it stays here on the caller's
+    // thread rather than moving into the worker below.
     state.comfyui_install_cancel.store(false, Ordering::SeqCst);
     let cancel_flag = state.comfyui_install_cancel.clone();
+
+    // final review Runde 4, R4-1: this command returns immediately, but
+    // `install.status` is only set to "installing" inside the worker thread
+    // below, AFTER the running-instance guard (up to 3s queue check plus up
+    // to 10s port-free poll, R2-1/R2-2). `install_status` is never reset to
+    // "idle" between runs (`state.rs`'s `InstallState::default` is the only
+    // place that ever writes "idle", and only at process startup) -- it just
+    // carries whatever the LAST install/repair/update run left behind. The
+    // panel starts polling `install_comfyui_status` 2s after this call
+    // (comfyInstallStore's POLL_MS), which can land well inside the guard's
+    // wait, and the poll's own `complete`/`error`/`cancelled` branches all
+    // stop watching right there: a stale "complete" from an earlier run read
+    // as this run's own end, "Update finished" shown for an update that had
+    // not even started yet, and any refusal the guard produces afterward
+    // never reaches the screen because nothing is watching anymore. Clearing
+    // the slot back to "idle" here, on the caller's thread, is one Mutex
+    // write with no wait of its own, so R3-1 (nothing here blocks the main
+    // thread) stays intact; "idle" itself is not one of the terminal states
+    // the store's poll treats as the run being over, so it keeps watching
+    // right through the guard's wait until the worker writes "installing" or
+    // an "error" refusal.
+    reset_install_status_for_new_run(state.inner());
+
     std::thread::spawn(move || {
         let _job_guard = job_guard;
+        // Re-resolved from the AppHandle, not the `state` argument above: a
+        // `State<'_, AppState>` borrow cannot cross into a spawned thread.
+        // Same instance either way, Tauri hands out one shared AppState.
+        let state = app.state::<AppState>();
+        let install_status = state.install_status.clone();
         let update = |status: &str, msg: &str| {
             if let Ok(mut s) = install_status.lock() {
                 s.status = status.to_string();
                 s.logs.push(msg.to_string());
             }
         };
+
+        // box-gruen/n9 Punkt 87 (ENG-18): the button used to start "Installing
+        // ComfyUI…" with no lock at all, even with a ComfyUI already serving
+        // the configured port, be that the app's own or a copy started
+        // outside LU. A Cancel taken 1-2 seconds later left a real Windows
+        // box with a pulled core and a venv that never finished,
+        // `ModuleNotFoundError: No module named 'comfy_aimdo.storage'` on the
+        // next start.
+        //
+        // Same split Stop already draws (`find_orphaned_comfyui`, T-68): a
+        // process LU itself started, whether the tracked child from this run
+        // or one it started in an earlier run and lost the handle to, is
+        // stopped cleanly here before anything touches the checkout. A
+        // process this app never launched is left alone; the update is
+        // refused instead.
+        //
+        // final review Runde 3, R3-1: this guard used to run right here but
+        // on the CALLER's thread, before this worker thread even existed,
+        // i.e. on the Tauri main thread, freezing the window for as long as
+        // the guard's own waits took (up to 3 s for the queue check plus up
+        // to 10 s for the port-free poll, R2-1/R2-2, worst case over 13 s
+        // with "Not responding" over the window the whole time). Moved into
+        // the worker thread this function already spawns for the rest of the
+        // update, so it now costs the same time without ever blocking the
+        // window; its refusal is reported through the same `install_status`
+        // slot every other guard below already uses, so the panel shows the
+        // identical English wording either way, just from `install_status`
+        // instead of a thrown error. The "nothing was changed" property is
+        // unaffected: this still runs before anything below touches the
+        // checkout.
+        if let Err(msg) = ensure_comfyui_stopped_for_update(&state) {
+            error!("comfyui update aborted: {}", msg);
+            update("error", &msg);
+            return;
+        }
+
+        {
+            let mut install = state.install_status.lock().unwrap();
+            install.status = "installing".to_string();
+            install.logs.clear();
+            install.notice.clear();
+            install.notice_kind.clear();
+            install.logs.push("Updating ComfyUI...".to_string());
+        }
+
+        info!("comfyui update start");
+
+        let comfy_dir = {
+            let p = state.comfy_path.lock().unwrap().clone();
+            p.or_else(crate::commands::process::find_comfyui_path)
+                .map(PathBuf::from)
+        };
+        let Some(comfy_dir) = comfy_dir else {
+            let msg = "ComfyUI not found. Install ComfyUI first.";
+            error!("comfyui update aborted: {}", msg);
+            update("error", msg);
+            return;
+        };
+        if !comfy_dir.join(".git").exists() {
+            // Portable / zip installs carry no git metadata, nothing to pull.
+            let msg = "This ComfyUI was not installed from git, so it can't be updated in place. \
+                        Update it with its own updater, or reinstall from Settings.";
+            error!("comfyui update aborted: {}", msg);
+            update("error", msg);
+            return;
+        }
+
+        // Runde 6, F12: same reasoning as install_comfyui's call. Without this,
+        // an Update pressed after a Repair that crashed mid rebuild reads
+        // `comfy_venv_state` below as `Absent` (the retired `venv.lu-old-*`
+        // sibling is not named `venv`), falls back to the system Python, and
+        // never notices the several-gigabyte orphan sitting right next to it.
+        // A no-op once a usable `venv` already exists.
+        restore_orphaned_venv_if_needed(&comfy_dir);
+
+        // Prefer the install's venv Python (same preference the launcher uses);
+        // refuse without a usable interpreter, since a pulled core with stale
+        // requirements is worse than no update (frontend package pins move often).
+        // P3: the same third answer the launcher has. Updating into the system
+        // Python while ComfyUI can only ever start out of this venv leaves the
+        // hole exactly where it was, one git pull further along.
+        let python_bin = match crate::python::comfy_venv_state(&comfy_dir) {
+            crate::python::ComfyVenv::Usable(p) => p,
+            crate::python::ComfyVenv::Broken { venv_dir, interpreter } => {
+                let msg = crate::commands::process::comfy_broken_venv_message(&venv_dir, &interpreter);
+                error!("comfyui update aborted: {}", msg);
+                update("error", &msg);
+                return;
+            }
+            crate::python::ComfyVenv::Absent => state.python_bin.lock().unwrap().clone(),
+        };
+        if python_bin.is_empty() || !crate::python::is_real_python(&python_bin) {
+            let msg = "No usable Python found for this ComfyUI. Install Python first, then retry the update.";
+            error!("comfyui update aborted: {}", msg);
+            update("error", msg);
+            return;
+        }
 
         // Set when `pip install -r requirements.txt` failed and the run carried
         // on with the packages LU knows about. Folder plus reason, so the live
@@ -781,6 +1097,61 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
                 return;
             }
         }
+
+        // box-gruen/n9 Punkt 87 (ENG-18 Nebenfund): the real damage on the
+        // Windows box was not the missing lock above, it was what a Cancel
+        // taken 1-2 seconds after the click left behind. `git pull` had
+        // already moved HEAD to a newer ComfyUI, and the pip step that new
+        // core needs never got to run, so the next start died on an import
+        // the old venv had no reason to carry. `old_commit` is where a
+        // cancel or a hard failure below rolls the checkout back to, so a
+        // half-finished update never outlives the run that started it.
+        //
+        // Recorded only when the tree is clean: `git reset --hard` on a
+        // dirty checkout would erase whatever the customer changed by hand,
+        // and that is worse than refusing the update outright and saying
+        // why, so a dirty tree never gets this far.
+        let old_commit = match git_dirty_lines(&comfy_dir) {
+            Ok(dirty) if dirty.is_empty() => match git_current_commit(&comfy_dir) {
+                Ok(commit) => commit,
+                Err(e) => {
+                    update(
+                        "error",
+                        &format!(
+                            "Could not read the current ComfyUI version, so a failed or cancelled \
+                             update could not be rolled back safely. Nothing was changed.\n\n{}",
+                            e
+                        ),
+                    );
+                    return;
+                }
+            },
+            Ok(dirty) => {
+                // box-gruen/n9 punkt 87, final review (B5): `dirty` already
+                // excludes LU's own venv rebuild siblings
+                // (`venv.lu-old-*`/`venv.lu-new-*`/`venv.lu-failed-*`), so
+                // whatever is left here is genuinely the customer's, and the
+                // message names it instead of a blanket "you changed
+                // something".
+                update(
+                    "error",
+                    &format!(
+                        "The ComfyUI folder has local changes, so a failed or cancelled update could \
+                         not be rolled back safely without erasing them. Commit or discard these, \
+                         then retry. Nothing was changed.\n\n{}",
+                        dirty.join("\n"),
+                    ),
+                );
+                return;
+            }
+            Err(e) => {
+                update(
+                    "error",
+                    &format!("Could not check the ComfyUI folder for local changes. Nothing was changed.\n\n{}", e),
+                );
+                return;
+            }
+        };
 
         update("installing", "Step 1/3: Pulling the latest ComfyUI...");
         let mut pull = crate::process_util::foreign_system_command("git");
@@ -853,7 +1224,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
             ) {
                 Ok(()) => update("installing", "Dependencies updated."),
                 Err(f) if f.diagnosis == "cancelled" => {
-                    update("cancelled", "Update cancelled during the requirements install.");
+                    update("cancelled", &rollback_after_cancelled_update(&comfy_dir, &old_commit, "the requirements install"));
                     return;
                 }
                 Err(f) => {
@@ -879,7 +1250,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         update("installing", "Step 3/3: Checking that the environment really starts...");
         if let Err(e) = verify_and_heal_environment(&python_bin, &comfy_dir, &reqs, &install_status, Some(&cancel_flag)) {
             if e == "cancelled" {
-                update("cancelled", "Update cancelled during the environment check.");
+                update("cancelled", &rollback_after_cancelled_update(&comfy_dir, &old_commit, "the environment check"));
                 return;
             }
             error!("comfyui update left an environment that does not import");
@@ -905,6 +1276,134 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
     Ok(serde_json::json!({"status": "installing"}))
 }
 
+/// LU's own throwaway siblings inside a ComfyUI checkout, none of them named
+/// in ComfyUI's own `.gitignore`.
+///
+/// box-gruen/n9 punkt 87, final review (B5): `retire_venv` (`venv.rs`) parks
+/// the previous venv at `venv.lu-old-<stamp>` right next to the checkout
+/// while the new one is built, and a rebuild that fails leaves a half-built
+/// one at `venv.lu-failed-<stamp>` until a background thread deletes it
+/// (`restore_after_failed_rebuild`); `venv.lu-new-*` is the same idea during
+/// a build that has not yet been renamed to plain `venv`. A crash or a
+/// cancelled Repair can leave one of these sitting in the checkout, and
+/// without this list `git status --porcelain` sees it as a local change:
+/// Update would then refuse every single time afterwards and blame the
+/// customer for LU's own leftovers, on exactly the boxes where something
+/// already went wrong once.
+const LU_VENV_SCRATCH_PREFIXES: [&str; 3] = ["venv.lu-old-", "venv.lu-new-", "venv.lu-failed-"];
+
+/// Does this one `git status --porcelain` line belong to one of LU's own
+/// venv rebuild siblings? Porcelain lines are two status characters, a
+/// space, then the path (`"?? venv.lu-old-171.../"` for an untracked
+/// directory), so the path starts at byte 3; that slice is always a valid
+/// UTF-8 boundary because the status characters and the separator are ASCII.
+fn is_lu_venv_scratch_status_line(line: &str) -> bool {
+    let path = line.get(3..).unwrap_or("").trim_start();
+    LU_VENV_SCRATCH_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+}
+
+/// The `git status --porcelain` lines that count as "dirty" for Update's
+/// rollback safety check: every real line except LU's own venv rebuild
+/// siblings (`LU_VENV_SCRATCH_PREFIXES`), which Update and Repair produce
+/// themselves and must never blame on the customer. Empty means the tree is
+/// safe to pull and, if needed later, safe to `git reset --hard` back out of.
+fn git_dirty_lines(dir: &Path) -> Result<Vec<String>, String> {
+    let mut cmd = crate::process_util::foreign_system_command("git");
+    cmd.args(["status", "--porcelain"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| os_error::english(&e))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !is_lu_venv_scratch_status_line(line))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The commit `dir` is on right now, as `git rev-parse HEAD` reports it.
+fn git_current_commit(dir: &Path) -> Result<String, String> {
+    let mut cmd = crate::process_util::foreign_system_command("git");
+    cmd.args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| os_error::english(&e))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if commit.is_empty() {
+        return Err("git rev-parse HEAD printed nothing".to_string());
+    }
+    Ok(commit)
+}
+
+/// Move `dir` back to `commit` with `git reset --hard`.
+///
+/// Only ever called from `update_comfyui`, and only on a checkout
+/// `git_dirty_lines` found empty (LU's own venv scratch siblings aside)
+/// right before the pull that moved it away from `commit`: a hard reset
+/// otherwise destroys uncommitted work, which is exactly what recording the
+/// commit only on a clean tree exists to prevent.
+fn git_reset_hard(dir: &Path, commit: &str) -> Result<(), String> {
+    let mut cmd = crate::process_util::foreign_system_command("git");
+    cmd.args(["reset", "--hard", commit])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| os_error::english(&e))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// The first 8 characters of a commit hash, for a message a customer might
+/// actually read. Falls back to the whole string if it is somehow shorter.
+fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(8)]
+}
+
+/// What Update tells the customer once a cancel has landed at `stage`,
+/// AFTER `git pull` already moved the checkout past `old_commit`.
+///
+/// Rolls the checkout back so a cancelled update never leaves a newer
+/// ComfyUI core wired to an older or half-installed venv, the exact shape
+/// of the real damage box-gruen/n9 punkt 87 found on a Windows box
+/// (`ModuleNotFoundError: No module named 'comfy_aimdo.storage'` after a
+/// Cancel taken 1-2 seconds into the run). Packages pip already installed or
+/// upgraded before the cancel took effect cannot be un-installed by moving
+/// the code back, so the message says that honestly instead of promising a
+/// clean rollback.
+fn rollback_after_cancelled_update(comfy_dir: &Path, old_commit: &str, stage: &str) -> String {
+    match git_reset_hard(comfy_dir, old_commit) {
+        Ok(()) => format!(
+            "Update cancelled during {stage}. The ComfyUI code was rolled back to the version \
+             from before the update ({short}). Some packages may already have been installed or \
+             upgraded before the cancel took effect, so they could be slightly ahead of that \
+             code; if ComfyUI does not start, run Update ComfyUI again to finish it, or Repair \
+             environment to rebuild the packages from scratch.",
+            short = short_commit(old_commit),
+        ),
+        Err(e) => format!(
+            "Update cancelled during {stage}, and the code could not be rolled back automatically \
+             ({e}). ComfyUI's code and its installed packages may now be out of step; run Update \
+             ComfyUI again to finish it, or Repair environment to rebuild the packages from \
+             scratch.",
+        ),
+    }
+}
 
 /// What Repair says about a folder with no requirements.txt.
 ///
@@ -1189,5 +1688,405 @@ mod tests {
         let at_pull = src[update_fn_start..].find(&pull_start).map(|i| i + update_fn_start).expect("the git pull step marker is gone");
 
         assert!(at_preflight < at_pull, "the interpreter preflight must run before git pull touches the checkout");
+    }
+
+    // ── box-gruen/n9 Punkt 87 (ENG-18): the running-instance lock, and the
+    //    "no half state" rollback for a cancel between pull and pip ─────────
+
+    /// Builds a throwaway git repo with one commit, `HEAD~1`'s file content
+    /// `"a"` and `HEAD`'s `"b"`, and returns `(tempdir, dir, commit_a,
+    /// commit_b)`. Real `git`, no mocking: the rollback this guards
+    /// (`git reset --hard` after a cancelled update) is exactly the kind of
+    /// thing a source-only needle test cannot prove.
+    fn two_commit_repo() -> (tempfile::TempDir, PathBuf, String, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ComfyUI");
+        std::fs::create_dir(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("requirements.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "a"]);
+        let commit_a = git_current_commit(&dir).unwrap();
+        std::fs::write(dir.join("requirements.txt"), "b\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "b"]);
+        let commit_b = git_current_commit(&dir).unwrap();
+        (tmp, dir, commit_a, commit_b)
+    }
+
+    #[test]
+    fn git_dirty_lines_tells_a_clean_checkout_from_a_dirty_one() {
+        let (_tmp, dir, _a, _b) = two_commit_repo();
+        assert!(git_dirty_lines(&dir).expect("status failed").is_empty(), "a freshly committed checkout is not clean");
+
+        // An untracked file counts as dirty: it is exactly what a hard reset
+        // would erase.
+        std::fs::write(dir.join("a_new_file.txt"), "custom node config").unwrap();
+        let dirty = git_dirty_lines(&dir).expect("status failed");
+        assert!(!dirty.is_empty(), "an untracked file was not seen as a local change");
+        assert!(dirty.iter().any(|l| l.contains("a_new_file.txt")), "the dirty file is not named: {dirty:?}");
+
+        // Negative control the other way: removing it restores clean.
+        std::fs::remove_file(dir.join("a_new_file.txt")).unwrap();
+        assert!(git_dirty_lines(&dir).expect("status failed").is_empty(), "clean again after the untracked file is gone");
+    }
+
+    #[test]
+    fn lu_own_venv_scratch_siblings_never_count_as_dirty() {
+        // box-gruen/n9 punkt 87, final review (B5): a crashed or cancelled
+        // Repair can leave one of these next to the checkout. Update must
+        // treat the tree as clean anyway, or it refuses forever afterwards
+        // and blames the customer for LU's own leftovers.
+        let (_tmp, dir, _a, _b) = two_commit_repo();
+        for name in ["venv.lu-old-1737400000", "venv.lu-new-1737400001", "venv.lu-failed-1737400002"] {
+            std::fs::create_dir(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("marker"), "x").unwrap();
+        }
+
+        let dirty = git_dirty_lines(&dir).expect("status failed");
+        assert!(dirty.is_empty(), "LU's own venv rebuild siblings were treated as customer changes: {dirty:?}");
+
+        // Gegenprobe: a look-alike name that is NOT one of the three exact
+        // prefixes still counts as dirty, so the filter is not accidentally
+        // matching every "venv.*" folder. (git does not track empty
+        // directories at all, hence the marker file, same as the three above.)
+        std::fs::create_dir(dir.join("venv.customer-backup")).unwrap();
+        std::fs::write(dir.join("venv.customer-backup").join("marker"), "x").unwrap();
+        let dirty = git_dirty_lines(&dir).expect("status failed");
+        assert!(dirty.iter().any(|l| l.contains("venv.customer-backup")), "an unrelated venv.* folder was wrongly exempted: {dirty:?}");
+    }
+
+    #[test]
+    fn git_current_commit_and_reset_hard_round_trip_on_a_real_repo() {
+        let (_tmp, dir, commit_a, commit_b) = two_commit_repo();
+        assert_ne!(commit_a, commit_b);
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_b, "HEAD should be the newer commit before any reset");
+
+        git_reset_hard(&dir, &commit_a).expect("reset failed");
+
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_a, "reset did not move HEAD back");
+        let contents = std::fs::read_to_string(dir.join("requirements.txt")).unwrap();
+        assert_eq!(contents, "a\n", "the working tree still shows the newer commit's content after reset");
+        assert!(git_dirty_lines(&dir).unwrap().is_empty(), "a hard reset should leave a clean tree");
+    }
+
+    #[test]
+    fn rollback_after_cancelled_update_moves_head_back_and_says_packages_may_be_ahead() {
+        // This is the exact shape of the box-gruen/n9 punkt 87 damage: `git
+        // pull` (here, a plain commit) moved the checkout to commit_b, then a
+        // cancel landed mid-pip. `old_commit` is commit_a, recorded before
+        // the pull. The message must be honest that packages are not
+        // provably rolled back with it.
+        let (_tmp, dir, commit_a, commit_b) = two_commit_repo();
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_b);
+
+        let msg = rollback_after_cancelled_update(&dir, &commit_a, "the requirements install");
+
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_a, "the checkout was not rolled back");
+        assert!(msg.contains("the requirements install"), "the stage is not named: {msg}");
+        assert!(msg.contains(short_commit(&commit_a)), "the commit the code fell back to is not named: {msg}");
+        assert!(msg.contains("may already have been installed"), "no honest caveat about packages: {msg}");
+    }
+
+    #[test]
+    fn rollback_after_cancelled_update_says_so_honestly_when_the_reset_itself_fails() {
+        // Negative control: point it at a directory that is not a git repo
+        // at all, so `git reset --hard` fails. The customer must not be told
+        // a rollback happened when it did not.
+        let tmp = tempfile::tempdir().unwrap();
+        let msg = rollback_after_cancelled_update(tmp.path(), "deadbeef", "the environment check");
+        assert!(msg.contains("could not be rolled back automatically"), "a failed reset must say so: {msg}");
+        assert!(!msg.contains("was rolled back to the version"), "a failed reset must not claim success: {msg}");
+    }
+
+    #[test]
+    fn update_records_the_rollback_commit_only_on_a_clean_tree_and_only_before_the_pull() {
+        // Same reasoning as the precheck-ordering tests above: the update
+        // body is a thread inside a Tauri command, so the ORDER is read out
+        // of the source. `old_commit` has to exist before `git pull` runs,
+        // or a cancel during pip has nothing safe to fall back to.
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let clean_check = needle("match git_dirty_l", "ines(&comfy_dir) {");
+        let pull_start = needle("Pulling the latest Comfy", "UI...");
+        let cancelled_pip = needle("rollback_after_cancelled_update(&comfy_d", "ir, &old_commit, \"the requirements install\")");
+        let cancelled_verify = needle("rollback_after_cancelled_update(&comfy_d", "ir, &old_commit, \"the environment check\")");
+
+        let at_clean_check = src[update_fn_start..].find(&clean_check).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer checks the working tree before pulling");
+        let at_pull = src[update_fn_start..].find(&pull_start).map(|i| i + update_fn_start)
+            .expect("the git pull step marker is gone");
+        let at_cancelled_pip = src[update_fn_start..].find(&cancelled_pip).map(|i| i + update_fn_start)
+            .expect("a cancel during the requirements install no longer rolls the checkout back");
+        let at_cancelled_verify = src[update_fn_start..].find(&cancelled_verify).map(|i| i + update_fn_start)
+            .expect("a cancel during the environment check no longer rolls the checkout back");
+
+        assert!(at_clean_check < at_pull, "the working tree must be checked, and old_commit recorded, before the pull");
+        assert!(at_pull < at_cancelled_pip, "the rollback call must be after the pull it is rolling back");
+        assert!(at_pull < at_cancelled_verify, "the rollback call must be after the pull it is rolling back");
+    }
+
+    #[test]
+    fn update_stops_its_own_or_orphaned_comfyui_before_acquiring_the_status_slot() {
+        // Same shape once more: prove from the source that the running-
+        // instance guard runs before `update_comfyui` starts writing to
+        // `install_status`, i.e. before it commits to the run at all. A
+        // guard placed after that point could refuse having already told
+        // the panel an update was starting.
+        //
+        // final review Runde 3, R3-1: the call itself moved from a `?`
+        // early-return on the caller's thread into an `if let Err(...)` on
+        // the worker thread, so the needle follows it there; the ordering
+        // this test actually cares about (guard before the status slot is
+        // touched) is unchanged.
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let guard_call = needle("if let Err(msg) = ensure_comfyui_stopped_for_upd", "ate(&state) {");
+        let installing_status = needle("install.status = \"instal", "ling\".to_string();");
+
+        let at_guard = src[update_fn_start..].find(&guard_call).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer guards against a running ComfyUI");
+        let at_installing = src[update_fn_start..].find(&installing_status).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer marks the status slot as installing");
+
+        assert!(at_guard < at_installing, "the running-instance guard must run before the status slot is claimed");
+    }
+
+    /// final review Runde 4, R4-1: `update_comfyui` returns immediately, but
+    /// `install.status` is only ever set to "installing" INSIDE the worker
+    /// thread, after the running-instance guard -- up to 13 s away
+    /// (R2-1/R2-2). `install_status` is never reset to "idle" between runs
+    /// on its own (`InstallState::default` is the only other writer, and
+    /// that only ever runs once, at process startup), so without a reset
+    /// here it keeps showing whatever the LAST install/repair/update run
+    /// left behind for that whole wait. The panel's first poll lands 2 s
+    /// after this call (`comfyInstallStore`'s `POLL_MS`), squarely inside
+    /// that window on a slow guard, and a stale `complete`/`error`/
+    /// `cancelled` there reads as THIS run already being over -- see the
+    /// Vitest case in `comfy-update-confirm-dialog.test.ts` for the
+    /// panel-side proof of that reading. This test proves the fix directly,
+    /// not just its position in the source: a real `AppState` carrying an
+    /// old `complete` does not survive the call.
+    #[test]
+    fn reset_install_status_for_new_run_clears_a_stale_complete_before_anything_else_runs() {
+        let state = crate::state::AppState::new();
+        {
+            let mut install = state.install_status.lock().unwrap();
+            install.status = "complete".to_string();
+            install.notice = "Update finished. Restart ComfyUI to load the new nodes.".to_string();
+            install.notice_kind = "ok".to_string();
+            install.logs.push("a line from the run before this one".to_string());
+        }
+
+        reset_install_status_for_new_run(&state);
+
+        let install = state.install_status.lock().unwrap();
+        assert_eq!(install.status, "idle", "a stale 'complete' from an earlier run survived into the guard's wait");
+        assert!(install.notice.is_empty(), "the previous run's closing notice survived");
+        assert!(install.notice_kind.is_empty(), "the previous run's notice kind survived");
+        assert!(install.logs.is_empty(), "the previous run's log lines survived");
+    }
+
+    /// Gegenprobe for the test above: `reset_install_status_for_new_run`
+    /// existing and working is not enough on its own if `update_comfyui`
+    /// never actually calls it, or calls it too late (after the worker
+    /// thread already started writing). Source guard, same shape as
+    /// `ensure_comfyui_stopped_for_update_runs_inside_the_worker_thread_not_
+    /// on_the_main_thread` above: the call must sit textually BEFORE
+    /// `std::thread::spawn` opens, i.e. on the caller's thread, so it always
+    /// finishes before anyone starts watching.
+    #[test]
+    fn update_comfyui_resets_the_status_slot_before_spawning_its_worker_thread() {
+        let src = include_str!("comfy_repair.rs");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let thread_spawn = "std::thread::spawn(move || {";
+        let reset_call = "reset_install_status_for_new_run(state.inner());";
+
+        let at_reset = src[update_fn_start..].find(reset_call).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer resets the status slot before its worker thread");
+        let at_spawn = src[update_fn_start..].find(thread_spawn).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer spawns its worker thread");
+
+        assert!(
+            at_reset < at_spawn,
+            "the status slot must be reset on the caller's thread, before the worker thread spawns -- \
+             resetting it from inside the worker leaves the exact window (up to 13 s) open for a poll \
+             to read a stale status from the previous run",
+        );
+    }
+
+    /// final review Runde 3, R3-1: `ensure_comfyui_stopped_for_update` can
+    /// sleep for up to 10 s (R2-1's `wait_for_port_free`) on top of up to 3 s
+    /// for the queue check (R2-2), and it used to run on the CALLER's thread
+    /// -- the Tauri main thread for a plain `#[tauri::command] pub fn` --
+    /// before `update_comfyui`'s own worker thread even existed, freezing
+    /// the window for as long as 13 s with "Not responding" over it the
+    /// whole time. The fix is not observable by calling the guard directly
+    /// (it behaves identically either way); only WHERE it is called from
+    /// changed, so this is a source guard, the same shape as the ordering
+    /// tests above and `filesystem.rs`'s `fs_search_is_dispatched_off_the_
+    /// main_thread`. Pinned here instead of only in a bug report about a
+    /// frozen window: the call must sit textually AFTER `std::thread::spawn`
+    /// opens, i.e. inside the closure, not before it.
+    #[test]
+    fn ensure_comfyui_stopped_for_update_runs_inside_the_worker_thread_not_on_the_main_thread() {
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let thread_spawn = "std::thread::spawn(move || {";
+        let guard_call = needle("if let Err(msg) = ensure_comfyui_stopped_for_upd", "ate(&state) {");
+
+        let at_spawn = src[update_fn_start..].find(thread_spawn).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer spawns its worker thread");
+        let at_guard = src[update_fn_start..].find(&guard_call).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer guards against a running ComfyUI");
+
+        assert!(
+            at_spawn < at_guard,
+            "the running-instance guard must run inside the worker thread, not on the caller's \
+             thread before it -- its own waits (up to 10 s for the port-free poll, up to 3 s for \
+             the queue check) would otherwise freeze the window",
+        );
+
+        // The old shape must not come back either: a bare `?` early-return
+        // needs a `Result`-returning scope, which only exists on the
+        // caller's thread, so its presence anywhere in this function is
+        // itself proof the call moved back out of the worker thread. Split
+        // in half so this line does not match itself.
+        let old_shape = needle("ensure_comfyui_stopped_for_upd", "ate(&state)?;");
+        assert!(
+            !src[update_fn_start..].contains(&old_shape),
+            "the guard is back to a `?`-early-return, which only compiles on the caller's thread",
+        );
+    }
+
+    #[test]
+    fn the_queue_is_checked_before_anything_is_stopped() {
+        // box-gruen/n9 punkt 87, final review (B3): a check that runs AFTER
+        // the kill is not a guard, it is a post-mortem. `stop_comfyui_blocking`
+        // must not be called until `comfyui_queue_busy` has already answered.
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let guard_fn_start = src.find("fn ensure_comfyui_stopped_for_update(").expect("the running-instance guard is gone");
+        let queue_check = needle("comfyui_queue_bus", "y(port)");
+        let stop_call = needle("process::stop_comfyui_bloc", "king(state)?;");
+
+        let at_queue_check = src[guard_fn_start..].find(&queue_check).map(|i| i + guard_fn_start)
+            .expect("the guard no longer checks whether ComfyUI is busy");
+        let at_stop_call = src[guard_fn_start..].find(&stop_call).map(|i| i + guard_fn_start)
+            .expect("the guard no longer stops ComfyUI through stop_comfyui_blocking");
+
+        assert!(at_queue_check < at_stop_call, "the queue must be checked before anything is stopped");
+    }
+
+    #[test]
+    fn foreign_comfyui_message_names_the_port_and_refuses_without_a_close_command() {
+        let msg = foreign_comfyui_blocks_update(8188);
+        assert!(msg.contains("8188"), "the port is not named: {msg}");
+        assert!(msg.contains("did not start it"), "does not say the app never started it: {msg}");
+        assert!(msg.contains("Close that ComfyUI first"), "does not tell the customer what to do: {msg}");
+        assert!(msg.contains("Nothing was changed"), "does not say nothing was touched: {msg}");
+    }
+
+    // ── box-gruen/n9 Punkt 87, final review (B3): the queue-busy guard's
+    //    JSON-parsing half, kept pure and provable with literal values ─────
+
+    #[test]
+    fn queue_has_work_reads_comfyuis_own_shape() {
+        assert!(!queue_has_work(&serde_json::json!({"queue_running": [], "queue_pending": []})));
+        assert!(queue_has_work(&serde_json::json!({"queue_running": [[0, "abc"]], "queue_pending": []})));
+        assert!(queue_has_work(&serde_json::json!({"queue_running": [], "queue_pending": [[0, "abc"]]})));
+        // A shape ComfyUI has never actually sent, kept as the honest
+        // fallback: neither key present reads as no work, not as an error.
+        assert!(!queue_has_work(&serde_json::json!({})));
+    }
+
+    // ── final review Runde 2, R2-1: the port-free wait after the stop ───────
+
+    #[test]
+    fn wait_for_port_free_returns_true_once_the_probe_actually_frees_up() {
+        // Positive case: the port is still occupied on the first two polls
+        // and free on the third, standing in for the real KILL_GRACE delay
+        // without an actual 800 ms sleep in the test suite. Before this
+        // helper existed, the single immediate check this replaced would
+        // have read the first `true` and stopped right there.
+        let mut calls = 0u32;
+        let freed = wait_for_port_free(
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(200),
+            || {
+                calls += 1;
+                calls < 3
+            },
+        );
+        assert!(freed, "the port never registered as free even though the probe said so on the third call");
+        assert_eq!(calls, 3, "expected exactly the calls needed to observe the port going free, got {calls}");
+    }
+
+    #[test]
+    fn wait_for_port_free_gives_up_once_the_cap_is_reached() {
+        // Gegenprobe: a port that never frees up must still return, with the
+        // caller then producing the "did not stop" refusal, not hang forever.
+        let start = std::time::Instant::now();
+        let freed = wait_for_port_free(
+            std::time::Duration::from_millis(2),
+            std::time::Duration::from_millis(20),
+            || true,
+        );
+        assert!(!freed, "a port that never frees up must not be reported as free");
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(20),
+            "gave up before the cap even elapsed: {:?}",
+            start.elapsed()
+        );
+    }
+
+    // ── final review Runde 2, R2-2: the queue check needs a real deadline ──
+
+    #[test]
+    fn queue_check_fails_closed_instead_of_hanging_on_a_server_that_never_answers() {
+        // A ComfyUI that holds the port but stopped answering ("Not
+        // responding" in this same panel) is exactly what this simulates:
+        // accept the connection, then never write a single byte back.
+        // `reqwest::blocking::get` (no `Client::builder().timeout(...)`)
+        // would hang here for as long as the OS lets a TCP connection sit
+        // idle, which is why this test is the negative control for R2-2.
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                drop(stream);
+            }
+        });
+
+        let start = std::time::Instant::now();
+        let result = comfyui_queue_busy_with_timeout(port, std::time::Duration::from_millis(200));
+        assert!(result.is_err(), "a server that never answers must fail closed, not report an empty queue");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "the call did not honor its timeout, took {:?}",
+            start.elapsed()
+        );
     }
 }
