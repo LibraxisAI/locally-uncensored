@@ -36,6 +36,10 @@ installs stop losing environment variables to it.
   tells you what to install before starting the roughly 2 GB PyTorch download,
   instead of that download running for minutes and then failing with pip's own
   generic error.
+- **Linux: a ComfyUI install missing python3-venv now says so.** The install
+  used to end with "venv creation failed:" and nothing after the colon,
+  because Python prints its python3-venv hint on stdout, and LU only read
+  stderr.
 - **Windows: installing to a very long folder path no longer stops the
   bundled engine from starting, and when Windows cannot shorten that path,
   the app now names the install path as the cause instead of showing a bare

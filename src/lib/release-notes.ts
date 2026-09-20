@@ -330,6 +330,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             detail: 'Setting an install location for the Character Trainer during first setup now also redirects pip, Hugging Face and torch\'s own caches there, so choosing a folder off a small system drive keeps those caches off it too. This applies at first setup only; there is no way in the app yet to move an already installed trainer to a different folder. The field itself now rejects a path it cannot actually use, always shows the folder it will really install to, and an emptied field goes back to the default; the Z Image base model downloads always follow your configured model folder in Settings, ComfyUI, either way.',
           },
           {
+            title: 'Linux: a ComfyUI install missing python3-venv now says so.',
+            detail: 'The install used to end with "venv creation failed:" and nothing after the colon, because Python prints its python3-venv hint on stdout, and LU only read stderr.',
+          },
+          {
             title: 'The Models folders tab now opens faster on the first click.',
             detail: 'The first click into the Models folders tab is faster, since it asks the running engine directly instead of falling back to a stale cache, and the onboarding VRAM hint asks LU\'s own probe first so it works before ComfyUI is installed.',
           },

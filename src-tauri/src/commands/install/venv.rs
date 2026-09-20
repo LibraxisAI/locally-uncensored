@@ -87,6 +87,44 @@ pub fn is_pep668_protected(python_bin: &str) -> bool {
 /// somewhere else and renamed in afterwards. The repair calls
 /// [`retire_for_rebuild`] first when an old venv is in the way, so this
 /// always runs against an empty slot.
+/// `python -m venv`'s own failure text, stdout and stderr merged into one
+/// string, so the hint detection in [`create_comfyui_venv`] sees whichever
+/// stream CPython actually chose for a given error (see that function's
+/// comment on the `Stdio` setup for the ENG-14 field measurement behind this).
+fn venv_failure_text(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
+/// The generic sentence for a failed venv build that neither of the two
+/// specific hints above recognized.
+///
+/// Never ends with an empty rest: `python -m venv` can exit non-zero having
+/// printed nothing to either stream (killed by a signal before it could write
+/// anything, or a distro whose failure mode is silent), and
+/// "venv creation failed: " with nothing after the colon told the customer
+/// nothing they could act on. The exit code is at least something to search
+/// for when there is no text at all.
+fn venv_creation_failed_message(combined_output: &str, exit_code: Option<i32>) -> String {
+    let snippet: String = combined_output.chars().take(400).collect();
+    if snippet.trim().is_empty() {
+        return match exit_code {
+            Some(code) => format!("venv creation failed with exit code {code} and no output."),
+            None => {
+                "venv creation failed: the process was terminated by a signal, with no output."
+                    .to_string()
+            }
+        };
+    }
+    format!("venv creation failed: {snippet}")
+}
+
 pub fn create_comfyui_venv(
     comfyui_dir: &Path,
     python_bin: &str,
@@ -104,10 +142,15 @@ pub fn create_comfyui_venv(
 
     let mut cmd = python_command(python_bin);
     cmd.args(["-m", "venv", venv_dir.to_string_lossy().as_ref()])
-        // Only stderr is ever read. stdout went into a buffer nobody looked at
-        // even before this, and an unread pipe is one more way to block while
-        // we are supposed to be polling the cancel flag.
-        .stdout(Stdio::null())
+        // Both are read, and merged, before the hint below ever looks at the
+        // text: measured on a real Ubuntu 22.04 box (E2E report, matrix point
+        // 83 / ENG-14), CPython's own `ensurepip` failure, the exact sentence
+        // that names `apt install python3.10-venv`, is written with `print()`,
+        // which lands on STDOUT, while stderr stays empty. Reading stderr
+        // alone (the old behaviour here) made the hint below never fire in
+        // that case: the customer saw only "venv creation failed: " with
+        // nothing after the colon.
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut child = cmd
@@ -119,21 +162,35 @@ pub fn create_comfyui_venv(
 
     // Drained next to the wait, not after it: a full pipe would stall the
     // child while the loop below thinks it is still working.
+    let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
+    let stdout_buf = Arc::new(Mutex::new(String::new()));
     let stderr_buf = Arc::new(Mutex::new(String::new()));
-    let sink = stderr_buf.clone();
-    let reader = std::thread::spawn(move || {
+    let stdout_sink = stdout_buf.clone();
+    let stderr_sink = stderr_buf.clone();
+    let stdout_reader = std::thread::spawn(move || {
+        if let Some(mut pipe) = stdout_pipe {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            if let Ok(mut slot) = stdout_sink.lock() {
+                *slot = text;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
         if let Some(mut pipe) = stderr_pipe {
             let mut text = String::new();
             let _ = pipe.read_to_string(&mut text);
-            if let Ok(mut slot) = sink.lock() {
+            if let Ok(mut slot) = stderr_sink.lock() {
                 *slot = text;
             }
         }
     });
 
     let waited = wait_or_cancel(&mut child, cancel, "`python -m venv`");
-    let _ = reader.join();
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    let stdout = stdout_buf.lock().map(|b| b.clone()).unwrap_or_default();
     let stderr = stderr_buf.lock().map(|b| b.clone()).unwrap_or_default();
 
     let exit_status = match waited {
@@ -146,7 +203,8 @@ pub fn create_comfyui_venv(
     };
 
     if !exit_status.success() {
-        let lower = stderr.to_lowercase();
+        let combined = venv_failure_text(&stdout, &stderr);
+        let lower = combined.to_lowercase();
         // Most common Arch / minimal-Python failure: stdlib venv module
         // isn't available because the distro packages it separately.
         if lower.contains("no module named venv") || lower.contains("ensurepip") {
@@ -156,20 +214,17 @@ pub fn create_comfyui_venv(
                  • Debian/Ubuntu: sudo apt install python3-venv\n\
                  • Fedora: sudo dnf install python3-virtualenv\n\
                  Then retry the ComfyUI install.\n\n--- python output ---\n{}",
-                stderr.chars().take(400).collect::<String>()
+                combined.chars().take(400).collect::<String>()
             ));
         }
-        return Err(format!(
-            "venv creation failed: {}",
-            stderr.chars().take(400).collect::<String>()
-        ));
+        return Err(venv_creation_failed_message(&combined, exit_status.code()));
     }
 
     let venv_py = venv_py_path;
     if !venv_py.exists() {
         return Err(format!(
             "venv was created at {} but no Python binary appeared at {}. \
-             This usually means the venv module is broken — try `sudo pacman -S python-virtualenv` (Arch) or the equivalent on your distro.",
+             This usually means the venv module is broken. Try `sudo pacman -S python-virtualenv` (Arch) or the equivalent on your distro.",
             venv_dir.display(),
             venv_py.display()
         ));
@@ -677,6 +732,217 @@ mod tests {
         // swallow the spawn error and return false so install proceeds as
         // it always did on systems that aren't PEP 668 protected.
         assert!(!is_pep668_protected("/definitely/not/a/real/python-9.99"));
+    }
+
+    // ── ENG-14 (matrix point 83): `python -m venv`'s hint reaches stdout ───
+    //
+    // Real transcript, e2e/linux/BERICHT-4.md, Punkt 83: on a fresh Ubuntu
+    // 22.04 with `python3-venv` missing, `python3 -m venv <dir>` writes its
+    // "apt install python3.10-venv" hint to STDOUT and exits 1 with stderr
+    // completely empty. `create_comfyui_venv` used to read only stderr, so
+    // the hint below (`lower.contains("ensurepip")`) never matched in that
+    // exact, measured case, and the customer saw the bare
+    // "venv creation failed: " sentence with nothing after the colon.
+
+    /// The exact text from the field measurement, word for word.
+    const ENG14_REAL_UBUNTU_STDOUT: &str = "The virtual environment was not created successfully because ensurepip is\nnot available. On Debian/Ubuntu systems, you need to install the\npython3-venv package using the following command.\n\n    apt install python3.10-venv\n";
+
+    #[test]
+    fn venv_failure_text_merges_stdout_and_stderr() {
+        assert_eq!(venv_failure_text("out", "err"), "out\nerr");
+        // The ENG-14 shape: the hint is entirely on stdout, stderr is empty.
+        assert_eq!(venv_failure_text(ENG14_REAL_UBUNTU_STDOUT, ""), ENG14_REAL_UBUNTU_STDOUT.trim());
+        // The old shape this file always handled: only stderr has text.
+        assert_eq!(venv_failure_text("", "boom"), "boom");
+        // Negative control: nothing on either stream merges to nothing.
+        assert_eq!(venv_failure_text("", ""), "");
+    }
+
+    #[test]
+    fn venv_creation_failed_message_never_ends_on_an_empty_colon() {
+        // The other half of ENG-14: a process that exits non-zero with
+        // literally nothing on either stream must still tell the customer
+        // something they can act on, not "venv creation failed: ".
+        let msg = venv_creation_failed_message("", Some(1));
+        assert!(msg.contains("exit code 1"), "{msg}");
+        assert!(!msg.trim_end().ends_with(':'), "{msg}");
+
+        // A signal kill (no exit code at all) gets its own honest sentence,
+        // still never a bare colon.
+        let msg = venv_creation_failed_message("", None);
+        assert!(msg.contains("terminated by a signal"), "{msg}");
+        assert!(!msg.trim_end().ends_with(':'), "{msg}");
+
+        // Negative control: real output is passed through unchanged, not
+        // replaced by the fallback wording.
+        let msg = venv_creation_failed_message("ERROR: something broke", Some(1));
+        assert_eq!(msg, "venv creation failed: ERROR: something broke");
+    }
+
+    /// The body of `create_comfyui_venv`, source lines only.
+    ///
+    /// Same pattern as `remote.rs`'s `shutdown_body` (KF-1's guard): the two
+    /// process tests that would actually catch a regression here
+    /// (`eng14_real_env_create_comfyui_venv_against_system_python3` and
+    /// `a_venv_failure_with_no_output_at_all_still_names_the_exit_code`) are
+    /// both `#[ignore]`'d for the `installer_children_test_lock` reason
+    /// documented above, so neither runs in a normal `cargo test`. Without a
+    /// standardly-running guard, reverting the one line this whole fix turns
+    /// on (`.stdout(Stdio::piped())` back to `.stdout(Stdio::null())`) would
+    /// leave every test green and quietly reintroduce ENG-14.
+    fn create_comfyui_venv_body() -> String {
+        let this_file = include_str!("venv.rs");
+        let from = this_file
+            .find("pub fn create_comfyui_venv")
+            .expect("venv.rs no longer has create_comfyui_venv");
+        let body = &this_file[from..];
+        let to = body
+            .find("\n// ── P3 (04.09.)")
+            .expect("venv.rs no longer follows create_comfyui_venv with the P3 retire section");
+        body[..to].to_string()
+    }
+
+    /// ENG-14's actual regression shape: `Stdio::null()` on stdout instead of
+    /// `Stdio::piped()`. The negative control this test answers to is
+    /// literal: comment the fix line back to `.stdout(Stdio::null())` (the
+    /// state this file was in before commit 09d2c2c5) and this is the ONE
+    /// test, of the whole standard suite, that turns red. Before the fix,
+    /// `cargo test --bins commands::install::venv::` still reported "32
+    /// passed" with the same count as after, because the two tests that
+    /// would have caught it are `#[ignore]`'d; with this guard added, the
+    /// same reverted line instead fails right here.
+    #[test]
+    fn create_comfyui_venv_still_pipes_stdout_instead_of_nulling_it() {
+        let body = create_comfyui_venv_body();
+        assert!(
+            body.contains(".stdout(Stdio::piped())"),
+            "create_comfyui_venv no longer pipes stdout for `python -m venv`. \
+             ENG-14 (matrix point 83): CPython's own ensurepip/venv-module hint, the \
+             sentence naming `apt install python3.10-venv`, lands on STDOUT, not \
+             stderr, measured live on Ubuntu 22.04. Reading only stderr makes the \
+             hint below never fire and the customer sees a bare \
+             \"venv creation failed: \" with nothing after the colon."
+        );
+        assert!(
+            !body.contains(".stdout(Stdio::null())"),
+            "create_comfyui_venv discards stdout again (`.stdout(Stdio::null())`); \
+             see the message above for why that reintroduces ENG-14."
+        );
+    }
+
+    /// A fake `python3` that ignores its arguments and reproduces exactly
+    /// what the real Ubuntu 22.04 box did: the hint on stdout, nothing on
+    /// stderr, exit code 1. `create_comfyui_venv` never gets far enough to
+    /// look at the venv directory it was asked to build, so this stands in
+    /// for the real `python3 -m venv` call end to end.
+    #[cfg(not(windows))]
+    fn write_fake_python_eng14_stdout_only(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-eng14.sh");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncat <<'EOF'\n{}EOF\nexit 1\n",
+                ENG14_REAL_UBUNTU_STDOUT
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[cfg(windows)]
+    fn write_fake_python_eng14_stdout_only(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-eng14.bat");
+        // cmd's `echo` cannot carry embedded newlines cleanly; one `echo` per
+        // line reproduces the same stdout-only, empty-stderr, exit-1 shape.
+        std::fs::write(
+            &path,
+            "@echo off\r\n\
+             echo The virtual environment was not created successfully because ensurepip is\r\n\
+             echo not available. On Debian/Ubuntu systems, you need to install the\r\n\
+             echo python3-venv package using the following command.\r\n\
+             echo(\r\n\
+             echo     apt install python3.10-venv\r\n\
+             exit /b 1\r\n",
+        )
+        .unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    #[ignore]
+    fn eng14_real_env_create_comfyui_venv_against_system_python3() {
+        // The negative control this whole fix answers to: BEFORE it, this
+        // test failed because the returned message did not contain
+        // "python3-venv" at all (only the bare "venv creation failed: "),
+        // since the hint text lived on stdout and only stderr was read.
+        //
+        // `#[ignore]` for the same reason as `a_venv_nobody_cancels_is_still_built_and_found`
+        // below: this registers a real tracked child, and `installer_children_test_lock`
+        // only protects against the tests IN THIS FILE that cooperate by
+        // taking it. It cannot protect against every OTHER test in the whole
+        // binary whose `AppState` drop reaches `shutdown_subprocesses` ->
+        // `kill_installer_children`, which SIGKILLs every tracked pid,
+        // this fake python's included, process-wide. Under
+        // `cargo test --all-targets` that happens often enough to turn the
+        // very assertions this test exists for into a false "terminated by a
+        // signal, with no output" failure that has nothing to do with ENG-14.
+        //
+        // Run with: cargo test --bins -- --ignored eng14_real_env
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let fake_python = write_fake_python_eng14_stdout_only(tmp.path());
+
+        let err = create_comfyui_venv(&comfy, &fake_python, None)
+            .expect_err("a python3 that always fails must not report success");
+
+        assert!(err.contains("python3-venv"), "the apt hint did not reach the message: {err}");
+        assert!(err.contains("apt install python3.10-venv"), "the exact command was lost: {err}");
+        assert!(err.contains("ensurepip"), "the wording lost its cause: {err}");
+        // The half-built venv folder venv itself never creates (the fake
+        // python never touches disk) must not be left behind either.
+        assert!(!comfy.join("venv").exists());
+    }
+
+    #[test]
+    #[ignore]
+    fn a_venv_failure_with_no_output_at_all_still_names_the_exit_code() {
+        // Negative control on the other axis: a python that fails SILENTLY
+        // (neither stream has a word on it) must not fall back to the bare
+        // "venv creation failed: " colon either.
+        //
+        // `#[ignore]` for the same reason as the test above: a real tracked
+        // child, vulnerable to any other test's `AppState` drop sweeping it
+        // away process-wide.
+        //
+        // Run with: cargo test --bins -- --ignored a_venv_failure_with_no_output
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        #[cfg(not(windows))]
+        let fake_python = {
+            let path = tmp.path().join("fake-python-silent.sh");
+            std::fs::write(&path, "#!/bin/sh\nexit 3\n").unwrap();
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        #[cfg(windows)]
+        let fake_python = {
+            let path = tmp.path().join("fake-python-silent.bat");
+            std::fs::write(&path, "@echo off\r\nexit /b 3\r\n").unwrap();
+            path.to_string_lossy().to_string()
+        };
+
+        let err = create_comfyui_venv(&comfy, &fake_python, None)
+            .expect_err("a python3 that always fails must not report success");
+
+        assert!(err.contains("exit code 3"), "{err}");
+        assert!(!err.trim_end().ends_with(':'), "{err}");
     }
 
     // ── Bug E — LIVE integration test ──────────────────────────────────────
