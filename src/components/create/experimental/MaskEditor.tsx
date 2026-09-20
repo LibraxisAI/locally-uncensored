@@ -290,6 +290,7 @@ function MaskEditorInner({ onClose }: { onClose: () => void }) {
         className="flex-1 min-h-0 min-w-0 overflow-hidden relative flex items-center justify-center"
         style={{ cursor: grabCursor ? 'grab' : 'none' }}
       >
+        <MaskHint />
         <div
           ref={stackRef}
           onPointerDown={onPointerDown}
@@ -334,3 +335,44 @@ function ToolBtn({ active, icon: Icon, label, onClick }: { active: boolean; icon
 }
 
 function Divider() { return <span className="w-px h-5 bg-white/[0.08] mx-0.5" /> }
+
+// Die Anleitung zum Malen der Maske. Sie stand bis zum 19.09.2026 gross und
+// gelb im Promptfenster, bei jedem Bearbeitungslauf aufs Neue. Entscheid von
+// David: "zu einer einmal wegklickbaren Info machen, wenn man die Paint Mask
+// oeffnet. Komplett raus aus dem Promptfenster."
+//
+// Sie steht jetzt dort, wo sie gebraucht wird, naemlich ueber der Leinwand, und
+// wer sie einmal weggeklickt hat, sieht sie nie wieder. Derselbe Baustein wie
+// beim Hinweis auf die Schraegstrich-Befehle im Chat.
+//
+// Was WO gemalt wird, sagt die Fusszeile ohnehin dauerhaft ("Rot = wird neu
+// erzeugt"). Dieser Hinweis sagt deshalb nur, wie es weitergeht - genau das,
+// was vorher unten im Promptfenster stand und dort niemandem half.
+const MASK_HINT_KEY = 'lu-mask-editor-hint-dismissed'
+function MaskHint() {
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(MASK_HINT_KEY) === '1' } catch { return false }
+  })
+  if (dismissed) return null
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center px-3">
+      <div className="lu-elevated pointer-events-auto flex items-center gap-2 rounded-[var(--radius-control)] px-3 py-1.5">
+        <Brush size={13} className="shrink-0 text-gray-400" />
+        <span className="t-control text-gray-300">
+          Apply mask when you are done, then describe the edit below the image.
+        </span>
+        <button
+          onClick={() => {
+            try { localStorage.setItem(MASK_HINT_KEY, '1') } catch { /* privates Fenster: dann gilt es nur fuer diese Sitzung */ }
+            setDismissed(true)
+          }}
+          title="Got it"
+          aria-label="Dismiss this hint"
+          className="-mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white/10 hover:text-gray-200"
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  )
+}
