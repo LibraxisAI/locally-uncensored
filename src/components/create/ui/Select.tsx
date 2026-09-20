@@ -14,6 +14,8 @@ export interface SelectOption {
   value: string
   label: string
   sublabel?: string
+  /** Ueberschrift ueber diesem und den folgenden Eintraegen derselben Gruppe. */
+  group?: string
   badge?: { label: string; color: string }
 }
 
@@ -27,6 +29,8 @@ interface Props {
   align?: 'left' | 'right'
   className?: string
   maxHeight?: number
+  /** Beschriftung fuer Bedienhilfen, wo kein sichtbarer Text danebensteht. */
+  ariaLabel?: string
 }
 
 interface MenuPosition {
@@ -50,6 +54,7 @@ export function Select({
   align = 'left',
   className,
   maxHeight = 280,
+  ariaLabel,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -235,6 +240,7 @@ export function Select({
         <button
           type="button"
           onClick={toggle}
+          aria-label={ariaLabel}
           aria-haspopup="listbox"
           aria-expanded={open}
           className={cn(
@@ -340,16 +346,26 @@ export function Select({
                     </div>
                   )}
 
-                  {filtered.map((option) => {
+                  {filtered.map((option, i) => {
                     const selected =
                       option.value === value
+                    const head =
+                      option.group &&
+                      option.group !== filtered[i - 1]?.group
+                        ? option.group
+                        : null
 
                     return (
+                      <div key={option.value}>
+                      {head && (
+                        <div className="t-control px-2.5 pt-2 pb-1 text-gray-600">
+                          {head}
+                        </div>
+                      )}
                       <button
                         type="button"
                         role="option"
                         aria-selected={selected}
-                        key={option.value}
                         onClick={() => {
                           onChange(option.value)
                           closeMenu()
@@ -388,6 +404,7 @@ export function Select({
                           />
                         )}
                       </button>
+                      </div>
                     )
                   })}
                 </div>
