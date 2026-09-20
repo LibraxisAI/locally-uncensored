@@ -648,8 +648,20 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
         // studioQuote() call above and the server's own booking check
         // (QuoteChangedError), or the quote call itself came back stale
         // (StudioQuoteChangedError, e.g. the provider's price moved between
-        // two calls). Either way: show the NEW price and stop, never
-        // silently rebook against it.
+        // two calls, or the shown-price guard right above this catch block
+        // rejected a quote higher than what the customer saw). Either way:
+        // show the NEW price and stop, never silently rebook against it.
+        //
+        // Review B6 (Runde 4, 20.09.2026): this used to only setError, never
+        // touching cloudStudioCredits, the ONE value the shown-price guard
+        // compares the next quote against (Composer.tsx's meter is the only
+        // writer otherwise, and nothing re-primes it unless the price key
+        // itself changes). Without this line a rejected run stayed rejected
+        // forever: click again, same stale low number, same rejection, on
+        // and on, even though the error text promised "hit Create again"
+        // would work. Setting it here means the SECOND click compares the
+        // new quote against the number this message just showed, and books.
+        st.setCloudStudioCredits(err.credits)
         st.setError(`The price changed to ${err.credits.toLocaleString('en-US')} credits. Review it, then hit Create again.`)
       } else if (err instanceof CloudJobError && err.status === 429) {
         st.setError(throttleMessage(err))
