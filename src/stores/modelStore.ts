@@ -31,6 +31,45 @@ import { ensureBuiltinEngineAlive, builtinSlotSwitchedOff } from '../api/builtin
 import { isBuiltinEngineEntry, type InstalledModelLike } from '../lib/lmstudio-match'
 import type { ProviderId } from '../api/providers/types'
 
+/**
+ * B6 followup (Auflage 1.1, lu-301/bau/review-offload2.md): `stop_bundled_engine`
+ * was not the only unguarded stop in `setActiveModel`. `unloadLmStudioModel`
+ * and Ollama's `unloadModel` sit right next to it, in the SAME function, fired
+ * by the SAME Cloud-switch click (`AppShell.tsx`'s mode-switch reselect calls
+ * `setActiveModel` on every entry into Cloud), and both target backends
+ * `run-lane-of-model.ts` counts as the LOCAL lane. All three now go through
+ * this one helper instead of three near-identical copies of "defer, then
+ * recheck at fire time".
+ *
+ * `target` dedupes: a second call for the SAME target cancels the FIRST
+ * pending one before scheduling its own, so switching Cloud/Local/Cloud
+ * repeatedly during one long local run leaves exactly one pending unload
+ * per target, not one per switch (Auflage 1.4: they used to stack, each
+ * harmless on its own since `stop_bundled_engine` is idempotent, but the
+ * bauer's own report claimed "exactly once" and that was only true for a
+ * single switch).
+ *
+ * `stillWanted` is read at FIRE TIME, not at scheduling time: the user may
+ * have switched back to the model (or, for the shared LU Engine, to ANY
+ * built-in model: the engine serves one at a time regardless of which)
+ * while this was waiting for the local lane to free up. Returning true skips
+ * the unload entirely.
+ */
+const pendingLocalUnloads = new Map<string, () => void>()
+
+function deferLocalUnload(target: string, stillWanted: () => boolean, unload: () => void): void {
+  pendingLocalUnloads.get(target)?.()
+  pendingLocalUnloads.delete(target)
+  let fired = false
+  const cancel = offloadWhenLocalLaneFree(useGenerationStore, () => {
+    fired = true
+    pendingLocalUnloads.delete(target)
+    if (stillWanted()) return
+    unload()
+  })
+  if (!fired) pendingLocalUnloads.set(target, cancel)
+}
+
 export interface PullState {
   progress: PullProgress
   controller: AbortController
@@ -271,8 +310,19 @@ export const useModelStore = create<ModelState>()(
           !!prevModel && 'providerName' in prevModel && isLuEngineName(prevModel.providerName)
         if (prevIsLms) {
           const bareKey = prev.replace(/^[^:]+::/, '') // strip LU's routing prefix
-          unloadLmStudioModel(bareKey).catch((e) =>
-            log.warn('[modelStore] failed to unload previous LM Studio model', { model: prev, err: e }),
+          // B6 (klaerung-n7.md) / Auflage 1.1 (review-offload2.md): this LM
+          // Studio unload sits in the SAME function as the LU Engine stop
+          // below and fires on the SAME Cloud-switch click, at a model
+          // `run-lane-of-model.ts` counts as local: it used to run
+          // unguarded while the built-in-engine branch right next to it
+          // already had the fix. `stillWanted` here means "the user picked
+          // this exact model again before the local lane freed up".
+          deferLocalUnload(
+            `lms:${bareKey}`,
+            () => get().activeModel === prev,
+            () => unloadLmStudioModel(bareKey).catch((e) =>
+              log.warn('[modelStore] failed to unload previous LM Studio model', { model: prev, err: e }),
+            ),
           )
         } else if (prevIsBuiltin) {
           const nextModel = get().models.find((m) => m.name === name)
@@ -292,21 +342,28 @@ export const useModelStore = create<ModelState>()(
             // Local or picked another built-in model themselves (this same
             // function runs again for that), so the stop must look at the
             // CURRENT active model, not the one that was picked when this
-            // closure was created.
-            offloadWhenLocalLaneFree(useGenerationStore, () => {
-              const stillActiveModel = get().activeModel
-              const stillActiveEntry = stillActiveModel
-                ? get().models.find((m) => m.name === stillActiveModel)
-                : undefined
-              const stillNonBuiltin =
-                !stillActiveEntry ||
-                !('providerName' in stillActiveEntry) ||
-                !isLuEngineName(stillActiveEntry.providerName)
-              if (!stillNonBuiltin) return
-              backendCall('stop_bundled_engine').catch((e) =>
+            // closure was created. Every built-in model shares the ONE
+            // engine process, so the check is "is ANY built-in model active
+            // again", not just this exact one (a different built-in pick
+            // takes the swap branch below, on ITS OWN call, and must not be
+            // undone by a stop this call scheduled earlier).
+            deferLocalUnload(
+              'builtin-engine',
+              () => {
+                const stillActiveModel = get().activeModel
+                const stillActiveEntry = stillActiveModel
+                  ? get().models.find((m) => m.name === stillActiveModel)
+                  : undefined
+                return (
+                  !!stillActiveEntry &&
+                  'providerName' in stillActiveEntry &&
+                  isLuEngineName(stillActiveEntry.providerName)
+                )
+              },
+              () => backendCall('stop_bundled_engine').catch((e) =>
                 log.warn('[modelStore] failed to stop the LU Engine on switch-away', { err: e }),
-              )
-            })
+              ),
+            )
           } else if (name) {
             // built-in → DIFFERENT built-in: llama-server serves exactly ONE
             // gguf and ignores the request's model field, and the send-path
@@ -329,8 +386,20 @@ export const useModelStore = create<ModelState>()(
             )
           }
         } else if (!prev.includes('::')) {
-          unloadModel(prev).catch((e) =>
-            log.warn('[modelStore] failed to unload previous model', { model: prev, err: e }),
+          // Same guard, same reason as the LM Studio branch above (Auflage
+          // 1.1): a bare Ollama name is local too (run-lane-of-model.ts),
+          // and this fires on the same Cloud-switch click. Whether Ollama's
+          // own `keep_alive: 0` waits out a request already in flight on
+          // that model is the SERVER's call, not observable from this repo
+          // (researched, not measured, in review-offload2.md); deferring
+          // here costs nothing either way and closes the loophole without
+          // relying on an unverified assumption about Ollama's scheduler.
+          deferLocalUnload(
+            `ollama:${prev}`,
+            () => get().activeModel === prev,
+            () => unloadModel(prev).catch((e) =>
+              log.warn('[modelStore] failed to unload previous model', { model: prev, err: e }),
+            ),
           )
         }
       },
