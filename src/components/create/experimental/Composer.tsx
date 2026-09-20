@@ -1,4 +1,4 @@
-import { useCallback, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles, X, SlidersHorizontal, Square, Workflow } from 'lucide-react'
 import { useCreateStore, MODEL_TYPE_DEFAULTS } from '../../../stores/createStore'
@@ -14,6 +14,11 @@ import {
   modelForOp,
   runCredits,
 } from '../../../stores/cloudCatalogStore'
+import { intentRequiredInputs, intentRoles, isStudioModel, resolveIntentPick } from '../../../lib/render/create-studio'
+import { STUDIO_MODELS } from '../../../lib/render/studio-contract'
+import { videoDurations } from '../../../lib/render/video-duration'
+import { mediaSeconds, useStudioPrice } from './useStudioPrice'
+import { resolveCharacterModel } from '../../../hooks/useCloudCreate'
 import { INTENT_MAP } from './intents'
 import { subscribeInstallRuns, getInstallRun } from '../../../lib/model-install-runs'
 import { useWorkflowStore, shouldShowManagerNotice } from '../../../stores/workflowStore'
@@ -53,6 +58,7 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   const cloudImageModel = useCreateStore((s) => s.cloudImageModel)
   const cloudVideoModel = useCreateStore((s) => s.cloudVideoModel)
   const cloudOpModel = useCreateStore((s) => s.cloudOpModel)
+  const cloudStudioOptions = useCreateStore((s) => s.cloudStudioOptions)
   const frames = useCreateStore((s) => s.frames)
   const fps = useCreateStore((s) => s.fps)
   // 2.5.8 specialized-intent inputs (readiness for the Create button).
@@ -101,29 +107,75 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   // the CreditsMeter shows — quota.costs[kind] is only the tier's
   // representative per-kind number and would mis-gate utility ops / pricier
   // models.
+  // Studio-Spur (Portplan Abschnitt 3d): ein DRITTER Zweig, strikt hinter
+  // `backend === 'cloud'`. Nur die vier Rollen-Absichten (lipsync/music/
+  // extend/motion, intentRoles(intent), P2) koennen ueberhaupt ein
+  // Studio-Modell fahren; character-use bleibt bei seiner festen
+  // -lora-Familie (resolveCharacterModel) und ruehrt Studio nie an. Auf der
+  // lokalen Spur ist `studioPick` immer undefined, und ausschliesslich das
+  // haelt useStudioPrice unten von jedem Netzabruf ab.
+  const roleIntent = backend === 'cloud' && !characterUse && intentRoles(intent).length > 0
+  const rolePick = roleIntent ? resolveIntentPick(intent, cloudOpModel) : undefined
+  const studioPick = rolePick && isStudioModel(rolePick) ? rolePick : undefined
   const pickedModel = characterUse
-    ? 'flux-schnell-lora'
-    : special
-      ? cloudOpModel
-      : (intentKind === 'video' ? cloudVideoModel : cloudImageModel) ||
-        defaultCloudModel(intentKind)?.id || ''
+    ? (resolveCharacterModel(selectedCharacter?.family ?? '', cloudOpModel) ?? '')
+    : roleIntent
+      ? (rolePick ?? '')
+      : special
+        ? cloudOpModel
+        : (intentKind === 'video' ? cloudVideoModel : cloudImageModel) ||
+          defaultCloudModel(intentKind)?.id || ''
+  // A Studio pick runs on its own schema-driven endpoint (studioBaseCredits /
+  // studioQuote), not on the classic per-kind picker's kind.
+  const runKind = studioPick ? STUDIO_MODELS[studioPick].kind : intentKind
   const runSeconds =
     intentOp === 'music'
       ? musicDuration
-      : intentKind === 'video' && (intentOp === 'generate' || intentOp === 'animate') && fps > 0
+      : runKind === 'video' && (intentOp === 'generate' || intentOp === 'animate') && fps > 0
         ? frames / fps
         : undefined
-  const costFallback = quota?.costs[intentKind === 'audio' ? 'image' : intentKind] ?? 0
+  // Die im Browser gemessene Laenge einer angehaengten Datei, gebraucht nur von den
+  // Modellen, die danach abrechnen (studio-contract.ts, price.mode 'input'/'both');
+  // useStudioPrice ruft dafuer nichts ab, solange sie fehlt.
+  const mediaUrl =
+    intent === 'lipsync' ? audioInput?.url
+      : intent === 'motion' ? videoInput?.url
+        : intent === 'extend' ? extendSource?.url
+          : undefined
+  const mediaKind = intent === 'lipsync' ? ('audio' as const) : ('video' as const)
+  // Measured async only, and only into state the async callback itself
+  // writes. Resetting synchronously inside the effect body (setState right
+  // where mediaUrl is falsy) is exactly the cascading-render pattern the
+  // set-state-in-effect rule flags. Keying the derived value off `mediaUrl`
+  // clears it for free the moment the source changes or disappears.
+  const [measured, setMeasured] = useState<{ url: string; seconds: number | undefined } | null>(null)
+  useEffect(() => {
+    let alive = true
+    if (!mediaUrl) return
+    void mediaSeconds(mediaUrl, mediaKind).then((v) => { if (alive) setMeasured({ url: mediaUrl, seconds: v }) })
+    return () => { alive = false }
+  }, [mediaUrl, mediaKind])
+  const inputSeconds = measured && measured.url === mediaUrl ? measured.seconds : undefined
+  const studioPrice = useStudioPrice(studioPick, cloudStudioOptions, prompt, runSeconds ?? inputSeconds)
+  const setCloudStudioCredits = useCreateStore((s) => s.setCloudStudioCredits)
+  useEffect(() => {
+    setCloudStudioCredits(studioPrice?.credits ?? null)
+  }, [studioPrice?.credits, setCloudStudioCredits])
+  const costFallback = quota?.costs[runKind === 'audio' ? 'image' : runKind] ?? 0
   // The exact rule the meter chip renders, so the button can never invite a run
   // the chip is already refusing. Credits alone were not enough: a user out of
   // monthly character trainings kept an enabled Create button and got a 429.
+  // A Studio pick that could not get a server-confirmed price (old server,
+  // unreachable) gates the button off too. Booking against a guessed number
+  // risks a 409 the customer only sees after pressing Create.
   const creditsOk =
     backend !== 'cloud' ||
     (quota != null &&
+      !(studioPick && studioPrice?.error) &&
       meterState(
         quota,
-        runCredits(intentKind, intentOp, pickedModel, runSeconds, costFallback, targetResolution),
-        intentKind,
+        studioPick ? (studioPrice?.credits ?? costFallback) : runCredits(intentKind, intentOp, pickedModel, runSeconds, costFallback, targetResolution),
+        runKind,
         intentOp,
       ).kind === 'ok')
   // Match useCloudCreate's submit-time edit fallback so the Neg gate reflects
@@ -145,11 +197,20 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
     backend === 'cloud' &&
     intent === 'lipsync' &&
     cloudModelById(modelForOp('video', 'lipsync', cloudOpModel))?.lipsync_source === 'video'
+  // A Studio model names its own required inputs (studio-contract.ts's
+  // schema). A presenter endpoint (HeyGen) reads only the voice and needs no
+  // photo at all, unlike every classic lipsync model.
+  const studioNeeds = studioPick ? intentRequiredInputs(intent, studioPick) : []
   const specialReady =
     intent === 'character'
       ? (characterUse ? !!selectedCharacter : trainImages.length >= 4)
       : intent === 'lipsync'
-        ? (!!audioInput || (backend === 'cloud' && !!voiceFromJob)) && (lipsyncNeedsClip ? !!videoInput : !!source)
+        ? (!!audioInput || (backend === 'cloud' && !!voiceFromJob)) &&
+          (lipsyncNeedsClip
+            ? !!videoInput
+            : studioPick
+              ? (!studioNeeds.includes('source_path') || !!source)
+              : !!source)
         : intent === 'extend'
           ? (backend === 'cloud' ? !!extendSource : !!source)
           : intent === 'motion'
@@ -250,9 +311,21 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
             )}
           </AnimatePresence>
 
-          {showNoPromptHint && (
+          {/* Ein Lauf, der weder Prompt noch Maske hat, bekommt die
+              gattungstypische Kurzanleitung (noPromptHint). Braucht die
+              Absicht eine gemalte Maske (Eraser, Cloud-Edit ohne
+              maskenloses Modell), steht stattdessen die eine Zeile, die den
+              Zustand der Maske selbst beschreibt, sonst stuende dort ein
+              Text, der beim Radiergummi nie zutrifft ("remove the
+              background"). */}
+          {showNoPromptHint && !needsMask && (
             <div className="px-3.5 py-3 t-body text-gray-500">
               {noPromptHint(meta.id)}
+            </div>
+          )}
+          {needsMask && !needPrompt && !isGenerating && (
+            <div className="px-3.5 py-3 t-body text-gray-500">
+              {mask ? 'Mask ready. Hit Create.' : 'Paint over what should go, then hit Create.'}
             </div>
           )}
 
@@ -282,6 +355,14 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
             {/* The backend axis moved to the global header switch (2.5.7) —
                 the Composer just reflects it via the CreditsMeter. */}
             {backend === 'cloud' && <CreditsMeter />}
+            {/* Portplan Abschnitt 5, Punkt 3: der Server ist die einzige
+                Preiswahrheit fuer ein Studio-Modell. Ist er nicht erreichbar
+                oder zu alt (studio.ts, OLDER_SERVER_MESSAGE), bleibt Create
+                gesperrt UND sagt hier woran es liegt, statt still auf die
+                Formel-Vorschau zurueckzufallen und dann doch zu buchen. */}
+            {studioPick && studioPrice?.error && (
+              <span className="t-control text-red-300">{studioPrice.error}</span>
+            )}
             {meta.id === 'upscale' && (
               <Tooltip content="Target resolution for the upscale pass.">
                 <div>
@@ -382,7 +463,9 @@ function LaneControls() {
   const frames = useCreateStore((s) => s.frames)
   const setFrames = useCreateStore((s) => s.setFrames)
   const fps = useCreateStore((s) => s.fps)
+  const setFps = useCreateStore((s) => s.setFps)
   const videoModel = useCreateStore((s) => s.videoModel)
+  const cloudVideoModel = useCreateStore((s) => s.cloudVideoModel)
 
   const base = MODEL_TYPE_DEFAULTS[imageModelType]?.steps ?? 25
   const qSteps = { Draft: Math.round(base * 0.6), Standard: base, High: Math.round(base * 1.5) }
@@ -393,13 +476,38 @@ function LaneControls() {
   // trained LoRA attached, so it takes the image knobs below.
   const characterTrain = intent === 'character' && characterTab === 'train'
   const characterUse = intent === 'character' && characterTab === 'use'
-  if (characterTrain) return null
 
   // The 2.5.8 specialized ops that submit "bare" on cloud (fixed server-side)
   // but consume the sliders locally — mirrors useCloudCreate's specialOp set.
   const specialOp = intent === 'lipsync' || intent === 'music' || intent === 'extend' || intent === 'motion'
   const kind: 'image' | 'video' | 'audio' =
     characterUse ? 'image' : intent === 'music' ? 'audio' : meta.isVideo ? 'video' : 'image'
+
+  // dd29f359 (Portplan Abschnitt 6): the hosted video endpoints book whatever
+  // lengths the provider actually prices (video-durations.json / the live
+  // catalog's clip.durations), not a fixed 5s/8s pair. Cloud text-to-video /
+  // animate is the only lane this reaches. Local video keeps its free
+  // Frames slider (nothing here runs on the local track), and the 2.5.8
+  // specialized ops (lipsync/music/extend/motion) submit bare and never see
+  // this hook either (`knobsLive` below hides the whole row for them on
+  // cloud). All hook calls stay UNCONDITIONAL (top of the component, before
+  // any early return) so this never violates the rules of hooks across a
+  // lane switch.
+  const cloudVideoOp = intentToJob(intent).op
+  const cloudVideoLaneModel = modelForOp('video', cloudVideoOp, cloudVideoModel || defaultCloudModel('video')?.id || '')
+  const cloudVideoDurations = effectiveVideoDurations(cloudVideoLaneModel)
+  const cloudVideoSeconds = cloudVideoDurations.length ? snapToVideoDuration(cloudVideoDurations, frames, fps) : undefined
+  useEffect(() => {
+    if (
+      backend === 'cloud' && kind === 'video' && !specialOp &&
+      cloudVideoSeconds !== undefined && frames / fps !== cloudVideoSeconds
+    ) {
+      setFrames(cloudVideoSeconds * 16)
+      setFps(16)
+    }
+  }, [backend, kind, specialOp, cloudVideoSeconds, frames, fps, setFrames, setFps])
+
+  if (characterTrain) return null
 
   // ── Image lanes: quality + aspect (+ edit strength) ──
   if (kind === 'image') {
@@ -505,7 +613,21 @@ function LaneControls() {
           options={resTiers.map((m) => ({ value: String(m), label: `${snap16(nativeShort * m)}p` }))}
         />
       </LabeledControl>
-      {showFrames ? (
+      {backend === 'cloud' && cloudVideoDurations.length > 0 ? (
+        // The hosted endpoint renders exactly these lengths (Portplan
+        // Abschnitt 6), no fixed 5s/8s pair, and no unpriced button: every
+        // option here has a catalog price, live via credits.by_duration or
+        // the base/long split runCredits already falls back to.
+        <LabeledControl label="Length">
+          <Segmented
+            size="sm"
+            layoutId="clip-length"
+            value={String(cloudVideoSeconds ?? cloudVideoDurations[0])}
+            onChange={(k) => { setFrames(Number(k) * 16); setFps(16) }}
+            options={cloudVideoDurations.map((secs) => ({ value: String(secs), label: `${secs}s` }))}
+          />
+        </LabeledControl>
+      ) : showFrames ? (
         <div className="w-44">
           <Slider label="Frames" min={9} max={121} step={4} value={frames} onChange={setFrames} format={(v) => `${v}f · ${(v / (fps || 16)).toFixed(1)}s`} />
         </div>
@@ -561,4 +683,27 @@ function nearestKey(map: Record<string, number>, val: number): string {
   let best = Object.keys(map)[0]; let bestD = Infinity
   for (const [k, v] of Object.entries(map)) { const d = Math.abs(v - val); if (d < bestD) { bestD = d; best = k } }
   return best
+}
+
+// ── cloud video length (dd29f359, Portplan Abschnitt 6) ──
+// The catalog is the runtime truth (a live model can add/retire lengths any
+// day); video-durations.json is the offline notvorrat only. Neither one
+// alone: an entry that has NOT yet re-fetched the live catalog still needs a
+// length list, and a length the catalog names that the static file has not
+// caught up with yet must still show.
+export function effectiveVideoDurations(model: string): number[] {
+  const cat = cloudModelById(model)
+  if (cat?.clip?.durations?.length) return cat.clip.durations
+  const json = videoDurations(model)
+  if (json.length > 0) return [...json]
+  if (cat?.clip) return cat.clip.long !== undefined ? [cat.clip.short, cat.clip.long] : [cat.clip.short]
+  return []
+}
+
+// An invalid-become choice (model switch, or a persisted value from a model
+// that no longer offers it) resets to the SHORTEST valid length, never to
+// the nearest one, which could silently jump the price up.
+export function snapToVideoDuration(allowed: number[], frames: number, fps: number): number {
+  const raw = fps > 0 ? frames / fps : allowed[0]
+  return allowed.includes(raw) ? raw : allowed[0]
 }
