@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Images, Play, PanelRightClose, Trash2, Download, MonitorOff, AudioLines } from 'lucide-react'
 import { downloadMediaUrl } from '../../../lib/download-media'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
+import { galleryLabel } from '../../../lib/render/gallery-label'
 import { galleryItemUrl } from './galleryUrl'
 import { useComfyMedia } from './useComfyMedia'
 import { cn } from '../ui/cn'
@@ -158,7 +159,7 @@ function GalleryThumb({ g }: { g: GalleryItem }) {
     return (
       <span className="w-full h-full flex flex-col items-center justify-center gap-1 bg-white/[0.03] text-gray-400 p-1">
         <AudioLines size={16} />
-        <span className="t-label truncate max-w-full px-1">{g.prompt || 'Audio'}</span>
+        <span className="t-label truncate max-w-full px-1">{galleryLabel(g)}</span>
       </span>
     )
   }
