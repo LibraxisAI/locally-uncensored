@@ -128,6 +128,10 @@ beforeEach(() => {
     isGenerating: false, error: null, backend: 'cloud',
     source: null, audioInput: null, videoInput: null, voiceFromJob: null,
     extendSource: null, gallery: [], cloudStudioOptions: {},
+    // Review A kleiner Punkt 1 (Runde 3): explicit per test below, null here
+    // so a leftover value from one test cannot leak a false block/pass into
+    // the next.
+    cloudStudioCredits: null,
   })
   useCreateStore.getState().setPrompt('a neutral placeholder line')
   // Review B1: this whole file simulates a server that already knows Studio
@@ -287,6 +291,63 @@ describe('Studio-Modelle in den Create-Unterkategorien', () => {
       await useCloudCreate().generate()
       expect(hoisted.studioQuote).not.toHaveBeenCalled()
       expect(submitted[0].params.max_credits).toBeUndefined()
+    })
+  })
+
+  // Review A kleiner Punkt 1 (Runde 2 report, geschlossen Runde 3): the cap
+  // must be the number the customer actually SAW (cloudStudioCredits, what
+  // CreditsMeter/the Composer meter rendered), not just any server-confirmed
+  // number. A confirmed quote coming back HIGHER than the shown price is
+  // treated exactly like a 409 quote_changed: new price shown, nothing
+  // booked, a second click required. LOWER or equal books directly, same as
+  // before, since the customer never sees a bigger bill than they were shown.
+  describe('der Deckel ist die GEZEIGTE Zahl, nicht nur eine bestaetigte (Review A kleiner Punkt 1, Runde 3)', () => {
+    it('bucht NICHT, wenn die Quote hoeher ausfaellt als der zuletzt gezeigte Preis', async () => {
+      hoisted.studioQuote.mockResolvedValueOnce({ credits: 9000 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      s.setCloudStudioCredits(5000) // was gerade im Zaehler stand
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(0)
+      expect(useCreateStore.getState().error).toContain('9,000')
+    })
+
+    it('bucht direkt, wenn die Quote GLEICH dem gezeigten Preis ist', async () => {
+      hoisted.studioQuote.mockResolvedValueOnce({ credits: 5000 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      s.setCloudStudioCredits(5000)
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0].params.max_credits).toBe(5000)
+    })
+
+    it('bucht direkt, wenn die Quote NIEDRIGER ist als der gezeigte Preis', async () => {
+      hoisted.studioQuote.mockResolvedValueOnce({ credits: 4200 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      s.setCloudStudioCredits(5000)
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0].params.max_credits).toBe(4200)
+    })
+
+    it('bucht direkt, wenn noch nie ein Preis gezeigt wurde (cloudStudioCredits null)', async () => {
+      hoisted.studioQuote.mockResolvedValueOnce({ credits: 60000 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      s.setCloudStudioCredits(null)
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0].params.max_credits).toBe(60000)
     })
   })
 })

@@ -18,6 +18,22 @@ import { errorText } from '../../../types/json-guards'
 
 const label = (s: string) => s.replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase())
 
+// Review B4 (Runde 3, 20.09.2026): considered giving `priceKey` the same
+// longer prompt-debounce as useStudioPrice.ts's fix (same shape: the LIVE
+// prompt text in the key, a keystroke restarts the 650ms debounce). Left
+// AS-IS here on purpose: B4's concrete measurement (48 studioQuote calls for
+// a 48-char prompt at 600ms/char) was run against useStudioPrice.ts, the
+// Composer's live meter, which is on-screen for every studio pick the whole
+// time a customer is on the cloud Create tab; the Workshop's price effect
+// only runs while its own dialog is open, on one step's prompt field at a
+// time, a narrower window. More importantly the Workshop already carries no
+// money risk either way: quote===null blocks Generate (see B3), so a 429
+// here costs the customer a wait, never a booking. A prompt-debounce here
+// would need reworking every real-timer waitFor() in this file's test
+// coverage (~20 call sites, all under the current 650ms budget); if this
+// ever gets measured hitting the same rate limit in practice, it is the
+// same one-constant fix as useStudioPrice.ts's PROMPT_DEBOUNCE_MS.
+
 export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;onClose:()=>void;onGenerate:()=>void}) {
   const [index,setIndex]=useState(0),[prompt,setPrompt]=useState(''),[options,setOptions]=useState<Record<string,unknown>>({})
   const [paths,setPaths]=useState<Record<string,string|string[]>>({}),[completed,setCompleted]=useState<Record<number,CloudJob>>({})
@@ -116,6 +132,13 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
     if(raw.role==='animate'){
       // The route prices a clip from frames/fps and ignores `duration`. Sending
       // the wrong one books the default length and the quote is rejected.
+      // Review A kleiner Punkt 4 (Runde 2 report): this reads the QUIET
+      // snap (selectedVideoSeconds), not the loud-throwing bookedVideoSeconds
+      // the Create tab's classic booking uses, on purpose: the Workshop
+      // already requires a server-confirmed `quote` before Generate unlocks
+      // (quote===null blocks it, see the priceKey effect above), so an
+      // invalid length here would have failed that quote call already, with
+      // its own visible error, before this function is ever reached.
       const seconds=selectedVideoSeconds(step.model,Number(options.duration??5)*16,16)
       p.frames=seconds*16;p.fps=16
       if(supportsProviderField(step.model,'shot_type','animate')&&(options.shot_type==='single'||options.shot_type==='multi'))p.shot_type=options.shot_type
