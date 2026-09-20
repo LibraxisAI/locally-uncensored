@@ -361,6 +361,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'A narrow window no longer scrolls the whole chat sideways.',
             detail: 'At a narrow window width, picking a model, opening the sampling sliders or opening the plugins menu used to leave the whole chat shifted sideways afterward, because the shared chat area allowed the browser to scroll it into view when a clicked control sat partly off screen. That area no longer accepts a programmatic scroll, so it stays put.',
           },
+          {
+            title: 'Update ComfyUI now asks first and never interrupts a render.',
+            detail: 'Update ComfyUI in Settings now shows a confirmation dialog before it starts. It stops LU\'s own running ComfyUI first if there is one, refuses while a ComfyUI this app did not start or one that is generating something holds the port, and puts the ComfyUI code back to the version it had before if you cancel partway through; Python packages already installed during that attempt are not undone.',
+          },
         ],
       },
     ],

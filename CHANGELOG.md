@@ -191,6 +191,12 @@ installs stop losing environment variables to it.
   still-empty chat. Only switching to another tab and back brought it
   around. The greeting now shows for that chat from the first frame, the
   same as before the first message is sent.
+- **Update ComfyUI in Settings now asks before it starts.** It stops LU's own
+  running ComfyUI first if there is one, refuses while a ComfyUI this app did
+  not start or one that is generating something holds the port, and puts the
+  ComfyUI code back to the version it had before if you cancel partway
+  through; Python packages already installed during that attempt are not
+  undone.
 
 ## [3.0.0] - 2026-09-13
 
