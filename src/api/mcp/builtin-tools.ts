@@ -11,7 +11,7 @@ import { backendCall, fetchExternal } from '../backend'
 import { getActiveChatId, getActiveConversationId, getActiveWorkspace, isChatArtifactMode, captureChatArtifact, isReadOnlyShellTurn } from '../agent-context'
 import type { AgentRunContext } from '../agent-context'
 import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
-import { WorkflowEngine, buildWorkflowApprovalGate } from '../../lib/workflow-engine'
+import { WorkflowEngine, buildWorkflowApprovalGate, describeWorkflowCompletion, describeWorkflowStepFailure } from '../../lib/workflow-engine'
 import type { StepResult } from '../../types/agent-workflows'
 import { DELEGATE_TASK_TOOL_DEF, buildDelegateExecutor } from '../agents/sub-agent'
 import {
@@ -515,7 +515,13 @@ async function executeWebSearch(args: ToolArgs): Promise<string> {
   }
   if (typeof data.error === 'string' && data.error) {
     const extra = typeof data.providerError === 'string' && data.providerError ? ` (${data.providerError})` : ''
-    return `Web search failed: ${data.error}${extra}`
+    // Auflage 2.1 (lu-301/bau/review-offload2.md): this text used to read
+    // "Web search failed: ..." without the "Error:" prefix `executeToolStep`
+    // checks for, so a search failure inside a `tool` workflow step counted
+    // as `status: 'completed'` and the run carried on with a failure message
+    // as if it were a real result, exactly the silent, GPU-idle-in-seconds
+    // run the box measured for "Research Topic".
+    return `Error: Web search failed: ${data.error}${extra}`
   }
   return JSON.stringify(data)
 }
@@ -531,12 +537,24 @@ async function executeWebFetch(args: ToolArgs): Promise<string> {
   // complaining it "only sees the header" of the page.
   try {
     const data = await backendCall<WebFetchResult>('web_fetch', { url })
+    // Auflage 2.1 (lu-301/bau/review-offload2.md): every response from the
+    // Rust command used to render as the SAME "Title/URL/Status/..." block
+    // regardless of the actual HTTP status or an empty body, so a 404, a
+    // 403 or a blank page all counted as `status: 'completed'` for
+    // `executeToolStep`'s `startsWith('Error:')` check. A non-2xx status or
+    // an empty body is a failed fetch, not a thin result.
+    if (data.status < 200 || data.status >= 300) {
+      return `Error: web_fetch got HTTP ${data.status} for ${url}${data.title ? ` (${data.title})` : ''}`
+    }
+    if (!data.text) {
+      return `Error: web_fetch got an empty body from ${url} (status ${data.status})`
+    }
     const parts: string[] = []
     if (data.title) parts.push(`Title: ${data.title}`)
     parts.push(`URL: ${data.url}`)
     parts.push(`Status: ${data.status}`)
     parts.push('')
-    parts.push(data.text || '(empty body)')
+    parts.push(data.text)
     if (data.truncated) parts.push('\n…(truncated to 24 000 chars)')
     return parts.join('\n')
   } catch (e) {
@@ -1583,7 +1601,6 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
     return `Error: Workflow "${workflow.name}" starts by asking "${firstAsk.userInputPrompt || 'for input'}", and nothing can answer that while it runs. Call run_workflow again with an "input" argument that answers it.`
   }
 
-  const results: StepResult[] = []
   let finalOutput = ''
   // Auflage 4, bau/review-wfgate.md: a no-op `onStepError` (the old body)
   // left `finalOutput` empty on a rejected approval, so `run_workflow`
@@ -1591,27 +1608,41 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
   // again. `runSteps` (workflow-engine.ts) calls `onStepError` and BREAKS
   // the step loop on a failure, but still calls `onComplete` afterward (it
   // is not the same as `onError`, which fires only on a thrown exception),
-  // and that handler's own fallback ("Workflow completed with no output.")
-  // would otherwise silently overwrite the error message set here, since a
-  // failed step's own `output` is '' and gets filtered out by
-  // `results.filter(r => r.output)`. `hadStepError` keeps `onComplete` from
-  // clobbering it.
+  // so without `hadStepError` that handler would overwrite the error
+  // message set here with whatever ran before the failure. B1
+  // (lu-301/bau/klaerung-n7.md): the message itself now comes from
+  // `describeWorkflowCompletion` (workflow-engine.ts), shared with
+  // `useAgentChat.ts`'s "run workflow" chat trigger; the old
+  // `results.filter(r => r.output).pop()` here always picked a trailing
+  // `memory_save` step's own receipt over the actual content.
   let hadStepError = false
   const callbacks = {
     onStepStart: () => {},
-    onStepComplete: (_idx: number, result: StepResult) => { results.push(result) },
-    onStepError: (_idx: number, error: string) => {
+    onStepComplete: () => {},
+    onStepError: (idx: number, error: string) => {
       hadStepError = true
       // The step's own `error` is already the gate's English message
       // ("Tool call rejected: ... was not approved.", `gatedApproval` in
-      // workflow-engine.ts).
-      finalOutput = `Workflow error: ${error}`
+      // workflow-engine.ts) or, since Auflage 2.1 (review-offload2.md), a
+      // tool's own honest failure text (web_search/web_fetch). Named with
+      // its position now, not a bare "Workflow error: ...", so a caller
+      // sees WHERE in a multi-step chain things stopped.
+      //
+      // "Error: " prefix (on top of describeWorkflowStepFailure's own,
+      // chat-facing text): this return value is a TOOL RESULT, read back by
+      // `executeToolStep`'s `startsWith('Error:')` check whenever a workflow
+      // step calls `run_workflow` on ANOTHER workflow (third-degree nesting,
+      // workflow-engine-echte-kennung-bei-drittem-grad.test.ts). Without the
+      // prefix a nested failure read as a completed step one level up, and
+      // THAT engine's own `onComplete` then wrapped it in its own
+      // "Workflow complete" header, a false positive one level removed from
+      // the one Auflage 2.1 fixed at the tool layer.
+      finalOutput = `Error: ${describeWorkflowStepFailure(workflow, idx, error)}`
     },
     onWaitingForInput: () => {},
-    onComplete: () => {
+    onComplete: (allResults: StepResult[]) => {
       if (hadStepError) return
-      const lastOutput = results.filter(r => r.output).pop()
-      finalOutput = lastOutput?.output || 'Workflow completed with no output.'
+      finalOutput = describeWorkflowCompletion(workflow, allResults)
     },
     onError: (error: string) => { finalOutput = `Workflow error: ${error}` },
   }

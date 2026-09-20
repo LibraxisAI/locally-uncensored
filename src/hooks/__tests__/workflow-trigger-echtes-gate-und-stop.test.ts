@@ -135,7 +135,7 @@ describe('Waechter: der Chat-Ausloeser "run workflow <name>" uebergibt ein ECHTE
     expect(execSpy.mock.calls.map((c) => c[0])).not.toContain('shell_execute')
     const conv = useChatStore.getState().conversations.find((c) => c.id === convId)!
     const lastAssistant = [...conv.messages].reverse().find((m) => m.role === 'assistant')!
-    expect(lastAssistant.content).toMatch(/Workflow error/)
+    expect(lastAssistant.content).toMatch(/Workflow stopped at step/)
   })
 })
 
@@ -263,7 +263,7 @@ describe('Nachtrag 1, bau/review-wfgate.md Runde 3: ein Ablaufname MIT Doppelpun
     // Positivkontrolle: "Deploy: staging" wurde erkannt und sein blockiertes
     // Werkzeug lief nie, meldet aber den Ablehnungsfehler statt zu haengen.
     expect(execSpy.mock.calls.map((c) => c[0])).not.toContain('shell_execute')
-    expect(lastAssistant.content).toMatch(/Workflow error/)
+    expect(lastAssistant.content).toMatch(/Workflow stopped at step/)
   })
 
   it('Negativkontrolle: ohne den passenden Namen "Deploy: staging" im Store faellt der alte Doppelpunkt-Split wieder zum kuerzeren Namen zurueck', async () => {
