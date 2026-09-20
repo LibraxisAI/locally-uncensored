@@ -43,10 +43,12 @@ import { useModelStore } from '../../stores/modelStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { resolveToolCallingStrategy } from '../agent-strategy'
 import { DEFAULT_SETTINGS } from '../constants'
+import { DEFAULT_PROMPT_STEP_MAX_TOKENS } from '../workflow-engine'
 import type { AgentWorkflow, WorkflowEngineCallbacks, StepResult } from '../../types/agent-workflows'
 import type { ChatOptions, ChatStreamChunk } from '../../api/providers/types'
 
 const ALWAYS_THINKS_MODEL = 'openai::always-thinks-model'
+const TOGGLE_MODEL = 'openai::toggle-model'
 
 function onePromptWorkflow(): AgentWorkflow {
   return {
@@ -79,6 +81,18 @@ beforeEach(() => {
         provider: 'openai',
         providerName: 'Test',
         thinkMode: 'always',
+        effortLevels: ['low', 'medium', 'high'],
+        effortDefault: 'medium',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      {
+        name: TOGGLE_MODEL,
+        model: TOGGLE_MODEL,
+        size: 0,
+        type: 'text',
+        provider: 'openai',
+        providerName: 'Test',
+        thinkMode: 'toggle',
         effortLevels: ['low', 'medium', 'high'],
         effortDefault: 'medium',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,19 +134,55 @@ describe('a prompt step asks for the SAME output-limit policy a normal chat/agen
     // default. See bau/wfprogress.md for the counted red count on the
     // pre-fix copy.
     expect(seenOptions).toBeDefined()
-    // klein 4 (bau/wfprogress.md, Eigner-Nachtrag): NOT `true` — an "always
-    // thinks" model asked to reason explicitly under a bounded output is
-    // exactly how the box's run died with no content at step 3 of 6.
-    // `thinking: false` is the SAME policy compact-run.ts already ships for
-    // this model family's measured failure.
-    expect(seenOptions!.thinking).toBe(false)
+    // klein 3 (review-wfprogress.md): an "always thinks" model (thinkMode
+    // 'always') must NOT be sent `thinking: false`, since openai-provider.ts's
+    // own measurement is that 'none'/false stops nothing for such a model
+    // and can cost MORE. This is the exact `canThinkAgent`/`thinkOpt`
+    // pattern useAgentChat.ts already uses for a normal turn: an 'always'
+    // (or 'never') model gets NO thinking wish at all (`undefined`); the
+    // bounded maxTokens plus the honest no-content message (klein 4 test
+    // below) catch the failure instead.
+    expect(seenOptions!.thinking).toBeUndefined()
     expect(seenOptions!.effortLevels).toEqual(['low', 'medium', 'high'])
     expect(seenOptions!.effortDefault).toBe('medium')
     // reasoningEffort itself may be undefined (the user never touched the
     // composer's slider) — what matters is the LADDER travels, which is what
     // lets the provider clamp onto a real rung instead of sending nothing.
     expect('reasoningEffort' in seenOptions!).toBe(true)
-    expect('maxTokens' in seenOptions!).toBe(true)
+    // klein 1/2 (review-wfprogress.md, "der eigentliche Boxbefund"):
+    // DEFAULT_SETTINGS.maxTokens is 0, and buildSamplingRequest omits the
+    // field entirely at that default (it means "auto" everywhere else),
+    // so a standard user who never touched the slider used to get an
+    // UNBOUNDED request (the box's measured 31619 would recur) even after
+    // thinking:false. The prompt step must now supply a real ceiling of
+    // its own whenever the user has not set one.
+    expect(seenOptions!.maxTokens).toBe(DEFAULT_PROMPT_STEP_MAX_TOKENS)
+  })
+
+  it('a "toggle" model (may or may not think) DOES get an explicit thinking:false, same as a normal turn', async () => {
+    let seenOptions: ChatOptions | undefined
+    useModelStore.setState({ activeModel: TOGGLE_MODEL })
+    vi.mocked(resolveToolCallingStrategy).mockResolvedValue({
+      strategy: 'native',
+      modelToUse: TOGGLE_MODEL,
+      modelId: TOGGLE_MODEL,
+      providerId: 'openai',
+      provider: {
+        chatStream: (_model: string, _messages: unknown, options: ChatOptions) => {
+          seenOptions = options
+          return (async function* (): AsyncGenerator<ChatStreamChunk> {
+            yield { content: 'a short answer', done: true }
+          })()
+        },
+        chatWithTools: vi.fn(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    })
+
+    const engine = new WorkflowEngine(onePromptWorkflow(), 'conv-a2', silentCallbacks(), APPROVE_ALL)
+    await engine.run()
+
+    expect(seenOptions!.thinking).toBe(false)
   })
 
   it('a chat with its own maxTokens override carries it onto the wire, same as a normal turn', async () => {
@@ -239,7 +289,8 @@ describe('Stop reaches a running prompt step (AbortSignal bis zum fetch)', () =>
       } as any,
     })
 
-    const callbacks = silentCallbacks()
+    const stopped: unknown[] = []
+    const callbacks: WorkflowEngineCallbacks = { ...silentCallbacks(), onStopped: (r) => stopped.push(r) }
     const engineHandle = new WorkflowEngine(onePromptWorkflow(), 'conv-e', callbacks, APPROVE_ALL)
     const results = await engineHandle.run()
 
@@ -248,6 +299,10 @@ describe('Stop reaches a running prompt step (AbortSignal bis zum fetch)', () =>
     // The stream stopped at the FIRST chunk once cancel() fired mid-loop —
     // the second chunk's text never reached the step's output.
     expect(results[0]?.output ?? '').not.toContain('second chunk')
+    // B1 (review-wfprogress.md): the step finished normally (non-empty
+    // output, no error) DESPITE the abort, exactly the gap that used to
+    // leave no terminal callback at all. `onStopped` must fire exactly once.
+    expect(stopped).toHaveLength(1)
   })
 })
 

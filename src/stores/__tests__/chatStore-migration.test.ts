@@ -185,4 +185,88 @@ describe('chatStore — migratePersistedChat', () => {
     const result = migrated(state)
     expect(result.conversations[0].messages[0].content).toBe('hi')
   })
+
+  // review-wfprogress.md, BLOCKER (Runde 2), app-restart case: the app can
+  // be closed mid-workflow-run, which persists a progress block whose
+  // `status` is still 'running': no process survives a restart to ever
+  // move it out of that state, so on the NEXT load (this migration, which
+  // runs on every load) it must be rewritten as honestly 'stopped' instead
+  // of showing a spinner for a run that provably is not happening.
+  describe('markiert einen ueber den Neustart hinweg "running" gebliebenen Workflow-Block als "stopped"', () => {
+    it('bei einem einzelnen Fortschrittsblock', () => {
+      const staleProgressCall: AgentToolCall = {
+        id: 'p1',
+        toolName: 'Step 2 of 3: Summarize',
+        args: {},
+        status: 'running',
+        timestamp: 1,
+      }
+      const state = {
+        conversations: [
+          {
+            id: 'c1',
+            messages: [
+              {
+                id: 'm1',
+                agentBlocks: [
+                  { id: 'b1', phase: 'tool_call', content: '', timestamp: 1, toolCalls: [staleProgressCall] },
+                ],
+              },
+            ],
+          },
+        ],
+      }
+      const result = migrated(state)
+      const tc = result.conversations[0].messages[0].agentBlocks![0].toolCalls![0]
+      expect(tc.status).toBe('stopped')
+      expect(tc.toolName).not.toMatch(/^Step /)
+    })
+
+    it('NEGATIVKONTROLLE: ein echter, noch laufender Werkzeug-Aufruf bleibt "running"', () => {
+      // Without the isWorkflowProgressToolName() guard, this would also get
+      // rewritten to 'stopped', which would be wrong the moment a tool
+      // call is shown mid-flight in the SAME session (no restart happened).
+      const realRunningCall: AgentToolCall = {
+        id: 't1', toolName: 'shell_execute', args: { command: 'sleep 5' }, status: 'running', timestamp: 1,
+      }
+      const state = {
+        conversations: [
+          { id: 'c1', messages: [{ id: 'm1', agentBlocks: [{ id: 'b1', phase: 'tool_call', content: '', timestamp: 1, toolCalls: [realRunningCall] }] }] },
+        ],
+      }
+      const result = migrated(state)
+      expect(result.conversations[0].messages[0].agentBlocks![0].toolCalls![0].status).toBe('running')
+    })
+
+    it('bereits abgeschlossene Workflow-Bloecke bleiben unangetastet', () => {
+      const settledCall: AgentToolCall = {
+        id: 'p1', toolName: 'Workflow: Research Topic (3/3 steps)', args: {}, status: 'completed', timestamp: 1,
+      }
+      const state = {
+        conversations: [
+          { id: 'c1', messages: [{ id: 'm1', agentBlocks: [{ id: 'b1', phase: 'tool_call', content: '', timestamp: 1, toolCalls: [settledCall] }] }] },
+        ],
+      }
+      const result = migrated(state)
+      expect(result.conversations[0].messages[0].agentBlocks![0].toolCalls![0].status).toBe('completed')
+    })
+
+    it('ist idempotent ueber die legacy toolCall/toolCalls-Migration hinweg', () => {
+      const staleLegacyCall: AgentToolCall = {
+        id: 'p1', toolName: 'Workflow: Research Topic (1/3 steps)', args: {}, status: 'running', timestamp: 1,
+      }
+      const state = {
+        conversations: [
+          { id: 'c1', messages: [{ id: 'm1', agentBlocks: [{ id: 'b1', phase: 'tool_call', content: '', timestamp: 1, toolCall: staleLegacyCall }] }] },
+        ],
+      }
+      const once = migratePersistedChat(state)
+      const twice = migrated(once)
+      const tc = twice.conversations[0].messages[0].agentBlocks![0].toolCalls![0]
+      expect(tc.status).toBe('stopped')
+      // The legacy singular field points at the SAME object migrateBlockInPlace
+      // keeps in sync, so it must read the rewritten status too.
+      expect(twice.conversations[0].messages[0].agentBlocks![0].toolCall!.status).toBe('stopped')
+    })
+  })
 })

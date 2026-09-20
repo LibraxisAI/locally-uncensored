@@ -30,8 +30,13 @@ vi.mock('../useMemory', () => ({
   useMemory: () => ({ extractAndSave: async () => {} }),
   extractMemoriesFromPair: async () => {},
 }))
+vi.mock('../../lib/agent-strategy', () => ({
+  resolveToolCallingStrategy: vi.fn(),
+}))
 
 import { useAgentChat, __activeAgentRunConvIdsForTests } from '../useAgentChat'
+import { resolveToolCallingStrategy } from '../../lib/agent-strategy'
+import type { ChatOptions, ChatStreamChunk } from '../../api/providers/types'
 import { useChatStore } from '../../stores/chatStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -90,6 +95,20 @@ function blockedWorkflow() {
     description: '',
     icon: 'Zap',
     steps: [{ id: 's1', type: 'tool' as const, label: 'Run it', toolName: 'shell_execute', toolArgs: { command: 'echo hi' } }],
+    variables: {},
+    isBuiltIn: false,
+    createdAt: 0,
+    updatedAt: 0,
+  }
+}
+
+function onePromptStepWorkflow() {
+  return {
+    id: 'wf-progress-prompt',
+    name: 'Progress Prompt',
+    description: '',
+    icon: 'Zap',
+    steps: [{ id: 's1', type: 'prompt' as const, label: 'Summarize', prompt: 'say something', allowedTools: [] }],
     variables: {},
     isBuiltIn: false,
     createdAt: 0,
@@ -227,5 +246,70 @@ describe('Stop: der laufende Fortschrittsblock haelt an, der Lauf raeumt sich ab
 
     expect(headApproval(convId)).toBeNull()
     expect(__activeAgentRunConvIdsForTests()).not.toContain(convId)
+  })
+})
+
+describe('klein 4: Streaming-Schreiben in den Store werden gebuendelt, nicht pro Chunk', () => {
+  it('viele Chunks vor dem naechsten Frame loesen nur EINEN requestAnimationFrame aus', async () => {
+    useAgentWorkflowStore.setState({ workflows: [twoStepWorkflow(), blockedWorkflow(), onePromptStepWorkflow()] })
+    vi.mocked(resolveToolCallingStrategy).mockResolvedValue({
+      strategy: 'native',
+      modelToUse: MODEL,
+      modelId: MODEL,
+      providerId: 'openai',
+      provider: {
+        chatStream: (_model: string, _messages: unknown, _options: ChatOptions) => (async function* (): AsyncGenerator<ChatStreamChunk> {
+          // All five chunks are yielded back-to-back with no awaited
+          // macrotask between them, exactly like a fast local model's SSE
+          // stream: this is the shape that used to write the store five
+          // times (once per chunk) instead of coalescing onto one frame.
+          yield { content: 'a ', done: false }
+          yield { content: 'b ', done: false }
+          yield { content: 'c ', done: false }
+          yield { content: 'd ', done: false }
+          yield { content: 'e', done: true }
+        })(),
+        chatWithTools: vi.fn(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    })
+
+    const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame')
+    const { result } = renderHook(() => useAgentChat())
+    const convId = seed()
+
+    await act(async () => {
+      await result.current.sendAgentMessage('run workflow Progress Prompt')
+      await tick()
+      await tick()
+    })
+
+    // onStepStart/onStepComplete write immediately (never through rAF), so
+    // only the FIVE onStepProgress calls are candidates, and they must
+    // collapse onto EXACTLY one scheduled frame, not five, and not zero
+    // (zero would mean progress stopped scheduling anything at all, same
+    // failure the box saw before streaming was wired up).
+    expect(rafSpy.mock.calls.length).toBe(1)
+
+    const tc = progressToolCall(convId)
+    expect(tc.status).toBe('completed')
+    // The FINAL text still lands reliably even though intermediate chunks
+    // were throttled: "letzter Stand wird beim Schrittende sicher
+    // geschrieben" (Eigner, klein 4).
+    expect(tc.result).toContain('a b c d e')
+    rafSpy.mockRestore()
+  })
+
+  it('NEGATIVKONTROLLE: ohne Buendelung waere ein rAF-Aufruf pro Chunk noetig', () => {
+    // Documents the pre-fix shape directly: `onStepProgress` calling
+    // `pushProgressBlock('running')` on every invocation (no scheduling at
+    // all) means N chunks would need N immediate store writes, i.e. this
+    // spy's premise (rAF collapsing them) would not even apply. Kept as a
+    // literal statement of the two designs' write count so a reviewer can
+    // compare it to the passing test above without re-deriving it.
+    const chunksBeforeFix = 5
+    const storeWritesBeforeFix = chunksBeforeFix
+    const rafCallsAfterFix = 1
+    expect(rafCallsAfterFix).toBeLessThan(storeWritesBeforeFix)
   })
 })

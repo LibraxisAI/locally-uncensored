@@ -483,12 +483,35 @@ export function useAgentChat() {
         const progressToolCallId = uuid()
         const progressStartedAt = Date.now()
 
-        const pushProgressBlock = (status: 'running' | 'completed' | 'failed') => {
+        type ProgressStatus = 'running' | 'completed' | 'failed' | 'stopped'
+        // klein 4 (Runde 2 review): `onStepProgress` fires per STREAM CHUNK,
+        // and a fast local model produces thousands of them per step. Writing
+        // the store on every one is the exact thing the normal agent turn's
+        // own `scheduleUIUpdate` (above, the main loop further down this
+        // file) already avoids with a `requestAnimationFrame` coalesce; this
+        // is the same pattern, scoped to the workflow's own block. Every
+        // call that reaches a TERMINAL or step-boundary state (onStepStart/
+        // onStepComplete/onStepError/onComplete/onError/onStopped) still
+        // writes immediately, never through this throttle, so "the final
+        // state at the end of a step is written for sure" holds regardless
+        // of whatever frame is or is not pending.
+        let currentProgressStatus: ProgressStatus = 'running'
+        let progressFrameScheduled = false
+
+        const pushProgressBlock = (status: ProgressStatus) => {
+          currentProgressStatus = status
           if (!convId) return
           const now = Date.now()
+          // B1 (Blocker, Runde 2): a genuine Stop gets its own honest label
+          // and status ('stopped', not 'failed'), since nothing broke, the
+          // run was simply cancelled. `workflowProgressHeader` only knows "running step
+          // X" and "(n/m steps)", neither of which is true here.
+          const toolName = status === 'stopped'
+            ? `Workflow: ${workflow.name} (stopped)`
+            : workflowProgressHeader(workflow.name, stepViews)
           const ac: AgentToolCall = {
             id: progressToolCallId,
-            toolName: workflowProgressHeader(workflow.name, stepViews),
+            toolName,
             args: {},
             status,
             result: renderWorkflowStepList(stepViews),
@@ -501,6 +524,19 @@ export function useAgentChat() {
             content: ac.toolName,
             toolCall: ac,
             toolCalls: [ac],
+          })
+        }
+
+        // Reads `currentProgressStatus` at FIRE time, not a captured
+        // 'running', so a stray frame that outlives the step (or the whole
+        // run) then writes whatever the run's real, current status is
+        // instead of stomping a terminal write that already landed.
+        const scheduleProgressUpdate = () => {
+          if (progressFrameScheduled) return
+          progressFrameScheduled = true
+          requestAnimationFrame(() => {
+            progressFrameScheduled = false
+            pushProgressBlock(currentProgressStatus)
           })
         }
 
@@ -535,7 +571,7 @@ export function useAgentChat() {
           onStepProgress: (stepIndex, partialOutput) => {
             const view = stepViews[stepIndex]
             if (view) view.output = partialOutput
-            pushProgressBlock('running')
+            scheduleProgressUpdate()
           },
           onStepComplete: (stepIndex, result) => {
             const view = stepViews[stepIndex]
@@ -594,6 +630,31 @@ export function useAgentChat() {
                 id: uuid(), role: 'assistant', content: `Workflow error: ${err}`, timestamp: Date.now(),
               })
             }
+          },
+          // B1 (Blocker, Runde 2): the ONE remaining terminal state, for
+          // when Stop fired between two steps, or during a step that finished
+          // normally despite the abort signal, so neither `onStepError` nor
+          // `onError` ever reported a terminal outcome. Whatever the engine
+          // DID complete before the stop is folded in the same way
+          // `onComplete` folds it; whatever never ran (still 'pending') or
+          // was interrupted mid-run ('running') is marked skipped, same
+          // vocabulary a real branch-skip already uses. No chat message is
+          // added: Stop has never added one for the ordinary agent loop
+          // either, the block itself is the honest record.
+          onStopped: (partialResults) => {
+            for (const result of partialResults) {
+              const idx = workflow.steps.findIndex((s) => s.id === result.stepId)
+              const view = idx >= 0 ? stepViews[idx] : undefined
+              if (view && view.status !== 'failed') {
+                view.status = result.status === 'failed' ? 'failed' : 'completed'
+                view.output = result.output
+                view.args = result.toolCalls?.[0]?.args ?? view.args
+              }
+            }
+            for (const view of stepViews) {
+              if (view.status === 'pending' || view.status === 'running') view.status = 'skipped'
+            }
+            pushProgressBlock('stopped')
           },
         }
 

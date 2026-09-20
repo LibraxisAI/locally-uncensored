@@ -289,7 +289,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           },
           {
             title: 'Running a workflow from chat now shows its progress, step by step.',
-            detail: 'Running a workflow from chat ("run workflow ...") now shows its own progress, clickable and expandable exactly like a tool call: every step listed as waiting, running, done or failed, each finished step\'s result, and the currently running step\'s answer streaming in live. Before this it showed no more than three static dots for the whole run, sometimes several minutes, with no way to tell it was still working. A model step also no longer reasons all the way to the end of its context window by default; it now asks for the same output limit a normal chat turn asks for.',
+            detail: 'Running a workflow from chat ("run workflow ...") now shows its own progress, clickable and expandable exactly like a tool call: every step listed as waiting, running, done or failed, each finished step\'s result, and the currently running step\'s answer streaming in live. Before this it showed no more than three static dots for the whole run, sometimes several minutes, with no way to tell it was still working. A model step also now carries a real upper bound on how long it may reason before it must answer, the same way a normal chat turn already does, instead of only being able to lean on a thinking-off preference that some models ignore; Stop now always leaves the block honestly marked "Stopped" instead of stuck on a spinner forever, and the same fix applies if the app was closed mid-run.',
           },
         ],
       },

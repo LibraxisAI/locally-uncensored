@@ -1,6 +1,6 @@
 import { useState, useEffect, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, Globe, FileText, FileEdit, Terminal, Image, Film, Loader2, Check, X, Clock, AlertCircle, FolderOpen, Monitor, GitBranch, GitCommitHorizontal, GitPullRequest, FlaskConical, History, Users, Database, Download } from 'lucide-react'
+import { Search, Globe, FileText, FileEdit, Terminal, Image, Film, Loader2, Check, X, Clock, AlertCircle, FolderOpen, Monitor, GitBranch, GitCommitHorizontal, GitPullRequest, FlaskConical, History, Users, Database, Download, Square } from 'lucide-react'
 import type { AgentToolCall } from '../../types/agent-mode'
 import { getComfyHost, getComfyPort, downloadComfyFile } from '../../api/backend'
 import { useModelPickStore } from '../../stores/modelPickStore'
@@ -207,6 +207,9 @@ const STATUS_ICONS = {
   rejected: X,
   // Phase 6 (v2.4.0): cached result from in-turn cache, no re-execution.
   cached: Database,
+  // bau/wfprogress.md Runde 2: Stop ended the run, nothing broke, so this
+  // gets a calm square, not the red AlertCircle 'failed' wears.
+  stopped: Square,
 }
 
 // memo (audit D2): the Codex/Agent transcript re-renders on every streamed
@@ -232,7 +235,7 @@ function ToolCallBlockImpl({ toolCall, onApprove, onReject }: Props) {
   // face the "run_workflow" tool itself already wears.
   const ToolIcon = toolCall.toolName === 'shell_execute'
     ? (SHELL_COMMAND_ICONS[shellIconKey(toolCall)] ?? Terminal)
-    : toolCall.toolName.startsWith('Step ')
+    : toolCall.toolName.startsWith('Step ') || toolCall.toolName.startsWith('Workflow')
       ? GitBranch
       : (TOOL_ICONS[toolCall.toolName] || Terminal)
   const StatusIcon = STATUS_ICONS[toolCall.status]

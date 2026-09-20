@@ -6,7 +6,8 @@ import type { AgentBlock } from '../types/agent-mode'
 import { clampSampling, type SamplingOverrides } from '../lib/sampling'
 import { idbStorage } from '../lib/idbStorage'
 import { coalescedJSONStorage } from '../lib/coalescedStorage'
-import { migrateBlockInPlace } from '../api/agents/block-helpers'
+import { migrateBlockInPlace, getBlockToolCalls } from '../api/agents/block-helpers'
+import { markStaleWorkflowProgressStopped } from '../lib/workflow-progress-view'
 import { useGenerationStore } from './generationStore'
 import { useRemoteStore } from './remoteStore'
 import { useRAGStore } from './ragStore'
@@ -37,7 +38,17 @@ export function migratePersistedChat(state: unknown): unknown {
         // migrateBlockInPlace reads `toolCall` and `toolCalls` and writes
         // `toolCalls`; the cast claims no more than those three, and the
         // record check above is what makes even that much true.
-        if (isRecord(block)) migrateBlockInPlace(block as unknown as AgentBlock)
+        if (!isRecord(block)) continue
+        const typedBlock = block as unknown as AgentBlock
+        migrateBlockInPlace(typedBlock)
+        // Runde 2 Blocker (app-restart case, workflow-progress-view.ts):
+        // a block still 'running' here means the app closed mid-run, since
+        // this migration only ever sees what was persisted, never a live
+        // in-session update (those go through addBlock/updateBlockById on
+        // the live Zustand state directly). Rewrite it as honestly stopped.
+        for (const tc of getBlockToolCalls(typedBlock)) {
+          markStaleWorkflowProgressStopped(tc)
+        }
       }
     }
   }

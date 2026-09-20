@@ -90,3 +90,38 @@ export function workflowProgressHeader(workflowName: string, views: WorkflowStep
   const settled = views.filter((v) => v.status === 'completed' || v.status === 'failed' || v.status === 'skipped').length
   return `Workflow: ${workflowName} (${settled}/${views.length} steps)`
 }
+
+/**
+ * A workflow-progress block's `toolName` is always either "Step N of M: ..."
+ * (while running) or "Workflow: <name> (...)" / "Workflow: <name> (stopped)"
+ * (once settled): see `workflowProgressHeader` and `pushProgressBlock` in
+ * useAgentChat.ts. No real tool call ever produces either shape, so this is
+ * a safe, cheap way to recognise one of these synthetic blocks without
+ * threading a dedicated marker field through persistence.
+ */
+export function isWorkflowProgressToolName(name: string): boolean {
+  return name.startsWith('Step ') || name.startsWith('Workflow:')
+}
+
+/**
+ * bau/wfprogress.md Runde 2, Blocker (app-restart case): the app can be
+ * closed mid-run, which persists a workflow-progress block whose `status`
+ * is still 'running': there is no process left to ever move it out of that
+ * state, so on the NEXT load it would show a spinner forever for a run that
+ * is provably not happening (no engine instance survives a restart). Called
+ * from `migratePersistedChat` (chatStore.ts), which already walks every
+ * block on every load and is documented as idempotent, so running this
+ * again on an already-fixed block is harmless: it only touches blocks that
+ * are BOTH a workflow-progress block AND still 'running'.
+ *
+ * Mutates `call` in place (matching `migrateBlockInPlace`'s own style) and
+ * returns whether it changed anything, mainly so callers/tests can assert
+ * on it directly.
+ */
+export function markStaleWorkflowProgressStopped(call: { toolName: string; status: string }): boolean {
+  if (call.status !== 'running') return false
+  if (!isWorkflowProgressToolName(call.toolName)) return false
+  call.status = 'stopped'
+  call.toolName = 'Workflow stopped before finishing'
+  return true
+}

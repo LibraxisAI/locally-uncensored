@@ -14,6 +14,8 @@ import {
   workflowProgressHeader,
   truncateForProgress,
   PROGRESS_DISPLAY_TRUNCATE_CHARS,
+  isWorkflowProgressToolName,
+  markStaleWorkflowProgressStopped,
   type WorkflowStepView,
 } from '../workflow-progress-view'
 import type { WorkflowStep } from '../../types/agent-workflows'
@@ -116,5 +118,39 @@ describe('workflowProgressHeader: der eingeklappte Titel', () => {
       { step: step('b', 'Summarize'), status: 'completed' },
     ]
     expect(workflowProgressHeader('Research Topic', views)).toBe('Workflow: Research Topic (2/2 steps)')
+  })
+})
+
+describe('markStaleWorkflowProgressStopped: App-Neustart mitten im Lauf (Runde 2, BLOCKER)', () => {
+  it('macht aus einem noch "running" persistierten Fortschrittsblock ehrlich "stopped"', () => {
+    const call = { toolName: 'Step 2 of 3: Summarize', status: 'running' }
+    const changed = markStaleWorkflowProgressStopped(call)
+    expect(changed).toBe(true)
+    expect(call.status).toBe('stopped')
+    expect(call.toolName).not.toMatch(/running/)
+  })
+
+  it('erkennt auch den abgeschlossenen Kopfzeilen-Stil ("Workflow: ...")', () => {
+    const call = { toolName: 'Workflow: Research Topic (1/3 steps)', status: 'running' }
+    expect(isWorkflowProgressToolName(call.toolName)).toBe(true)
+    expect(markStaleWorkflowProgressStopped(call)).toBe(true)
+    expect(call.status).toBe('stopped')
+  })
+
+  it('laesst einen bereits fertigen Fortschrittsblock unangetastet (idempotent)', () => {
+    const call = { toolName: 'Workflow: Research Topic (3/3 steps)', status: 'completed' }
+    expect(markStaleWorkflowProgressStopped(call)).toBe(false)
+    expect(call.status).toBe('completed')
+  })
+
+  it('NEGATIVKONTROLLE: ruehrt einen echten Werkzeug-Aufruf mit Status "running" NICHT an', () => {
+    // A real tool call's toolName never starts with "Step " or "Workflow:":
+    // this is exactly what tells the two apart with no dedicated marker
+    // field. If this ever matched, a genuinely still-running shell command
+    // shown right after app start would get relabelled "stopped" too.
+    const call = { toolName: 'shell_execute', status: 'running' }
+    expect(isWorkflowProgressToolName(call.toolName)).toBe(false)
+    expect(markStaleWorkflowProgressStopped(call)).toBe(false)
+    expect(call.status).toBe('running')
   })
 })
