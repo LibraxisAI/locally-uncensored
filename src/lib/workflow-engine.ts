@@ -32,6 +32,7 @@ import type { AgentRunContext } from '../api/agent-context'
 import { settleThinking } from './thinking-stripper'
 import { buildHermesToolPrompt, parseHermesToolCalls, stripToolCallTags, hasToolCallTags } from '../api/hermes-tool-calling'
 import { resolveToolCallingStrategy } from './agent-strategy'
+import { isThinkingCompatible } from './model-compatibility'
 import type { AgentWorkflow, WorkflowStep, StepResult, WorkflowEngineCallbacks } from '../types/agent-workflows'
 import type { ChatMessage, ToolDefinition } from '../api/providers/types'
 import { usePermissionStore } from '../stores/permissionStore'
@@ -138,6 +139,24 @@ export const MAX_WORKFLOW_DEPTH = 5
  * is an unbounded loop, and run_workflow gives the agent no way to cancel it.
  */
 export const MAX_STEPS_EXECUTED = 500
+
+/**
+ * Fallback output cap for a `prompt` step when neither this chat nor the
+ * Settings page has its own Max tokens set (`DEFAULT_SETTINGS.maxTokens` is
+ * 0 = "auto", and `buildSamplingRequest` leaves the field off the wire at
+ * that default: bau/wfprogress.md Runde 2, klein 1, for every user who
+ * never touched that slider, `maxTokens` still went out `undefined`, and the
+ * OpenAI-compatible provider's own fallback then asked for
+ * `Math.min(headroom, 32768)`, practically the ENTIRE remaining context,
+ * exactly the n_predict 31619 on a 32768 ctx the box measured). A user- or
+ * chat-set value (`sampling.maxTokens > 0`) always wins over this; it only
+ * fills the gap "auto" leaves. 8192 is not a new number invented for this:
+ * it is the house's own long-standing default (`DEFAULT_SETTINGS.
+ * builtinEngine.ctx`, constants.ts, "GH #129: die 8192 hier ist die
+ * Voreinstellung des Hauses, keine Wahl"), reused here as a generous but
+ * bounded ceiling for one step's answer rather than a fresh guess.
+ */
+export const DEFAULT_PROMPT_STEP_MAX_TOKENS = 8192
 
 // ── Variable Interpolation ────────────────────────────────────
 
@@ -501,12 +520,31 @@ export class WorkflowEngine {
   private async runSteps(results: StepResult[]): Promise<void> {
     let stepIndex = 0
     let executed = 0
+    // B1 (bau/wfprogress.md Runde 2, Blocker): a run that Stop cancelled
+    // BETWEEN two steps, or during a step that finished normally despite
+    // the abort signal (a tool that does not itself watch it), used to
+    // leave here with NO terminal callback at all: `onComplete` is gated
+    // behind `!aborted` below, and `onError` only ever fired from the
+    // `catch`. The chat trigger's progress block, which only ever leaves
+    // 'running' inside `onStepComplete`/`onStepError`/`onComplete`/
+    // `onError`, was measured staying on 'running' with its spinner
+    // forever, persisted into the conversation as if the run were still
+    // going (Final-Verifier repro: `CALLBACKS=["start0","complete0"]` after
+    // `cancel()` mid step 1, nothing after). `stepLevelTerminalFired`
+    // tracks whether THIS loop already reported a terminal outcome through
+    // `onStepError` or the step-budget `onError` below; if the loop instead
+    // ends because it was aborted and neither of those fired, `onStopped`
+    // is the ONE remaining terminal callback, guaranteeing every run ends
+    // in exactly one of onComplete / onStepError+onComplete / onError /
+    // onStopped, never in silence.
+    let stepLevelTerminalFired = false
 
     try {
       while (stepIndex < this.workflow.steps.length) {
         if (this.abortController.signal.aborted) break
         if (++executed > MAX_STEPS_EXECUTED) {
           this.callbacks.onError(`Workflow exceeded ${MAX_STEPS_EXECUTED} steps, check for a condition that branches back on itself`)
+          stepLevelTerminalFired = true
           break
         }
 
@@ -518,6 +556,7 @@ export class WorkflowEngine {
 
         if (result.status === 'failed') {
           this.callbacks.onStepError(stepIndex, result.error || 'Unknown error')
+          stepLevelTerminalFired = true
           break
         }
 
@@ -546,7 +585,9 @@ export class WorkflowEngine {
         }
       }
 
-      if (!this.abortController.signal.aborted) {
+      if (this.abortController.signal.aborted) {
+        if (!stepLevelTerminalFired) this.callbacks.onStopped?.(results)
+      } else {
         this.callbacks.onComplete(results)
       }
     } catch (err) {
@@ -600,7 +641,7 @@ export class WorkflowEngine {
     try {
       switch (step.type) {
         case 'prompt':
-          return await this.executePromptStep(step, startedAt)
+          return await this.executePromptStep(step, startedAt, stepIndex)
 
         case 'tool':
           return await this.executeToolStep(step, startedAt)
@@ -634,7 +675,7 @@ export class WorkflowEngine {
 
   // ── Prompt Step ───────────────────────────────────────────
 
-  private async executePromptStep(step: WorkflowStep, startedAt: number): Promise<StepResult> {
+  private async executePromptStep(step: WorkflowStep, startedAt: number, stepIndex: number): Promise<StepResult> {
     const { activeModel } = useModelStore.getState()
     if (!activeModel) throw new Error('No active model')
 
@@ -652,6 +693,64 @@ export class WorkflowEngine {
       (c) => c.id === this.conversationId,
     )?.sampling
     const sampling = buildSamplingRequest(settings, convSampling)
+
+    // Harter Befund von der Box (bau/wfprogress.md, 20.09.2026): a prompt step
+    // sent none of `maxTokens`/`thinking`/`reasoningEffort`/`effortLevels`/
+    // `effortDefault` — every field a normal chat/agent turn resolves before
+    // calling the SAME provider (useAgentChat.ts's `chatOptions`, useCodex.ts's
+    // `codexThinkMode`/`codexEffort`). Measured on the box: `llama-server`
+    // /slots showed n_decoded 30090 at n_predict 31619 on a 32768 ctx, and the
+    // run ended with "Workflow stopped at step 3 of 6: The model returned no
+    // content for this prompt step." — the model spent the WHOLE budget
+    // inside <think> and never reached an answer.
+    //
+    // klein 1 (Runde 2 review): `sampling.maxTokens` is 0/absent for every
+    // user who never touched the Max tokens slider (`DEFAULT_SETTINGS.
+    // maxTokens = 0`, and `buildSamplingRequest` omits a field still at the
+    // app default): for THAT user, sending `maxTokens: sampling.maxTokens`
+    // unchanged put `undefined` on the wire, same as before this fix, and
+    // the OpenAI-compatible provider's own fallback
+    // (`body.max_tokens = Math.min(headroom, 32768)`) would still ask for
+    // the entire remaining context. `DEFAULT_PROMPT_STEP_MAX_TOKENS` (above)
+    // is the real ceiling for that default case; a value the user or this
+    // chat DID set always wins over it.
+    //
+    // klein 3 (Runde 2 review): a first version of this fix sent
+    // `thinking: false` to EVERY model, including a catalogue "always
+    // thinks" one, reasoning that a workflow step is mechanical, not a
+    // conversation. But `openai-provider.ts`'s own measurement says
+    // otherwise for that case: "on GLM 5.3 'none' does not stop the
+    // thinking, it only stops the upstream from separating it ... costs
+    // MORE than sending nothing". Asking an always-reasoning model to stop
+    // cannot help it finish in time and can cost more while doing nothing.
+    // The normal agent turn already has the right rule for this
+    // (`canThinkAgent`/`thinkOpt`, useAgentChat.ts): an 'always'/'never'
+    // model gets NO thinking wish at all (`undefined`), only a real
+    // 'toggle' model gets an explicit true/false. Reused verbatim here,
+    // with the workflow's own wish for a 'toggle' model always being "off",
+    // since a step executes an instruction and does not hold a conversation that
+    // benefits from visible deliberation. `DEFAULT_PROMPT_STEP_MAX_TOKENS`
+    // plus the existing honest "no content" failure (below) are what still
+    // catch a model that reasons regardless.
+    const modelMeta = useModelStore.getState().models.find((m) => m.name === activeModel)
+    const stepThinkMode = modelMeta && 'thinkMode' in modelMeta ? modelMeta.thinkMode : undefined
+    const canThinkStep = stepThinkMode ? stepThinkMode === 'toggle' : isThinkingCompatible(activeModel)
+    const effortLevels = modelMeta && 'effortLevels' in modelMeta ? modelMeta.effortLevels : undefined
+    const effortDefault = modelMeta && 'effortDefault' in modelMeta ? modelMeta.effortDefault : undefined
+    const userSetMaxTokens = sampling.maxTokens && sampling.maxTokens > 0
+    const reasoningOptions = {
+      thinking: canThinkStep ? false : undefined,
+      reasoningEffort: settings.reasoningEffort,
+      effortLevels,
+      effortDefault,
+      maxTokens: userSetMaxTokens ? sampling.maxTokens : DEFAULT_PROMPT_STEP_MAX_TOKENS,
+      // Runde 3 klein 1 (bau/wfprogress.md): tells openai-provider.ts's
+      // unmeasured-context branch this is OUR fallback, not something the
+      // user typed, so it stays off the wire there instead of being sent
+      // uncapped to a server whose real window was never measured.
+      maxTokensIsDefault: !userSetMaxTokens,
+    }
+
     let output = ''
 
     if (step.allowedTools && step.allowedTools.length === 0) {
@@ -662,12 +761,19 @@ export class WorkflowEngine {
       // 404s the moment the model lives on LM Studio.
       const stream = provider.chatStream(modelToUse, messages, {
         temperature: sampling.temperature,
+        ...reasoningOptions,
         // Bug AA v2.5.0 — keep num_ctx override for workflow steps too.
         contextWindow: settings.contextWindowOverride || undefined,
         signal: this.abortController.signal,
       })
       for await (const chunk of stream) {
-        if (chunk.content) output += chunk.content
+        if (chunk.content) {
+          output += chunk.content
+          // klein 3 (bau/wfprogress.md): relay the growing answer to whoever
+          // is watching this run (the chat trigger's progress block), so a
+          // long-thinking model shows LIVE text instead of a silent wait.
+          this.callbacks.onStepProgress?.(stepIndex, output)
+        }
         if (chunk.done) break
       }
     } else {
@@ -690,11 +796,15 @@ export class WorkflowEngine {
       if (strategy === 'native') {
         const turn = await provider.chatWithTools(modelToUse, messages, allowedTools, {
           temperature: sampling.temperature,
+          ...reasoningOptions,
           // Bug AA v2.5.0 — same num_ctx override on tool calls.
           contextWindow: settings.contextWindowOverride || undefined,
           signal: this.abortController.signal,
         })
         output = turn.content || ''
+        // `chatWithTools` returns one turn, not a stream — no per-chunk
+        // progress to relay, but the field the block shows still updates
+        // once this call resolves (onStepComplete carries the final output).
 
         // Execute any tool calls, gated the same as a tool step (see
         // executeToolStep below): the catalog above already hides a blocked
@@ -727,9 +837,16 @@ export class WorkflowEngine {
           hermesMessages.map(m => ({ role: m.role, content: m.content })),
           {
             temperature: sampling.temperature,
+            ...reasoningOptions,
             contextWindow: settings.contextWindowOverride || undefined,
             signal: this.abortController.signal,
           },
+          // klein 3: `streamProviderTurn` already streams under the hood
+          // (it wraps `provider.chatStream`) — relaying its cumulative
+          // content is the same live-progress hookup the plain-prompt
+          // branch above gets, just through this transport's own callback
+          // instead of a hand-rolled for-await loop.
+          (full) => this.callbacks.onStepProgress?.(stepIndex, full),
         )
         const rawContent = hermesTurn.content
 

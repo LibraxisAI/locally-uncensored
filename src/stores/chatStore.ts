@@ -7,6 +7,7 @@ import { clampSampling, type SamplingOverrides } from '../lib/sampling'
 import { idbStorage } from '../lib/idbStorage'
 import { coalescedJSONStorage } from '../lib/coalescedStorage'
 import { migrateBlockInPlace } from '../api/agents/block-helpers'
+import { markStaleWorkflowProgressStoppedOnBlock, extractWorkflowNameFromProgressMessage } from '../lib/workflow-progress-view'
 import { useGenerationStore } from './generationStore'
 import { useRemoteStore } from './remoteStore'
 import { useRAGStore } from './ragStore'
@@ -33,11 +34,28 @@ export function migratePersistedChat(state: unknown): unknown {
     for (const msg of messages) {
       const blocks = prop(msg, 'agentBlocks')
       if (!Array.isArray(blocks)) continue
+      // Runde 3, B2 (review-wfprogress.md): the workflow's own name lives on
+      // the TRIGGER message's content ("Running workflow: **<name>**"), not
+      // on the block or the tool call, so it has to be pulled out here, once
+      // per message, and threaded into the block-level fix below.
+      const workflowName = extractWorkflowNameFromProgressMessage(prop(msg, 'content'))
       for (const block of blocks) {
         // migrateBlockInPlace reads `toolCall` and `toolCalls` and writes
         // `toolCalls`; the cast claims no more than those three, and the
         // record check above is what makes even that much true.
-        if (isRecord(block)) migrateBlockInPlace(block as unknown as AgentBlock)
+        if (!isRecord(block)) continue
+        const typedBlock = block as unknown as AgentBlock
+        migrateBlockInPlace(typedBlock)
+        // Runde 2 Blocker (app-restart case, workflow-progress-view.ts),
+        // fixed properly in Runde 3 (B2): a block still 'running' here means
+        // the app closed mid-run, since this migration only ever sees what
+        // was persisted, never a live in-session update (those go through
+        // addBlock/updateBlockById on the live Zustand state directly).
+        // Rewrite it as honestly stopped - on BOTH the legacy `toolCall` and
+        // the `toolCalls` array, since after a JSON persist round-trip they
+        // are separate objects and the chat surface (`groupAgentBlocks`,
+        // tool-call-groups.ts) renders only the legacy singular field.
+        markStaleWorkflowProgressStoppedOnBlock(typedBlock, workflowName)
       }
     }
   }

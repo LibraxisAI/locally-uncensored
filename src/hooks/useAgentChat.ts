@@ -86,6 +86,7 @@ import { AgentLoopGuard } from '../lib/agent-loop-guard'
 import { budgetFromSettings } from '../api/agents/budget'
 import type { ChatMessage, ToolCall, ToolDefinition } from '../api/providers/types'
 import type { WorkflowEngineCallbacks } from '../types/agent-workflows'
+import { renderWorkflowStepList, workflowProgressHeader, type WorkflowStepView } from '../lib/workflow-progress-view'
 import { executeParallel, applyResultToToolCall, type ExecutionRequest } from '../api/agents/tool-executor'
 import { useToolAuditStore } from '../stores/toolAuditStore'
 import { makeInTurnCacheLookup } from '../api/agents/in-turn-cache'
@@ -401,8 +402,17 @@ export function useAgentChat() {
         useChatStore.getState().addMessage(convId, {
           id: uuid(), role: 'user', content: userContent, timestamp: Date.now(),
         })
+        // klein 2 (bau/wfprogress.md): this message used to end on a bare
+        // "..." that never changed for the whole run — the ONLY feedback a
+        // multi-minute workflow gave was three static dots, unlike every
+        // other tool call, which shows a running/working status block. The
+        // trailing "..." is dropped here; `progressMessageId` below carries
+        // the SAME per-step ToolCallBlock/ToolCallBand pattern real tool
+        // calls use instead, updated live from the engine's onStepStart/
+        // onStepComplete/onStepError callbacks.
+        const progressMessageId = uuid()
         useChatStore.getState().addMessage(convId, {
-          id: uuid(), role: 'assistant', content: `Running workflow: **${workflow.name}**...`, timestamp: Date.now(),
+          id: progressMessageId, role: 'assistant', content: `Running workflow: **${workflow.name}**`, timestamp: Date.now(),
         })
 
         // B1 (lu-301/bau/klaerung-n7.md): a workflow that ends in
@@ -428,34 +438,6 @@ export function useAgentChat() {
         // failed. Those tool responses are fixed at the source now
         // (builtin-tools.ts), and a failure IS reported here with WHERE it
         // happened, not a bare "Workflow error: ...".
-        let hadStepError = false
-        const callbacks: WorkflowEngineCallbacks = {
-          onStepStart: () => {},
-          onStepComplete: () => {},
-          onStepError: (i, error) => {
-            hadStepError = true
-            if (convId) {
-              useChatStore.getState().addMessage(convId, {
-                id: uuid(), role: 'assistant', content: describeWorkflowStepFailure(workflow, i, error), timestamp: Date.now(),
-              })
-            }
-          },
-          onWaitingForInput: () => {},
-          onComplete: (allResults) => {
-            if (hadStepError || !convId) return
-            useChatStore.getState().addMessage(convId, {
-              id: uuid(), role: 'assistant', content: describeWorkflowCompletion(workflow, allResults), timestamp: Date.now(),
-            })
-          },
-          onError: (err) => {
-            if (convId) {
-              useChatStore.getState().addMessage(convId, {
-                id: uuid(), role: 'assistant', content: `Workflow error: ${err}`, timestamp: Date.now(),
-              })
-            }
-          },
-        }
-
         // Nebenbefund, bau/review-wfplay.md Teil B: this trigger used to hand
         // the engine no gate at all, so a workflow's own tool steps ran
         // unattended. Reusing `buildSubAgentGates` (audit AGT-1's fix, same
@@ -473,7 +455,209 @@ export function useAgentChat() {
         // Registering this run the same way every other agent turn does
         // gives Stop both a real `abortSignal` to close the gate with and a
         // live engine to call `cancel()` on.
+        //
+        // Declared here (before `callbacks`) because onStepStart/onStepComplete
+        // below write into `workflowRunState.blocks` the same way the normal
+        // tool-call loop writes into its own run state — see addBlock/
+        // updateBlockById above.
         const workflowAbort = new AbortController()
+        const workflowRunState: AgentRunState = { convId, content: '', thinking: '', blocks: [], abort: workflowAbort }
+
+        // klein 2 (bau/wfprogress.md) + Zusatz vom Eigner, 20.09.2026: ONE
+        // AgentToolCall-shaped block for the whole run, added once and
+        // updated in place — the exact addBlock/updateBlockById pattern the
+        // normal agent tool loop already uses (see the `run_workflow`-less
+        // path below), so this is the SAME clickable, downward-expanding
+        // ToolCallBlock a real tool call gets: same header/spinner while
+        // running, same "click to expand" body. The body (`result`, rendered
+        // in the block's existing details pane) is the full step list from
+        // `workflow-progress-view.ts` — every step's status (waiting/running/
+        // done/failed), each finished step's truncated args+result (tool
+        // steps) or the start of the model's answer (prompt steps), and the
+        // currently running step's LIVE text as it streams in
+        // (`onStepProgress`). The block stays mounted and expandable after
+        // the run ends; the existing honest completion/error message still
+        // follows as its own chat message, unchanged.
+        const stepViews: WorkflowStepView[] = workflow.steps.map((step) => ({ step, status: 'pending' as const }))
+        const progressBlockId = uuid()
+        const progressToolCallId = uuid()
+        const progressStartedAt = Date.now()
+
+        type ProgressStatus = 'running' | 'completed' | 'failed' | 'stopped'
+        // klein 4 (Runde 2 review): `onStepProgress` fires per STREAM CHUNK,
+        // and a fast local model produces thousands of them per step. Writing
+        // the store on every one is the exact thing the normal agent turn's
+        // own `scheduleUIUpdate` (above, the main loop further down this
+        // file) already avoids with a `requestAnimationFrame` coalesce; this
+        // is the same pattern, scoped to the workflow's own block. Every
+        // call that reaches a TERMINAL or step-boundary state (onStepStart/
+        // onStepComplete/onStepError/onComplete/onError/onStopped) still
+        // writes immediately, never through this throttle, so "the final
+        // state at the end of a step is written for sure" holds regardless
+        // of whatever frame is or is not pending.
+        let currentProgressStatus: ProgressStatus = 'running'
+        let progressFrameScheduled = false
+
+        const pushProgressBlock = (status: ProgressStatus) => {
+          currentProgressStatus = status
+          if (!convId) return
+          const now = Date.now()
+          // B1 (Blocker, Runde 2): a genuine Stop gets its own honest label
+          // and status ('stopped', not 'failed'), since nothing broke, the
+          // run was simply cancelled. `workflowProgressHeader` only knows "running step
+          // X" and "(n/m steps)", neither of which is true here.
+          const toolName = status === 'stopped'
+            ? `Workflow: ${workflow.name} (stopped)`
+            : workflowProgressHeader(workflow.name, stepViews)
+          const ac: AgentToolCall = {
+            id: progressToolCallId,
+            toolName,
+            args: {},
+            status,
+            result: renderWorkflowStepList(stepViews),
+            timestamp: progressStartedAt,
+            startedAt: progressStartedAt,
+            completedAt: status === 'running' ? undefined : now,
+            duration: status === 'running' ? undefined : now - progressStartedAt,
+          }
+          updateBlockById(workflowRunState, convId, progressMessageId, progressBlockId, {
+            content: ac.toolName,
+            toolCall: ac,
+            toolCalls: [ac],
+          })
+        }
+
+        // Reads `currentProgressStatus` at FIRE time, not a captured
+        // 'running', so a stray frame that outlives the step (or the whole
+        // run) then writes whatever the run's real, current status is
+        // instead of stomping a terminal write that already landed.
+        const scheduleProgressUpdate = () => {
+          if (progressFrameScheduled) return
+          progressFrameScheduled = true
+          requestAnimationFrame(() => {
+            progressFrameScheduled = false
+            pushProgressBlock(currentProgressStatus)
+          })
+        }
+
+        // Mounted once, before the engine starts, so the block exists and is
+        // already expandable (every step listed as "waiting") the instant
+        // the run begins, not only once the first step starts.
+        addBlock(workflowRunState, convId, progressMessageId, {
+          id: progressBlockId,
+          phase: 'tool_call',
+          content: workflowProgressHeader(workflow.name, stepViews),
+          toolCall: {
+            id: progressToolCallId, toolName: workflowProgressHeader(workflow.name, stepViews), args: {},
+            status: 'running', result: renderWorkflowStepList(stepViews), timestamp: progressStartedAt, startedAt: progressStartedAt,
+          },
+          toolCalls: [{
+            id: progressToolCallId, toolName: workflowProgressHeader(workflow.name, stepViews), args: {},
+            status: 'running', result: renderWorkflowStepList(stepViews), timestamp: progressStartedAt, startedAt: progressStartedAt,
+          }],
+          timestamp: progressStartedAt,
+        })
+
+        let hadStepError = false
+        const callbacks: WorkflowEngineCallbacks = {
+          onStepStart: (stepIndex, step) => {
+            const view = stepViews[stepIndex]
+            if (view) {
+              view.status = 'running'
+              view.step = step
+            }
+            pushProgressBlock('running')
+          },
+          onStepProgress: (stepIndex, partialOutput) => {
+            const view = stepViews[stepIndex]
+            if (view) view.output = partialOutput
+            scheduleProgressUpdate()
+          },
+          onStepComplete: (stepIndex, result) => {
+            const view = stepViews[stepIndex]
+            if (view) {
+              view.status = 'completed'
+              view.output = result.output
+              view.args = result.toolCalls?.[0]?.args
+            }
+            pushProgressBlock('running')
+          },
+          onStepError: (i, error) => {
+            hadStepError = true
+            const view = stepViews[i]
+            if (view) {
+              view.status = 'failed'
+              view.error = error
+            }
+            pushProgressBlock('failed')
+            if (convId) {
+              useChatStore.getState().addMessage(convId, {
+                id: uuid(), role: 'assistant', content: describeWorkflowStepFailure(workflow, i, error), timestamp: Date.now(),
+              })
+            }
+          },
+          onWaitingForInput: () => {},
+          onComplete: (allResults) => {
+            // Any step neither completed nor failed never ran (a condition
+            // branched past it, or the chain stopped before reaching it) —
+            // named "skipped" (the SAME StepStatus a real skip already uses)
+            // instead of staying "waiting" forever after the run is over.
+            for (const result of allResults) {
+              const idx = workflow.steps.findIndex((s) => s.id === result.stepId)
+              const view = idx >= 0 ? stepViews[idx] : undefined
+              if (view && view.status !== 'failed') {
+                view.status = result.status === 'failed' ? 'failed' : 'completed'
+                view.output = result.output
+                view.args = result.toolCalls?.[0]?.args ?? view.args
+              }
+            }
+            for (const view of stepViews) {
+              if (view.status === 'pending' || view.status === 'running') view.status = 'skipped'
+            }
+            pushProgressBlock(hadStepError ? 'failed' : 'completed')
+            if (hadStepError || !convId) return
+            useChatStore.getState().addMessage(convId, {
+              id: uuid(), role: 'assistant', content: describeWorkflowCompletion(workflow, allResults), timestamp: Date.now(),
+            })
+          },
+          onError: (err) => {
+            for (const view of stepViews) {
+              if (view.status === 'pending' || view.status === 'running') view.status = 'skipped'
+            }
+            pushProgressBlock('failed')
+            if (convId) {
+              useChatStore.getState().addMessage(convId, {
+                id: uuid(), role: 'assistant', content: `Workflow error: ${err}`, timestamp: Date.now(),
+              })
+            }
+          },
+          // B1 (Blocker, Runde 2): the ONE remaining terminal state, for
+          // when Stop fired between two steps, or during a step that finished
+          // normally despite the abort signal, so neither `onStepError` nor
+          // `onError` ever reported a terminal outcome. Whatever the engine
+          // DID complete before the stop is folded in the same way
+          // `onComplete` folds it; whatever never ran (still 'pending') or
+          // was interrupted mid-run ('running') is marked skipped, same
+          // vocabulary a real branch-skip already uses. No chat message is
+          // added: Stop has never added one for the ordinary agent loop
+          // either, the block itself is the honest record.
+          onStopped: (partialResults) => {
+            for (const result of partialResults) {
+              const idx = workflow.steps.findIndex((s) => s.id === result.stepId)
+              const view = idx >= 0 ? stepViews[idx] : undefined
+              if (view && view.status !== 'failed') {
+                view.status = result.status === 'failed' ? 'failed' : 'completed'
+                view.output = result.output
+                view.args = result.toolCalls?.[0]?.args ?? view.args
+              }
+            }
+            for (const view of stepViews) {
+              if (view.status === 'pending' || view.status === 'running') view.status = 'skipped'
+            }
+            pushProgressBlock('stopped')
+          },
+        }
+
         const gates = await buildSubAgentGates({
           token: `workflow-trigger-${convId}`,
           chatId: null,
@@ -495,7 +679,6 @@ export function useAgentChat() {
           : undefined
         const engine = new WorkflowEngine(workflow, convId, callbacks, gates.awaitApproval, initialVars)
         workflowAbort.signal.addEventListener('abort', () => engine.cancel(), { once: true })
-        const workflowRunState: AgentRunState = { convId, content: '', thinking: '', blocks: [], abort: workflowAbort }
         activeAgentRuns.set(convId, workflowRunState)
         setIsAgentRunning(true)
         try {
