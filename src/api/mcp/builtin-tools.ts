@@ -1679,6 +1679,18 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
     } finally {
       abort?.removeEventListener('abort', onAbort)
     }
+    // A1 (Final Review Teil 17, review-teil17-lintfix.md): a Stop hitting
+    // BETWEEN two steps trips `workflow-engine.ts`'s own abort check
+    // (`if (this.abortController.signal.aborted) break`), which skips
+    // `onComplete` entirely and fires no `onStepError` either (that only
+    // runs for a step that actually returned `status: 'failed'`, such as
+    // the waiting `user_input` step's own `error: 'Cancelled'` ->
+    // `Workflow error: Cancelled`). Without this line `finalOutput` stayed
+    // '' in that gap, and the model got back an empty tool result with no
+    // sign the run was ever stopped. Same English message as the waiting
+    // step, so a caller sees the identical text regardless of where the
+    // Stop landed.
+    if (abort?.aborted && !finalOutput) finalOutput = 'Workflow error: Cancelled'
   } finally {
     _workflowDepth--
   }
