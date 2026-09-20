@@ -8,6 +8,29 @@ import type { RenderOp } from '../../lib/render/cloud-jobs'
 
 export interface CloudJobParams {
   op: RenderOp
+  // ── Studio (2026-09): a schema-driven step booked against a server-
+  // confirmed quote rather than one of the fixed shapes below. ──
+  /** Idempotency key (a UUID minted client-side): a retried submit after a
+   *  dropped response replays the same job instead of booking twice. */
+  client_request_id?: string
+  /** The picked step's option values, validated client-side against the same
+   *  provider schema studio-contract.ts reads (createStore.cloudStudioOptions). */
+  studio_options?: Record<string, unknown>
+  /** Ceiling from the last confirmed studio-quote; the server re-quotes and
+   *  answers 409 quote_changed (see QuoteChangedError) if its own number now
+   *  exceeds this — never books a price the customer never saw. */
+  max_credits?: number
+  /** Kurze Ueberschrift fuer die Galerie, wenn der Lauf keinen Prompt hat oder
+   *  der Prompt nicht sagt, was dabei herauskam: der Titel eines Presets, die
+   *  Beschreibung eines Schrittes. Hoechstens 120 Zeichen, der Server kuerzt. */
+  label?: string
+  /** Second staged audio input (a Studio step that mixes two tracks). */
+  audio2_path?: string
+  /** Last frame of a prior step's clip, chained in as this step's image. */
+  last_image_path?: string
+  /** wan i2v: single shot or a multi-shot cut. Mapped only where the endpoint
+   *  schema carries the field; the worker checks the same schema. */
+  shot_type?: 'single' | 'multi'
   negative_prompt?: string
   width?: number
   height?: number
@@ -56,6 +79,11 @@ export interface CloudJob {
   started_at?: string | null
   completed_at: string | null
   error: string | null
+  // Die Anzeigefelder, die die Listenroute (GET /api/jobs) aus den params
+  // herausreicht, damit eine neu geladene Galerie den Namen des Laufs
+  // wiederherstellt statt jedesmal leer anzufangen.
+  prompt?: string
+  label?: string
 }
 
 export interface CloudMe {
@@ -96,14 +124,51 @@ export async function uploadInput(
   return path
 }
 
+export interface CloudJobSubmitResult {
+  id: string
+  /** A submit retried with the same client_request_id (CloudJobParams) hits
+   *  the server's idempotency check and replays the original booking instead
+   *  of charging twice — `used`/`limit` are not recomputed for a replay, only
+   *  `cost` is guaranteed. */
+  quota: { cost: number; used?: number; limit?: number }
+  replayed?: boolean
+}
+
+/** The server re-quoted at submit time (prepareStudio()) and its own number
+ *  now exceeds the studio-quote price the customer confirmed. Distinct from
+ *  a plain CloudJobError so a Studio caller can show the new price instead of
+ *  a generic failure — see Portplan Abschnitt 4 and Risiko 1. */
+export class QuoteChangedError extends CloudJobError {
+  readonly credits: number
+  constructor(message: string, credits: number) {
+    super(message, 409, { code: 'quote_changed' })
+    this.credits = credits
+  }
+}
+
 export async function submitCloudJob(
   submit: CloudJobSubmit,
-): Promise<{ id: string; quota: { cost: number; used: number; limit: number } }> {
+): Promise<CloudJobSubmitResult> {
   const res = await cloudFetch('/api/jobs', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(submit),
   })
+  if (res.status === 409) {
+    // Read by hand rather than through jsonOrError: only this one status
+    // carries the extra `credits` figure QuoteChangedError needs, and every
+    // other 409 (a plain conflict) must still surface as a normal
+    // CloudJobError with the server's own message.
+    const raw = await res.text().catch(() => '')
+    let body: unknown = {}
+    try { if (raw.trim()) body = JSON.parse(raw) } catch { /* falls through below */ }
+    const b = body as { error?: unknown; code?: unknown; credits?: unknown }
+    const msg = typeof b.error === 'string' ? b.error : 'request failed (409)'
+    if (b.code === 'quote_changed' && typeof b.credits === 'number') {
+      throw new QuoteChangedError(msg, b.credits)
+    }
+    throw new CloudJobError(msg, 409, { code: typeof b.code === 'string' ? b.code : undefined })
+  }
   return jsonOrError(res)
 }
 

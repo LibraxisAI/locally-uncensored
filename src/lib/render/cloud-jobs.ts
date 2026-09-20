@@ -1,7 +1,17 @@
 // Desktop port: shared render types + intent mapping. The HTTP client (upload/
 // submit/poll/cancel against lu-labs.ai) lives in api/cloud/jobs.ts.
 
-import type { CreateIntent } from '../../stores/createStore'
+// intentToJob's parameter, kept as a LOCAL literal union rather than an
+// `import type { CreateIntent } from '../../stores/createStore'`. createStore
+// now imports the cloud catalog (cloudCatalogStore, itself typed against
+// RenderKind/RenderOp from this file) for addToGallery's backend gate — a
+// type-only import back to createStore here would close that into a module
+// cycle (`npm run cycles`, madge, counts type-only edges too). The two sets
+// must be kept in sync by hand; CreateIntent in stores/createStore.ts is the
+// source of truth.
+type CreateIntentLike =
+  | 'image' | 'edit' | 'removebg' | 'video' | 'animate' | 'upscale' | 'eraser'
+  | 'character' | 'lipsync' | 'music' | 'extend' | 'motion'
 
 export type RenderKind = 'image' | 'video' | 'audio'
 // 'upscale'/'eraser' are WaveSpeed utility endpoints (super-resolution /
@@ -9,9 +19,12 @@ export type RenderKind = 'image' | 'video' | 'audio'
 // 2.5.8 adds the specialized ops behind the new Create categories: 'lipsync'
 // (talking character), 'extend' (continue a clip), 'motion' (motion transfer,
 // NOT face-swap — banned), 'music', 'tts' and 'lora-train' (Character-Studio).
+// 'studio' (2026-09): the guided Create-Studio path — a schema-driven
+// endpoint booked with `studio_options` and a server-confirmed quote, rather
+// than one of the fixed param shapes above.
 export type RenderOp =
   | 'generate' | 'edit' | 'removebg' | 'animate' | 'upscale' | 'eraser'
-  | 'lipsync' | 'extend' | 'motion' | 'music' | 'tts' | 'lora-train'
+  | 'studio' | 'lipsync' | 'extend' | 'motion' | 'music' | 'tts' | 'lora-train'
 
 // One shared compute-credit wallet — text + media draw from the same budget
 // (server shape: uselu /api/jobs/quota).
@@ -41,7 +54,7 @@ export interface CloudQuota {
  *  'character' maps per characterTab (train vs use) — see useCloudCreate; the
  *  default here is the training op, the use-surface submits a plain image
  *  generate with a `loras` reference. */
-export function intentToJob(intent: CreateIntent): { kind: RenderKind; op: RenderOp } {
+export function intentToJob(intent: CreateIntentLike): { kind: RenderKind; op: RenderOp } {
   switch (intent) {
     case 'edit':
       return { kind: 'image', op: 'edit' }
