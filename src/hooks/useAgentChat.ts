@@ -403,7 +403,7 @@ export function useAgentChat() {
           id: uuid(), role: 'user', content: userContent, timestamp: Date.now(),
         })
         // klein 2 (bau/wfprogress.md): this message used to end on a bare
-        // "..." that never changed for the whole run — the ONLY feedback a
+        // "...", never changing for the whole run: the ONLY feedback a
         // multi-minute workflow gave was three static dots, unlike every
         // other tool call, which shows a running/working status block. The
         // trailing "..." is dropped here; `progressMessageId` below carries
@@ -458,20 +458,20 @@ export function useAgentChat() {
         //
         // Declared here (before `callbacks`) because onStepStart/onStepComplete
         // below write into `workflowRunState.blocks` the same way the normal
-        // tool-call loop writes into its own run state — see addBlock/
-        // updateBlockById above.
+        // tool-call loop writes into its own run state (see addBlock/
+        // updateBlockById above).
         const workflowAbort = new AbortController()
         const workflowRunState: AgentRunState = { convId, content: '', thinking: '', blocks: [], abort: workflowAbort }
 
         // klein 2 (bau/wfprogress.md) + Zusatz vom Eigner, 20.09.2026: ONE
         // AgentToolCall-shaped block for the whole run, added once and
-        // updated in place — the exact addBlock/updateBlockById pattern the
+        // updated in place, the exact addBlock/updateBlockById pattern the
         // normal agent tool loop already uses (see the `run_workflow`-less
         // path below), so this is the SAME clickable, downward-expanding
         // ToolCallBlock a real tool call gets: same header/spinner while
         // running, same "click to expand" body. The body (`result`, rendered
         // in the block's existing details pane) is the full step list from
-        // `workflow-progress-view.ts` — every step's status (waiting/running/
+        // `workflow-progress-view.ts`: every step's status (waiting/running/
         // done/failed), each finished step's truncated args+result (tool
         // steps) or the start of the model's answer (prompt steps), and the
         // currently running step's LIVE text as it streams in
@@ -599,9 +599,9 @@ export function useAgentChat() {
           onWaitingForInput: () => {},
           onComplete: (allResults) => {
             // Any step neither completed nor failed never ran (a condition
-            // branched past it, or the chain stopped before reaching it) —
-            // named "skipped" (the SAME StepStatus a real skip already uses)
-            // instead of staying "waiting" forever after the run is over.
+            // branched past it, or the chain stopped before reaching it), so
+            // it is named "skipped" (the SAME StepStatus a real skip already
+            // uses) instead of staying "waiting" forever after the run is over.
             for (const result of allResults) {
               const idx = workflow.steps.findIndex((s) => s.id === result.stepId)
               const view = idx >= 0 ? stepViews[idx] : undefined

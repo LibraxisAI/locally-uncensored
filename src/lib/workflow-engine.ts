@@ -696,12 +696,12 @@ export class WorkflowEngine {
 
     // Harter Befund von der Box (bau/wfprogress.md, 20.09.2026): a prompt step
     // sent none of `maxTokens`/`thinking`/`reasoningEffort`/`effortLevels`/
-    // `effortDefault` — every field a normal chat/agent turn resolves before
+    // `effortDefault`, every field a normal chat/agent turn resolves before
     // calling the SAME provider (useAgentChat.ts's `chatOptions`, useCodex.ts's
     // `codexThinkMode`/`codexEffort`). Measured on the box: `llama-server`
     // /slots showed n_decoded 30090 at n_predict 31619 on a 32768 ctx, and the
     // run ended with "Workflow stopped at step 3 of 6: The model returned no
-    // content for this prompt step." — the model spent the WHOLE budget
+    // content for this prompt step.": the model spent the WHOLE budget
     // inside <think> and never reached an answer.
     //
     // klein 1 (Runde 2 review): `sampling.maxTokens` is 0/absent for every
@@ -802,8 +802,8 @@ export class WorkflowEngine {
           signal: this.abortController.signal,
         })
         output = turn.content || ''
-        // `chatWithTools` returns one turn, not a stream — no per-chunk
-        // progress to relay, but the field the block shows still updates
+        // `chatWithTools` returns one turn, not a stream, so there is no
+        // per-chunk progress to relay, but the field the block shows still updates
         // once this call resolves (onStepComplete carries the final output).
 
         // Execute any tool calls, gated the same as a tool step (see
@@ -842,7 +842,7 @@ export class WorkflowEngine {
             signal: this.abortController.signal,
           },
           // klein 3: `streamProviderTurn` already streams under the hood
-          // (it wraps `provider.chatStream`) — relaying its cumulative
+          // (it wraps `provider.chatStream`); relaying its cumulative
           // content is the same live-progress hookup the plain-prompt
           // branch above gets, just through this transport's own callback
           // instead of a hand-rolled for-await loop.

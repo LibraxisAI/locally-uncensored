@@ -3,25 +3,25 @@
  * ran "Research Topic", `llama-server`'s /slots endpoint showed one request at
  * n_decoded 30090 / n_predict 31619 on a 32768-token context, and the run
  * ended with "Workflow stopped at step 3 of 6: The model returned no content
- * for this prompt step." — the model spent its ENTIRE output budget inside
+ * for this prompt step.": the model spent its ENTIRE output budget inside
  * <think> and never reached an answer. The cause: `executePromptStep`
  * (workflow-engine.ts) built its `provider.chatStream` / `chatWithTools` /
- * `streamProviderTurn` options from `temperature` and `contextWindow` ONLY —
- * no `maxTokens` (so the OpenAI-compatible provider's own fallback,
+ * `streamProviderTurn` options from `temperature` and `contextWindow` ONLY,
+ * with no `maxTokens` (so the OpenAI-compatible provider's own fallback,
  * `body.max_tokens = Math.min(headroom, 32768)`, asked for the entire
  * remaining context) and no `thinking` policy at all, so an "always thinks"
- * model (GLM-5.3, Flash, Qwen3.5 — memory index) reasoned at its own default
+ * model (GLM-5.3, Flash, Qwen3.5, see memory index) reasoned at its own default
  * depth with the whole context to spend it in.
  *
  * The fix reuses the house's own answer to this exact failure:
  * `compact-run.ts`'s auto-compaction summarizer measured the SAME thing on
  * the SAME model family and asks for `thinking: false` outright, because its
- * call — like a workflow's prompt step — is a mechanical execution of an
+ * call, like a workflow's prompt step, is a mechanical execution of an
  * instruction, not a conversation that benefits from visible deliberation. An
  * earlier version of this fix instead requested `thinking: true` for an
  * "always thinks" model (reasoning: "that is what the catalogue says"), which
  * a counter-check found makes the failure MORE likely under a bounded
- * `maxTokens`, not less — explicit full-depth reasoning burns the cap before
+ * `maxTokens`, not less: explicit full-depth reasoning burns the cap before
  * ever answering. `thinking: false` is what actually ships.
  *
  * This drives the REAL `WorkflowEngine` over a one-step prompt workflow with
@@ -129,7 +129,7 @@ describe('a prompt step asks for the SAME output-limit policy a normal chat/agen
     await engine.run()
 
     // NEGATIVKONTROLLE (bau/wfprogress.md): before the fix `executePromptStep`
-    // sent only `{ temperature, contextWindow, signal }` — every one of these
+    // sent only `{ temperature, contextWindow, signal }`, and every one of these
     // was `undefined`/absent, and the model reasoned at its own unbounded
     // default. See bau/wfprogress.md for the counted red count on the
     // pre-fix copy.
@@ -146,7 +146,7 @@ describe('a prompt step asks for the SAME output-limit policy a normal chat/agen
     expect(seenOptions!.effortLevels).toEqual(['low', 'medium', 'high'])
     expect(seenOptions!.effortDefault).toBe('medium')
     // reasoningEffort itself may be undefined (the user never touched the
-    // composer's slider) — what matters is the LADDER travels, which is what
+    // composer's slider); what matters is the LADDER travels, which is what
     // lets the provider clamp onto a real rung instead of sending nothing.
     expect('reasoningEffort' in seenOptions!).toBe(true)
     // klein 1/2 (review-wfprogress.md, "der eigentliche Boxbefund"):
@@ -296,7 +296,7 @@ describe('Stop reaches a running prompt step (AbortSignal bis zum fetch)', () =>
 
     expect(seenSignal).toBeDefined()
     expect(seenSignal!.aborted).toBe(true)
-    // The stream stopped at the FIRST chunk once cancel() fired mid-loop —
+    // The stream stopped at the FIRST chunk once cancel() fired mid-loop:
     // the second chunk's text never reached the step's output.
     expect(results[0]?.output ?? '').not.toContain('second chunk')
     // B1 (review-wfprogress.md): the step finished normally (non-empty
@@ -338,7 +338,7 @@ describe('Denk-Inhalt reist nicht als Schrittergebnis weiter (bereits gefixt, ge
 describe('klein 4: ein Modell, das die ganze Ausgabelaenge im Denken verbraucht', () => {
   it('endet weiter mit der ehrlichen Fehlermeldung, nicht mit leerem "Erfolg"', async () => {
     // The exact shape the box measured: everything the model produced sat
-    // inside <think>...</think> — no real answer ever followed, because the
+    // inside <think>...</think>, and no real answer ever followed, because the
     // model ran out of output budget while still reasoning. thinking:false
     // (klein 4's own fix) lowers how OFTEN this happens; it cannot promise it
     // never happens on a model that ignores the wish entirely, so the step
