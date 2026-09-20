@@ -684,15 +684,62 @@ fn queue_has_work(body: &serde_json::Value) -> bool {
 /// answers `Err`, and the caller refuses the update rather than risk killing
 /// a render it could not see.
 fn comfyui_queue_busy(port: u16) -> Result<bool, String> {
-    let resp = reqwest::blocking::get(format!("http://localhost:{port}/queue"))
-        .map_err(|e| format!("could not reach ComfyUI's queue: {e}"))?;
+    comfyui_queue_busy_with_timeout(port, std::time::Duration::from_secs(3))
+}
+
+/// Same check, with the HTTP timeout as a parameter so a test can hand it a
+/// server that never answers without waiting out the real 3 s (final review
+/// Runde 2, R2-2). `reqwest::blocking::get` has no deadline of its own; the
+/// house pattern everywhere else that calls a local model server
+/// (`engine_sanity.rs`, `mlx.rs`, `trainer.rs`, `ollama.rs`, `lmstudio.rs`,
+/// `torch.rs`, `process.rs`) builds a `Client` with `.timeout(...)` instead,
+/// and this does the same. A ComfyUI that holds the port but stopped
+/// answering ("Not responding" in this same panel) used to hang this call,
+/// and with it the whole `COMFY_JOB` lock, forever. A timed-out or failed
+/// request is still an `Err` here, which the caller already turns into a
+/// refusal, so a stalled ComfyUI fails closed exactly like an unreadable one.
+fn comfyui_queue_busy_with_timeout(port: u16, timeout: std::time::Duration) -> Result<bool, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("could not build an HTTP client to check ComfyUI's queue: {e}"))?;
+    let resp = client
+        .get(format!("http://localhost:{port}/queue"))
+        .send()
+        .map_err(|e| format!("could not reach ComfyUI's queue: {}", crate::os_error::english(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("ComfyUI's queue endpoint answered with {}", resp.status()));
     }
     let body: serde_json::Value = resp
         .json()
-        .map_err(|e| format!("could not read ComfyUI's queue: {e}"))?;
+        .map_err(|e| format!("could not read ComfyUI's queue: {}", crate::os_error::english(&e)))?;
     Ok(queue_has_work(&body))
+}
+
+/// Poll `is_occupied` every `interval` until it reports the port free or
+/// `cap` has passed, whichever comes first. Returns whether the port ended up
+/// free.
+///
+/// Pure of any real I/O of its own (final review Runde 2, R2-1): the probe is
+/// a closure, so both directions -- a port that frees up partway through the
+/// wait, and one that never does -- are provable with a counting closure and
+/// millisecond-scale durations, no real ComfyUI and no real 10 s wait in the
+/// test suite.
+fn wait_for_port_free(
+    interval: std::time::Duration,
+    cap: std::time::Duration,
+    mut is_occupied: impl FnMut() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + cap;
+    loop {
+        if !is_occupied() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(interval);
+    }
 }
 
 /// Stop whatever ComfyUI this app itself is responsible for before Update
@@ -719,14 +766,15 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
         return Ok(());
     }
     let port = *state.comfy_port.lock().unwrap();
-    if !crate::commands::process::is_comfyui_running_on_port(port) {
-        return Ok(());
-    }
+    let port_occupied = crate::commands::process::is_comfyui_running_on_port(port);
 
     // Peeked, never taken: the actual stop happens inside
     // `stop_comfyui_blocking` below, in its own single lock. Reading the
     // handle here decides only whether this ComfyUI is ours to stop at all.
-    let own_child_alive = {
+    // Skipped outright when nothing is even on the port, so the process-table
+    // scan `find_orphaned_comfyui` only ever costs anything when it can
+    // actually change the answer.
+    let own_child_alive = port_occupied && {
         let mut proc = state.comfy_process.lock().unwrap();
         match proc.as_mut() {
             Some(child) => match child.try_wait() {
@@ -740,13 +788,17 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
             None => false,
         }
     };
-    let orphan_pid = if own_child_alive {
+    let orphan_pid = if !port_occupied || own_child_alive {
         None
     } else {
         crate::commands::process::find_orphaned_comfyui(port)
     };
 
-    match crate::commands::process::classify_comfyui_ownership(true, own_child_alive, orphan_pid) {
+    // The real `port_occupied` goes into the classification (final review
+    // Runde 2, R2-k3): a hardcoded `true` here, kept alive by the early
+    // return that used to sit above this block, made the `NotRunning` arm
+    // below dead code that only LOOKED like a check.
+    match crate::commands::process::classify_comfyui_ownership(port_occupied, own_child_alive, orphan_pid) {
         crate::commands::process::ComfyOwnership::NotRunning => Ok(()),
         crate::commands::process::ComfyOwnership::Foreign => {
             println!("[Update] Refusing: port {port} is served by a ComfyUI this app did not start");
@@ -777,7 +829,25 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
                         return Err(foreign_comfyui_blocks_update(port));
                     }
                     info!(port = port, status = status, "update_comfyui stopped its own ComfyUI before updating");
-                    if crate::commands::process::is_comfyui_running_on_port(port) {
+                    // final review Runde 2, R2-1: a single check right here
+                    // used to fire before the kill had actually landed.
+                    // `stop_comfyui_blocking`'s own-child path reaps with
+                    // `child.wait()`, but the adopted-orphan path
+                    // (`process_util::kill_pid_tree`) sends SIGTERM and
+                    // returns immediately on Unix, with the SIGKILL only
+                    // following `KILL_GRACE` (800 ms) later on a background
+                    // thread; `shell::kill_tree` on Windows likewise does not
+                    // wait for the tree to actually exit. The immediate check
+                    // therefore caught a ComfyUI LU had just killed a moment
+                    // before, still mid-shutdown, and told the customer it
+                    // "did not stop" -- untrue, and it pointed them at a Stop
+                    // button with nothing left to stop. Poll instead, capped
+                    // a little past the grace period.
+                    if !wait_for_port_free(
+                        std::time::Duration::from_millis(400),
+                        std::time::Duration::from_secs(10),
+                        || crate::commands::process::is_comfyui_running_on_port(port),
+                    ) {
                         return Err(format!(
                             "ComfyUI on port {port} did not stop, so the update was not started. Try \
                              Stop in Settings, then run Update ComfyUI again. Nothing was changed."
@@ -1749,5 +1819,75 @@ mod tests {
         // A shape ComfyUI has never actually sent, kept as the honest
         // fallback: neither key present reads as no work, not as an error.
         assert!(!queue_has_work(&serde_json::json!({})));
+    }
+
+    // ── final review Runde 2, R2-1: the port-free wait after the stop ───────
+
+    #[test]
+    fn wait_for_port_free_returns_true_once_the_probe_actually_frees_up() {
+        // Positive case: the port is still occupied on the first two polls
+        // and free on the third, standing in for the real KILL_GRACE delay
+        // without an actual 800 ms sleep in the test suite. Before this
+        // helper existed, the single immediate check this replaced would
+        // have read the first `true` and stopped right there.
+        let mut calls = 0u32;
+        let freed = wait_for_port_free(
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(200),
+            || {
+                calls += 1;
+                calls < 3
+            },
+        );
+        assert!(freed, "the port never registered as free even though the probe said so on the third call");
+        assert_eq!(calls, 3, "expected exactly the calls needed to observe the port going free, got {calls}");
+    }
+
+    #[test]
+    fn wait_for_port_free_gives_up_once_the_cap_is_reached() {
+        // Gegenprobe: a port that never frees up must still return, with the
+        // caller then producing the "did not stop" refusal, not hang forever.
+        let start = std::time::Instant::now();
+        let freed = wait_for_port_free(
+            std::time::Duration::from_millis(2),
+            std::time::Duration::from_millis(20),
+            || true,
+        );
+        assert!(!freed, "a port that never frees up must not be reported as free");
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(20),
+            "gave up before the cap even elapsed: {:?}",
+            start.elapsed()
+        );
+    }
+
+    // ── final review Runde 2, R2-2: the queue check needs a real deadline ──
+
+    #[test]
+    fn queue_check_fails_closed_instead_of_hanging_on_a_server_that_never_answers() {
+        // A ComfyUI that holds the port but stopped answering ("Not
+        // responding" in this same panel) is exactly what this simulates:
+        // accept the connection, then never write a single byte back.
+        // `reqwest::blocking::get` (no `Client::builder().timeout(...)`)
+        // would hang here for as long as the OS lets a TCP connection sit
+        // idle, which is why this test is the negative control for R2-2.
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                drop(stream);
+            }
+        });
+
+        let start = std::time::Instant::now();
+        let result = comfyui_queue_busy_with_timeout(port, std::time::Duration::from_millis(200));
+        assert!(result.is_err(), "a server that never answers must fail closed, not report an empty queue");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "the call did not honor its timeout, took {:?}",
+            start.elapsed()
+        );
     }
 }

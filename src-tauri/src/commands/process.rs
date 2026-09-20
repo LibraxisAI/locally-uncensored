@@ -2386,12 +2386,24 @@ pub async fn comfyui_status(state: State<'_, AppState>) -> Result<serde_json::Va
     // live `process_alive` is always `Own`, and nothing running at all is
     // always `NotRunning`, so the sysinfo walk only ever runs for the one
     // case that needs it, a port answering with no handle from this run.
+    //
+    // R2-k2 (final review Runde 2, 19.09.2026): that walk is
+    // `process_table_with_cmdlines`, a full sysinfo snapshot with command
+    // lines, and it used to run straight on this `async fn`'s own thread.
+    // The panel polls this command every 5 s, and the case that needs the
+    // scan is not rare: it holds for the whole time a customer's own
+    // ComfyUI keeps running, and again after every app restart until the
+    // customer's next click. `spawn_blocking` moves the scan off the async
+    // worker so it cannot stall other commands sharing that thread.
+    let orphan_pid = if is_local && running && !process_alive {
+        tokio::task::spawn_blocking(move || find_orphaned_comfyui(port))
+            .await
+            .unwrap_or(None)
+    } else {
+        None
+    };
     let owned_by_app = is_local && running && matches!(
-        classify_comfyui_ownership(
-            running,
-            process_alive,
-            if process_alive { None } else { find_orphaned_comfyui(port) },
-        ),
+        classify_comfyui_ownership(running, process_alive, orphan_pid),
         ComfyOwnership::Own,
     );
 
