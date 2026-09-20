@@ -168,6 +168,64 @@ function evaluateCondition(
   }
 }
 
+// ── Completion Message ──────────────────────────────────────────
+
+/**
+ * B1 (lu-301/bau/klaerung-n7.md): what a finished run tells the user.
+ *
+ * Both callers of this engine (`useAgentChat.ts`'s "run workflow" chat
+ * trigger and `builtin-tools.ts`'s `run_workflow` tool) used to pick the
+ * final message the same, slightly wrong way: `results.filter(r =>
+ * r.output).pop()`, the LAST step with any output at all. For every
+ * workflow that ends in `memory_save` (the built-in "Research Topic" among
+ * them) that step's own receipt (`executeMemorySaveStep` below, "Saved to
+ * memory: ...") is never empty by construction, so it always won `.pop()`
+ * and buried the actual content, a `prompt` step's summary, the thing the
+ * user sent the workflow to produce. A user who does not read the whole
+ * chat history cannot tell that cryptic one-liner from a hang.
+ *
+ * This is the one place both callers now read the result from, instead of
+ * each keeping its own near-identical copy. Rules:
+ *   - Lead with a plain header naming how many of the workflow's steps ran,
+ *     so "finished, short answer" never again looks like "stuck after one".
+ *   - The content is the LAST step with non-empty output that is not a
+ *     memory_save receipt: a receipt is shown ALONGSIDE the content, never
+ *     INSTEAD of it.
+ *   - No step produced any (non-receipt) output, or the run stopped on a
+ *     failure: say that plainly instead of ending on a bare header.
+ */
+export function describeWorkflowCompletion(workflow: AgentWorkflow, results: StepResult[]): string {
+  const total = workflow.steps.length
+  const ran = results.length
+  const header = `Workflow complete (${ran}/${total} step${total === 1 ? '' : 's'}).`
+
+  const stepTypeOf = (stepId: string) => workflow.steps.find((s) => s.id === stepId)?.type
+
+  // Most recent first, so a later step's output wins over an earlier one's,
+  // same as the old `.pop()` did, only now memory_save is excluded from
+  // this pick rather than being the one type of step it always found first.
+  const reversed = [...results].reverse()
+  const content = reversed.find((r) => r.output && stepTypeOf(r.stepId) !== 'memory_save')
+  const savedNote = reversed.find((r) => r.output && stepTypeOf(r.stepId) === 'memory_save')
+
+  const lines = [header]
+  if (content) {
+    lines.push('', content.output)
+  } else {
+    const failed = results.find((r) => r.status === 'failed')
+    lines.push(
+      '',
+      failed
+        ? `No step produced a result to show (the last one failed: ${failed.error || 'unknown error'}).`
+        : 'No step produced any output to show.',
+    )
+  }
+  if (savedNote && savedNote !== content) {
+    lines.push('', savedNote.output)
+  }
+  return lines.join('\n')
+}
+
 // ── Engine ────────────────────────────────────────────────────
 
 export class WorkflowEngine {

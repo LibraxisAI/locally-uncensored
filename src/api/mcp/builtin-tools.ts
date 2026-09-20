@@ -11,7 +11,7 @@ import { backendCall, fetchExternal } from '../backend'
 import { getActiveChatId, getActiveConversationId, getActiveWorkspace, isChatArtifactMode, captureChatArtifact, isReadOnlyShellTurn } from '../agent-context'
 import type { AgentRunContext } from '../agent-context'
 import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
-import { WorkflowEngine, buildWorkflowApprovalGate } from '../../lib/workflow-engine'
+import { WorkflowEngine, buildWorkflowApprovalGate, describeWorkflowCompletion } from '../../lib/workflow-engine'
 import type { StepResult } from '../../types/agent-workflows'
 import { DELEGATE_TASK_TOOL_DEF, buildDelegateExecutor } from '../agents/sub-agent'
 import {
@@ -1583,7 +1583,6 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
     return `Error: Workflow "${workflow.name}" starts by asking "${firstAsk.userInputPrompt || 'for input'}", and nothing can answer that while it runs. Call run_workflow again with an "input" argument that answers it.`
   }
 
-  const results: StepResult[] = []
   let finalOutput = ''
   // Auflage 4, bau/review-wfgate.md: a no-op `onStepError` (the old body)
   // left `finalOutput` empty on a rejected approval, so `run_workflow`
@@ -1591,15 +1590,17 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
   // again. `runSteps` (workflow-engine.ts) calls `onStepError` and BREAKS
   // the step loop on a failure, but still calls `onComplete` afterward (it
   // is not the same as `onError`, which fires only on a thrown exception),
-  // and that handler's own fallback ("Workflow completed with no output.")
-  // would otherwise silently overwrite the error message set here, since a
-  // failed step's own `output` is '' and gets filtered out by
-  // `results.filter(r => r.output)`. `hadStepError` keeps `onComplete` from
-  // clobbering it.
+  // so without `hadStepError` that handler would overwrite the error
+  // message set here with whatever ran before the failure. B1
+  // (lu-301/bau/klaerung-n7.md): the message itself now comes from
+  // `describeWorkflowCompletion` (workflow-engine.ts), shared with
+  // `useAgentChat.ts`'s "run workflow" chat trigger; the old
+  // `results.filter(r => r.output).pop()` here always picked a trailing
+  // `memory_save` step's own receipt over the actual content.
   let hadStepError = false
   const callbacks = {
     onStepStart: () => {},
-    onStepComplete: (_idx: number, result: StepResult) => { results.push(result) },
+    onStepComplete: () => {},
     onStepError: (_idx: number, error: string) => {
       hadStepError = true
       // The step's own `error` is already the gate's English message
@@ -1608,10 +1609,9 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
       finalOutput = `Workflow error: ${error}`
     },
     onWaitingForInput: () => {},
-    onComplete: () => {
+    onComplete: (allResults: StepResult[]) => {
       if (hadStepError) return
-      const lastOutput = results.filter(r => r.output).pop()
-      finalOutput = lastOutput?.output || 'Workflow completed with no output.'
+      finalOutput = describeWorkflowCompletion(workflow, allResults)
     },
     onError: (error: string) => { finalOutput = `Workflow error: ${error}` },
   }

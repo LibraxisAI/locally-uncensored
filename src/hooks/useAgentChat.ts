@@ -57,7 +57,7 @@ import { getProviderIdFromModel } from '../api/providers'
 import { markToolsUnsupported } from '../api/tool-capability'
 import { extractMemoriesFromPair } from './useMemory'
 import { useAgentWorkflowStore } from '../stores/agentWorkflowStore'
-import { WorkflowEngine } from '../lib/workflow-engine'
+import { WorkflowEngine, describeWorkflowCompletion } from '../lib/workflow-engine'
 import type { AgentBlock, AgentToolCall } from '../types/agent-mode'
 import { selectRelevantToolsAsync, toolSelectionOpts, ALWAYS_INCLUDE } from '../lib/tool-selection'
 import { renderToolRoster, renderToolNames } from '../lib/tool-roster'
@@ -85,7 +85,7 @@ import { toolCallCapMs, raceWithToolTimeout, SHELL_EXECUTE_DEFAULT_TIMEOUT_MS } 
 import { AgentLoopGuard } from '../lib/agent-loop-guard'
 import { budgetFromSettings } from '../api/agents/budget'
 import type { ChatMessage, ToolCall, ToolDefinition } from '../api/providers/types'
-import type { StepResult, WorkflowEngineCallbacks } from '../types/agent-workflows'
+import type { WorkflowEngineCallbacks } from '../types/agent-workflows'
 import { executeParallel, applyResultToToolCall, type ExecutionRequest } from '../api/agents/tool-executor'
 import { useToolAuditStore } from '../stores/toolAuditStore'
 import { makeInTurnCacheLookup } from '../api/agents/in-turn-cache'
@@ -405,17 +405,27 @@ export function useAgentChat() {
           id: uuid(), role: 'assistant', content: `Running workflow: **${workflow.name}**...`, timestamp: Date.now(),
         })
 
-        const results: StepResult[] = []
+        // B1 (lu-301/bau/klaerung-n7.md): a workflow that ends in
+        // `memory_save` (every built-in one does) used to show only that
+        // step's own receipt ("Saved to memory: ...") at the end, because
+        // the old `onComplete` picked `results.filter(r => r.output).pop()`,
+        // the LAST step with any output, which memory_save always is.
+        // That buried the actual content (a `prompt` step's summary) behind
+        // a cryptic one-liner indistinguishable from a hang. Fix lives in
+        // `describeWorkflowCompletion` (workflow-engine.ts), shared with
+        // `builtin-tools.ts`'s `run_workflow` tool so the two do not drift.
+        //
+        // `hadStepError` mirrors that same shared engine's other caller: a
+        // failed step's `onStepError` already posts "Workflow error: ...",
+        // and `runSteps` (workflow-engine.ts) still calls `onComplete`
+        // right after that break, so without this flag a second message
+        // would follow, repeating whatever ran before the failure.
+        let hadStepError = false
         const callbacks: WorkflowEngineCallbacks = {
           onStepStart: () => {},
-          onStepComplete: (_i, r) => { results.push(r) },
-          // Same fix as Auflage 4, bau/review-wfgate.md (builtin-tools.ts's
-          // `executeRunWorkflow`): `runSteps` calls `onStepError` and then
-          // breaks WITHOUT calling `onComplete` or `onError`, so a no-op
-          // here left a rejected approval's chat turn with no message at
-          // all, the same silent-failure shape the review flagged for the
-          // `run_workflow` tool's return value.
+          onStepComplete: () => {},
           onStepError: (_i, error) => {
+            hadStepError = true
             if (convId) {
               useChatStore.getState().addMessage(convId, {
                 id: uuid(), role: 'assistant', content: `Workflow error: ${error}`, timestamp: Date.now(),
@@ -423,13 +433,11 @@ export function useAgentChat() {
             }
           },
           onWaitingForInput: () => {},
-          onComplete: () => {
-            const lastOutput = results.filter(r => r.output).pop()
-            if (lastOutput && convId) {
-              useChatStore.getState().addMessage(convId, {
-                id: uuid(), role: 'assistant', content: lastOutput.output, timestamp: Date.now(),
-              })
-            }
+          onComplete: (allResults) => {
+            if (hadStepError || !convId) return
+            useChatStore.getState().addMessage(convId, {
+              id: uuid(), role: 'assistant', content: describeWorkflowCompletion(workflow, allResults), timestamp: Date.now(),
+            })
           },
           onError: (err) => {
             if (convId) {
