@@ -181,6 +181,15 @@ export function runCredits(
   fallback: number,
   resolution?: string,
 ): number {
+  // P3, Studio-Zweig: a Studio model (`quote_required` on the catalog entry)
+  // prices live from POST /api/jobs/studio-quote, see studio.ts and
+  // studio-contract.ts's own `studioCredits()` formula, which is a PREVIEW,
+  // not this function's job. Computing anything below for one would drift
+  // from the provider's real price the moment it changes there, and a run
+  // must never book a different number than what got shown, so this guard
+  // sits before every other branch and returns the caller's own fallback
+  // instead of guessing (Portplan Abschnitt 7, Risiko 1).
+  if (cloudModelById(pickedModel)?.quote_required) return fallback
   const { ops } = useCloudCatalogStore.getState()
   // Music bills per second: catalog per_s × the requested duration (60 s
   // default, mirroring the server's MUSIC_SECONDS fallback).
@@ -204,6 +213,15 @@ export function runCredits(
   const model = modelForOp(kind, op, pickedModel)
   const credits = cloudModelById(model)?.credits
   if (!credits) return fallback
+  // P3, by_duration: dd29f359 lets a video model book any advertised length,
+  // not just the short/long pair; an exact catalog price for the requested
+  // length beats rounding it onto one of the two buckets below. Falls
+  // through to the base/long split when the catalog carries no per-duration
+  // table yet (older payload) or no entry for this exact length.
+  if (kind === 'video' && seconds !== undefined && credits.by_duration) {
+    const exact = credits.by_duration[String(seconds)]
+    if (exact !== undefined) return exact
+  }
   return kind === 'video' && seconds !== undefined && seconds >= 6.5
     ? (credits.long ?? credits.base)
     : credits.base
