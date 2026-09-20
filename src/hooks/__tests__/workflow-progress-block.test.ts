@@ -3,14 +3,14 @@
  *
  * bau/wfprogress.md: the "run workflow <name>" chat trigger used to add ONE
  * static assistant message ("Running workflow: **X**...") that never changed
- * for the whole run — the only feedback a multi-minute workflow gave was
+ * for the whole run: the only feedback a multi-minute workflow gave was
  * three static dots, unlike every real tool call, which shows a running/
  * working ToolCallBlock. This drives the REAL `useAgentChat` hook (the same
  * one ChatView uses) over real workflows and asserts on the progress
  * message's `agentBlocks`: a single AgentToolCall-shaped block that starts at
  * "waiting" for every step, updates to "running"/"done"/"failed" per step,
- * and ends up clickable/expandable with the full step list — reusing
- * ToolCallBlock, not a new component.
+ * and ends up clickable/expandable with the full step list, reusing
+ * ToolCallBlock instead of a new component.
  *
  * Run: npx vitest run src/hooks/__tests__/workflow-progress-block.test.ts
  */
