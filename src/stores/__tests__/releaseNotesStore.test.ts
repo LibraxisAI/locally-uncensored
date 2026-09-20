@@ -299,6 +299,9 @@ describe('the notes table', () => {
       'survives export and import again', 'blocks the whole sync',
       'composer lock during a send', 'a third remembered agent folder',
       'asks the running engine directly',
+      // ENG-14, matrix point 83 (review-venvhint.md): the fix itself was
+      // stdout being discarded; this is the sentence the sheet promises for it.
+      'python3-venv', 'lu only read stderr',
     ]) {
       expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
     }
