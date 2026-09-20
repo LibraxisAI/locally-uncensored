@@ -5754,9 +5754,6 @@ mod tests {
         /// after run, because a leaf directory has nothing under it for
         /// `remove_dir_all` to recurse into.
         top_level_verbatim: PathBuf,
-        /// The `\\?\`-prefixed form of the deepest (leaf) directory: for
-        /// filesystem operations only.
-        verbatim: PathBuf,
         /// The plain, unprefixed form of the deepest directory: what the
         /// code under test actually sees, same as it would from
         /// `resource_dir()`.
@@ -5788,9 +5785,12 @@ mod tests {
             while plain.as_os_str().encode_wide().count() < 280 {
                 plain.push(&component);
             }
+            // Only needed to create the leaf directory below: `Drop` cleans
+            // up through `top_level_verbatim` instead (see its field doc),
+            // so this verbatim form of the leaf is not kept on the struct.
             let verbatim = PathBuf::from(format!(r"\\?\{}", plain.display()));
             std::fs::create_dir_all(&verbatim).expect("create a long verbatim test directory");
-            let fixture = LongDirFixture { top_level_verbatim, verbatim, plain };
+            let fixture = LongDirFixture { top_level_verbatim, plain };
             // Sanity check on the fixture itself: this must actually be over
             // the limit, or the test below would pass for the wrong reason.
             assert!(exceeds_classic_current_dir_limit(utf16_len(&fixture.plain)));
@@ -5806,7 +5806,7 @@ mod tests {
             // TOP-level directory (verbatim form: ordinary, non-verbatim
             // removal is itself subject to the classic length limit without
             // LongPathsEnabled), which recursively takes every level
-            // underneath it, including the leaf `self.verbatim` points at.
+            // underneath it, including the leaf directory `create()` built.
             let _ = std::fs::remove_dir_all(&self.top_level_verbatim);
         }
     }
