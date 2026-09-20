@@ -18,7 +18,7 @@ export interface CloudJobParams {
   studio_options?: Record<string, unknown>
   /** Ceiling from the last confirmed studio-quote; the server re-quotes and
    *  answers 409 quote_changed (see QuoteChangedError) if its own number now
-   *  exceeds this — never books a price the customer never saw. */
+   *  exceeds this, never books a price the customer never saw. */
   max_credits?: number
   /** Kurze Ueberschrift fuer die Galerie, wenn der Lauf keinen Prompt hat oder
    *  der Prompt nicht sagt, was dabei herauskam: der Titel eines Presets, die
@@ -128,7 +128,7 @@ export interface CloudJobSubmitResult {
   id: string
   /** A submit retried with the same client_request_id (CloudJobParams) hits
    *  the server's idempotency check and replays the original booking instead
-   *  of charging twice — `used`/`limit` are not recomputed for a replay, only
+   *  of charging twice. `used`/`limit` are not recomputed for a replay, only
    *  `cost` is guaranteed. */
   quota: { cost: number; used?: number; limit?: number }
   replayed?: boolean
@@ -137,7 +137,7 @@ export interface CloudJobSubmitResult {
 /** The server re-quoted at submit time (prepareStudio()) and its own number
  *  now exceeds the studio-quote price the customer confirmed. Distinct from
  *  a plain CloudJobError so a Studio caller can show the new price instead of
- *  a generic failure — see Portplan Abschnitt 4 and Risiko 1. */
+ *  a generic failure, see Portplan Abschnitt 4 and Risiko 1. */
 export class QuoteChangedError extends CloudJobError {
   readonly credits: number
   constructor(message: string, credits: number) {

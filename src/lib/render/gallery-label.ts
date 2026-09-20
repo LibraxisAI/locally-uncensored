@@ -14,8 +14,7 @@
 // Katalog in einem Store statt in einer statischen Liste, deshalb kommt
 // cloudModelById hier aus cloudCatalogStore statt aus cloud-models.
 import type { GalleryItem } from '../../stores/createStore'
-import { STUDIO_MODELS } from './studio-contract'
-import { cloudModelById } from '../../stores/cloudCatalogStore'
+import { modelLabel as resolveModelLabel } from './preset-models'
 
 /** Was der Lauf getan hat, wenn niemand etwas geschrieben hat. */
 const OP_NAME: Record<string, string> = {
@@ -34,8 +33,17 @@ const TYPE_NAME: Record<GalleryItem['type'], string> = {
   audio: 'Audio',
 }
 
+// Review A kleiner Punkt 3: this used to be its own copy (STUDIO_MODELS
+// first, catalog second), while preset-models.ts's exported `modelLabel`
+// (what useCloudCreate.ts sends as `params.label`) checks the catalog twin
+// FIRST. A model that is both a Studio entry and a catalog twin with a
+// DIFFERENT label could read one name before a reload (this file, from the
+// job) and another after (preset-models.ts's version, from the picker),
+// exactly the mix-up gallery-label.ts exists to prevent. One function now,
+// imported, not two that can drift apart.
 function modelLabel(id: string): string | undefined {
-  return STUDIO_MODELS[id]?.label ?? cloudModelById(id)?.label
+  const label = resolveModelLabel(id)
+  return label === id ? undefined : label
 }
 
 /** Der Name des Eintrags. Nie leer: eine Kachel ohne Namen ist von der

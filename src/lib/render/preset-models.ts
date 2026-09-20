@@ -10,7 +10,7 @@
 // The contract test walks each one and refuses a member that cannot.
 
 import { STUDIO_MODELS, studioSchema } from './studio-contract'
-import { cloudModelById, cloudModelsFor, i2vModels, runCredits } from '../../stores/cloudCatalogStore'
+import { catalogHasStudio, cloudModelById, cloudModelsFor, i2vModels, runCredits } from '../../stores/cloudCatalogStore'
 import type { RenderKind, RenderOp } from './cloud-jobs'
 
 export type StepRole =
@@ -136,16 +136,6 @@ function entry(id: string, role: StepRole): PresetModel | null {
  *  the whole list. Where it has none, the role is not about refusals at all
  *  (adding sound, driving a mouth) and the full list stands, because an empty
  *  picker would take the step away entirely. */
-/** Studio-Bildmodelle ohne klassisches Gegenstueck. Der Bildwaehler im
- *  Create-Tab listet den Katalog; diese vier stehen in keinem Katalogeintrag,
- *  es gaebe sie dort also gar nicht. Ein Modell mit `sourceModel` bleibt aussen
- *  vor: das steht schon unter seinem alten Namen in der Liste. */
-export function studioOnlyImageModels(): PresetModel[] {
-  const klassisch = new Set(cloudModelsFor('image').map((m) => m.id))
-  return presetModels('image').filter((m) =>
-    m.op === 'studio' && !klassisch.has(m.id) && !STUDIO_MODELS[m.id]?.sourceModel)
-}
-
 export function presetModels(role: StepRole, openOnly = false): PresetModel[] {
   const all = allPresetModels(role)
   if (!openOnly) return all
@@ -161,9 +151,16 @@ function allPresetModels(role: StepRole): PresetModel[] {
   for (const id of ids) {
     if (seen.has(id)) continue
     // A classic id the studio registry already serves is dropped, not listed
-    // twice under the same name.
+    // twice under the same name. Review B1 (Runde 2): ONLY when the live
+    // catalog actually announces Studio (`catalogHasStudio()`), the same
+    // gate `create-studio.ts`'s `intentPickerModels()` applies to the twin
+    // itself. Without this, an older server dropped the classic id here
+    // (its studio twin is in STUDIO_MODELS unconditionally, catalog or not)
+    // while `intentPickerModels()` separately dropped the twin for being a
+    // Studio entry, leaving Extend/Motion with NEITHER: an empty picker
+    // instead of the classic member that used to run there.
     const twin = SUPERSEDED.get(id)
-    if (twin && ids.includes(twin)) continue
+    if (twin && ids.includes(twin) && catalogHasStudio()) continue
     const e = entry(id, role)
     if (!e) continue
     seen.add(id)

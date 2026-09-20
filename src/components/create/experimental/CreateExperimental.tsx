@@ -27,7 +27,7 @@ import { Modal } from '../../ui/Modal'
 // `provider-schemas.json` (P1) ist 256 KB. `PresetShelf` haengt schon
 // synchron an `studio-contract.ts` (fuer `STUDIO_MODELS` in der
 // Einzelmodell-Auswahl der Schiene), zieht das Schema also ohnehin in den
-// Hauptbaum — nur die WERKSTATT selbst, die `SchemaControl`/`AvatarPicker`
+// Hauptbaum. Nur die WERKSTATT selbst, die `SchemaControl`/`AvatarPicker`
 // und damit `studioSchema()` fuer jedes einzelne Feld aufruft, laesst sich
 // ohne Vertragsaenderung an `PresetShelf`/`studio-contract.ts` (P1/P3, fremde
 // Dateien) aus dem ersten Ladevorgang heraushalten: sie oeffnet sich erst auf
@@ -445,8 +445,8 @@ function CreateExperimentalInner() {
 
       {/* Preset-Werkstatt (P6): ein Popup mit X und Escape, dieselbe Sperrklinke
           wie jedes andere Fenster (Modal, siehe src/components/ui/Modal.tsx).
-          Die Generation laeuft IM Fenster weiter, auch wenn niemand es zulaesst
-          — geschlossen wird nur von Hand (Portplan Abschnitt 5/7). */}
+          Die Generation laeuft IM Fenster weiter, auch wenn niemand zusieht,
+          geschlossen wird nur von Hand (Portplan Abschnitt 5/7). */}
       {selectedPreset && backend === 'cloud' && (
         <Modal
           open={presetDialogOpen}
@@ -454,6 +454,12 @@ function CreateExperimentalInner() {
           title={selectedPreset.title}
           maxWidth="max-w-4xl"
           panelPad="p-0"
+          // Review B2: X/Escape darf den bezahlten Schrittzustand der
+          // Werkstatt nicht wegwerfen. `keepMounted` haelt PresetWorkshop im
+          // Baum und blendet nur das Fenster aus; `selectedPreset` bleibt
+          // ohnehin schon stehen (siehe Kommentar oben bei presetDialogOpen),
+          // also ist dies die letzte fehlende Haelfte.
+          keepMounted
         >
           <div className="flex h-[min(600px,90vh)] flex-col overflow-hidden">
             <Suspense fallback={<div className="flex flex-1 items-center justify-center t-control text-gray-500">Loading…</div>}>

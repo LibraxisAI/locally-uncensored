@@ -38,7 +38,8 @@ import { resolveRunSeed } from '../lib/run-seed'
 import { intentRoles, intentRequiredInputs, isStudioModel, resolveIntentPick } from '../lib/render/create-studio'
 import { STUDIO_MODELS, studioFields } from '../lib/render/studio-contract'
 import { modelLabel } from '../lib/render/preset-models'
-import { selectedVideoSeconds } from '../lib/render/video-duration'
+import { bookedVideoSeconds } from '../lib/render/video-duration'
+import { studioQuote, StudioQuoteChangedError } from '../api/cloud/studio'
 
 // B3 (review-w2ui.md, 18.09.2026): the CSAM floor above runs regardless of
 // tier, but the adult half of safety.ts (ADULT_SOFT_TERMS/ADULT_HARD_TERMS)
@@ -380,9 +381,17 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
               seed: runSeed,
             }
       if (kind === 'video' && !bare) {
-        // dd29f359 (Portplan Abschnitt 6): book exactly a length the model
-        // prices, never a raw frames/fps ratio the server would reject.
-        const seconds = selectedVideoSeconds(model, s.frames, s.fps)
+        // dd29f359 (Portplan Abschnitt 6), review A2 (Runde 2): book exactly
+        // a length the model prices, read from the SAME catalog-first list
+        // LaneControls shows (effectiveVideoDurations, in video-duration.ts),
+        // never the static JSON alone, that mismatch silently booked a
+        // shorter clip than the one shown and priced (review-studio-A.md
+        // B2). bookedVideoSeconds throws loud, in English, if frames/fps
+        // still fall outside the model's list, before any credit is claimed.
+        // Review A kleiner Punkt 1 (studio-r2): reads the cloud track's OWN
+        // cloudFrames/cloudFps, the same fields LaneControls' Length control
+        // writes, not the local track's shared frames/fps.
+        const seconds = bookedVideoSeconds(model, { frames: s.cloudFrames, fps: s.cloudFps })
         params.frames = seconds * 16
         params.fps = 16
       }
@@ -487,6 +496,44 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       // we were uploading inputs.
       if (ac.signal.aborted) return
 
+      // Review A1/B3 (Runde 2, 20.09.2026): a Studio run books against a
+      // SERVER-CONFIRMED number, never the client formula alone
+      // (studio-contract.ts's createStudioCost is a PREVIEW for the meter,
+      // this call is what actually gets charged). Fetched HERE, right after
+      // the uploads and right before the credits claim, against the SAME
+      // staged paths the submit below sends, that is "before the render
+      // starts" for every Studio pick, including the 17 price.mode
+      // 'input'/'both' endpoints (talking/presenter/duo/motion/restyle/
+      // upscale/extend) that Composer's live meter can only PREVIEW: those
+      // price off the uploaded file's measured length, which the provider
+      // only knows once the file is staged, so a true confirmed number
+      // cannot exist before this point without uploading a file the
+      // customer might never submit. useStudioPrice (Composer's live meter)
+      // already confirms output/characters-mode picks continuously while
+      // typing; this call re-confirms fresh, right before the claim, so a
+      // stale live quote can never book either.
+      //
+      // Bewusste Abweichung von der Web-Referenz (Portplan Abschnitt 4/7):
+      // apps/web/hooks/useCloudCreate.ts sendet `max_credits` NIE aus dem
+      // normalen Create-Weg, nur die Preset-Werkstatt tut das
+      // (PresetWorkshop.tsx:191). Das Web bucht also aus dem Create-Tab ohne
+      // Deckel, genau das Risiko 1 des Portplans. Der Desktop weicht hier
+      // bewusst ab und deckelt auch den Create-Tab. Der Eigner sollte den
+      // Web-Client nachziehen (review-studio-A.md B1, review-studio-B.md B3).
+      if (studioModel) {
+        s.setProgress(9, 'Confirming the price…')
+        const quoteFields: Record<string, unknown> = {}
+        for (const k of ['source_path', 'mask_path', 'audio_path', 'audio2_path', 'video_path', 'last_image_path', 'shot_type'] as const) {
+          if (params[k] !== undefined) quoteFields[k] = params[k]
+        }
+        const quote = await studioQuote(studioModel, s.prompt, {
+          op: 'studio',
+          studio_options: studioOptionsFiltered ?? {},
+          ...quoteFields,
+        })
+        params.max_credits = quote.credits
+      }
+
       // Der Titel geht mit an den Server, sonst hiesse der Eintrag nach dem
       // naechsten Laden wieder nur nach seiner Gattung (Portplan Abschnitt 1,
       // Punkt 9). A Studio run with no prompt (or a schema whose prompt field
@@ -573,14 +620,14 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       }
     } catch (err) {
       const st = useCreateStore.getState()
-      if (err instanceof QuoteChangedError) {
-        // 409 quote_changed (Portplan Abschnitt 3/4): a submit that DID carry
-        // a client-confirmed ceiling (max_credits, e.g. from a future Studio
-        // caller that quotes before booking) found the server's own re-quote
-        // exceeding it, show the new price instead of silently rebooking.
-        // This Composer path never sends max_credits itself today (no
-        // pre-submit quote call, see useStudioPrice for the on-screen-only
-        // preview), so this branch is a safety net, not yet a live path.
+      if (err instanceof QuoteChangedError || err instanceof StudioQuoteChangedError) {
+        // 409 quote_changed (Portplan Abschnitt 3/4, review A1/B3 Runde 2):
+        // the confirmed number went stale between the pre-submit
+        // studioQuote() call above and the server's own booking check
+        // (QuoteChangedError), or the quote call itself came back stale
+        // (StudioQuoteChangedError, e.g. the provider's price moved between
+        // two calls). Either way: show the NEW price and stop, never
+        // silently rebook against it.
         st.setError(`The price changed to ${err.credits.toLocaleString('en-US')} credits. Review it, then hit Create again.`)
       } else if (err instanceof CloudJobError && err.status === 429) {
         st.setError(throttleMessage(err))

@@ -30,7 +30,7 @@ describe('intentToJob', () => {
 
 // P9: galleryItemFromJob was built twice independently (PresetWorkshop.tsx,
 // P6; inline in useCloudCreate.ts, P7) because P5 did not port the web's
-// version — folded here into the one place the portplan names for it, so
+// version, folded here into the one place the portplan names for it, so
 // both PresetWorkshop and useCloudCreate now build a gallery entry the same
 // way (studio-p5.md/studio-p6.md, "Offen fuer P9").
 describe('galleryItemFromJob', () => {

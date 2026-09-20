@@ -3,7 +3,7 @@
  *
  * Vier Faelle, die David/der Plan als Waechter verlangen:
  *  1. Ein Zustand der Version 1 (vor dem Studio) liest cloudStudioOptions als
- *     {} ein, nie als undefined — sonst faellt Object.entries() im Composer.
+ *     {} ein, nie als undefined, sonst faellt Object.entries() im Composer.
  *  2. Ein LOKALER Lauf laesst den Cloud-Modellwaehler in Ruhe: im Desktop
  *     landen in derselben Galerie auch ComfyUI-/MLX-Ergebnisse, anders als im
  *     Web, das keine lokale Spur kennt.
@@ -90,7 +90,7 @@ describe('createStore Studio fields', () => {
       const s = store.getState()
       expect(s.cloudStudioOptions).toEqual({})
       expect(s.cloudStudioCredits).toBeNull()
-      // The Composer calls Object.entries() on this straight away — must
+      // The Composer calls Object.entries() on this straight away, must
       // never throw on an old blob.
       expect(() => Object.entries(s.cloudStudioOptions)).not.toThrow()
       expect(Object.entries(s.cloudStudioOptions)).toEqual([])
@@ -114,7 +114,7 @@ describe('createStore Studio fields', () => {
       expect(store.getState().cloudStudioOptions).toEqual({ duration: 8 })
     })
 
-    it('a saved price never rehydrates, at any version — a price from yesterday is a lie', async () => {
+    it('a saved price never rehydrates, at any version: a price from yesterday is a lie', async () => {
       const store = await freshStoreFrom(
         { mode: 'image', cloudStudioCredits: 4200 },
         2,

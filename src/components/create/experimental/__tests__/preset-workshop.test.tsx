@@ -27,7 +27,7 @@ import { StudioQuoteChangedError } from '../../../../api/cloud/studio'
 //    `uploadInput`/`submitCloudJob`/`pollJob`/`getJob`/`cancelJob` aus
 //    src/api/cloud/jobs.ts statt aus einer Web-eigenen cloud-jobs.ts. Der
 //    globale `fetch`-Stub bleibt nur fuer das Herunterladen eines VORIGEN
-//    Ergebnisses (adopt()) stehen — das ist ein signierter S3-Link, keine
+//    Ergebnisses (adopt()) stehen: das ist ein signierter S3-Link, keine
 //    Cloud-API-Route, und blieb im Web genauso ein blosses `fetch`.
 //  - neue Faelle unten: die Schiene erscheint nur auf der Wolken-Spur UND nur,
 //    wenn der Katalog `quote_required` fuehrt (Portplan Abschnitt 5/P6-
@@ -57,7 +57,7 @@ function WerkstattFenster({ preset, onClosed }: { preset: CreatePreset; onClosed
 
 // P2-Befund (studio-p2.md, "Preisluecken im Notvorrat"): `flux-schnell` und
 // `wan-2.2-720p` fuehren im statischen Notvorrat bis heute KEIN `credits`-
-// Feld — im echten Betrieb heilt das die erste Katalogaktualisierung, hier
+// Feld. Im echten Betrieb heilt das die erste Katalogaktualisierung, hier
 // braucht es einen Preis, damit die klassischen Faelle unten (Modellwechsel,
 // Frames/Fps) ueberhaupt einen bestaetigbaren Preis sehen.
 const QUOTE_REQUIRED_CATALOG: CloudModel[] = [
@@ -87,7 +87,7 @@ vi.mock('../../../../api/cloud/studio', async (importOriginal) => ({
 }))
 
 // jsdom kennt keinen ResizeObserver; `Select` (P4/Bestand) braucht ihn nur,
-// um die Menuegroesse an offenen Platz anzupassen — fuer die Faelle hier
+// um die Menuegroesse an offenen Platz anzupassen, fuer die Faelle hier
 // reicht ein Stub, der nichts tut.
 class ResizeObserverStub {
   observe() {}
@@ -428,7 +428,7 @@ it('haelt ein optionales Endbild unter den erweiterten Einstellungen', () => {
 // P6: ein Server, der Studio noch nicht kennt (oder die zwei Routen ohne CORS
 // vor P0), antwortet auf studio-quote mit 404 oder einem rohen Netzfehler.
 // studioQuote() (P3) wandelt beides in denselben festen Text um. Start bleibt
-// gesperrt, weil `quote` nie gesetzt wird — kein Rueckfall auf die eigene
+// gesperrt, weil `quote` nie gesetzt wird: kein Rueckfall auf die eigene
 // Formel, kein Buchen einer geratenen Zahl.
 it('Start bleibt gesperrt und zeigt den festen Text, wenn der Server das Studio nicht kennt', async () => {
   mocks.quote.mockRejectedValue(new CloudJobError('This feature needs a newer LU Cloud server. Try again later.', 404))
@@ -440,7 +440,7 @@ it('Start bleibt gesperrt und zeigt den festen Text, wenn der Server das Studio 
 })
 
 // P6: 409 quote_changed beim Buchen (POST /api/jobs, real erwarteter Fall
-// laut Portplan Abschnitt 4 Punkt 3 — die Preisabfrage selbst liefert ihn
+// laut Portplan Abschnitt 4 Punkt 3, die Preisabfrage selbst liefert ihn
 // laut P3-Bericht heute nicht). Der neue, vom Server bestaetigte Preis
 // erscheint, aber es wird NICHT still mit ihm weitergebucht: submitCloudJob
 // wurde genau einmal aufgerufen, ein zweiter Klick waere noetig.
@@ -453,12 +453,38 @@ it('zeigt bei 409 quote_changed den neuen Preis, statt still neu zu buchen', asy
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('4,200 credits'), { timeout: 2000 })
   expect(screen.getAllByText(/4,200 credits/).length).toBeGreaterThan(0)
   expect(mocks.submit).toHaveBeenCalledTimes(1)
-  // Der Knopf ist wieder bedienbar, gegen den NEUEN Preis — ein zweiter,
+  // Der Knopf ist wieder bedienbar, gegen den NEUEN Preis: ein zweiter,
   // ausdruecklicher Klick bucht ihn, keiner buchte ihn automatisch.
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(2))
   expect(mocks.submit.mock.calls[1][0]).toMatchObject({ params: { max_credits: 4200 } })
+  // review-studio-B.md, kleiner Punkt 5: genau HIER darf sich der Schluessel
+  // nicht wiederholen, weil der Preis wirklich anders ist (ein NEUER Lauf,
+  // nicht derselbe wiederholte).
+  expect(mocks.submit.mock.calls[1][0].params.client_request_id)
+    .not.toBe(mocks.submit.mock.calls[0][0].params.client_request_id)
+})
+
+// review-studio-B.md, kleiner Punkt 5: die Idempotenz haengt daran, dass ein
+// Wiederholungsversuch DENSELBEN client_request_id schickt. Ein Absenden,
+// das an einem gewoehnlichen Fehler (keine Preisaenderung) scheitert und ein
+// zweites Mal versucht wird, ohne dass die Quote neu gezogen wurde, muss
+// denselben Schluessel tragen, sonst bucht der Server zwei Auftraege fuer
+// einen Klick, den der Kunde als einen einzigen Versuch sieht.
+it('schickt bei einem Wiederholungsversuch ohne neue Quote denselben client_request_id', async () => {
+  mocks.submit.mockRejectedValueOnce(new Error('network blip'))
+  render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
+  fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1))
+  fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(2))
+  const first = mocks.submit.mock.calls[0][0].params.client_request_id
+  const second = mocks.submit.mock.calls[1][0].params.client_request_id
+  expect(first).toBeDefined()
+  expect(second).toBe(first)
 })
 
 // P6: `StudioQuoteChangedError` aus der Preisabfrage selbst (P3 haelt den

@@ -15,6 +15,10 @@ const RUNTIME_ONLY_KEYS: readonly string[] = [
   // unten): auch wenn ein fremder/aelterer Blob ihn doch mitbringt, darf er
   // nie zurueckkommen.
   'cloudStudioCredits',
+  // Review A kleiner Punkt 1 (studio-r2): the cloud video length selection,
+  // own fields since this bugfix. Session-scratch like source/mask, not a
+  // preference worth remembering across restarts.
+  'cloudFrames', 'cloudFps',
 ]
 import type { ModelType, ClassifiedModel } from '../api/comfyui'
 import { classifyModel } from '../api/comfyui'
@@ -231,6 +235,16 @@ interface CreateState {
   batchSize: number
   frames: number
   fps: number
+  // Review A kleiner Punkt 1 (studio-r2): the cloud video Length control used
+  // to read and write these SAME frames/fps fields, which the local video
+  // lane also owns. Picking a cloud length silently rewrote the local
+  // Frames slider's remembered value, so a later switch back to the local
+  // track showed a number the user never chose there. Own fields, runtime
+  // only (see RUNTIME_ONLY_KEYS): the cloud track keeps its own length
+  // selection, the local track keeps its own, and neither can overwrite the
+  // other by backend switch or model switch alone.
+  cloudFrames: number
+  cloudFps: number
   denoise: number  // Denoise strength for I2I (0.0–1.0)
   /** Native text-to-image latent upscale + refinement pass (local ComfyUI). */
   hiresFixEnabled: boolean
@@ -299,11 +313,11 @@ interface CreateState {
    *  coerces a stale cross-intent pick onto the op's own list. */
   cloudOpModel: string
   /** Studio: the schema-driven option values for the picked cloudOpModel step
-   *  (studio-contract.ts). Belongs to the model, not the run — a model switch
+   *  (studio-contract.ts). Belongs to the model, not the run: a model switch
    *  drops them, see setCloudOpModel. */
   cloudStudioOptions: Record<string, unknown>
   /** Studio: the last confirmed studio-quote price, shown next to the start
-   *  button. Never persisted — a stale price is a lie, see partialize. */
+   *  button. Never persisted: a stale price is a lie, see partialize. */
   cloudStudioCredits: number | null
   /** Runtime-only: the LOCAL model picked inside a specialized lane (ACE
    *  checkpoint / S2V UNet / Animate-VACE UNet). One slot for all lanes —
@@ -363,6 +377,8 @@ interface CreateState {
   setBatchSize: (batchSize: number) => void
   setFrames: (frames: number) => void
   setFps: (fps: number) => void
+  setCloudFrames: (frames: number) => void
+  setCloudFps: (fps: number) => void
   setDenoise: (denoise: number) => void
   setHiresFixEnabled: (enabled: boolean) => void
   setHiresScale: (scale: number) => void
@@ -426,7 +442,7 @@ interface CreateState {
   updateGalleryItem: (id: string, patch: Partial<GalleryItem>) => void
   /** Cloud hydration: merges freshly-listed jobs into the gallery. Existing
    *  items (matched by jobId/id) just get a fresh signed URL plus a
-   *  backfilled prompt/label when they never had one — nothing here ever
+   *  backfilled prompt/label when they never had one, nothing here ever
    *  overwrites what is already on screen. See mergeGallery below. */
   mergeGallery: (items: GalleryItem[]) => void
   removeFromGallery: (id: string) => void
@@ -532,6 +548,8 @@ export const useCreateStore = create<CreateState>()(
       batchSize: 1,
       frames: 24,
       fps: 8,
+      cloudFrames: 24,
+      cloudFps: 8,
       denoise: 0.7,
       hiresFixEnabled: false,
       hiresScale: 1.5,
@@ -663,6 +681,16 @@ export const useCreateStore = create<CreateState>()(
       setBatchSize: (batchSize) => set({ batchSize: Math.max(1, Math.min(8, Math.floor(batchSize))) }),
       setFrames: (frames) => set({ frames: Math.max(1, Math.min(120, Math.floor(frames))) }),
       setFps: (fps) => set({ fps: Math.max(1, Math.min(60, Math.floor(fps))) }),
+      // Review A kleiner Punkt 1 (studio-r2, 20.09.2026, found by the new
+      // e2e test itself): the local slider's 120-frame clamp is a real
+      // ComfyUI hardware constraint; the cloud track only ever encodes
+      // `seconds * 16` here (never rendered as an actual frame count), and
+      // video-durations.json's longest priced clip is already 15s (240
+      // frames at 16fps). 3600 (225s) leaves headroom for a longer length a
+      // provider adds later without silently clamping a real priced option
+      // back down to the shortest one, the same Risiko 1 A2 fixed.
+      setCloudFrames: (frames) => set({ cloudFrames: Math.max(1, Math.min(3600, Math.floor(frames))) }),
+      setCloudFps: (fps) => set({ cloudFps: Math.max(1, Math.min(60, Math.floor(fps))) }),
       setDenoise: (denoise) => set({ denoise: Math.max(0, Math.min(1, denoise)) }),
       setHiresFixEnabled: (hiresFixEnabled) => set({ hiresFixEnabled }),
       setHiresScale: (hiresScale) => set({
@@ -927,7 +955,7 @@ export const useCreateStore = create<CreateState>()(
       // Cloud hydration: the server's job list is the source of truth for
       // hosted renders. Existing items (matched by jobId/id) just get a fresh
       // signed URL plus a backfilled prompt/label when they never had one
-      // (an older gallery, from before the list route sent them) — nothing
+      // (an older gallery, from before the list route sent them), nothing
       // here ever overwrites what is already on screen, so a value the
       // customer already saw cannot jump. Unknown jobs (other device,
       // cleared storage) are added with the server's metadata.
@@ -951,6 +979,12 @@ export const useCreateStore = create<CreateState>()(
           )
         }
         const merged = [...byKey.values()].sort((a, b) => b.createdAt - a.createdAt)
+        // Review A3: dieselbe Zusage wie in addToGallery/removeFromGallery,
+        // jeder Pfad, der einen Eintrag aus der Galerie wirft, gibt seine
+        // blob-URL frei. Ein lokaler MLX-Clip, den eine Wolken-Hydrierung vom
+        // Deckel schiebt, hielt seine Bytes sonst fuer den Rest der
+        // Fenster-Lebensdauer fest (lu-desktop-oom-persist).
+        for (const dropped of merged.slice(GALLERY_CAP)) releaseItemMedia(dropped)
         return { gallery: merged.slice(0, GALLERY_CAP) }
       }),
       removeFromGallery: (id) => set((s) => {
@@ -1019,7 +1053,7 @@ export const useCreateStore = create<CreateState>()(
         triggerWord: state.triggerWord,
         trainSteps: state.trainSteps,
         // Studio: the picked step's option values are a preference like the
-        // ones above. cloudStudioCredits is NOT here on purpose — a saved
+        // ones above. cloudStudioCredits is NOT here on purpose: a saved
         // price from yesterday is a lie, see the field's own doc comment.
         cloudStudioOptions: state.cloudStudioOptions,
       }),
@@ -1032,7 +1066,7 @@ export const useCreateStore = create<CreateState>()(
       // an older build that still declares version 1 already ships its own
       // migrate (the identity function below, unchanged by this bump), so a
       // downgrade reading a version-2 blob calls THAT migrate, gets the state
-      // back unchanged, and loses nothing — the pairing the contract asks
+      // back unchanged, and loses nothing: the pairing the contract asks
       // for was already in place before this change.
       version: 2,
       // Explicit annotations for the same reason the state creator carries
@@ -1040,7 +1074,7 @@ export const useCreateStore = create<CreateState>()(
       // typing here and infers the store as Partial<CreateState>.
       //
       // A version-1 blob is missing cloudStudioOptions/cloudStudioCredits
-      // entirely (they did not exist yet) — merge() below already backfills
+      // entirely (they did not exist yet); merge() below already backfills
       // any key absent from the persisted blob from `current`'s defaults, so
       // this migrate only needs to guard the one case merge() cannot: a
       // blob that DOES carry the key but as `undefined` (a JSON round-trip

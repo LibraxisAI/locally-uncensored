@@ -10,16 +10,27 @@
 // 'upscale' fuer Bild UND Video (aelterer Utility-Op-Pfad in createStore.ts,
 // P5's Datei). StudioIntent in create-studio.ts ist der lokale Behelf dafuer;
 // siehe die Notiz dort und den Bericht fuer P9.
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import {
   intentPickerModels, intentRequiredInputs, intentRoleFor, intentRoles,
   isStudioModel, resolveIntentPick, createStudioCost, type StudioIntent,
 } from '../create-studio'
 import { STUDIO_MODELS } from '../studio-contract'
-import { opPickerModels } from '../../../stores/cloudCatalogStore'
+import { CLOUD_MODEL_SEED } from '../cloud-models'
+import { opPickerModels, useCloudCatalogStore } from '../../../stores/cloudCatalogStore'
 import type { CreateIntent } from '../../../stores/createStore'
 
 const MIT_ROLLE: StudioIntent[] = ['lipsync', 'music', 'extend', 'motion', 'video_upscale']
+
+// Review B1 (Runde 2): die ganze Datei prueft den Fall "der lebende Katalog
+// kennt Studio" (`quote_required` auf mindestens einem Eintrag). Das ist
+// der Zustand nach einem erfolgreichen Katalogabruf gegen einen Server, der
+// das Studio kennt. Der GEGENTEILIGE Fall (kein `quote_required`, altes
+// Verhalten) hat einen eigenen Fall unten ("faellt ohne quote_required im
+// Katalog auf die klassischen Mitglieder zurueck").
+beforeEach(() => {
+  useCloudCatalogStore.setState({ models: [...CLOUD_MODEL_SEED, { id: 'test-studio-marker', label: 'x', kind: 'image', quote_required: true }] })
+})
 
 describe('die Unterkategorien von Create fahren dieselben Modelle wie die Presets', () => {
   it('jede Unterkategorie mit einer Rolle hat eine Auswahl, und jedes Mitglied steht einmal drin', () => {
@@ -99,5 +110,43 @@ describe('die Unterkategorien von Create fahren dieselben Modelle wie die Preset
       expect(intentRoles(intent), intent).toEqual([])
       expect(intentPickerModels(intent), intent).toEqual([])
     }
+  })
+
+  // Review B1 (review-studio-B.md): ohne `quote_required` im Katalog (ein
+  // aelterer Server, oder ein frischer Zustand vor der ersten Katalogabfrage)
+  // darf KEIN Studio-Modell in der Auswahl stehen, und Extend/Motion muessen
+  // sich exakt wie vor dem Port verhalten. Gemessen war: `resolveIntentPick`
+  // gab fuer Extend `preset-wan-2.2-spicy-extend` (price.mode 'output', lief
+  // sofort in CORS/404) und fuer Motion `scail-2` (price.mode 'input', lief
+  // ungeprueft durch und wurde erst vom Server abgewiesen) zurueck, beide
+  // Studio-Modelle, obwohl der Katalog sie nie angekuendigt hatte.
+  describe('faellt ohne quote_required im Katalog auf die klassischen Mitglieder zurueck', () => {
+    beforeEach(() => {
+      useCloudCatalogStore.setState({ models: CLOUD_MODEL_SEED })
+    })
+
+    it('listet fuer keine Rollen-Absicht ein Studio-Mitglied', () => {
+      for (const intent of MIT_ROLLE) {
+        for (const m of intentPickerModels(intent)) {
+          expect(m.op, `${intent}/${m.id}`).not.toBe('studio')
+          expect(isStudioModel(m.id), `${intent}/${m.id}`).toBe(false)
+        }
+      }
+    })
+
+    it('waehlt fuer Extend keinen Studio-Zwilling, egal was zuvor gespeichert war', () => {
+      const pick = resolveIntentPick('extend', '')
+      expect(isStudioModel(pick), pick).toBe(false)
+      // Eine gespeicherte Studio-Wahl aus einer frueheren Session (der
+      // Katalog kannte Studio damals) ueberlebt den Ruecksprung auf einen
+      // aelteren Server nicht.
+      expect(isStudioModel(resolveIntentPick('extend', 'preset-wan-2.2-spicy-extend'))).toBe(false)
+    })
+
+    it('waehlt fuer Motion keinen Studio-Zwilling, egal was zuvor gespeichert war', () => {
+      const pick = resolveIntentPick('motion', '')
+      expect(isStudioModel(pick), pick).toBe(false)
+      expect(isStudioModel(resolveIntentPick('motion', 'scail-2'))).toBe(false)
+    })
   })
 })

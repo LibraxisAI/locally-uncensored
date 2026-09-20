@@ -1210,7 +1210,7 @@ function CloudExtendControls() {
                       // problem it fixes (David, 19.09.2026: "everything
                       // after that is just Cloud videos"). A prompt-less
                       // entry here is routinely a Studio step (sharpen,
-                      // extend, a preset step) — galleryLabelShort names
+                      // extend, a preset step), galleryLabelShort names
                       // those from their model/label instead of a blank
                       // notname.
                       label: galleryLabelShort(g, 40),

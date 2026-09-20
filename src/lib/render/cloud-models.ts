@@ -71,9 +71,12 @@ export interface CloudModel {
    *
    *  `durations` (P3, server field `clip.durations`, from dd29f359): every
    *  length the model actually books, not just the two named buttons; the
-   *  booking truth is `bookedVideoSeconds()` in `video-duration.ts` against
-   *  this same list. Optional: an older catalog payload omits it and the
-   *  short/long pair above still holds. */
+   *  booking truth is `useCloudCreate`'s call to `bookedVideoSeconds()` in
+   *  `video-duration.ts`, which reads this SAME list first (via
+   *  `effectiveVideoDurations()`, also what the picker shows) and only falls
+   *  back to `video-durations.json` when this field is absent (review-
+   *  studio-A.md B2, fixed Runde 2 20.09.2026). Optional: an older catalog
+   *  payload omits it and the short/long pair above still holds. */
   clip?: { short: number; long?: number; durations?: number[] }
   /** Per-run credit cost (base = image or 5s clip, long = 8s clip; music
    *  models additionally quote per_s for the duration slider).

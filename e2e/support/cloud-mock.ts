@@ -37,7 +37,7 @@ export interface CloudScenario {
    * `api_schema`/`pricing`/`quote_required`, plus `clip.durations` and
    * `credits.by_duration` on the classic video entry (dd29f359). The Preset
    * shelf and StudioParams gate purely on `quote_required` being present on
-   * AT LEAST ONE entry (never a version number, Portplan Abschnitt 4) —
+   * AT LEAST ONE entry (never a version number, Portplan Abschnitt 4);
    * leaving this unset reproduces an OLDER server's catalog (no entry knows
    * Studio at all), the shelf must stay hidden.
    */
@@ -60,7 +60,7 @@ export interface CloudScenario {
 // the server) renders the same fields a live run would use: a flat-rate
 // model with a bare `prompt` input, no upload, the simplest full booking path
 // for an e2e run. `pricing`/`api_schema` mirror studio-contract.ts's own
-// StudioModel/Schema shape (Portplan Abschnitt 2.1) — present on the wire so
+// StudioModel/Schema shape (Portplan Abschnitt 2.1), present on the wire so
 // a future server-truth switch is a data change, not a contract change; nothing
 // on the client reads them yet (studioQuote() is the price source of record).
 const STUDIO_CATALOG_MODEL = {
@@ -179,6 +179,14 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
                 ? { base: 40000, long: 64000, by_duration: { '4': 32000, '6': 48000, '9': 72000 } }
                 : { base: 40000, long: 64000 },
             },
+            // Review B1 (Runde 2): the CLASSIC twin of two role intents
+            // (Extend, Motion) that predates Studio and must keep working
+            // when the catalog carries no `quote_required` at all, present
+            // on EVERY scenario, not just studioCatalog, so
+            // create-studio.spec.ts can prove the fallback actually resolves
+            // to a real, pickable model instead of an empty list.
+            { id: 'wan-2.2-spicy-extend', label: 'Wan 2.2 Spicy Extend', kind: 'video', ops: ['extend'], t2v: false, i2v: false, adult: true, credits: { base: 15000 } },
+            { id: 'wan-2.2-animate', label: 'Wan 2.2 Animate', kind: 'video', ops: ['motion'], t2v: false, i2v: false, credits: { base: 12000 } },
             ...(scenario.studioCatalog ? [STUDIO_CATALOG_MODEL] : []),
           ],
           ops: { removebg: 1000, eraser: 2500, upscale_image: 1000, upscale_video_per_s: 500, upscale_video_min: 2500 },
@@ -192,11 +200,11 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
 
     // P9: POST /api/jobs/studio-quote, the provider-confirmed price a Studio
     // run asks for before it books (Portplan Abschnitt 4, Punkt 1). A flat,
-    // deterministic number — real per-model pricing is studio-contract.ts's
+    // deterministic number; real per-model pricing is studio-contract.ts's
     // job, not this mock's.
     if (path === '/api/jobs/studio-quote') {
       if (scenario.studioQuoteStatus === 404) return route.fulfill(json(404, { error: 'not found' }))
-      // 'unreachable': the pre-P0 state (no withCors/OPTIONS at all) — the
+      // 'unreachable': the pre-P0 state (no withCors/OPTIONS at all). The
       // browser never lets a response reach the app, so the mock aborts
       // instead of fulfilling, the same failure shape a real CORS block
       // produces (studio.ts's own comment: this collapses to the identical
@@ -206,7 +214,7 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
     }
 
     // P9: GET /api/jobs/runtime (Portplan Abschnitt 4, Punkt 2). Empty is a
-    // valid, common answer (MIN_SAMPLES: silence over a guess) — no spec
+    // valid, common answer (MIN_SAMPLES: silence over a guess). No spec
     // needs a populated runtime map, so this mock never returns one.
     if (path === '/api/jobs/runtime') {
       return route.fulfill(json(200, { runtimes: {} }))

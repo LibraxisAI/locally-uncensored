@@ -8,8 +8,7 @@
 import { SlidersHorizontal } from 'lucide-react'
 import { useCreateStore } from '../../../stores/createStore'
 import { SchemaControl, isCompactField, studioFieldsInOrder } from './SchemaControl'
-import { modelHint } from '../../../lib/render/preset-models'
-import { modelLabel } from '../../../lib/render/preset-models'
+import { modelHint, modelLabel } from '../../../lib/render/preset-models'
 
 export function StudioParams({ model }: { model: string }) {
   const options = useCreateStore((s) => s.cloudStudioOptions)

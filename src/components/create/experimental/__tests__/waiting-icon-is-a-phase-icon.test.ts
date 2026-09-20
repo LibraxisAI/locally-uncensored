@@ -18,7 +18,7 @@
  *
  * 19.09.2026 (Portplan Studio, Paket P5): David dropped the per-phase COLOR
  * (sky for loading, green for sampling) in favor of one lu-accent purple
- * everywhere, "damit sichtbar ist, dass da etwas passiert" — see
+ * everywhere, "damit sichtbar ist, dass da etwas passiert", see
  * OutputView.tsx's phaseIcon/phaseBeat. Sampling and idle always rendered the
  * same Sparkles icon as the fallback branch, so the now-pointless standalone
  * `phase === 'sampling'` check was dropped with the color, not the mapping:
@@ -50,7 +50,7 @@ describe('the waiting circle icon', () => {
     expect(body).toMatch(/phase === 'loading-clip'/)
     expect(body).toMatch(/phase === 'loading-vae'/)
     expect(body).toMatch(/phase === 'decoding'[\s\S]*?<ImageDown /)
-    // No standalone 'sampling' branch any more — it fell through to the
+    // No standalone 'sampling' branch any more: it fell through to the
     // fallback Sparkles before the color unification too, so dropping the
     // dead check changed nothing sampling ever showed.
     expect(body).not.toMatch(/phase === 'sampling'/)

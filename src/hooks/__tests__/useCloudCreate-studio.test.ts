@@ -72,6 +72,7 @@ const hoisted = vi.hoisted(() => {
       result_url: 'https://storage.example/out.mp4', created_at: new Date().toISOString(),
     })),
     cancelJob: vi.fn(async () => ({ status: 'canceled' })),
+    studioQuote: vi.fn(async (..._args: unknown[]) => ({ credits: 42 })),
   }
 })
 const { submitted, hochgeladen } = hoisted
@@ -94,8 +95,20 @@ vi.mock('../../api/cloud/jobs', () => ({
   QuoteChangedError: hoisted.FakeQuoteChangedError,
 }))
 
+// Review A1/B3 (Runde 2): useCloudCreate now quotes a Studio run right
+// before booking (see useCloudCreate.ts, the "Confirming the price…" step)
+// and uses that number as max_credits. A fixed 42 keeps every existing
+// assertion below about the OTHER params fields unaffected; the dedicated
+// max_credits/quote_changed behavior gets its own tests further down.
+vi.mock('../../api/cloud/studio', () => ({
+  studioQuote: hoisted.studioQuote,
+  StudioQuoteChangedError: hoisted.FakeQuoteChangedError,
+}))
+
 import { useCloudCreate } from '../useCloudCreate'
 import { useCreateStore } from '../../stores/createStore'
+import { useCloudCatalogStore } from '../../stores/cloudCatalogStore'
+import { CLOUD_MODEL_SEED } from '../../lib/render/cloud-models'
 
 const BILD = { filename: 'portrait.png', url: 'data:image/png;base64,AA', width: 512, height: 512 }
 const TON = { name: 'voice.mp3', url: 'blob:voice', blob: new Blob(['x']) }
@@ -103,6 +116,13 @@ const TON = { name: 'voice.mp3', url: 'blob:voice', blob: new Blob(['x']) }
 beforeEach(() => {
   submitted.length = 0
   hochgeladen.length = 0
+  hoisted.studioQuote.mockClear()
+  hoisted.studioQuote.mockResolvedValue({ credits: 42 })
+  hoisted.submitCloudJob.mockClear()
+  hoisted.submitCloudJob.mockImplementation(async (payload: (typeof submitted)[number]) => {
+    submitted.push(payload)
+    return { id: 'job-test', quota: { cost: 1000, used: 1000, limit: 100000 } }
+  })
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob(['x']) })))
   useCreateStore.setState({
     isGenerating: false, error: null, backend: 'cloud',
@@ -110,6 +130,12 @@ beforeEach(() => {
     extendSource: null, gallery: [], cloudStudioOptions: {},
   })
   useCreateStore.getState().setPrompt('a neutral placeholder line')
+  // Review B1: this whole file simulates a server that already knows Studio
+  // (that is what every test here submits against). Without `quote_required`
+  // on the live catalog, `resolveIntentPick` would fall back to a CLASSIC
+  // member for every one of these role intents (create-studio.test.ts has
+  // the dedicated fallback coverage for the opposite state).
+  useCloudCatalogStore.setState({ models: [...CLOUD_MODEL_SEED, { id: 'test-studio-marker', label: 'x', kind: 'image', quote_required: true }] })
 })
 
 describe('Studio-Modelle in den Create-Unterkategorien', () => {
@@ -196,5 +222,71 @@ describe('Studio-Modelle in den Create-Unterkategorien', () => {
     expect(submitted[0].params.client_request_id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     )
+  })
+
+  // Review A1/B3: das war der eigentliche Blocker beider Urteile. Der
+  // normale Create-Weg bucht jetzt nie mehr ohne einen server-bestaetigten
+  // Deckel, egal ob das Modell nach Ausgabe oder nach Eingabe abrechnet.
+  describe('bucht einen Studio-Lauf nur gegen eine bestaetigte Zahl (Review A1/B3)', () => {
+    it('holt vor der Buchung eine frische Quote und schickt sie als max_credits', async () => {
+      hoisted.studioQuote.mockResolvedValueOnce({ credits: 7654 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(hoisted.studioQuote).toHaveBeenCalledTimes(1)
+      expect(hoisted.studioQuote.mock.calls[0][0]).toBe('heygen-twin')
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0].params.max_credits).toBe(7654)
+      expect(submitted[0].params.client_request_id).toBeDefined()
+    })
+
+    it('bucht price.mode input/both Modelle (die 17, review-studio-B.md B3) ebenso gegen eine bestaetigte Zahl', async () => {
+      hoisted.studioQuote.mockResolvedValueOnce({ credits: 180000 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('infinitetalk') // price.mode: 'input', review B3's exact example family
+      useCreateStore.setState({ source: BILD, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(hoisted.studioQuote).toHaveBeenCalledTimes(1)
+      expect(submitted[0].params.max_credits).toBe(180000)
+    })
+
+    it('zeigt bei einer veralteten Quote den neuen Preis und bucht NICHT still nach', async () => {
+      hoisted.studioQuote.mockRejectedValueOnce(new hoisted.FakeQuoteChangedError('The price has changed.', 9999))
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(0)
+      expect(useCreateStore.getState().error).toContain('9,999')
+    })
+
+    it('zeigt bei einer 409 quote_changed BEIM BUCHEN (nicht bei der Quote) den neuen Preis, statt still neu zu buchen', async () => {
+      hoisted.submitCloudJob.mockRejectedValueOnce(new hoisted.FakeQuoteChangedError('The price has changed.', 5150))
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      useCreateStore.setState({ source: null, audioInput: TON })
+      await useCloudCreate().generate()
+      expect(useCreateStore.getState().error).toContain('5,150')
+      // The dead branch B1/B3 flagged is alive now: submitCloudJob was
+      // actually called (with a max_credits ceiling from the earlier, still
+      // successful quote call) and ITS OWN 409 surfaced, instead of the call
+      // never happening because max_credits was absent.
+      expect(hoisted.submitCloudJob).toHaveBeenCalledTimes(1)
+      expect(hoisted.submitCloudJob.mock.calls[0][0].params.max_credits).toBe(42)
+    })
+
+    it('bucht nie fuer eine klassische (nicht-Studio) Wahl gegen eine Quote', async () => {
+      const s = useCreateStore.getState()
+      s.setIntent('music')
+      s.setCloudOpModel('ace-step')
+      await useCloudCreate().generate()
+      expect(hoisted.studioQuote).not.toHaveBeenCalled()
+      expect(submitted[0].params.max_credits).toBeUndefined()
+    })
   })
 })

@@ -31,6 +31,19 @@ interface Props {
    *  (`title=""` oder `hideHeader`). Ohne sie fällt der Dialog auf `title`
    *  bzw. „Dialog" zurück. */
   ariaLabel?: string
+  /** Review B2 (Runde 2, 20.09.2026): das Standardverhalten (AnimatePresence
+   *  plus `{open && children}`) baut die Kinder beim Schliessen VOLLSTAENDIG
+   *  ab. Fuer die meisten der zwoelf Einbindungen ist das richtig: ein
+   *  Formular soll beim naechsten Oeffnen leer sein. Ein Fenster, das
+   *  bezahlten, nicht wiederholbaren Fortschritt in seinem eigenen
+   *  React-Baum haelt (die Preset-Werkstatt), darf X/Escape nicht mit
+   *  diesem Fortschritt bezahlen lassen. `keepMounted` haelt die Kinder
+   *  MONTIERT und blendet das Fenster nur aus, genau wie die Web-Referenz
+   *  (`apps/web/.../CreateExperimental.tsx`: `className={open?'fixed
+   *  inset-0 z-50 ...':'hidden'}`). Alle Tastatur-/Fokus-/Escape-Effekte
+   *  oben bleiben unveraendert an `open` gehaengt und schalten sich beim
+   *  Ausblenden sauber ab; nur der Unmount entfaellt. */
+  keepMounted?: boolean
 }
 
 // A modal is a real dialog, so it needs an OPAQUE, elevated surface — not the
@@ -42,7 +55,7 @@ interface Props {
 // und Screenreader aber keiner — kein Escape, keine Fokus-Falle, keine Rolle.
 // Wer die Maus nicht benutzt, kam aus dem Ding nicht wieder heraus. Alles unten
 // sitzt bewusst an DIESER einen Stelle, damit die zwölf Einbindungen es erben.
-export function Modal({ open, onClose, title, children, hideHeader, maxWidth = 'max-w-lg', panelRadius = 'rounded-2xl', panelPad = 'p-6', ariaLabel }: Props) {
+export function Modal({ open, onClose, title, children, hideHeader, maxWidth = 'max-w-lg', panelRadius = 'rounded-2xl', panelPad = 'p-6', ariaLabel, keepMounted = false }: Props) {
   const overlayRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   /** Wohin der Fokus beim Schließen zurückkehrt. */
@@ -157,6 +170,60 @@ export function Modal({ open, onClose, title, children, hideHeader, maxWidth = '
     return () => document.removeEventListener('keydown', onKey)
   }, [open, reactId, onClose, focusables])
 
+  const header = hideHeader ? (
+    <button
+      onClick={onClose}
+      data-dialog-close
+      className="absolute top-3 right-3 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
+      aria-label="Close"
+    >
+      <X size={18} />
+    </button>
+  ) : (
+    <div className="flex items-center justify-between mb-4">
+      <h2 id={titleId} className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
+      <button
+        onClick={onClose}
+        data-dialog-close
+        className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
+        aria-label="Close"
+      >
+        <X size={20} />
+      </button>
+    </div>
+  )
+  const panelClass = `relative z-10 w-full outline-none ${panelRadius} ${panelPad} lu-elevated ` + maxWidth
+  const dialogA11y = hasVisibleTitle
+    ? { 'aria-labelledby': titleId }
+    : { 'aria-label': ariaLabel || title || 'Dialog' }
+
+  if (keepMounted) {
+    // Kein AnimatePresence, kein Unmount: dieselbe montiert-und-ausgeblendet
+    // Regel wie die Web-Referenz. `children` bleibt im Baum, auch wenn
+    // `open` false ist, also ueberlebt der Zustand, den es haelt, X und
+    // Escape (Review B2).
+    return (
+      <div
+        ref={overlayRef}
+        data-lu-dialog={open ? '' : undefined}
+        className={open ? 'fixed inset-0 z-50 flex items-center justify-center p-4' : 'hidden'}
+      >
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          {...dialogA11y}
+          tabIndex={-1}
+          className={panelClass}
+        >
+          {header}
+          {children}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <AnimatePresence>
       {open && (
@@ -173,40 +240,15 @@ export function Modal({ open, onClose, title, children, hideHeader, maxWidth = '
             ref={panelRef}
             role="dialog"
             aria-modal="true"
-            {...(hasVisibleTitle
-              ? { 'aria-labelledby': titleId }
-              : { 'aria-label': ariaLabel || title || 'Dialog' })}
+            {...dialogA11y}
             tabIndex={-1}
-            className={
-              `relative z-10 w-full outline-none ${panelRadius} ${panelPad} lu-elevated ` + maxWidth
-            }
+            className={panelClass}
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
             transition={SPRING_PANEL}
           >
-            {hideHeader ? (
-              <button
-                onClick={onClose}
-                data-dialog-close
-                className="absolute top-3 right-3 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            ) : (
-              <div className="flex items-center justify-between mb-4">
-                <h2 id={titleId} className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
-                <button
-                  onClick={onClose}
-                  data-dialog-close
-                  className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
-                  aria-label="Close"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-            )}
+            {header}
             {children}
           </motion.div>
         </motion.div>
