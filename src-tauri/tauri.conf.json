@@ -88,6 +88,9 @@
           "libayatana-appindicator3-1",
           "libvulkan1",
           "libgomp1"
+        ],
+        "recommends": [
+          "git"
         ]
       },
       "rpm": {
@@ -97,6 +100,9 @@
           "libappindicator-gtk3",
           "libvulkan.so.1()(64bit)",
           "libgomp.so.1()(64bit)"
+        ],
+        "recommends": [
+          "git"
         ]
       }
     }

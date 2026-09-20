@@ -1072,6 +1072,14 @@ pub fn update_comfyui(state: State<'_, AppState>, app: tauri::AppHandle) -> Resu
             }
         }
 
+        // Linux setup stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13
+        // and Fedora 43 cloud/desktop images ship no git at all. Probe
+        // before the `git pull --ff-only` below touches anything.
+        if let Some(hint) = super::git::git_download_preflight() {
+            update("error", &hint);
+            return;
+        }
+
         // Runde 6, F8 (review Runde 5, same objection as Runde 4 raised for
         // the Install path): this preflight used to sit AFTER `git pull
         // --ff-only`, so an update on a venv with no compatible interpreter
@@ -2095,6 +2103,37 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "the call did not honor its timeout, took {:?}",
             start.elapsed()
+        );
+    }
+}
+
+/// Review Runde 2, B1: nothing may delete the Linux git preflight in
+/// `update_comfyui` or move it after the `git pull --ff-only` it is meant
+/// to guard, without a test going red. Same technique as
+/// `update_checks_the_interpreter_before_pulling_the_repository` above.
+#[cfg(test)]
+mod git_preflight_call_site_guard {
+    #[test]
+    fn update_comfyui_checks_git_before_pull() {
+        let src = include_str!("comfy_repair.rs");
+        let fn_start = src
+            .find("pub fn update_comfyui(")
+            .expect("update_comfyui is gone from comfy_repair.rs");
+        let body = &src[fn_start..];
+
+        let at_preflight = body.find("git_download_preflight()").expect(
+            "update_comfyui no longer calls git_download_preflight(): a fresh \
+             Debian 13 or Fedora 43 box without git would pull straight into a \
+             cryptic spawn error again instead of the distro-specific hint",
+        );
+        let at_pull = body
+            .find("\"pull\"")
+            .expect("the git pull literal is gone from update_comfyui");
+
+        assert!(
+            at_preflight < at_pull,
+            "git_download_preflight() (byte {at_preflight}) must run before \
+             git pull --ff-only (byte {at_pull}), not after"
         );
     }
 }

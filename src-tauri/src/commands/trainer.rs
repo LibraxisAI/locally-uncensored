@@ -1884,8 +1884,13 @@ pub(crate) fn musubi_source_present(root: &Path) -> bool {
 }
 
 /// Step 1 without a git binary: the tag as an archive, unpacked into place.
-/// git is the fallback, not the requirement, so a machine without it gets the
-/// network sentence when the archive fails, never "install git first".
+/// git is the fallback the source falls back to, not a requirement checked
+/// up front, so a machine without it only hears about git once the archive
+/// has already failed. On Linux that answer names the exact package manager
+/// command (review Runde 2, B3: this used to say the opposite, "never
+/// install git first", which stopped being true the moment the preflight
+/// below was added); on Windows and macOS it stays the plain network
+/// sentence it always was.
 fn fetch_musubi_source(
     root: &Path,
     state: &Arc<Mutex<crate::state::InstallState>>,
@@ -1900,13 +1905,25 @@ fn fetch_musubi_source(
         Err(e) if e == "cancelled" => return Err(e),
         Err(e) => e,
     };
-    let mut git = crate::process_util::foreign_system_command("git");
-    git.arg("--version");
-    #[cfg(target_os = "windows")]
-    git.creation_flags(CREATE_NO_WINDOW);
-    let has_git = git.output().map(|o| o.status.success()).unwrap_or(false);
+    // One git probe for both platform decisions (review Runde 2,
+    // Nachbesserung 2: this used to run `git --version` a second time right
+    // after git_download_preflight() already ran it). Linux setup
+    // stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13 and Fedora 43
+    // cloud/desktop images ship no git at all, so name the exact package
+    // manager command instead of a bare "could not download" there.
+    let has_git = crate::commands::install::git::is_git_present();
     if !has_git {
-        return Err(format!("Could not download the trainer source: {archive_err}"));
+        #[cfg(target_os = "linux")]
+        {
+            let hint = crate::commands::install::git::linux_git_missing_message(
+                &crate::commands::install::git::read_os_release(),
+            );
+            return Err(format!("Could not download the trainer source: {archive_err}\n\n{hint}"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err(format!("Could not download the trainer source: {archive_err}"));
+        }
     }
     push_log(state, &format!("Could not get the trainer source as an archive ({archive_err}); getting it with git instead."));
     let _ = fs::remove_dir_all(repo_dir(root));
@@ -5387,5 +5404,58 @@ mod progress_line_tests {
         let body = &body[..body.find("let exit = loop").expect("wait loop")];
         assert!(body.contains("for_each_progress_line(stream"), "the reader goes through the \\r-aware splitter");
         assert!(!body.contains(".lines()"), "BufRead::lines would hide tqdm updates until the epoch ends");
+    }
+}
+
+/// Review Runde 2, B1: nothing may delete the Linux git preflight in
+/// `fetch_musubi_source` or move it after the `git clone` it is meant to
+/// guard, without a test going red. Same technique as
+/// process_util.rs's `the_argv_matchers_share_one_refresh`.
+#[cfg(test)]
+mod git_preflight_call_site_guard {
+    #[test]
+    fn fetch_musubi_source_checks_git_before_clone() {
+        let src = include_str!("trainer.rs");
+        let fn_start = src
+            .find("fn fetch_musubi_source(")
+            .expect("fetch_musubi_source is gone from trainer.rs");
+        let body = &src[fn_start..];
+
+        let at_probe = body.find("is_git_present()").expect(
+            "fetch_musubi_source no longer probes git before falling back to it: a \
+             fresh Debian 13 or Fedora 43 box without git would clone straight into \
+             a cryptic spawn error again instead of the distro-specific hint",
+        );
+        // The probe alone is not the whole guarantee: review Runde 2 merged
+        // the old git_download_preflight() call into is_git_present() plus
+        // this direct call to the same Linux hint builder, to avoid running
+        // `git --version` twice. Anchoring only on is_git_present() would
+        // stay green even if someone deleted the `#[cfg(target_os =
+        // "linux")]` arm that actually builds the distro-specific message,
+        // so the hint builder call has to be found too.
+        let at_hint = body.find("linux_git_missing_message(").expect(
+            "fetch_musubi_source no longer builds the Linux-specific git hint: a \
+             fresh Debian 13 or Fedora 43 box without git would get the bare \
+             network sentence again instead of the package manager command",
+        );
+        let at_clone = body
+            .find("\"clone\"")
+            .expect("the git clone literal is gone from fetch_musubi_source");
+
+        assert!(
+            at_probe < at_clone,
+            "is_git_present() (byte {at_probe}) must run before the clone \
+             (byte {at_clone}), not after"
+        );
+        assert!(
+            at_hint < at_clone,
+            "linux_git_missing_message(...) (byte {at_hint}) must run before the \
+             clone (byte {at_clone}), not after"
+        );
+        assert!(
+            at_probe < at_hint,
+            "is_git_present() (byte {at_probe}) must be checked before building \
+             the Linux hint (byte {at_hint}), not the other way round"
+        );
     }
 }
