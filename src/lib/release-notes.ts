@@ -296,10 +296,6 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'The model picker no longer crashes when grouping by family.',
             detail: 'The model picker no longer crashes when grouping models by family, a custom OpenAI compatible endpoint now receives Top K, a model name is no longer cut off at its first colon, and a newly added provider starts with no value pre filled.',
           },
-          {
-            title: 'ltx-2 LoRA renders now cost credits, matching the web.',
-            detail: 'ltx-2 LoRA renders in the desktop app now carry a credit cost, matching the web catalog, instead of pricing as free.',
-          },
         ],
       },
       {
