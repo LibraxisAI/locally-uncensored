@@ -100,6 +100,27 @@ export function toolCallCapMs(
  * path Stop already uses, and, for every tool that honours its signal
  * (shell_execute, and now delegate_task/run_workflow, see sub-agent.ts and
  * builtin-tools.ts), actually winds down and releases what it held.
+ *
+ * Review-Auflage 1 (Opus, review-dtimeout.md): `baseSignal` is the whole
+ * run's Stop controller, alive for up to 200 iterations with several
+ * parallel tool calls each. Every call used to add its own `abort` listener
+ * to it and never remove it, win or lose, hundreds of dead listeners per run
+ * pinning their own `AbortController` (and the closure around it) alive for
+ * the rest of the run. The handler is a named const now so the SAME
+ * reference goes into `removeEventListener` in the shared `.finally()`
+ * below, whether the tool call wins, loses, or `run()` throws synchronously
+ * (Auflage 4).
+ *
+ * Review-Auflage 4 (Opus, review-dtimeout.md): `run(controller.signal)` used
+ * to be called directly inside the `Promise.race([...])` array literal. A
+ * factory that throws SYNCHRONOUSLY (instead of returning a rejected
+ * promise) would have thrown straight out of this function, before
+ * `Promise.race` and its `.finally()` ever ran: the deadline's `setTimeout`
+ * would stay armed for up to ~24.8 days (NO_PRACTICAL_CAP_MS) and its
+ * eventual rejection would be unhandled, and `baseSignal`'s listener would
+ * leak exactly like Auflage 1. No real factory here throws synchronously
+ * today (both callers wrap an `async` function, which never does), so this
+ * is hardening against a future caller's mistake, not a live bug.
  */
 export function raceWithToolTimeout(
   name: string,
@@ -108,9 +129,10 @@ export function raceWithToolTimeout(
   baseSignal?: AbortSignal,
 ): Promise<string> {
   const controller = new AbortController()
+  const onBaseAbort = () => controller.abort()
   if (baseSignal) {
     if (baseSignal.aborted) controller.abort()
-    else baseSignal.addEventListener('abort', () => controller.abort(), { once: true })
+    else baseSignal.addEventListener('abort', onBaseAbort, { once: true })
   }
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<string>((_, reject) => {
@@ -127,6 +149,16 @@ export function raceWithToolTimeout(
       capMs,
     )
   })
+  // Auflage 4: a factory call wrapped in try/catch instead of sitting bare
+  // inside the array literal, so a synchronous throw becomes a rejected
+  // promise that still goes through the race and its cleanup below, instead
+  // of escaping this function before either ever runs.
+  let started: Promise<string>
+  try {
+    started = run(controller.signal)
+  } catch (err) {
+    started = Promise.reject(err instanceof Error ? err : new Error(String(err)))
+  }
   // The tool call is built to resolve, not reject, once it honours the
   // signal (registry.execute() and every builtin executor return an "Error:
   // ..."/"Cancelled: ..." STRING on abort, they do not throw), so the
@@ -134,5 +166,12 @@ export function raceWithToolTimeout(
   // an unhandled rejection. Tools that DO throw on abort are caught the same
   // way any other tool error already is, inside registry.execute()'s own
   // try/catch, well before this race ever sees it.
-  return Promise.race([run(controller.signal), deadline]).finally(() => clearTimeout(timer))
+  return Promise.race([started, deadline]).finally(() => {
+    clearTimeout(timer)
+    // Auflage 1: removed unconditionally, win or lose. `removeEventListener`
+    // with a listener that was never added (baseSignal undefined, or the
+    // `{ once: true }` listener already fired and removed itself) is a
+    // documented no-op, not an error.
+    baseSignal?.removeEventListener('abort', onBaseAbort)
+  })
 }

@@ -174,3 +174,103 @@ describe('raceWithToolTimeout, Fix 2: der Verlierer wird wirklich abgebrochen', 
     await expect(promise).rejects.toThrow(/timed out/)
   })
 })
+
+// ── Review-Auflagen (Opus, review-dtimeout.md) ──────────────────────────
+
+describe('Auflage 1: der abort-Listener auf baseSignal wird IMMER entfernt, auch wenn das Werkzeug gewinnt', () => {
+  it('Sieger-Fall: removeEventListener wird mit demselben Handler gerufen, den addEventListener bekam', async () => {
+    const baseController = new AbortController()
+    const addSpy = vi.spyOn(baseController.signal, 'addEventListener')
+    const removeSpy = vi.spyOn(baseController.signal, 'removeEventListener')
+
+    const result = await raceWithToolTimeout(
+      'file_read', 5_000, () => Promise.resolve('ok'), baseController.signal,
+    )
+
+    expect(result).toBe('ok')
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    expect(removeSpy).toHaveBeenCalledTimes(1)
+    // Derselbe Funktions-Verweis: ein removeEventListener mit einer ANDEREN
+    // Funktion entfernt den echten Listener nicht, das waere ein Leck, das
+    // wie eine Behebung aussieht.
+    const addedHandler = addSpy.mock.calls[0][1]
+    const removedHandler = removeSpy.mock.calls[0][1]
+    expect(removedHandler).toBe(addedHandler)
+
+    // Beobachtbare Folge des reparierten Lecks: ein SPAETERES Abbrechen von
+    // baseSignal darf jetzt nichts mehr an dieser (laengst abgeschlossenen)
+    // Race aufloesen, es gibt nichts mehr, das zuhoert.
+    baseController.abort()
+    expect(removeSpy).toHaveBeenCalledTimes(1) // kein zweiter Aufruf noetig
+  })
+
+  it('Negativkontrolle: Verlierer-Fall (Deckel gewinnt) hat das Entfernen schon vorher getan, hier nur zur Abgrenzung', async () => {
+    vi.useFakeTimers()
+    const baseController = new AbortController()
+    const addSpy = vi.spyOn(baseController.signal, 'addEventListener')
+    const removeSpy = vi.spyOn(baseController.signal, 'removeEventListener')
+
+    const promise = raceWithToolTimeout(
+      'delegate_task', 1_000, () => new Promise<string>(() => {}), baseController.signal,
+    )
+    const caught = promise.catch((err: Error) => err.message)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await caught
+
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    expect(removeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('kein baseSignal: kein Aufruf von addEventListener/removeEventListener noetig, .finally() bleibt unschaedlich', async () => {
+    const result = await raceWithToolTimeout('file_read', 5_000, () => Promise.resolve('ok'))
+    expect(result).toBe('ok')
+  })
+})
+
+describe('Auflage 4: eine synchron werfende Fabrik reisst den Deckel-Timer und den Listener nicht mit sich', () => {
+  it('run() wirft SOFORT statt eine Promise zurueckzugeben: raceWithToolTimeout wirft nicht synchron, sondern liefert eine abgelehnte Promise', async () => {
+    vi.useFakeTimers()
+    const baseController = new AbortController()
+    const removeSpy = vi.spyOn(baseController.signal, 'removeEventListener')
+    const boom = new Error('run() ist synchron explodiert')
+
+    let threwSynchronously = false
+    let promise: Promise<string>
+    try {
+      promise = raceWithToolTimeout(
+        'delegate_task', 5_000,
+        () => { throw boom },
+        baseController.signal,
+      )
+    } catch {
+      threwSynchronously = true
+      promise = Promise.resolve('unreachable')
+    }
+
+    expect(threwSynchronously).toBe(false)
+    await expect(promise).rejects.toBe(boom)
+
+    // Aufraeumen lief trotzdem: der Listener ist weg, und der Deckel-Timer
+    // ist geraeumt statt bis zu NO_PRACTICAL_CAP_MS weiterzulaufen.
+    expect(removeSpy).toHaveBeenCalledTimes(1)
+    let unhandled = false
+    const onUnhandled = () => { unhandled = true }
+    process.on('unhandledRejection', onUnhandled)
+    await vi.advanceTimersByTimeAsync(NO_PRACTICAL_CAP_MS)
+    process.off('unhandledRejection', onUnhandled)
+    expect(unhandled).toBe(false)
+  })
+
+  it('Negativkontrolle: eine Fabrik, die normal eine abgelehnte Promise zurueckgibt (kein synchroner Wurf), verhaelt sich gleich', async () => {
+    const baseController = new AbortController()
+    const boom = new Error('normale Ablehnung, kein synchroner Wurf')
+
+    const promise = raceWithToolTimeout(
+      'file_read', 5_000,
+      () => Promise.reject(boom),
+      baseController.signal,
+    )
+
+    await expect(promise).rejects.toBe(boom)
+  })
+})
