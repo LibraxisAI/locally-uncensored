@@ -1138,24 +1138,75 @@ const VERBATIM_UNC_PREFIX: [u16; 8] = [
 #[cfg(any(windows, test))]
 const BACKSLASH: u16 = b'\\' as u16;
 
+/// A plain forward slash, as a UTF-16 code unit.
+#[cfg(any(windows, test))]
+const FORWARD_SLASH: u16 = b'/' as u16;
+
+/// review-longpath.md Runde 2, Auflage 11 (small): fold ASCII `A-Z` to
+/// lowercase, leaving every other code unit (backslashes, `?`, non-ASCII)
+/// untouched. Used only to compare the fixed "UNC" letters of the verbatim
+/// prefix case-insensitively; nothing here does general Unicode casing.
+#[cfg(any(windows, test))]
+fn ascii_lower(c: u16) -> u16 {
+    if (b'A' as u16..=b'Z' as u16).contains(&c) { c + 32 } else { c }
+}
+
+/// Does `path` start with `\\?\UNC\`, comparing the "UNC" letters without
+/// regard to case (review-longpath.md Runde 2, Auflage 11)? A plain
+/// `[u16]::starts_with` would miss a `\\?\unc\...` input and leave
+/// `strip_verbatim_prefix` stripping only the plain `\\?\` part of it,
+/// handing back a broken relative path (`unc\server\share` instead of
+/// `\\server\share`). `resource_dir()` never produces this in practice, but
+/// `GetShortPathNameW` is free to hand back whatever casing it wants, and a
+/// silent wrong answer is worse than one extra comparison.
+#[cfg(any(windows, test))]
+fn starts_with_verbatim_unc_prefix_ci(path: &[u16]) -> bool {
+    path.len() >= VERBATIM_UNC_PREFIX.len()
+        && path[..VERBATIM_UNC_PREFIX.len()]
+            .iter()
+            .zip(VERBATIM_UNC_PREFIX.iter())
+            .all(|(&a, &b)| ascii_lower(a) == ascii_lower(b))
+}
+
 /// Add the verbatim prefix `GetShortPathNameW` needs to accept an
 /// over-MAX_PATH input. A path that already carries `\\?\` is returned
 /// unchanged (never doubled); a UNC path (`\\server\share\...`) becomes
 /// `\\?\UNC\server\share\...`; anything else (a drive-letter path) is simply
 /// prefixed with `\\?\`.
+///
+/// review-longpath.md Runde 2, Auflage 11 (small), two edge cases hardened:
+/// - Forward slashes are normalized to backslashes FIRST. The verbatim
+///   prefix "disables all string parsing" (Microsoft, "Naming Files, Paths,
+///   and Namespaces"), forward-slash-as-separator included, so a
+///   `C:/long/path` handed to `GetShortPathNameW` verbatim would not resolve
+///   as a path at all; `resource_dir()` never produces one in practice
+///   (`PathBuf` renders with the platform separator), but the call must not
+///   quietly mis-parse one if it ever did.
+/// - A device path (`\\.\...`) is not mistaken for a UNC share: both start
+///   with two backslashes, but the third character tells them apart (`.`
+///   for a device, anything else for a UNC server name). Prefixing a device
+///   path as if it were UNC would silently point `GetShortPathNameW` at a
+///   nonexistent `\\?\UNC\.\...` path instead of failing loudly; `SkipCurrentDir`
+///   is still the safe outcome either way (klaerung-63.md), this just keeps
+///   the failure honest rather than a wrong guess.
 #[cfg(any(windows, test))]
 fn verbatim_prefixed(long_path: &[u16]) -> Vec<u16> {
     if long_path.starts_with(&VERBATIM_PREFIX) {
         return long_path.to_vec();
     }
-    let is_unc = long_path.len() >= 2 && long_path[0] == BACKSLASH && long_path[1] == BACKSLASH;
-    let mut out = Vec::with_capacity(long_path.len() + VERBATIM_UNC_PREFIX.len());
+    let normalized: Vec<u16> =
+        long_path.iter().map(|&c| if c == FORWARD_SLASH { BACKSLASH } else { c }).collect();
+    let is_unc = normalized.len() >= 3
+        && normalized[0] == BACKSLASH
+        && normalized[1] == BACKSLASH
+        && normalized[2] != b'.' as u16; // "\\.\..." is a device path, not UNC
+    let mut out = Vec::with_capacity(normalized.len() + VERBATIM_UNC_PREFIX.len());
     if is_unc {
         out.extend_from_slice(&VERBATIM_UNC_PREFIX);
-        out.extend_from_slice(&long_path[2..]); // drop the UNC path's own leading "\\"
+        out.extend_from_slice(&normalized[2..]); // drop the UNC path's own leading "\\"
     } else {
         out.extend_from_slice(&VERBATIM_PREFIX);
-        out.extend_from_slice(long_path);
+        out.extend_from_slice(&normalized);
     }
     out
 }
@@ -1170,11 +1221,15 @@ fn verbatim_prefixed(long_path: &[u16]) -> Vec<u16> {
 /// otherwise), and counting the `\\?\`/`\\?\UNC\` characters themselves would
 /// make `exceeds_classic_current_dir_limit` lie about how long the resolved
 /// short path "really" is once handed to `current_dir`. A value carrying
-/// neither prefix is returned unchanged.
+/// neither prefix is returned unchanged. The UNC form is checked FIRST and
+/// case-insensitively (`starts_with_verbatim_unc_prefix_ci`, Auflage 11):
+/// checking the plain `\\?\` form first would match a `\\?\UNC\...` input
+/// too (it starts with the same four characters) and strip only that much.
 #[cfg(any(windows, test))]
 fn strip_verbatim_prefix(path: &[u16]) -> Vec<u16> {
-    if let Some(rest) = path.strip_prefix(VERBATIM_UNC_PREFIX.as_slice()) {
+    if starts_with_verbatim_unc_prefix_ci(path) {
         // "\\?\UNC\server\share" -> "\\server\share"
+        let rest = &path[VERBATIM_UNC_PREFIX.len()..];
         let mut out = Vec::with_capacity(rest.len() + 2);
         out.push(BACKSLASH);
         out.push(BACKSLASH);
@@ -2011,6 +2066,15 @@ pub(crate) fn stderr_blames_the_port(stderr: &str) -> bool {
 /// this is a substring test on a log, not a regular expression, and no line
 /// ever carries the two characters `.*`. That case arrives through
 /// `failed to load model` like every other load error.
+///
+/// `failed to load model` IS included here, unlike in the stricter
+/// `stderr_blames_the_model_file` right below: llama.cpp also prints that
+/// line on load failures that have nothing to do with the file (a CUDA
+/// out-of-memory, no backend loaded at all), so `died_failure_hint` only
+/// reaches this looser check once it has already ruled out a too-long
+/// install path as the cause (review-longpath.md Runde 2, Blocker 9): this
+/// function stays the right answer for every OTHER "the child died and said
+/// something model-shaped" case, short-path included.
 fn stderr_blames_the_model(stderr: &str) -> bool {
     const MARKERS: &[&str] = &[
         "unknown model architecture",
@@ -2228,6 +2292,46 @@ fn illegal_instruction_repair_sentence(module_count: Option<usize>, is_macos: bo
     }
 }
 
+/// The priority logic behind `start_failure_message`'s generic "the engine
+/// died" sentence (review-longpath.md Runde 2, Blocker 9 and 10). Pulled out
+/// as a pure function of `stderr` and a plain `backend_dir_too_long: bool`
+/// (rather than a `Path` and a real Windows API call) specifically so it is
+/// directly unit-testable on every host OS: `windows_backend_dir_too_long`
+/// stays the one place that turns a real `backend_dir` into that bool.
+///
+/// Order, most specific (something the CHILD process itself proved) first:
+/// 1. A named missing system library (`stderr_names_a_missing_system_library`),
+///    read straight off the loader's own error line.
+/// 2. `backend_dir_too_long`: a too-long install path is checked BEFORE the
+///    general model-blame step, not after. Blocker 9: `stderr_blames_the_model`
+///    (step 3) matches `failed to load model`, which llama.cpp prints on load
+///    failures that have NOTHING to do with the file (its own doc comment
+///    names a CUDA out-of-memory as one such case). With no backend loaded at
+///    all (a too-long install path with no usable short name), the model load
+///    aborts and prints exactly that line, and reading it in step 3 first
+///    would have told a user with a perfectly good model file to download it
+///    again while never mentioning the real, fixable cause. Checking the path
+///    first REPLACES (not appends to) the generic "Reinstall..." catch-all,
+///    which would send the user right back into the same too-long path
+///    (review-longpath.md Runde 1, Auflage 3).
+/// 3. The general model-blame markers (`stderr_blames_the_model`, which does
+///    include `failed to load model`): once a too-long path is ruled out,
+///    this is exactly right for a short-path model failure, CUDA
+///    out-of-memory included as a case GPU Layers 0 already handles above
+///    this function.
+/// 4. The generic catch-all.
+fn died_failure_hint(stderr: &str, backend_dir_too_long: bool, on_linux: bool) -> String {
+    if let Some(lib) = stderr_names_a_missing_system_library(stderr) {
+        missing_library_hint(&lib, on_linux)
+    } else if backend_dir_too_long {
+        format!(" {}", long_install_path_hint())
+    } else if stderr_blames_the_model(stderr) {
+        " The engine could not read the model file. It may be damaged, cut short, or of a type this engine cannot run. Open Models, Get new and download it again, or pick another model.".to_string()
+    } else {
+        " Reinstall Locally Uncensored if this keeps happening, or pick a different backend in Settings, AI Backends.".to_string()
+    }
+}
+
 /// One English sentence a user can act on, plus llama-server's own last words
 /// so a bug report still carries them.
 ///
@@ -2298,6 +2402,7 @@ pub(crate) fn start_failure_message(
         && stderr_blames_the_gpu(&failure.stderr)
         && !stderr_blames_the_port(&failure.stderr)
         && !stderr_blames_the_model_file(&failure.stderr)
+        && !backend_dir.is_some_and(windows_backend_dir_too_long)
     {
         // A missing system library is asked before the card: the loader line
         // "error while loading shared libraries: libvulkan.so.1" carries the
@@ -2315,6 +2420,16 @@ pub(crate) fn start_failure_message(
         // GGUF with a header it cannot parse used to arrive here and be sent
         // away as a graphics-card problem. No setting repairs a broken file.
         //
+        // review-longpath.md Runde 2, Blocker 9 named this branch as one that
+        // could ALSO swallow the honest long-install-path message (it is not
+        // decidable at a desk whether `stderr_blames_the_gpu`'s loose word
+        // match ever fires in that scenario, since the sidecar most likely
+        // dies before reaching any GPU-init logging with no backend loaded at
+        // all; box measurement, Runde 2 Messvorschrift Punkt 3, settles that
+        // empirically). Guarded here regardless, the same way the model-file
+        // check already is: "set GPU Layers to 0" cannot fix a too-long
+        // installation path any more than it fixes a broken GGUF.
+        //
         // And the whole branch is asked only of a retry that ran the SAME
         // offload. Once the second attempt has run on the processor by itself,
         // "set GPU Layers to 0" is advice the app has already taken, and
@@ -2325,27 +2440,11 @@ pub(crate) fn start_failure_message(
             "The LU Engine could not open port {port}. Another program holds it, or the port sits in a range this system has reserved. The app already tried the next free ports and got the same answer. Close that program or reboot, then try again."
         )
     } else if failure.died {
-        // K1-14 (3.0.1, review-longpath.md Runde 1, Auflage 3): a backend dir
-        // over Windows' classic current-directory limit is checked BEFORE the
-        // generic "Reinstall..." catch-all and REPLACES it, not adds to it.
-        // apply_engine_backend_dir already leaves current_dir unset in
-        // exactly this case rather than fail the spawn outright (see its own
-        // doc comment), so the sidecar reaches this ordinary "died" path
-        // instead of the immediate spawn-error path; sending the user back to
-        // "Reinstall" here would point them right back into the same
-        // too-long path that caused this. A more specific, stderr-backed
-        // cause (a named missing library, a bad model file) still wins over
-        // this: those are read off what the child itself said, not inferred
-        // from a path length.
-        let hint = if let Some(lib) = stderr_names_a_missing_system_library(&failure.stderr) {
-            missing_library_hint(&lib, cfg!(target_os = "linux"))
-        } else if stderr_blames_the_model(&failure.stderr) {
-            " The engine could not read the model file. It may be damaged, cut short, or of a type this engine cannot run. Open Models, Get new and download it again, or pick another model.".to_string()
-        } else if backend_dir.is_some_and(windows_backend_dir_too_long) {
-            format!(" {}", long_install_path_hint())
-        } else {
-            " Reinstall Locally Uncensored if this keeps happening, or pick a different backend in Settings, AI Backends.".to_string()
-        };
+        let hint = died_failure_hint(
+            &failure.stderr,
+            backend_dir.is_some_and(windows_backend_dir_too_long),
+            cfg!(target_os = "linux"),
+        );
         match second {
             SecondAttempt::SameOffload => format!(
                 "The LU Engine started and exited again before it could serve on port {port}. It was tried twice.{hint}"
@@ -5412,6 +5511,41 @@ mod tests {
         assert_eq!(strip_verbatim_prefix(&verbatim_prefixed(&original)), original);
     }
 
+    // ── Prefix edge cases (review-longpath.md Runde 2, Auflage 11) ──────────
+
+    #[test]
+    fn strip_verbatim_prefix_strips_a_lowercase_unc_marker_too() {
+        // GetShortPathNameW is free to hand back any casing; a case-sensitive
+        // compare here would strip only "\\?\" and leave the broken relative
+        // path "unc\server\share\x" behind.
+        assert_eq!(strip_verbatim_prefix(&utf16(r"\\?\unc\server\share\x")), utf16(r"\\server\share\x"));
+        // Negative control: this must still be the ONLY thing that changes;
+        // an unrelated path is not touched by the case-insensitive compare.
+        assert_eq!(strip_verbatim_prefix(&utf16(r"C:\LU~1")), utf16(r"C:\LU~1"));
+    }
+
+    #[test]
+    fn verbatim_prefixed_does_not_mistake_a_device_path_for_unc() {
+        // "\\.\C:" and similar device paths also start with two backslashes,
+        // but the third character (".") marks them as a device path, not a
+        // UNC share. Getting this wrong would silently build a nonexistent
+        // "\\?\UNC\.\..." path instead of just prefixing the device path
+        // unchanged, "\\?\" followed by the original "\\.\C:\long\path".
+        let expected: Vec<u16> = utf16(r"\\?\").into_iter().chain(utf16(r"\\.\C:\long\path")).collect();
+        assert_eq!(verbatim_prefixed(&utf16(r"\\.\C:\long\path")), expected);
+    }
+
+    #[test]
+    fn verbatim_prefixed_normalizes_forward_slashes_before_prefixing() {
+        // The verbatim prefix disables all string parsing, forward slashes
+        // included, so a mixed-separator input must be normalized to
+        // backslashes FIRST or the result would not resolve as a path at all.
+        assert_eq!(verbatim_prefixed(&utf16("C:/LU/long/path")), utf16(r"\\?\C:\LU\long\path"));
+        // A UNC path with forward slashes must still be recognized as UNC
+        // AFTER normalization, not missed because the check ran too early.
+        assert_eq!(verbatim_prefixed(&utf16("//server/share/x")), utf16(r"\\?\UNC\server\share\x"));
+    }
+
     #[test]
     fn decide_long_path_current_dir_uses_the_short_dir_as_is() {
         // Short enough already: the short-name resolver must never even run.
@@ -5446,6 +5580,65 @@ mod tests {
         // than returning a usable name.
         let decision = decide_long_path_current_dir(295, || None);
         assert_eq!(decision, LongPathDecision::SkipCurrentDir);
+    }
+
+    // ── died_failure_hint (review-longpath.md Runde 2, Blocker 9 and 10) ────
+    //
+    // Pure function of `stderr` and a plain `bool`, no Windows API or `Path`
+    // involved: testable, and tested, on every host OS, closing the gap
+    // Blocker 10 named (the real call site is only reachable through
+    // `windows_backend_dir_too_long`, which is a hard `false` off Windows, so
+    // nothing here was ever exercised on the Mac before this).
+
+    #[test]
+    fn died_failure_hint_names_a_missing_library_before_anything_else() {
+        // Step 1 outranks even a long path: a library the loader itself named
+        // is more certain than an inferred path-length cause.
+        let hint = died_failure_hint(
+            "lu-llama-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file",
+            true,
+            true,
+        );
+        assert!(hint.contains("libvulkan.so.1"), "{hint}");
+        assert!(!hint.contains("installation's own folder path"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_blames_the_long_path_even_when_stderr_looks_like_a_model_failure() {
+        // THE guard against Blocker 9: with no backend loaded at all (a long
+        // path with no usable short name), llama.cpp's model loader aborts
+        // and prints exactly this line, which has nothing to do with the
+        // file's own bytes. A long path must win here, not "download it
+        // again" for a perfectly good model.
+        let hint = died_failure_hint("llama_model_load_from_file_impl: failed to load model", true, false);
+        assert!(hint.contains("installation's own folder path"), "{hint}");
+        assert!(!hint.contains("download it again"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_still_blames_the_model_on_a_short_path() {
+        // The exact opposite of the test above, same stderr line: with a
+        // SHORT path, `backend_dir_too_long` is false, so this is genuinely
+        // the ordinary "the child died over a bad model" case and the model
+        // hint is still correct. Negative control for the guard test: this
+        // is what proves the guard checks the PATH, not just the stderr text.
+        let hint = died_failure_hint("llama_model_load_from_file_impl: failed to load model", false, false);
+        assert!(hint.contains("download it again"), "{hint}");
+        assert!(!hint.contains("installation's own folder path"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_falls_back_to_reinstall_advice_with_nothing_else_to_go_on() {
+        let hint = died_failure_hint("some unrelated crash text", false, false);
+        assert!(hint.contains("Reinstall Locally Uncensored"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_names_the_long_path_with_an_empty_stderr_too() {
+        // The plain case BERICHT.md #63's 8dot3-disabled scenario actually
+        // produces: no specific stderr line at all, just a too-long path.
+        let hint = died_failure_hint("", true, false);
+        assert!(hint.contains("installation's own folder path"), "{hint}");
     }
 
     // Serializes the two tests below: both read and mutate the process-wide
@@ -5552,37 +5745,56 @@ mod tests {
 
     #[cfg(windows)]
     struct LongDirFixture {
-        /// The `\\?\`-prefixed form: for filesystem operations only.
+        /// The verbatim form of the TOP-level directory this fixture itself
+        /// created (the first of the repeated `component` levels, directly
+        /// under `std::env::temp_dir()`). `Drop` removes THIS, not the
+        /// bottom (leaf) directory: review-longpath.md Runde 2, Auflage 12
+        /// found that removing only the deepest level (what `verbatim` used
+        /// to point at) left every level above it behind on the box, run
+        /// after run, because a leaf directory has nothing under it for
+        /// `remove_dir_all` to recurse into.
+        top_level_verbatim: PathBuf,
+        /// The `\\?\`-prefixed form of the deepest (leaf) directory: for
+        /// filesystem operations only.
         verbatim: PathBuf,
-        /// The plain, unprefixed form: what the code under test actually
-        /// sees, same as it would from `resource_dir()`.
+        /// The plain, unprefixed form of the deepest directory: what the
+        /// code under test actually sees, same as it would from
+        /// `resource_dir()`.
         plain: PathBuf,
     }
 
     #[cfg(windows)]
     impl LongDirFixture {
         /// Builds and creates a directory over the classic 258 character
-        /// ceiling, and returns both spellings of its path. Creation happens
-        /// here (not lazily) so a guard can start cleaning up from the very
-        /// next line, before any assertion in the caller can panic and skip
-        /// it (Auflage 4, "kleiner" nit: cleanup used to run only after the
-        /// assertions).
+        /// ceiling, and returns both spellings of its path.
+        ///
+        /// review-longpath.md Runde 2, Auflage 12: the sanity assertion used
+        /// to run BEFORE constructing the returned `Self`, so a failing
+        /// assertion (this fixture proving out over the limit is itself
+        /// meant to be true, but a fixture bug should not compound into a
+        /// leaked directory) skipped `Drop` entirely and left the directory
+        /// on disk. The assertion now runs AFTER `fixture` is bound to a
+        /// local of type `LongDirFixture`, so unwinding drops it and cleans
+        /// up regardless of which assertion (here, or in the caller) fails.
         fn create() -> Self {
             use std::os::windows::ffi::OsStrExt;
             let base = std::env::temp_dir();
-            let mut plain = base.clone();
+            let component = "a".repeat(50);
+            let top_level_plain = base.join(&component);
+            let top_level_verbatim = PathBuf::from(format!(r"\\?\{}", top_level_plain.display()));
+            let mut plain = top_level_plain.clone();
             // One 50-character component per iteration, comfortably past 260
             // total once joined with the temp dir and a few levels.
-            let component = "a".repeat(50);
             while plain.as_os_str().encode_wide().count() < 280 {
                 plain.push(&component);
             }
             let verbatim = PathBuf::from(format!(r"\\?\{}", plain.display()));
             std::fs::create_dir_all(&verbatim).expect("create a long verbatim test directory");
+            let fixture = LongDirFixture { top_level_verbatim, verbatim, plain };
             // Sanity check on the fixture itself: this must actually be over
             // the limit, or the test below would pass for the wrong reason.
-            assert!(exceeds_classic_current_dir_limit(utf16_len(&plain)));
-            LongDirFixture { verbatim, plain }
+            assert!(exceeds_classic_current_dir_limit(utf16_len(&fixture.plain)));
+            fixture
         }
     }
 
@@ -5590,11 +5802,12 @@ mod tests {
     impl Drop for LongDirFixture {
         fn drop(&mut self) {
             // Best effort: a failed cleanup must not mask a real test
-            // failure (and Drop cannot propagate one anyway). Uses the
-            // VERBATIM path, same reasoning as creation: ordinary
-            // (non-verbatim) removal is itself subject to the classic length
-            // limit without LongPathsEnabled.
-            let _ = std::fs::remove_dir_all(&self.verbatim);
+            // failure (and Drop cannot propagate one anyway). Removes the
+            // TOP-level directory (verbatim form: ordinary, non-verbatim
+            // removal is itself subject to the classic length limit without
+            // LongPathsEnabled), which recursively takes every level
+            // underneath it, including the leaf `self.verbatim` points at.
+            let _ = std::fs::remove_dir_all(&self.top_level_verbatim);
         }
     }
 
@@ -7627,7 +7840,7 @@ srv    llama_server: exiting due to model loading error";
         // Negative control: a plain port collision is not a GPU problem, and
         // sending that user into the GPU Layers setting would waste their time.
         assert!(!stderr_blames_the_gpu("error: bind(): Address already in use"));
-        assert!(!stderr_blames_the_model("error: bind(): Address already in use"));
+        assert!(!stderr_blames_the_model_file("error: bind(): Address already in use"));
     }
 
     #[test]
