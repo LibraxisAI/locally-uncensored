@@ -1065,3 +1065,48 @@ mod disk_pressure_doc_matches_body {
         );
     }
 }
+
+/// Review Runde 2, B1: nothing may delete the Linux git preflight in
+/// `install_comfyui` or move it after the first network write it is meant
+/// to guard, without a test going red. Same include_str! + marker technique
+/// as `update_checks_the_interpreter_before_pulling_the_repository` in
+/// comfy_repair.rs and `the_argv_matchers_share_one_refresh` in
+/// process_util.rs: read the file's own source, cut it at the function
+/// signature, and require the preflight call text to occur before both
+/// download literals the function can hit ("clone" for the fresh install,
+/// "pull" for the "already exists, update it" branch).
+#[cfg(test)]
+mod git_preflight_call_site_guard {
+    #[test]
+    fn install_comfyui_checks_git_before_clone_and_before_pull() {
+        let src = include_str!("comfy_install.rs");
+        let fn_start = src
+            .find("pub fn install_comfyui(")
+            .expect("install_comfyui is gone from comfy_install.rs");
+        let body = &src[fn_start..];
+
+        let at_preflight = body.find("git_download_preflight()").expect(
+            "install_comfyui no longer calls git_download_preflight(): a fresh \
+             Debian 13 or Fedora 43 box without git would clone straight into a \
+             cryptic spawn error again instead of the distro-specific hint",
+        );
+        let at_clone = body
+            .find("\"clone\"")
+            .expect("the git clone literal is gone from install_comfyui");
+        let at_pull = body
+            .find("\"pull\"")
+            .expect("the git pull literal (already-exists branch) is gone from install_comfyui");
+
+        assert!(
+            at_preflight < at_clone,
+            "git_download_preflight() (byte {at_preflight}) must run before the \
+             clone (byte {at_clone}), not after"
+        );
+        assert!(
+            at_preflight < at_pull,
+            "git_download_preflight() (byte {at_preflight}) must run before the \
+             already-exists pull (byte {at_pull}) too: both start from the same \
+             preflight call, which is single, up front"
+        );
+    }
+}

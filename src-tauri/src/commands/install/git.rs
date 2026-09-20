@@ -261,8 +261,17 @@ pub fn linux_git_missing_message(os_release: &str) -> String {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn read_os_release() -> String {
+pub fn read_os_release() -> String {
     std::fs::read_to_string("/etc/os-release").unwrap_or_default()
+}
+
+/// Whether `git --version` succeeds, exposed as its own call so a caller
+/// that needs the yes/no answer for more than the network preflight (the
+/// trainer's archive-then-git fallback, review Runde 2 Nachbesserung 2)
+/// probes git exactly once instead of running `git --version` a second
+/// time right after `git_download_preflight` already ran it.
+pub fn is_git_present() -> bool {
+    git_version_string().is_some()
 }
 
 /// Pure core of [`git_download_preflight`]: whether git is present in, the
@@ -293,7 +302,7 @@ fn git_download_preflight_core(is_git_present: bool, os_release: &str) -> Option
 /// so callers see no behaviour change there.
 #[cfg(target_os = "linux")]
 pub fn git_download_preflight() -> Option<String> {
-    git_download_preflight_core(git_version_string().is_some(), &read_os_release())
+    git_download_preflight_core(is_git_present(), &read_os_release())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -515,8 +524,12 @@ mod tests {
 
     #[test]
     fn linux_pm_debian_derivative_via_id_like_is_apt() {
-        // Linux Mint style: ID is its own name, ID_LIKE carries the upstream.
-        let os_release = "NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n";
+        // Review Runde 2, B2: the old example here was Linux Mint
+        // (ID=linuxmint), but "linuxmint" is itself in the Apt match list,
+        // so that test passed even with ID_LIKE completely ignored: it
+        // never actually exercised the ID_LIKE path. Zorin OS's own ID is
+        // not in any family list; only ID_LIKE carries "ubuntu debian".
+        let os_release = "NAME=\"Zorin OS\"\nID=zorin\nID_LIKE=\"ubuntu debian\"\n";
         assert_eq!(
             linux_package_manager_from_os_release(os_release),
             LinuxPackageManager::Apt
@@ -534,7 +547,11 @@ mod tests {
 
     #[test]
     fn linux_pm_rhel_derivative_via_id_like_is_dnf() {
-        let os_release = "NAME=\"Rocky Linux\"\nID=rocky\nID_LIKE=\"rhel centos fedora\"\n";
+        // Review Runde 2, B2: the old example here was Rocky Linux
+        // (ID=rocky), but "rocky" is itself in the Dnf match list, so this
+        // test passed even with ID_LIKE completely ignored. Nobara's own ID
+        // is not in any family list; only ID_LIKE carries "fedora".
+        let os_release = "NAME=\"Nobara Linux\"\nID=nobara\nID_LIKE=fedora\n";
         assert_eq!(
             linux_package_manager_from_os_release(os_release),
             LinuxPackageManager::Dnf
@@ -544,6 +561,18 @@ mod tests {
     #[test]
     fn linux_pm_arch_is_pacman() {
         let os_release = "NAME=\"Arch Linux\"\nID=arch\nID_LIKE=\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Pacman
+        );
+    }
+
+    #[test]
+    fn linux_pm_arch_derivative_via_id_like_is_pacman() {
+        // Review Runde 2, B2: no Pacman example went through ID_LIKE at
+        // all before this. CachyOS's own ID is not in any family list;
+        // only ID_LIKE carries "arch".
+        let os_release = "NAME=\"CachyOS Linux\"\nID=cachyos\nID_LIKE=arch\n";
         assert_eq!(
             linux_package_manager_from_os_release(os_release),
             LinuxPackageManager::Pacman

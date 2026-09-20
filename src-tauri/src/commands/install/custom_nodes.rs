@@ -727,3 +727,42 @@ mod tests {
         assert!(outcome.needs_reverification());
     }
 }
+
+/// Review Runde 2, B1: nothing may delete the Linux git preflight in
+/// `install_custom_node_blocking` or move it after the pull or the clone it
+/// is meant to guard, without a test going red. Same technique as
+/// process_util.rs's `the_argv_matchers_share_one_refresh`.
+#[cfg(test)]
+mod git_preflight_call_site_guard {
+    #[test]
+    fn install_custom_node_checks_git_before_pull_and_before_clone() {
+        let src = include_str!("custom_nodes.rs");
+        let fn_start = src
+            .find("fn install_custom_node_blocking(")
+            .expect("install_custom_node_blocking is gone from custom_nodes.rs");
+        let body = &src[fn_start..];
+
+        let at_preflight = body.find("git_download_preflight()").expect(
+            "install_custom_node_blocking no longer calls git_download_preflight(): \
+             a fresh Debian 13 or Fedora 43 box without git would clone or pull \
+             straight into a cryptic spawn error again",
+        );
+        let at_pull = body
+            .find("\"pull\"")
+            .expect("the git pull literal (update branch) is gone from install_custom_node_blocking");
+        let at_clone = body
+            .find("\"clone\"")
+            .expect("the git clone literal (fresh install branch) is gone from install_custom_node_blocking");
+
+        assert!(
+            at_preflight < at_pull,
+            "git_download_preflight() (byte {at_preflight}) must run before the \
+             update pull (byte {at_pull}), not after"
+        );
+        assert!(
+            at_preflight < at_clone,
+            "git_download_preflight() (byte {at_preflight}) must run before the \
+             fresh clone (byte {at_clone}), not after"
+        );
+    }
+}
