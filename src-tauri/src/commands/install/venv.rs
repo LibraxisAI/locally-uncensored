@@ -224,7 +224,7 @@ pub fn create_comfyui_venv(
     if !venv_py.exists() {
         return Err(format!(
             "venv was created at {} but no Python binary appeared at {}. \
-             This usually means the venv module is broken — try `sudo pacman -S python-virtualenv` (Arch) or the equivalent on your distro.",
+             This usually means the venv module is broken. Try `sudo pacman -S python-virtualenv` (Arch) or the equivalent on your distro.",
             venv_dir.display(),
             venv_py.display()
         ));
@@ -777,6 +777,57 @@ mod tests {
         // replaced by the fallback wording.
         let msg = venv_creation_failed_message("ERROR: something broke", Some(1));
         assert_eq!(msg, "venv creation failed: ERROR: something broke");
+    }
+
+    /// The body of `create_comfyui_venv`, source lines only.
+    ///
+    /// Same pattern as `remote.rs`'s `shutdown_body` (KF-1's guard): the two
+    /// process tests that would actually catch a regression here
+    /// (`eng14_real_env_create_comfyui_venv_against_system_python3` and
+    /// `a_venv_failure_with_no_output_at_all_still_names_the_exit_code`) are
+    /// both `#[ignore]`'d for the `installer_children_test_lock` reason
+    /// documented above, so neither runs in a normal `cargo test`. Without a
+    /// standardly-running guard, reverting the one line this whole fix turns
+    /// on (`.stdout(Stdio::piped())` back to `.stdout(Stdio::null())`) would
+    /// leave every test green and quietly reintroduce ENG-14.
+    fn create_comfyui_venv_body() -> String {
+        let this_file = include_str!("venv.rs");
+        let from = this_file
+            .find("pub fn create_comfyui_venv")
+            .expect("venv.rs no longer has create_comfyui_venv");
+        let body = &this_file[from..];
+        let to = body
+            .find("\n// ── P3 (04.09.)")
+            .expect("venv.rs no longer follows create_comfyui_venv with the P3 retire section");
+        body[..to].to_string()
+    }
+
+    /// ENG-14's actual regression shape: `Stdio::null()` on stdout instead of
+    /// `Stdio::piped()`. The negative control this test answers to is
+    /// literal: comment the fix line back to `.stdout(Stdio::null())` (the
+    /// state this file was in before commit 09d2c2c5) and this is the ONE
+    /// test, of the whole standard suite, that turns red. Before the fix,
+    /// `cargo test --bins commands::install::venv::` still reported "32
+    /// passed" with the same count as after, because the two tests that
+    /// would have caught it are `#[ignore]`'d; with this guard added, the
+    /// same reverted line instead fails right here.
+    #[test]
+    fn create_comfyui_venv_still_pipes_stdout_instead_of_nulling_it() {
+        let body = create_comfyui_venv_body();
+        assert!(
+            body.contains(".stdout(Stdio::piped())"),
+            "create_comfyui_venv no longer pipes stdout for `python -m venv`. \
+             ENG-14 (matrix point 83): CPython's own ensurepip/venv-module hint, the \
+             sentence naming `apt install python3.10-venv`, lands on STDOUT, not \
+             stderr, measured live on Ubuntu 22.04. Reading only stderr makes the \
+             hint below never fire and the customer sees a bare \
+             \"venv creation failed: \" with nothing after the colon."
+        );
+        assert!(
+            !body.contains(".stdout(Stdio::null())"),
+            "create_comfyui_venv discards stdout again (`.stdout(Stdio::null())`); \
+             see the message above for why that reintroduces ENG-14."
+        );
     }
 
     /// A fake `python3` that ignores its arguments and reproduces exactly
