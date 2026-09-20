@@ -9,8 +9,10 @@ import { activateBuiltinModel } from '../api/engine'
 import { isLmStudioProvider } from '../lib/hf-to-provider'
 import { isTauri, backendCall } from '../api/backend'
 import { useChatStore } from './chatStore'
+import { useGenerationStore } from './generationStore'
 import { log } from '../lib/logger'
 import { isLuEngineName } from '../lib/engine-name'
+import { offloadWhenLocalLaneFree } from '../lib/cloud-offload-defer'
 // Which provider slot a model name routes to. There is exactly one answer to
 // that question in this app and it lives in api/providers/registry, the same
 // function getProviderForModel uses to pick the client that actually sends the
@@ -277,9 +279,34 @@ export const useModelStore = create<ModelState>()(
           const nextIsBuiltin =
             !!nextModel && 'providerName' in nextModel && isLuEngineName(nextModel.providerName)
           if (!nextIsBuiltin) {
-            backendCall('stop_bundled_engine').catch((e) =>
-              log.warn('[modelStore] failed to stop the LU Engine on switch-away', { err: e }),
-            )
+            // B6 (lu-301/bau/klaerung-n7.md): this reselect is the SECOND,
+            // unguarded path that stops the LU Engine. AppShell's cloud-mode
+            // effect calls setActiveModel(pick.next) on every mode flip
+            // BEFORE its own offload effect runs, and this stop used to fire
+            // unconditionally, killing llama-server mid-stream for whatever
+            // OTHER conversation was still generating locally. Same guard as
+            // AppShell's offload: defer until the local lane is free.
+            //
+            // A re-check at fire time, not just a deferred call: by the time
+            // the local lane frees up, the user may have switched back to
+            // Local or picked another built-in model themselves (this same
+            // function runs again for that), so the stop must look at the
+            // CURRENT active model, not the one that was picked when this
+            // closure was created.
+            offloadWhenLocalLaneFree(useGenerationStore, () => {
+              const stillActiveModel = get().activeModel
+              const stillActiveEntry = stillActiveModel
+                ? get().models.find((m) => m.name === stillActiveModel)
+                : undefined
+              const stillNonBuiltin =
+                !stillActiveEntry ||
+                !('providerName' in stillActiveEntry) ||
+                !isLuEngineName(stillActiveEntry.providerName)
+              if (!stillNonBuiltin) return
+              backendCall('stop_bundled_engine').catch((e) =>
+                log.warn('[modelStore] failed to stop the LU Engine on switch-away', { err: e }),
+              )
+            })
           } else if (name) {
             // built-in → DIFFERENT built-in: llama-server serves exactly ONE
             // gguf and ignores the request's model field, and the send-path
