@@ -312,9 +312,15 @@ export function useAgentChat() {
     if (!activeModel) return
 
     // ── Workflow trigger detection ──────────────────────────
-    const workflowMatch = userContent.match(/^run\s+workflow\s+(.+)$/i)
+    // R2, bau/review-wfgate.md klein 1: "run workflow <name>: <input>" lets
+    // the text after the FIRST colon answer the workflow's first
+    // `user_input` step, the same convention `run_workflow`'s own `input`
+    // argument uses (builtin-tools.ts). Optional and non-greedy on the name
+    // so a colon-free name still matches unchanged.
+    const workflowMatch = userContent.match(/^run\s+workflow\s+([^:]+?)\s*(?::\s*([\s\S]*))?$/i)
     if (workflowMatch) {
       const workflowName = workflowMatch[1].trim()
+      const workflowInput = workflowMatch[2]?.trim()
       const wfStore = useAgentWorkflowStore.getState()
       const workflow = wfStore.workflows.find(
         w => w.name.toLowerCase() === workflowName.toLowerCase()
@@ -325,6 +331,45 @@ export function useAgentChat() {
         if (!convId) {
           convId = store.createConversation(activeModel, persona?.systemPrompt || '')
         }
+
+        // R2-1, bau/review-wfgate.md (blockierend): `activeAgentRuns` is the
+        // re-entry guard documented above (a key present means THIS
+        // conversation already has a live run), and this trigger used to
+        // register its OWN run before that check ever ran, below at the
+        // guard for the normal send path. A workflow started while an
+        // ordinary agent turn (or a second workflow) was already running in
+        // the SAME conversation overwrote that turn's `AgentRunState` in the
+        // map: `stopAgent` then found only the new workflow, and the
+        // displaced turn's own `finally` removed the entry out from under
+        // it, orphaning its abort handle entirely. Same check as the
+        // existing guard, moved in front of every side effect this trigger
+        // has (the chat messages included), so a "run workflow" sent while a
+        // turn is live is cleanly refused instead of stealing its slot.
+        if (activeAgentRuns.has(convId)) {
+          log.info('agent.duplicate_send_blocked', { activeModel, convId })
+          return
+        }
+
+        // R2, bau/review-wfgate.md klein 1/2: a workflow that asks a
+        // question (`user_input`) cannot be answered while it runs -
+        // neither this trigger nor `run_workflow` wires anything to
+        // `provideUserInput`, so without a prefilled answer the FIRST such
+        // step would wait forever, stoppable only by hand. Refuse up front
+        // with the fix instead of starting a run nobody can finish.
+        const firstAsk = workflow.steps.find(s => s.type === 'user_input')
+        if (firstAsk && !workflowInput) {
+          useChatStore.getState().addMessage(convId, {
+            id: uuid(), role: 'user', content: userContent, timestamp: Date.now(),
+          })
+          useChatStore.getState().addMessage(convId, {
+            id: uuid(),
+            role: 'assistant',
+            content: `Workflow "${workflow.name}" starts by asking "${firstAsk.userInputPrompt || 'for input'}", and nothing can answer that while it runs. Send "run workflow ${workflow.name}: <your answer>" to provide it up front.`,
+            timestamp: Date.now(),
+          })
+          return
+        }
+
         useChatStore.getState().addMessage(convId, {
           id: uuid(), role: 'user', content: userContent, timestamp: Date.now(),
         })
@@ -396,7 +441,15 @@ export function useAgentChat() {
           artifacts: [],
           abortSignal: workflowAbort.signal,
         })
-        const engine = new WorkflowEngine(workflow, convId, callbacks, gates.awaitApproval)
+        // `workflowInput` (the text after "run workflow <name>:") answers
+        // this run's first `user_input` step the same way `run_workflow`'s
+        // own `input` argument does (klein 1 above); `undefined` when the
+        // workflow needs no answer at all, matched by the `!firstAsk` branch
+        // that skipped the refusal above.
+        const initialVars: Record<string, string> | undefined = workflowInput
+          ? { user_input: workflowInput, last_output: workflowInput }
+          : undefined
+        const engine = new WorkflowEngine(workflow, convId, callbacks, gates.awaitApproval, initialVars)
         workflowAbort.signal.addEventListener('abort', () => engine.cancel(), { once: true })
         const workflowRunState: AgentRunState = { convId, content: '', thinking: '', blocks: [], abort: workflowAbort }
         activeAgentRuns.set(convId, workflowRunState)

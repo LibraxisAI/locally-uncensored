@@ -70,6 +70,29 @@ function guardWorkflow() {
   }
 }
 
+/** bau/review-wfgate.md Runde 2, klein 1: a workflow whose first step
+ *  genuinely asks a question, to test the chat trigger's colon syntax and
+ *  its up-front refusal when no answer is given at all. */
+function guardAskWorkflow() {
+  return {
+    id: 'guard-wf-ask',
+    name: 'Guard Ask Workflow',
+    description: '',
+    icon: 'Zap',
+    steps: [
+      { id: 's1', type: 'user_input' as const, label: 'Ask', userInputPrompt: 'What topic?' },
+      {
+        id: 's2', type: 'memory_save' as const, label: 'Save',
+        memorySave: { type: 'reference' as const, titleTemplate: '{{user_input}}', contentTemplate: '{{user_input}}', tags: [] },
+      },
+    ],
+    variables: {},
+    isBuiltIn: false,
+    createdAt: 0,
+    updatedAt: 0,
+  }
+}
+
 beforeEach(() => {
   registerBuiltinTools(toolRegistry)
   __resetRunStopsForTests()
@@ -88,7 +111,7 @@ beforeEach(() => {
     providers: { ...s.providers, openai: { ...s.providers.openai, enabled: true } },
   }))
   useModelStore.setState({ models: [], activeModel: MODEL })
-  useAgentWorkflowStore.setState({ workflows: [guardWorkflow()] })
+  useAgentWorkflowStore.setState({ workflows: [guardWorkflow(), guardAskWorkflow()] })
 })
 
 afterEach(() => {
@@ -141,5 +164,43 @@ describe('Auflage 8: Stop erreicht den Chat-ausgeloesten Ablauf', () => {
 
     expect(headApproval(convId)).toBeNull()
     expect(__activeAgentRunConvIdsForTests()).not.toContain(convId)
+  })
+})
+
+describe('klein 1: "run workflow <name>: <input>" beantwortet den ersten user_input-Schritt', () => {
+  it('ohne Doppelpunkt-Eingabe wird sauber abgewiesen statt zu haengen', async () => {
+    const { result } = renderHook(() => useAgentChat())
+    const convId = seed()
+
+    await act(async () => {
+      await result.current.sendAgentMessage('run workflow Guard Ask Workflow')
+      await tick()
+    })
+
+    // NEGATIVKONTROLLE fuer klein 1 selbst: vor dem Fix haette dieser Aufruf
+    // die Engine gestartet, die am user_input-Schritt fuer immer wartet
+    // (nichts ruft `provideUserInput`), und den Lauf registriert gelassen.
+    expect(__activeAgentRunConvIdsForTests()).not.toContain(convId)
+    const conv = useChatStore.getState().conversations.find((c) => c.id === convId)!
+    const lastAssistant = [...conv.messages].reverse().find((m) => m.role === 'assistant')!
+    expect(lastAssistant.content).toMatch(/What topic\?/)
+    expect(lastAssistant.content).toMatch(/run workflow Guard Ask Workflow:/)
+  })
+
+  it('mit "run workflow X: <eingabe>" beantwortet der Text nach dem Doppelpunkt den ersten Schritt, der Ablauf laeuft durch', async () => {
+    const { result } = renderHook(() => useAgentChat())
+    const convId = seed()
+
+    await act(async () => {
+      await result.current.sendAgentMessage('run workflow Guard Ask Workflow: quantum computing')
+      await tick()
+      await tick()
+    })
+
+    expect(__activeAgentRunConvIdsForTests()).not.toContain(convId)
+    const conv = useChatStore.getState().conversations.find((c) => c.id === convId)!
+    const lastAssistant = [...conv.messages].reverse().find((m) => m.role === 'assistant')!
+    expect(lastAssistant.content).not.toMatch(/What topic\?/)
+    expect(lastAssistant.content).toMatch(/Saved to memory: quantum computing/)
   })
 })

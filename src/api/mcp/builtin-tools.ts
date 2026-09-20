@@ -465,12 +465,12 @@ const BUILTIN_TOOLS: MCPToolDefinition[] = [
       'Execute a saved agent workflow by name. Runs a nested ReAct with a pre-built step chain. '
       + 'USE for repeatable multi-step tasks: "Research Topic", "Summarize URL", "Code Review", plus any user-created workflows. '
       + 'DO NOT call from inside another workflow tool — depth capped at 5 to prevent recursion fork-bombs. '
-      + 'Pass optional input as the starting variable. If the name is unknown, the error lists available names.',
+      + 'input answers the first user_input step or fails fast; else seeds user_input/last_output.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Name of the workflow (case-insensitive match)' },
-        input: { type: 'string', description: 'Initial input passed as user_input / last_output' },
+        input: { type: 'string', description: 'Answers first user_input step; else seeds user_input/last_output.' },
       },
       required: ['name'],
     },
@@ -1570,6 +1570,17 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
   if (!workflow) {
     const available = store.workflows.map(w => w.name).join(', ')
     return `Error: Workflow "${workflowName}" not found. Available: ${available}`
+  }
+
+  // R2, bau/review-wfgate.md klein 2: a workflow with a user_input step
+  // cannot be answered mid-run (neither this executor nor the chat trigger
+  // wires anything to provideUserInput), so without `input` the FIRST such
+  // step would wait forever, all three built-in workflows included. Fail
+  // immediately with a message the model can act on instead of hanging and
+  // holding the lane on a question nobody will ever answer.
+  const firstAsk = workflow.steps.find(s => s.type === 'user_input')
+  if (firstAsk && !args.input) {
+    return `Error: Workflow "${workflow.name}" starts by asking "${firstAsk.userInputPrompt || 'for input'}", and nothing can answer that while it runs. Call run_workflow again with an "input" argument that answers it.`
   }
 
   const results: StepResult[] = []

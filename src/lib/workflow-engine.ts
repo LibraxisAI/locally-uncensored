@@ -492,6 +492,26 @@ export class WorkflowEngine {
 
   /**
    * Provide user input for a waiting user_input step.
+   *
+   * bau/review-wfgate.md Runde 2, klein 3: neither surviving caller
+   * (`run_workflow`'s `executeRunWorkflow`, the "run workflow <name>" chat
+   * trigger) ever calls this, and both now refuse UP FRONT
+   * (`executeUserInputStep` below, and the callers' own pre-checks) when a
+   * workflow's FIRST `user_input` step has no prefilled answer, closing the
+   * hang the review measured for all three built-in workflows. Kept rather
+   * than deleted: a workflow with a SECOND `user_input` step still reaches
+   * this exact wait after its first step consumes the one prefilled value
+   * (see `workflow-user-input-vorbefuellt.test.ts`'s third case), a real,
+   * if narrow, gap neither caller's up-front check catches, since it only
+   * looks at whether the workflow has a question at all, not how many.
+   * This method is the only way anything could ever answer that second
+   * question; deleting it would turn a stoppable wait into a permanently
+   * unanswerable one instead of closing it. It also still backs the lane
+   * tests that use a `user_input` step purely as a controllable pause point
+   * (`workflow-engine-lane.test.ts`, `background-shutdown-lanes.test.ts`),
+   * unrelated to `user_input`'s own semantics: rebuilding those around a
+   * different pausable step type instead is a fair follow-up, not done
+   * here.
    */
   provideUserInput(input: string) {
     if (this.inputResolver) {
@@ -815,7 +835,13 @@ export class WorkflowEngine {
     // (builtin-tools.ts's `initialVars`), so the FIRST `user_input` step can
     // read it directly instead of waiting. Consumed at most once: a second
     // `user_input` step in a custom workflow still genuinely waits, since
-    // only one caller-supplied value exists.
+    // only one caller-supplied value exists. Runde 2 fix (klein 1/2,
+    // bau/review-wfgate.md): both callers now refuse UP FRONT, before this
+    // engine even starts, when a workflow has a `user_input` step and no
+    // answer was given at all, so THIS wait branch is unreachable through
+    // either surviving caller for that case; only a workflow with a SECOND
+    // `user_input` step (after the first already consumed the one supplied
+    // value) still reaches it, see `provideUserInput`'s own doc comment.
     if (this.prefilledUserInput !== undefined) {
       const input = this.prefilledUserInput
       this.prefilledUserInput = undefined
