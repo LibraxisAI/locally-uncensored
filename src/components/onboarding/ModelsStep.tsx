@@ -30,7 +30,7 @@
  */
 import { useState, useEffect } from 'react'
 import { Check, Download, ChevronRight } from 'lucide-react'
-import { ONBOARDING_MODELS } from '../../lib/constants'
+import { ONBOARDING_MODELS, recommendedOnboardingModelName } from '../../lib/constants'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { useDownloadStore } from '../../stores/downloadStore'
@@ -336,6 +336,11 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
   // Trennlinie zwischen „welches ist gut?" und „welches willst du?".
   const showRecommendedBadge = existingModelCount === 0
 
+  // Which entry the badge sits on: the hardware-aware pick, or the static
+  // fallback when VRAM is unknown / fits nothing. See
+  // `recommendedOnboardingModelName` for the reused threshold.
+  const recommendedModelName = recommendedOnboardingModelName(ONBOARDING_MODELS, systemVRAM)
+
   // Die Wahl steht NICHT hier. Sie steht dort, wo der Chat sie liest, in
   // `modelStore.activeModel`, derselben Stelle, die der Modellknopf des
   // Composers zeigt und aus der der naechste Sendeweg sein Modell nimmt.
@@ -517,7 +522,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
                 <div>
                   <div className="flex items-center gap-1.5">
                     <span className="font-medium text-[0.7rem]">{model.label}</span>
-                    {model.recommended && showRecommendedBadge && (
+                    {model.name === recommendedModelName && showRecommendedBadge && (
                       <span className={`text-[0.5rem] px-1 py-0.5 rounded ${isDark ? 'bg-white/10 text-gray-300' : 'bg-gray-200 text-gray-600'}`}>
                         Recommended
                       </span>
