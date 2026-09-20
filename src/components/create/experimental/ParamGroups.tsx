@@ -15,6 +15,7 @@ import { NumberField } from '../ui/NumberField'
 import { Button } from '../ui/Button'
 import { Tooltip } from '../ui/Tooltip'
 import { cn } from '../ui/cn'
+import { HINWEIS_TEXT } from '../../../lib/hinweis'
 
 // Video families whose dynamic-workflow strategy actually wires a LoRA node:
 // the generic UNET path (wan/hunyuan/ltx/mochi/cosmos) plus Wan 2.2's dedicated
@@ -44,6 +45,15 @@ export function ParamGroups() {
   // silently dropped, so the whole Expert section is dead on the local Mac.
   // Keep it on Mac-cloud and on the ComfyUI hosts (Windows/Linux).
   const isMlxLocal = !isCloud && isMlxImageHost()
+  // R2-28, Entscheid David 12.09.2026: auf der LOKALEN Musikbahn waren fuenf
+  // Expert-Regler sichtbar und alle fuenf tot. `dynamic-workflow.ts` nagelt
+  // sampler_name, scheduler und denoise fuer Audio fest, `LocalOpParams`
+  // traegt weder `loras` noch `selectedVae` noch `clipSkip`, und VAEDecodeAudio
+  // nimmt den VAE des Checkpoints. Es ist dieselbe Begruendung, die eine Zeile
+  // hoeher fuer den MLX-Mac steht; sie war nur nie auf diese Bahn angewandt.
+  // Die Wolken-Musikbahn bleibt unberuehrt.
+  const isLocalAudio = isAudio && !isCloud
+  const showExpert = !isMlxLocal && !isLocalAudio && (!isCloud || isEdit)
   // LoRA is a local-only knob; for video it's offered only on families whose
   // builder actually applies it (see VIDEO_LORA_FAMILIES). Image always qualifies.
   const loraSupported = !isCloud && (!isVideo || VIDEO_LORA_FAMILIES.has(classifyModel(s.videoModel)))
@@ -153,7 +163,10 @@ export function ParamGroups() {
                       <span className="t-mono text-gray-200">{hiresFinal.width}×{hiresFinal.height}</span>
                     </>
                   ) : (
-                    <span className="text-amber-400">{hiresSizeError}</span>
+                    // Rot, nicht gelb: solange hier ein Satz steht, kommt aus
+                    // dieser Zeile keine Zielgroesse und der Lauf startet nicht.
+                    // Zwei Toene, kein dritter, siehe lib/hinweis.ts.
+                    <span className={HINWEIS_TEXT.fehler}>{hiresSizeError}</span>
                   )}
                 </div>
                 <Slider label="Upscale" min={1.1} max={3} step={0.1} value={s.hiresScale} onChange={s.setHiresScale} format={(v) => `${v.toFixed(1)}×`} />
@@ -193,9 +206,8 @@ export function ParamGroups() {
         )}
       </Section>
 
-      {/* EXPERT — every control in here is dropped by the Mac MLX pipeline, so
-          the whole section is hidden on the local Mac (kept on cloud + ComfyUI). */}
-      {!isMlxLocal && (
+      {/* Only render a section with controls the selected backend can use. */}
+      {showExpert && (
       <Section title="Expert" icon={FlaskConical} defaultOpen={false}>
         {/* Sampler/Scheduler are ComfyUI-only knobs — the hosted WaveSpeed
             endpoints don't accept them, so hide them on the cloud backend
@@ -214,7 +226,7 @@ export function ParamGroups() {
         {isEdit && (
           <Slider label="Denoise (raw)" min={0.05} max={1} step={0.05} value={s.denoise} onChange={s.setDenoise} format={(v) => v.toFixed(2)} />
         )}
-        {meta.allowsMask && (
+        {meta.allowsMask && !isCloud && (
           <Slider label="Mask edge feather" min={0} max={64} step={1} value={s.growMaskBy} onChange={s.setGrowMaskBy} unit="px" />
         )}
 

@@ -21,6 +21,26 @@ async function installMock(page: Page) {
   })
 }
 
+test('small GPU keeps the 7B starter visible with a memory advisory', async ({ page }) => {
+  await installMock(page)
+  await page.addInitScript(() => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string, args: { url?: string }) => Promise<unknown> } }).__TAURI_INTERNALS__
+    const invoke = bridge.invoke
+    bridge.invoke = (command, args) => command === 'proxy_localhost' && args?.url?.includes('/system_stats')
+      ? Promise.resolve(JSON.stringify({ devices: [{ name: 'Test GPU', type: 'cuda', vram_total: 2 * 1024 ** 3 }] }))
+      : invoke(command, args)
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: /Get Started/i }).click()
+  await page.getByRole('button', { name: /Continue/i }).click()
+  await page.getByRole('button', { name: /Skip for now/i }).click()
+  const starter = page.getByRole('button', { name: /Qwen 2\.5 7B/i })
+  await expect(starter).toBeVisible()
+  await expect(starter).toContainText('Full GPU offload may not fit.')
+  await expect(page.getByRole('button', { name: /0\.5B/i })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible()
+})
+
 test('fresh onboarding boots the built-in engine and answers a chat', async ({ page }) => {
   await installMock(page)
   await page.goto('/')
@@ -40,13 +60,19 @@ test('fresh onboarding boots the built-in engine and answers a chat', async ({ p
   // models — select the starter GGUF, then install. The step auto-advances to
   // embeddings once the (mocked) download completes and the engine boots.
   await expect(page.getByRole('heading', { name: /Pick a starter model/i })).toBeVisible()
-  await page.getByRole('button', { name: /Qwen 2\.5 0\.5B/i }).click()
+  await page.getByRole('button', { name: /Qwen 2\.5 7B/i }).click()
   const installBtn = page.getByRole('button', { name: /Install \d+ model/i })
   await expect(installBtn).toBeVisible()
   await installBtn.click()
 
   // embeddings — skip; onboarding is Ollama-free on the built-in path
   await expect(page.getByRole('button', { name: /Skip for now/i })).toBeVisible({ timeout: 30_000 })
+  const downloads = await page.evaluate(() => (window as unknown as { __E2E_DL_CALLS__: unknown[] }).__E2E_DL_CALLS__)
+  expect(downloads).toContainEqual(expect.objectContaining({
+    filename: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    expectedBytes: 4683074240,
+    expectedSha256: '65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423',
+  }))
   await page.getByRole('button', { name: /Skip for now/i }).click()
 
   // done — finish sets onboardingDone and reveals the chat UI

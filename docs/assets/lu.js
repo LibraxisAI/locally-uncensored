@@ -146,6 +146,24 @@
     });
   }
 
+  // Preserve a validated campaign source when a visitor crosses from the
+  // editorial LUC site to LU Labs. Static pricing links carry a useful default
+  // (`luc-pricing`), but an inbound campaign such as `m300_w1_a` must win so the
+  // eventual Stripe checkout can still be attributed after login.
+  function wireFunnelSource() {
+    var source = new URLSearchParams(window.location.search).get("src");
+    if (!source || !/^[a-z0-9_-]{1,32}$/.test(source)) return;
+
+    var links = document.querySelectorAll('a[href^="https://lu-labs.ai/"]');
+    for (var i = 0; i < links.length; i++) {
+      try {
+        var target = new URL(links[i].href);
+        target.searchParams.set("src", source);
+        links[i].href = target.toString();
+      } catch (e) {}
+    }
+  }
+
   // ── Language toggle (EN ↔ DE, client-side via Google Translate) ──────
   var LANG_KEY = "lu-lang";
   var FLAG_DE = '<svg viewBox="0 0 60 40" aria-hidden="true"><rect width="60" height="40" fill="#000"/><rect y="13.4" width="60" height="13.3" fill="#D00"/><rect y="26.7" width="60" height="13.3" fill="#FFCE00"/></svg>';
@@ -208,7 +226,7 @@
     injectAmbient();
     var monos = document.querySelectorAll("[data-mono]");
     for (var i = 0; i < monos.length; i++) buildMono(monos[i]);
-    wireTheme(); wireNav(); wireScrollArrow(); wireLang();
+    wireTheme(); wireNav(); wireScrollArrow(); wireFunnelSource(); wireLang();
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

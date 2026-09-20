@@ -27,6 +27,7 @@ export interface TauriMockOptions {
     videoEngineInstalled?: boolean
     installedImages?: string[]
     installedVideos?: string[]
+    imageInstallError?: string
   }
   /**
    * Which OS the app should believe it is on. `isMacOS()` reads
@@ -71,10 +72,25 @@ export interface TauriMockOptions {
   }>
   /** Canned file contents served to fs_read, keyed by path suffix. */
   files?: Record<string, string>
+  /**
+   * What Ollama's `/api/tags` reports as already installed. Omit for the
+   * historical EMPTY answer, which is what makes a box look brand new.
+   *
+   * This is the difference between a first-time user and a returning one, and
+   * the whole app reads it from this one endpoint: the onboarding model step
+   * counts it, the model manager lists it, and the chat picker is filled from
+   * it. A spec about "the user already has models" therefore cannot fake that
+   * state anywhere else without testing a fiction.
+   *
+   * Order matters to a spec: nothing preselects for the user, so the model
+   * store's own fallback takes the FIRST chat-capable entry. A spec that wants
+   * to prove a pick really arrived has to pick a different one than that.
+   */
+  ollamaModels?: string[]
 }
 
 export const DEFAULT_ASSISTANT_REPLY = 'PONG_BUILTIN_OK the built-in engine answered.'
-export const DEFAULT_MODEL_NAME = 'qwen2.5-0.5b-instruct-q4_k_m'
+export const DEFAULT_MODEL_NAME = 'qwen2.5-7b-instruct-q4_k_m'
 
 /**
  * The function body below is serialized and runs in the PAGE context — it must
@@ -280,6 +296,7 @@ export function tauriMockInit(opts: TauriMockOptions) {
           destDir: args?.destDir,
           filename: fn,
           expectedBytes: args?.expectedBytes,
+          expectedSha256: args?.expectedSha256,
         })
         return Promise.resolve({ status: 'started', id: `dl-${fn}` })
       }
@@ -388,7 +405,9 @@ export function tauriMockInit(opts: TauriMockOptions) {
         record('__E2E_MLX_CALLS__', { cmd, id: m?.id })
         return Promise.resolve({ ok: true, status: 'installing', id: m?.id })
       case 'mlx_image_install_status': {
-        const s = installStatus('image')
+        const s = installStatus('image', opts.mlx?.imageInstallError && slot.image !== null
+          ? { status: 'error', error: opts.mlx.imageInstallError, logs: [opts.mlx.imageInstallError] }
+          : undefined)
         if (s.status === 'complete' && pendingImageId) {
           mlx.images.add(pendingImageId)
           pendingImageId = null
@@ -470,6 +489,11 @@ export function tauriMockInit(opts: TauriMockOptions) {
 
       // ── chat streaming: drive the onChunk Channel ─────────────────
       case 'proxy_localhost_stream_chunked': {
+        // Jeden Chat-Koerper mitschreiben. Eine Persona hat am 03.09.2026 am
+        // Netzwerk-Payload gemessen, dass auf Deutsch KEIN `tools`-Feld
+        // mitging — Specs koennen das jetzt genauso pruefen, statt sich auf
+        // das zu verlassen, was gerade auf dem Schirm steht.
+        ;(w.__E2E_CHAT_BODIES__ = w.__E2E_CHAT_BODIES__ || []).push(args?.body ?? '')
         const channel = args?.onChunk
         const script = opts.agentTurns
         const parts = script && script.length
@@ -489,16 +513,18 @@ export function tauriMockInit(opts: TauriMockOptions) {
         return Promise.resolve(null)
       }
       case 'proxy_localhost_stream':
+        ;(w.__E2E_CHAT_BODIES__ = w.__E2E_CHAT_BODIES__ || []).push(args?.body ?? '')
         return Promise.resolve(enc(chatSse(opts.assistantReply)))
       case 'cancel_proxy_stream':
         return Promise.resolve(null)
 
       // ── generic localhost proxy ───────────────────────────────────
-      // Ollama's model list (`/api/tags`) must resolve to an EMPTY list so a
-      // fresh box looks fresh (existingModelCount === 0 keeps the model picker
-      // visible instead of auto-skipping). Resolving here also stops localFetch
-      // from falling through to a direct fetch that could hit a REAL Ollama on
-      // the dev machine. Every other probe rejects, so no external backend is
+      // Ollama's model list (`/api/tags`) resolves to `opts.ollamaModels`,
+      // empty by default, so a fresh box looks fresh (no installed models →
+      // the starter recommendation is the one thing on the model step).
+      // Resolving here rather than rejecting also stops localFetch from
+      // falling through to a direct fetch that could hit a REAL Ollama on the
+      // dev machine. Every other probe rejects, so no external backend is
       // ever detected as live.
       case 'proxy_localhost': {
         const url: string = args?.url || ''
@@ -523,7 +549,23 @@ export function tauriMockInit(opts: TauriMockOptions) {
         }
 
         if (url.includes('11434') || /\/tags(\?|$)/.test(url)) {
-          return Promise.resolve(JSON.stringify({ models: [] }))
+          // Shaped like a real /api/tags entry, not just a name: listModels()
+          // spreads the entry through and the pickers read `details` and
+          // `capabilities` off it. `tools` is declared so a chosen model is
+          // not additionally judged by the family-name fallback.
+          const models = (opts.ollamaModels || []).map((name: string) => ({
+            name,
+            model: name,
+            size: 4 * 1024 * 1024 * 1024,
+            digest: `e2e-${name}`,
+            modified_at: '2026-09-01T00:00:00Z',
+            details: {
+              parent_model: '', format: 'gguf', family: name.split(':')[0],
+              families: [name.split(':')[0]], parameter_size: '4B', quantization_level: 'Q4_K_M',
+            },
+            capabilities: ['completion', 'tools'],
+          }))
+          return Promise.resolve(JSON.stringify({ models }))
         }
         return Promise.reject('error sending request: connection refused (e2e)')
       }
@@ -580,6 +622,10 @@ export function tauriMockInit(opts: TauriMockOptions) {
         return Promise.resolve({ files: [], count: 0 })
 
       default:
+        // Tauri v2 unlisten calls the injected event registry before IPC.
+        // Use the already unique callback ID as this fixture's listener ID.
+        if (cmd === 'plugin:event|listen') return Promise.resolve(args.handler)
+        if (cmd === 'plugin:event|unlisten') return Promise.resolve(null)
         // Record system-browser opens so specs can assert redirect targets
         // (pricing CTA, closed-beta link) without leaving the page.
         if (cmd === 'plugin:shell|open') {
@@ -621,4 +667,9 @@ export function tauriMockInit(opts: TauriMockOptions) {
   }
   // Legacy v1 alias some detection code still probes for.
   w.__TAURI__ = w.__TAURI_INTERNALS__
+  w.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener(_event: string, eventId: number) {
+      w.__TAURI_INTERNALS__.unregisterCallback(eventId)
+    },
+  }
 }

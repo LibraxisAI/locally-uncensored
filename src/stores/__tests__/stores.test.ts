@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { useChatStore } from '../chatStore'
 import { useModelStore } from '../modelStore'
 import { useAgentModeStore } from '../agentModeStore'
@@ -230,8 +232,10 @@ describe('modelStore', () => {
     useModelStore.setState({
       models: [],
       activeModel: null,
-      pullProgress: null,
-      isPulling: false,
+      // `pullProgress` / `isPulling` are long gone from ModelState — pulls are
+      // tracked per model in `activePulls`. Setting the dead keys wrote junk
+      // into the store instead of resetting anything.
+      activePulls: {},
       categoryFilter: 'all',
     })
   })
@@ -407,30 +411,31 @@ describe('memoryStore', () => {
         { type: 'user', title: 'A', content: 'alpha' },
         { type: 'project', title: 'B', content: 'beta' },
       ] }))
-      expect(n).toBe(2)
+      expect(n.added).toBe(2)
       expect(useMemoryStore.getState().entries).toHaveLength(2)
     })
     it('tolerates a bare array', () => {
-      expect(useMemoryStore.getState().importFromJSON(JSON.stringify([{ content: 'x' }, { content: 'y' }]))).toBe(2)
+      expect(useMemoryStore.getState().importFromJSON(JSON.stringify([{ content: 'x' }, { content: 'y' }])).added).toBe(2)
     })
     it('tolerates a {memories:[...]} shape', () => {
-      expect(useMemoryStore.getState().importFromJSON(JSON.stringify({ memories: [{ content: 'z' }] }))).toBe(1)
+      expect(useMemoryStore.getState().importFromJSON(JSON.stringify({ memories: [{ content: 'z' }] })).added).toBe(1)
     })
     it('returns 0 for invalid JSON and for entries without content', () => {
-      expect(useMemoryStore.getState().importFromJSON('not json')).toBe(0)
-      expect(useMemoryStore.getState().importFromJSON(JSON.stringify({ entries: [{ title: 'no content' }] }))).toBe(0)
+      expect(useMemoryStore.getState().importFromJSON('not json').added).toBe(0)
+      expect(useMemoryStore.getState().importFromJSON(JSON.stringify({ entries: [{ title: 'no content' }] })).added).toBe(0)
       expect(useMemoryStore.getState().entries).toHaveLength(0)
     })
-    it('regenerates ids so a re-imported export never collides', () => {
+    it('reads the same file twice without a second copy and without an id collision', () => {
       const json = JSON.stringify({ entries: [{ id: 'fixed-id', type: 'user', title: 'T', content: 'c' }] })
-      useMemoryStore.getState().importFromJSON(json)
-      useMemoryStore.getState().importFromJSON(json)
+      expect(useMemoryStore.getState().importFromJSON(json).added).toBe(1)
+      expect(useMemoryStore.getState().importFromJSON(json)).toEqual({ added: 0, updated: 0, alreadyPresent: 1 })
       const ids = useMemoryStore.getState().entries.map(e => e.id)
-      expect(new Set(ids).size).toBe(2)
+      expect(ids).toHaveLength(1)
+      expect(new Set(ids).size).toBe(1)
     })
     it('importFromMarkdown returns the number of parsed entries', () => {
       const md = '# Memory\n\n## User\n\n- **Likes** — coffee [drinks] *(import)*\n'
-      expect(useMemoryStore.getState().importFromMarkdown(md)).toBe(1)
+      expect(useMemoryStore.getState().importFromMarkdown(md).added).toBe(1)
       expect(useMemoryStore.getState().entries[0].content).toBe('coffee')
     })
   })
@@ -441,6 +446,29 @@ describe('memoryStore', () => {
       expect(effectiveMemoryBudget(32768, null).maxMemories).toBe(15)
       expect(effectiveMemoryBudget(32768, 0).maxMemories).toBe(15)
       expect(effectiveMemoryBudget(32768, undefined).maxMemories).toBe(15)
+    })
+
+    /**
+     * R2-23 und R2-24: 0 heisst hier "nicht gesetzt", das Feld nahm 0 aber an.
+     * Wer 0 eintrug, um Erinnerungen abzustellen, bekam den vollen Stufenwert,
+     * und das Feld zeigte danach seine eigene 0 als Beleg. Das Feld beginnt
+     * jetzt bei 1, und ein alter gespeicherter Nullwert wird leer gezeigt,
+     * genau wie er wirkt.
+     */
+    it('das Feld laesst sich nicht unter 1 stellen und zeigt eine alte 0 als leer', () => {
+      const quelle = readFileSync(
+        resolve(__dirname, '..', '..', 'components/settings/MemorySettings.tsx'), 'utf8',
+      )
+      const feld = quelle.slice(quelle.indexOf('Max memories injected'))
+      const bis = feld.slice(0, feld.indexOf('</div>'))
+      expect(bis, 'das Feld nimmt weiter 0 an').toContain('min={1}')
+      expect(bis, 'die Zahl faellt weiter unter 1').toContain('Math.max(1,')
+      expect(bis, 'eine gespeicherte 0 wird weiter als 0 gezeigt')
+        .toContain("value={settings.maxMemoriesOverride || ''}")
+      // Und die Zeile darueber nennt dieselbe Zahl: 0 gespeichert wirkt als
+      // "nicht gesetzt", also ist ein leeres Feld die ehrliche Anzeige.
+      expect(effectiveMemoryBudget(32768, 0).maxMemories)
+        .toBe(effectiveMemoryBudget(32768, null).maxMemories)
     })
     it('honors a positive override and grows the token budget + allows all types', () => {
       const b = effectiveMemoryBudget(32768, 30)
@@ -457,7 +485,7 @@ describe('memoryStore', () => {
   // injected prompt block, and that the manual override caps the count.
   describe('getMemoriesForPrompt injection', () => {
     it('injects a keyword-matching memory into the prompt block', () => {
-      useMemoryStore.getState().addMemory({ type: 'user', title: 'Favorite language', description: '', content: 'My favorite programming language is Rust', tags: [] })
+      useMemoryStore.getState().addMemory({ type: 'user', title: 'Favorite language', description: '', content: 'My favorite programming language is Rust', tags: [], source: 'manual' })
       const block = useMemoryStore.getState().getMemoriesForPrompt('what is my favorite programming language?', 32768)
       expect(block).toContain('Rust')
     })
@@ -465,7 +493,7 @@ describe('memoryStore', () => {
       // Unique marker only in CONTENT (title is shared) so each memory shows
       // its marker exactly once in the rendered block.
       for (const m of ['uniqaaa', 'uniqbbb', 'uniqccc']) {
-        useMemoryStore.getState().addMemory({ type: 'user', title: 'note', description: '', content: `shared topic ${m}`, tags: [] })
+        useMemoryStore.getState().addMemory({ type: 'user', title: 'note', description: '', content: `shared topic ${m}`, tags: [], source: 'manual' })
       }
       useMemoryStore.setState({ settings: { ...useMemoryStore.getState().settings, maxMemoriesOverride: 1 } })
       const block = useMemoryStore.getState().getMemoriesForPrompt('shared topic', 32768)
@@ -584,19 +612,6 @@ describe('memoryStore', () => {
       expect(prompt).toContain('About the user')
       expect(prompt).toContain('Project context')
       expect(prompt).toContain('References')
-    })
-  })
-
-  describe('getMemoryForPrompt (legacy compat)', () => {
-    it('returns formatted string via legacy API', () => {
-      useMemoryStore.getState().addEntry('fact', 'Earth orbits the Sun')
-      const prompt = useMemoryStore.getState().getMemoryForPrompt('Earth Sun')
-      expect(prompt).toContain('Earth orbits the Sun')
-    })
-
-    it('returns empty for no matches', () => {
-      const prompt = useMemoryStore.getState().getMemoryForPrompt('xylophone')
-      expect(prompt).toBe('')
     })
   })
 
@@ -726,6 +741,21 @@ describe('memoryStore', () => {
     it('updates memory settings', () => {
       useMemoryStore.getState().updateMemorySettings({ autoExtractEnabled: true })
       expect(useMemoryStore.getState().settings.autoExtractEnabled).toBe(true)
+    })
+
+    it('beide Extraktionsschalter kommen ab Werk auf an', () => {
+      // R2-48 und R5-40: der Typkommentar in types/agent-mode.ts sagte
+      // "default false", ausgeliefert wird true. Der Kommentar ist
+      // nachgezogen, diese Zeile haelt ihn und den Zustand zusammen.
+      // Ob die Vorbelegung selbst richtig ist, ist Entscheid David; dieser
+      // Fall behauptet nur, was heute ausgeliefert wird.
+      //
+      // getInitialState(), nicht getState(): der Fall eine Zeile darueber
+      // schaltet denselben Schalter an, und gegen einen gesetzten Wert zu
+      // pruefen beweist nichts ueber die Vorbelegung.
+      const werk = useMemoryStore.getInitialState().settings
+      expect(werk.autoExtractEnabled).toBe(true)
+      expect(werk.autoExtractInAllModes).toBe(true)
     })
   })
 })

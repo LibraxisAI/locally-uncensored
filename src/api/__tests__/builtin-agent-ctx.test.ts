@@ -117,6 +117,35 @@ describe('ensureBuiltinAgentCtx', () => {
     expect(backendCall).not.toHaveBeenCalled()
   })
 
+  it('NEGATIVE: eine ausdrueckliche Wahl von 8K wird nicht ueberstimmt (GH #129)', async () => {
+    /*
+     * Der zweite Befund des Melders: "wenn ich die Lu-Engine benutze und den
+     * Agenten einschalte, ruckelt mein PC so stark, dass er unbrauchbar ist".
+     *
+     * Der Deckel hier hebt den Motor vor einem Agentenlauf auf
+     * min(ctx_train, 32768), gemessen auf einer RTX 3060 12 GB. Wer auf einem
+     * schwaecheren Geraet ausdruecklich 8K waehlt, meint 8K. Bis hierher war
+     * genau dieser eine Wert nicht als Wahl erkennbar, weil die
+     * Voreinstellung dieselbe Zahl ist; jeder andere war es laengst (die
+     * Probe darueber mit 12288). Die Marke schliesst die Luecke.
+     */
+    tuning.ctx = 8192
+    tuning.ctxChosen = true
+    mockEngine({ running: true, ctx: 8192 })
+    await ensureBuiltinAgentCtx('qwen3-8b')
+    expect(backendCall).not.toHaveBeenCalled()
+  })
+
+  it('ohne die Marke bleibt die 8192 die Voreinstellung und wird gehoben', async () => {
+    // Die Gegenprobe zur Probe darueber: ein bestehendes Profil traegt die
+    // 8192 seit dem ersten Start. Sie als Wahl zu lesen waere Z36 zurueck.
+    tuning.ctx = 8192
+    tuning.ctxChosen = false
+    mockEngine({ running: true, ctx: 8192 })
+    await ensureBuiltinAgentCtx('qwen3-8b')
+    expect(callsTo('swap_bundled_model')[0][1]).toMatchObject({ tuning: { ctx: 32768 } })
+  })
+
   it('contextWindowOverride wins over the GGUF ceiling', async () => {
     contextWindowOverride = 24576
     mockEngine({ running: true, ctx: 8192 })

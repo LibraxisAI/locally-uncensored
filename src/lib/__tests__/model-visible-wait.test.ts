@@ -99,6 +99,11 @@ describe('the install path uses it, and says something honest when it runs out',
     resolve(dirname(fileURLToPath(import.meta.url)), '../../api/discover.ts'),
     'utf8',
   )
+  // The loaders themselves live beside the folder table they belong to.
+  const comfyuiSrc = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../api/comfyui.ts'),
+    'utf8',
+  )
 
   it('the video bundle is picked by the lane rule, not by index', () => {
     // The bug this pins: the installer took getVideoBundles()[0] whatever the
@@ -110,10 +115,13 @@ describe('the install path uses it, and says something honest when it runs out',
     expect(src).not.toMatch(/kind === 'video' \? getVideoBundles\(\)/)
   })
 
-  it('only the subfolders ComfyUI enumerates are checked', () => {
-    // loras and upscale models never show up in these enums, so demanding
-    // them would turn every install into a failure.
-    expect(src).toMatch(/files\.filter\(\(f\) => ENUM_SUBFOLDERS\.has\(f\.subfolder!\)\)/)
+  it('only the folders THIS engine enumerates are checked', () => {
+    // Demanding a folder the engine in front of us says nothing about turns an
+    // install into a failure over a loader that is simply not there. The list
+    // is asked of the engine now (judgeableFolders) rather than taken from a
+    // set of folders a ComfyUI could have.
+    expect(src).toMatch(/const judgeable = await judgeableFolders\(\)/)
+    expect(src).toMatch(/files\.filter\(\(f\) => judgeable\.has\(f\.subfolder!\)\)/)
   })
 
   it('an engine it cannot reach counts as nothing confirmed', () => {
@@ -152,17 +160,16 @@ describe('the install path uses it, and says something honest when it runs out',
     //
     // B1 (2.6.7): the loader list moved into one reader, readComfyModelNames,
     // because the three paths that ask "can ComfyUI see this file" each had
-    // their own copy and they drifted. checkBundlesInstalled was taught the
-    // GGUF loader in 2.6.6 and this probe was born with it, while the Model
-    // Manager's install click kept asking four loaders and told users LU and
-    // ComfyUI use different model folders for a GGUF the engine serves fine.
-    // The guard pins the reader AND that both callers go through it.
+    // their own copy and they drifted. 3.0.0 took the last step: the loaders
+    // are COMFY_MODEL_FOLDERS in comfyui.ts, the same table the catalog's
+    // download folders are checked against, so a folder cannot be written into
+    // and then not read back (.__nothing_, 2026-09-02).
     const reader = discoverSrc.slice(
       discoverSrc.indexOf('export async function readComfyModelNames'),
-      discoverSrc.indexOf('/** Which of `wanted`'),
+      discoverSrc.indexOf('/** The folders this ComfyUI really enumerates'),
     )
-    expect(reader).toContain('getGgufUnetModels()')
-    expect(discoverSrc).toMatch(/import \{[^}]*getGgufUnetModels[^}]*\} from "\.\/comfyui"/)
+    expect(reader).toContain('readComfyFolderLists()')
+    expect(comfyuiSrc).toContain("nodeOptionsOrNull('UnetLoaderGGUF', 'unet_name')")
     const probe = discoverSrc.slice(
       discoverSrc.indexOf('export async function modelsNotVisibleInComfy'),
       discoverSrc.indexOf('/** #72:'),

@@ -34,6 +34,9 @@
 export const ENGINE_DEFAULT_CTX = 8192
 
 export interface SwapCtxInput {
+  /** `settings.builtinEngine.ctxChosen` (GH #129): hat der Nutzer den Wert
+   *  selbst gewaehlt? Dann gilt er, auch wenn er zufaellig 8192 lautet. */
+  tuningChosen?: boolean
   /** `settings.builtinEngine.ctx` — the expert tuning value. */
   tuningCtx?: number | null
   /** `bundled_engine_status.ctx` — what the running engine was started with. */
@@ -53,7 +56,11 @@ export function preservedSwapCtx(input: SwapCtxInput): number | undefined {
   const tuning = num(input.tuningCtx)
   // An expert value that is anything other than the untouched default is a
   // decision, not an accident. Never second-guess it.
-  if (tuning > 0 && tuning !== ENGINE_DEFAULT_CTX) return undefined
+  //
+  // GH #129: eine ausdrueckliche Wahl von 8192 ist ebenfalls eine. Die Zahl
+  // allein konnte das nie sagen, weil die Voreinstellung dieselbe ist; die
+  // Marke sagt es.
+  if (tuning > 0 && (input.tuningChosen === true || tuning !== ENGINE_DEFAULT_CTX)) return undefined
 
   const base = tuning > 0 ? tuning : ENGINE_DEFAULT_CTX
   const current = num(input.currentCtx)

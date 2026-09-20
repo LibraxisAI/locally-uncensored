@@ -1,4 +1,5 @@
 import type { AppMode } from '../types/settings'
+import { canAutoSelectChat, type ChatSizeCandidate } from './chat-model-minimum'
 
 /**
  * Which chat model may stay selected under the current Local/Cloud switch.
@@ -14,10 +15,17 @@ import type { AppMode } from '../types/settings'
  * An empty list is not evidence that a model is gone. It is the absence of
  * evidence, and this rule is re-run the moment the real list lands.
  */
-export interface ModeCandidate {
+export interface ModeCandidate extends ChatSizeCandidate {
   name: string
   type?: string
   provider?: string
+}
+
+/** Was jeder der beiden Modi zuletzt gewaehlt hatte. Kein Modus schreibt in
+ *  die Erinnerung des anderen. */
+export interface RememberedPicks {
+  local: string | null
+  cloud: string | null
 }
 
 export interface ModePick {
@@ -58,6 +66,26 @@ export function pickForMode(
    * has to be in the list and still has to be usable in this mode.
    */
   requested: string | null = null,
+  /**
+   * Je Modus die Wahl, die dort zuletzt galt (stores/modelStore,
+   * `lastLocalModel` und `lastCloudModel`).
+   *
+   * Der Schalter hat EINE Wahl fuer zwei Modi gefuehrt, und jeder Wechsel hat
+   * die des anderen ueberschrieben. Beide Richtungen sind auf der Box gemessen
+   * worden. Rueckweg (T3, Fund 1, 11.09.2026): Cloud an, Cloud aus, und der
+   * Waehler stand auf `Select a chat model`, weil der lokale Name weg war und
+   * der Ersatz `canAutoSelectChat` bestehen muss, also mindestens 7B haben; das
+   * Modell der Box hat 3B. Hinweg (T1, Nebenfunde 7 und 3, 11.09.2026, im
+   * selben Bau frueher am Tag): "Der Cloud-Modus schaltet das Modell
+   * selbstaendig um. Beim Eintritt stand zweimal `Llama 3.1 8B Turbo` da,
+   * ohne dass ich es gewaehlt hatte". Das war der Kopf des Katalogs, nicht die
+   * letzte Wolkenwahl des Nutzers.
+   *
+   * Zwei getrennte Erinnerungen loesen beides: jeder Modus bekommt zurueck, was
+   * er zuletzt hatte, und der Kopf der Liste springt nur noch ein, wenn es dort
+   * wirklich noch keine Wahl gab.
+   */
+  remembered: RememberedPicks = { local: null, cloud: null },
 ): ModePick {
   // Nothing to judge against. THE guard: without it, the mount-time run of
   // this rule wipes a perfectly good persisted pick.
@@ -76,7 +104,53 @@ export function pickForMode(
   const current = activeModel ? models.find((m) => m.name === activeModel) : undefined
   if (current && wanted(current)) return { change: false, next: activeModel, usedRequest: false }
 
-  const fallback = models.find(wanted)
+  // Der Moduswechsel, beide Richtungen: `current` steht hier in der Liste und
+  // ist trotzdem nicht gewollt, gehoert also dem anderen Modus. Bevor der Kopf
+  // der Liste einspringt, bekommt dieser Modus die Wahl zurueck, die er zuletzt
+  // hatte. Eng an diesen einen Fall gebunden, damit die Erinnerung nirgends
+  // sonst in eine Wahl hineinredet, die gerade aus einem anderen Grund
+  // geraeumt wurde.
+  const zuletztHier = appMode === 'cloud' ? remembered.cloud : remembered.local
+  const behalten = current && zuletztHier
+    ? models.find((m) => m.name === zuletztHier)
+    : undefined
+  if (behalten && wanted(behalten)) {
+    return { change: activeModel !== behalten.name, next: behalten.name, usedRequest: false }
+  }
+
+  const fallback = models.find(model => wanted(model) && canAutoSelectChat(model))
   if (activeModel === null && !fallback) return { change: false, next: null, usedRequest: false }
   return { change: true, next: fallback ? fallback.name : null, usedRequest: false }
+}
+
+/**
+ * Did the app replace the user's pick behind his back.
+ *
+ * Gegenprobe G1, 04.09.2026: der Testkunde nimmt den Provider LM Studio
+ * wieder heraus. Das gewaehlte Modell gehoerte dazu, verschwindet also aus der
+ * Liste, und die Regel oben greift zum ersten Eintrag, den sie findet. Zweimal
+ * hintereinander war das eine kaputte GGUF-Datei. Die Models-Seite schrieb
+ * ACTIVE daneben, der Waehlerknopf nannte sie, und auf Port 8127 lief nichts.
+ * Kein Wort dazu stand irgendwo.
+ *
+ * Ein Moduswechsel zaehlt NICHT: den hat der Nutzer selbst umgelegt, der
+ * Schalter steht sichtbar auf dem Schirm, und eine Zeile darueber waere Laerm.
+ * Gemeint ist allein der Fall, in dem sich die Liste unter dem Nutzer bewegt
+ * hat, ohne dass er den Waehler angefasst hat.
+ *
+ * `activeModel` muss dafuer da sein, und das ist keine Luecke, sondern die
+ * Grenze dieser Regel: der Satz nennt beide Namen, und ohne den alten gibt es
+ * keinen Satz. Der Fall, in dem die Wahl vorher schon geraeumt wurde, weil ein
+ * fremdes Backend den lokalen Steckplatz uebernommen hat, wird deshalb dort
+ * angesagt, wo der alte Name noch dasteht: in
+ * `dropPickServedByTheBuiltinEngine` (stores/modelStore), im selben Zug wie das
+ * Raeumen. Wer ihn hier einzufangen versucht, kommt immer zu spaet.
+ */
+export function replacedBehindTheUsersBack(
+  activeModel: string | null,
+  pick: ModePick,
+  modeFlipped: boolean,
+): boolean {
+  if (modeFlipped || !pick.change || pick.usedRequest) return false
+  return !!activeModel && !!pick.next && pick.next !== activeModel
 }

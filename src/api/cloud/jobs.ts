@@ -67,6 +67,11 @@ export interface CloudMe {
     /** Launch gate (Max-only closed beta): false = licensed but not yet
      *  allowed in. Absent on older servers = allowed. */
     access?: boolean
+    /** Has this account actually paid? The server runs the very function it
+     *  runs before billing a Flash turn, so the marks on screen cannot promise
+     *  what the invoice contradicts. Absent on older servers = unknown, which
+     *  every surface reads as "promise nothing". */
+    paidPlan?: boolean
   }
 }
 
@@ -222,3 +227,70 @@ export async function pollJob(
 }
 
 export { CloudJobError }
+
+// ── Kontoeinstellung: Inhaltsrichtlinie (Migration 0042) ─────────────
+
+export type ContentPolicy = 'strict' | 'soft' | 'off'
+
+export interface ContentPolicyState {
+  policy: ContentPolicy
+  ageConfirmedAt: string | null
+  /**
+   * Ob der Server fuer 'off' eine Altersbestaetigung verlangt.
+   *
+   * Die Stellung steht im Server (AGE_CONFIRMATION_REQUIRED, lib/launch.ts im
+   * Web-Repo) und kommt mit der GET-Antwort mit. Die App haelt keine eigene
+   * Kopie davon, die abweichen koennte von der, die wirklich geprueft wird.
+   */
+  ageConfirmationRequired: boolean
+}
+
+/**
+ * Die Inhaltsrichtlinie dieses Kontos, gelesen und gesetzt ueber DIESELBE
+ * Route wie in der Webanwendung.
+ *
+ * Zwei Kopien derselben Einstellung waeren zwei Wahrheiten. Die Desktop-App
+ * bringt hier nichts Eigenes mit, sie zeigt und schickt nur, was der Server
+ * sagt. 'off' verlangt eine Altersbestaetigung in derselben Anfrage; den
+ * Zeitstempel setzt der Server selbst, ein mitgeschickter waere wertlos.
+ */
+export async function getContentPolicy(): Promise<ContentPolicyState> {
+  const res = await cloudFetch('/api/account/content-policy')
+  const data = await jsonOrError<{
+    policy?: string
+    ageConfirmedAt?: string | null
+    ageConfirmationRequired?: unknown
+  }>(res)
+  return {
+    policy: data.policy === 'strict' || data.policy === 'off' ? data.policy : 'soft',
+    ageConfirmedAt: data.ageConfirmedAt ?? null,
+    /*
+     * Fehlt das Feld, wird gefragt.
+     *
+     * Ein aelterer Server kennt es nicht, und eine unvollstaendige Antwort darf
+     * keine Altersschranke abraeumen. Einmal zu viel fragen ist ein Aergernis,
+     * eine still verlorene Schranke ist es nicht. Deshalb gilt hier NICHT das
+     * `=== true` des Webs: dort ist die Vorgabe "kein Schritt", weil das PUT
+     * derselben Herkunft ohnehin abgewiesen wird. Der Desktop haengt an einem
+     * fremden Server und kennt dessen Stand nur aus dieser Antwort.
+     */
+    ageConfirmationRequired:
+      typeof data.ageConfirmationRequired === 'boolean' ? data.ageConfirmationRequired : true,
+  }
+}
+
+export async function setContentPolicy(policy: ContentPolicy, ageConfirmed = false): Promise<ContentPolicy> {
+  const res = await cloudFetch('/api/account/content-policy', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    /*
+     * `ageConfirmed` geht nur mit, wenn wirklich jemand bestaetigt hat. Wo der
+     * Server keinen Schritt verlangt, behauptet die App auch keinen: ein fest
+     * mitgeschicktes `false` waere harmlos, ein fest mitgeschicktes `true`
+     * waere eine Bestaetigung, die niemand gegeben hat.
+     */
+    body: JSON.stringify(ageConfirmed ? { policy, ageConfirmed: true } : { policy }),
+  })
+  const data = await jsonOrError<{ policy?: string }>(res)
+  return data.policy === 'strict' || data.policy === 'off' ? data.policy : 'soft'
+}

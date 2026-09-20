@@ -36,9 +36,20 @@ import {
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
+  FolderX,
 } from 'lucide-react'
 import { useCodexStore } from '../../stores/codexStore'
+import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useGenerationStore } from '../../stores/generationStore'
+import { useAgentModeStore } from '../../stores/agentModeStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useUIStore } from '../../stores/uiStore'
+import {
+  CODEX_WORKDIR_LOCK_TITLE,
+  codexBusyReason,
+  codexFallbackLabel,
+} from '../../lib/codex-workdir'
+import { resolveWorkspacePath } from '../../api/agents/workspace-resolve'
 import { backendCall, isTauri, isMacOS } from '../../api/backend'
 import {
   EMPTY_LISTING,
@@ -56,6 +67,8 @@ import { PlanApprovalBar } from './PlanApprovalBar'
 import { FilePreview } from './FilePreview'
 import { useChatStore } from '../../stores/chatStore'
 import { useTodoStore } from '../../stores/todoStore'
+import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { workspacePickRefusedMessage } from '../../lib/workspace-rejected'
 
 const fsList: FsList = (args) => backendCall('fs_list', args as unknown as Record<string, unknown>)
 
@@ -67,12 +80,49 @@ interface Props {
 export function ExplorerPanel({ onApprovePlan }: Props) {
   const root = useCodexStore((s) => s.workingDirectory)
   const setWorkingDirectory = useCodexStore((s) => s.setWorkingDirectory)
+  const clearWorkingDirectory = useCodexStore((s) => s.clearWorkingDirectory)
   const fileTreeVersion = useCodexStore((s) => s.fileTreeVersion)
+
+  // A8 (2.6.8): the folder is GLOBAL, so moving it mid-run would send the next
+  // turn somewhere the user is not looking. Locked with a reason on the button
+  // while that is the case, not hidden, and the SAME lock on both buttons: a
+  // picker that stays free while Remove is held is the same hole (review S8).
+  //
+  // Only Coding Agent signals count. Reading every conversation's generating
+  // flag locked this column whenever any Chat tab was streaming (review S3).
+  //
+  // Der Status eines Fadens allein ist kein Beweis, dass noch etwas laeuft:
+  // Stop raeumt die Erzeugungsfahne sofort, der Status kommt erst zurueck,
+  // wenn der Lauf sich abgewickelt hat. Beide Karten kommen deshalb herein und
+  // werden in `codexBusyReason` versoehnt.
+  const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
+  const threads = useCodexStore((s) => s.threads)
+  const generating = useGenerationStore((s) => s.generating)
+  const loop = useAgentLoopStore((s) => s.loop)
+  const lockReason = codexBusyReason({ sendsInFlight, threads, generating, loop })
+  const lockTitle = lockReason ? CODEX_WORKDIR_LOCK_TITLE[lockReason] : null
+
+  // Read up here because the workspace fallback below needs it too. The plan
+  // moved into this column, so a collapsed column would hide it, and with it
+  // the only Approve-and-run button there is. The rail says so instead.
+  const activeConversationId = useChatStore((s) => s.activeConversationId)
 
   const width = useUIStore((s) => s.explorerWidth)
   const collapsed = useUIStore((s) => s.explorerCollapsed)
   const setExplorerWidth = useUIStore((s) => s.setExplorerWidth)
   const setExplorerCollapsed = useUIStore((s) => s.setExplorerCollapsed)
+
+  // Where the agent ACTUALLY goes while the picker is empty. The empty state
+  // used to promise ~/agent-workspace flat out, which is wrong for anybody who
+  // pinned a folder on this chat or set a default workspace: both beat an
+  // empty picker in the run resolver (review S4).
+  const perChatWorkspace = useAgentModeStore((s) =>
+    activeConversationId ? s.workspaces[activeConversationId] : undefined,
+  )
+  const defaultWorkspace = useSettingsStore((s) => s.settings.defaultWorkspace)
+  const fallbackLabel = codexFallbackLabel(
+    resolveWorkspacePath({ perChat: perChatWorkspace, defaultWorkspace }),
+  )
 
   const [listings, setListings] = useState<Record<string, ExplorerListing>>({})
   const [expanded, setExpanded] = useState<string[]>([])
@@ -80,9 +130,6 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ExplorerNode | null>(null)
 
-  // The plan moved into this column, so a collapsed column would hide it, and
-  // with it the only Approve-and-run button there is. The rail says so instead.
-  const activeConversationId = useChatStore((s) => s.activeConversationId)
   const planWaiting = useCodexStore((s) =>
     activeConversationId ? !!s.planApprovalByConversation[activeConversationId] : false,
   )
@@ -142,20 +189,50 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
     if (next.includes(node.path) && !listings[node.path]) load(node.path)
   }
 
-  // Native folder picker. Tauri uses the Rust dialog, dev mode a prompt.
+  // Der Ordner-Dialog der gepackten App (Fehler D, aldrich_ironhart,
+  // 08.09.2026).
+  //
+  // `asWorkspace: true` laesst die Rust-Seite einen Ordner, den sie nicht als
+  // Arbeitsordner annimmt, MELDEN statt den Pfad zurueckzugeben, als waere
+  // nichts gewesen. Vorher landete so ein Ordner in der Kopfzeile, und jede
+  // Dateioperation darunter antwortete mit "pick it again to allow it", also
+  // genau mit dem, was der Nutzer gerade getan hatte. Ein abgelehnter Ordner
+  // wird deshalb GAR NICHT gesetzt.
+  //
+  // Der getippte Pfad als RUECKFALL ist weg, und nur er. Auf die
+  // Erlaubnisliste der gepackten App kommt ein Ordner ausschliesslich ueber
+  // `system::pick_folder` (weiter zu `remember_picked_root`); ein in ein
+  // `window.prompt` getippter Pfad war dort also ein Arbeitsordner, der nie
+  // funktionieren konnte, und der Weg heraus aus dem Fehler war derselbe
+  // Prompt. Im Browser des Dev-Servers ist es umgekehrt: dort gibt es weder
+  // einen nativen Dialog noch ueberhaupt eine Erlaubnisliste (die Begruendung
+  // steht in lib/dev-fs-jail.ts), der getippte Pfad ist der vorgesehene Weg
+  // und er funktioniert. Deshalb steht er dort und nur dort.
   const pickFolder = async () => {
-    let picked: string | null = null
-    if (isTauri()) {
-      try {
-        const invoke = (await import('@tauri-apps/api/core')).invoke
-        picked = await invoke<string | null>('pick_folder', { defaultPath: root || undefined })
-      } catch {
-        picked = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
-      }
-    } else {
-      picked = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
+    setError(null)
+    if (!isTauri()) {
+      const typed = window.prompt('Enter folder path:', root || (isMacOS() ? '/Users/' : 'C:\\Users'))
+      if (typed) setWorkingDirectory(typed)
+      return
     }
-    if (picked) setWorkingDirectory(picked)
+    try {
+      const picked = await backendCall<string | null>('pick_folder', {
+        defaultPath: root || undefined,
+        asWorkspace: true,
+      })
+      if (picked) setWorkingDirectory(picked)
+    } catch (e) {
+      setError(workspacePickRefusedMessage(e))
+    }
+  }
+
+  // Give the folder back (A8). Users reported no way out of a folder they had
+  // opened by mistake, one of them was ready to reinstall the app over it.
+  // Clearing the store also unpins every open thread, so the CURRENT chat falls
+  // back to its own sandbox instead of keeping the tree it was born with.
+  const removeFolder = () => {
+    if (lockReason) return
+    clearWorkingDirectory()
   }
 
   const startDrag = (e: React.PointerEvent) => {
@@ -221,8 +298,10 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
       <div className="flex items-center gap-1 p-1.5 border-b border-gray-200 dark:border-white/[0.04]">
         <button
           onClick={pickFolder}
-          title={root || 'Pick the folder the agent works in'}
-          className="flex-1 min-w-0 flex items-center gap-1 px-1.5 py-1 rounded bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/[0.06] hover:border-gray-400 dark:hover:border-white/15 transition-colors text-left"
+          disabled={!!lockReason}
+          data-testid="explorer-pick-folder"
+          title={lockTitle || root || 'Pick the folder the agent works in'}
+          className="flex-1 disabled:opacity-40 min-w-0 flex items-center gap-1 px-1.5 py-1 rounded bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/[0.06] hover:border-gray-400 dark:hover:border-white/15 transition-colors text-left"
         >
           <FolderOpen size={10} className="text-gray-500 shrink-0" />
           {root ? (
@@ -231,6 +310,21 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
             <span className="text-[0.5rem] text-gray-400 dark:text-gray-600 flex-1">Select folder...</span>
           )}
         </button>
+        {root && (
+          <button
+            onClick={removeFolder}
+            disabled={!!lockReason}
+            data-testid="explorer-remove-folder"
+            aria-label="Remove the working directory"
+            title={
+              lockTitle ||
+              `Remove this folder. The agent falls back to ${fallbackLabel} until you pick a new one.`
+            }
+            className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/5 text-gray-400 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors shrink-0"
+          >
+            <FolderX size={11} />
+          </button>
+        )}
         <button
           onClick={refresh}
           disabled={!root}
@@ -249,11 +343,42 @@ export function ExplorerPanel({ onApprovePlan }: Props) {
         </button>
       </div>
 
+      {/* Warum die beiden Knoepfe darueber tot sind, in Worten.
+          Der Grund hing bisher nur als `title` an ihnen, und ein `disabled`
+          Knopf nimmt keine Mauszeiger-Ereignisse an: der Hinweis ist also nie
+          erschienen. Uebrig blieben zwei graue Knoepfe ohne Erklaerung. Ruhiger
+          Ton, keine Warnfarbe: gesperrt ist kein Fehler, sondern ein Zustand,
+          der von selbst endet (`lib/hinweis.ts`). */}
+      {lockTitle && (
+        <p
+          data-testid="explorer-workdir-lock"
+          className={`px-1.5 py-1 text-[0.45rem] leading-relaxed border-b border-gray-200 dark:border-white/[0.04] ${HINWEIS_TEXT.ruhig}`}
+        >
+          {lockTitle}
+        </p>
+      )}
+
       <div className={`overflow-y-auto scrollbar-thin p-1 ${selected ? 'max-h-[45%] shrink-0' : 'flex-1 min-h-0'}`}>
-        {!root ? (
-          <p className="text-[0.5rem] text-gray-400 dark:text-gray-600 px-1 py-2">Click above to set a folder</p>
-        ) : error ? (
-          <p className="text-[0.5rem] text-red-500/80 px-1 py-2 break-words">{error}</p>
+        {/* R2-15: der leere Zustand stand VOR der Fehlerzeile. Wird ein Ordner
+            abgelehnt, bleibt `root` leer, also gewann "No folder picked." und
+            der Grund verschwand ungelesen. Der Nutzer sah einen Klick, der
+            nichts tat, und den einzigen Satz, der ihm haette sagen koennen,
+            warum, bekam er nie. Der Fehler steht deshalb zuerst. */}
+        {error ? (
+          <p
+            data-testid="explorer-error"
+            className="text-[0.5rem] text-red-500/80 px-1 py-2 break-words"
+          >
+            {error}
+          </p>
+        ) : !root ? (
+          <p
+            data-testid="explorer-no-folder"
+            className="text-[0.5rem] text-gray-400 dark:text-gray-600 px-1 py-2 leading-relaxed"
+          >
+            No folder picked. The agent works in {fallbackLabel} until you
+            click "Select folder..." above.
+          </p>
         ) : !rootListing ? (
           <p className="text-[0.5rem] text-gray-400 dark:text-gray-600 px-1 py-2">Loading...</p>
         ) : rows.length === 0 ? (
@@ -335,7 +460,11 @@ function ListingHints({ listing, depth }: { listing: ExplorerListing; depth: num
   return (
     <div style={{ paddingLeft: `${depth * 8 + 4}px` }} className="py-[1px]">
       {listing.truncated && (
-        <p className="text-[0.45rem] text-amber-500/80" data-testid="explorer-truncated">
+        // Ruhiger Ton, nicht Gelb: die Liste ist vollstaendig bis zur Grenze,
+        // sie ist nicht kaputt. Etwas kraeftiger als die Zeile darunter, weil
+        // „hier fehlt der Rest" die groessere der zwei Auskuenfte ist
+        // (`lib/hinweis.ts`).
+        <p className={`text-[0.45rem] ${HINWEIS_TEXT.ruhig}`} data-testid="explorer-truncated">
           shortened, first {FS_LIST_CAP} entries only
         </p>
       )}

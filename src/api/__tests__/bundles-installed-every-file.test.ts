@@ -40,19 +40,17 @@ vi.mock('../backend', () => ({
   fetchExternal: vi.fn(),
 }))
 
-vi.mock('../comfyui', () => ({
-  getCheckpoints: async () => [],
-  getDiffusionModels: () => diffusionModels(),
-  getGgufUnetModels: () => ggufUnets(),
-  // Sixth loader (2026-08-29): the AnimateDiff pack lists its motion modules
-  // itself. No motion module in these fixtures, so it answers empty.
-  getAnimateDiffModels: async () => [],
-  getVAEModels: () => vaes(),
-  getCLIPModels: () => clips(),
-  // Seventh loader (2026-08-29, abnahme counter-check): LoraLoader has always
-  // enumerated the loras folder and nothing here ever asked it, so a LoRA was
-  // the one installed file no surface could reason about.
-  getLoraModels: () => loras(),
+vi.mock('../comfyui', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../comfyui')>()),
+  // What the engine lists, per folder, through the one table every folder is
+  // read back with (COMFY_MODEL_FOLDERS). diffusion_models carries both its
+  // loaders: UNETLoader lists .safetensors and .sft, the GGUF pack the quants.
+  readComfyFolderLists: async () => ({
+    diffusion_models: [...(await diffusionModels()), ...(await ggufUnets())],
+    vae: await vaes(),
+    text_encoders: await clips(),
+    loras: await loras(),
+  }),
   filterPartialFiles: async (names: string[]) => new Set(names),
   refreshComfyModels: vi.fn(async () => true),
 }))
@@ -186,7 +184,9 @@ describe('the row a user actually reads names the cause that fits the file', () 
   })
 
   it('no dashes in either text (house rule) and both stay English', () => {
-    // eslint-disable-next-line no-misleading-character-class
+    // (Die Unterdrueckung fuer no-misleading-character-class stand hier, ohne
+    // dass die Regel je etwas gemeldet haette — beide Code Points sind BMP
+    // und bilden kein Surrogatpaar.)
     const dash = /[\u2013\u2014]/
     return import('../../stores/downloadStore').then(({ invisibleFileMessage }) => {
       expect(invisibleFileMessage(GGUF)).not.toMatch(dash)

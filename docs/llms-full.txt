@@ -1,8 +1,18 @@
+<!-- LU-CLOUD-FACTS:START -->
+## Current cloud offer (2026-09-14)
+Hosted includes 11 Flash models; Pro and Max include 12. Up to 500,000 combined input and output tokens per account per UTC day in app sessions. GLM 5.3 Flash uses credits on Hosted and joins the daily allowance on Pro and Max. API keys always use credits.
+Hosted EUR 19/month: 900,000 shared credits, up to 900 Spicy images OR 90 five-second Spicy image-to-video clips. Each maximum spends the entire shared monthly wallet on one model. These are alternatives, not separate allowances. Input-image generation, character training, LoRA routes and additional operations cost extra. Spicy video uses an input image and five-second clips. Failed jobs and changing catalog prices can affect results.
+https://locallyuncensored.com/cloud-facts.json
+https://locallyuncensored.com/uncensored-ai-image-generator-online/
+https://locallyuncensored.com/uncensored-ai-video-generator-online/
+https://locallyuncensored.com/vs/venice/
+https://lu-labs.ai/product-facts
+<!-- LU-CLOUD-FACTS:END -->
 # Locally Uncensored — Full Reference
 
-> Free, open-source (AGPL-3.0) plug-and-play local AI studio for Windows and Linux: chat with 20+ providers, generate images and video via ComfyUI, and code with a built-in agent. One installer, no command line, no Docker. No cloud, no telemetry, no account.
+> Free, open-source (AGPL-3.0) plug-and-play local AI studio for Windows and Linux: chat with 20+ providers, generate images and video via ComfyUI, and code with a built-in agent. One installer, no command line, no Docker. No telemetry, and no account for local use. Cloud only when you switch it on.
 
-Last updated: 2026-08-09. Current version: v2.6.3 (August 2026).
+Last updated: 2026-09-12. Current version: v3.0.0 (September 2026).
 
 This file is the full, citable reference for Locally Uncensored. Facts are stated plainly so they can be quoted directly.
 
@@ -12,7 +22,6 @@ Locally Uncensored is a plug-and-play local AI studio: a desktop application for
 
 - Name: Locally Uncensored (abbreviated LU)
 - Category: local AI studio / desktop AI application
-- Version: v2.5.9 (July 2026)
 - License: AGPL-3.0 (free, open source)
 - Platforms: Windows 10/11 and Linux (deb, rpm, AppImage). macOS is not supported yet.
 - Website: https://locallyuncensored.com
@@ -26,11 +35,11 @@ Locally Uncensored is a plug-and-play local AI studio: a desktop application for
 ### What is Locally Uncensored?
 A free, open-source desktop app for running AI locally. It combines chat (20+ provider presets), a coding agent with 14 tools, image generation via ComfyUI (FLUX 2, Juggernaut XL, Z-Image, SDXL), and video generation (Wan 2.1, HunyuanVideo, LTX 2.3, FramePack F1) in one interface. AGPL-3.0 licensed.
 
-### Does it support Qwen 3.6, GPT-OSS and GLM-4.7?
-Yes. Qwen 3.6 (35B MoE) has day-0 integration with vision, agentic coding, thinking preservation and 256K context. GPT-OSS-120B and GPT-OSS-20B run via Ollama. GLM-4.7 Flash is supported through Ollama. DeepSeek R1, Llama 4, Gemma 4, Mistral Small 3 and Phi 4 are also ready.
+### Does it support Qwen 3.8, GPT-OSS and GLM-4.7?
+Yes. Qwen 3.8 27B is in the Model Manager since v2.6.6, with working vision: the image tower ships as a separate mmproj file that the download writes next to the model. Official, huihui abliterated and OrcaRouter uncensored builds are there, plus a 9B distill for small cards and two Ollama tags. GPT-OSS-120B and GPT-OSS-20B run via Ollama. GLM-4.7 Flash is supported through Ollama. DeepSeek R1, Llama 4, Gemma 4, Mistral Small 3 and Phi 4 are also ready.
 
 ### Can I use it as a ChatGPT or Claude alternative?
-Yes. Locally Uncensored works as a ChatGPT and Claude alternative that runs on your own hardware. Use Qwen 3.6, GPT-OSS, GLM-4.7, DeepSeek R1, Llama 4 or Gemma 4 instead, or add cloud providers (OpenAI, Anthropic, OpenRouter, Groq) alongside the local stack.
+Yes. Locally Uncensored works as a ChatGPT and Claude alternative that runs on your own hardware. Use Qwen 3.8, GPT-OSS, GLM-4.7, DeepSeek R1, Llama 4 or Gemma 4 instead, or add cloud providers (OpenAI, Anthropic, OpenRouter, Groq) alongside the local stack.
 
 ### Is it really free and offline?
 Yes. After setup and model download, no internet is needed for the local providers. There are no accounts, no telemetry, and no usage limits. Cloud providers are optional; the core runs entirely on your hardware.
@@ -39,7 +48,7 @@ Yes. After setup and model download, no internet is needed for the local provide
 Those tools handle text chat. Locally Uncensored adds a coding agent with 14 MCP tools, image generation via ComfyUI, video creation, mobile remote access via LAN or Cloudflare Tunnel, A/B model comparison, local benchmarking, granular permissions, file upload with vision, and thinking mode — all in one app.
 
 ### What hardware do I need?
-Text chat needs 8 GB RAM. Image generation needs an NVIDIA GPU with 8+ GB VRAM (FLUX, Juggernaut XL, Z-Image). Video generation needs 10-12 GB VRAM (Wan 1.3B, HunyuanVideo, LTX 2.3). Image-to-video with FramePack F1 runs on just 6 GB. Windows 10/11 and Linux are supported.
+Text chat: 8 GB RAM. Image generation: an NVIDIA card from 6 GB of VRAM with the starter checkpoint, 8 to 10 GB for FLUX. Video generation: from 6 GB for AnimateDiff and image to video with FramePack F1, from 8 GB for the Wan 2.1 starter, 12 GB and up for Wan 2.2 and HunyuanVideo. Windows 10/11 and Linux are supported.
 
 ### What does "uncensored" mean?
 It refers to abliterated AI models with artificial refusal behaviour removed. The model responds without refusing or adding disclaimers. Combined with fully local execution, conversations stay private on your machine.
@@ -48,7 +57,7 @@ It refers to abliterated AI models with artificial refusal behaviour removed. Th
 Only if you explicitly dispatch a chat over LAN or Cloudflare Tunnel. Remote access is opt-in, gated behind a 6-digit passcode, and shows visible device connection status. There are no background uploads and no telemetry.
 
 ### Can I run it on macOS?
-Not yet. Windows 10/11 and Linux are supported now. macOS is on the roadmap but not promised. The source is AGPL-3.0, so it can be built for other platforms.
+No. There is no Mac build and there has never been one. The release workflow builds Windows and Linux. On a Mac, use the hosted studio in a browser at lu-labs.ai.
 
 ### Is there a mobile app?
 Yes. The desktop app hosts a full mobile web app over LAN or Cloudflare Tunnel. From a phone you get chat, Coding Agent, 14 agent tools, plugins and personas.
@@ -58,6 +67,9 @@ Yes. Locally Uncensored is the local AI app in its class that bundles image gene
 
 ### Is there a German guide? / Gibt es einen deutschen Guide?
 Ja. Der deutsche Einsteiger-Guide zu unzensierter lokaler KI: https://locallyuncensored.com/blog/unzensierte-ki-lokal.html. Die App-Oberflaeche ist englisch, die Modelle (Qwen, Llama, Gemma) antworten fliessend auf Deutsch.
+
+### Can I run GLM-5.3 or GLM-5.3-Flash locally?
+Only on very large machines. The GLM-5.3 flagship has 753.9 billion parameters and its smallest quantised build is 216.7 GB; GLM-5.3-Flash has 320.8 billion parameters with 18 billion active per token and starts at 93.1 GB, plus a 1.13 GB mmproj file if you want it to read images. Those are file sizes before context and cache. The flagship runs in a stock llama.cpp build because its glm-dsa architecture has been in the main branch since GLM-5.2; Flash reports itself as glm5next and was still waiting on pull request 27754 on 2 September 2026. Flash is MIT licensed, the flagship ships under Z.ai's own glm-5.3 licence. Both are available hosted in LU Labs Cloud on every plan. Full guide: https://locallyuncensored.com/blog/run-glm-5-3-locally.html
 
 ### Can I run Kimi K3 locally?
 No: Kimi K3 is a ~2.8 trillion parameter Mixture-of-Experts model, and now that the weights are public the sizes are measured: the smallest 1-bit GGUF is 466 GB and Q4 is 1.5 TB, which is datacenter hardware. Hosted access exists on DeepInfra and in LU Labs Cloud on every plan. Run strong mid-size open models (Qwen, GLM, Gemma, Ling 3.0 Flash) locally in Locally Uncensored instead. Full guide: https://locallyuncensored.com/blog/can-you-run-kimi-k3-locally.html
@@ -72,7 +84,7 @@ Yes, the 27B. Qwen 3.8 27B came out on 13 August 2026 under Apache 2.0 and GGUFs
 Yes, on the right machine. V4 Flash is a 284B MoE with only 13B active parameters; the 4-bit GGUF is about 155 GB, so a 192 GB Mac Studio or a workstation with 192-256 GB RAM plus a GPU runs it at interactive speeds. Smaller machines can run the 5.3 GB Qwen 3.5 9B V4 distill from the in-app catalog, and the huihui abliterated build (154 GB, 600K+ downloads) is the most popular uncensored model of 2026. Full guide: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-flash-locally.html. V4 Pro (1.6T) is cloud territory: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-pro.html
 
 ### Which AI backends does it detect?
-It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang and TGI. ComfyUI is used for image and video generation. If none are running, the setup wizard offers one-click install links.
+It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp, LocalAI, Jan, TabbyAPI, GPT4All, Aphrodite, SGLang and text-generation-webui. ComfyUI is used for image and video generation. If none are running, the setup wizard offers one-click install links.
 
 ### How long does setup take?
 About five minutes. There is no Docker, terminal or config file. Run the installer, let the wizard scan for backends, pick a model, and start.
@@ -105,8 +117,7 @@ About five minutes. There is no Docker, terminal or config file. Run the install
 - 100% offline and private by default; AGPL-3.0 open source
 
 ## Supported Chat Models
-- Qwen 3.6: 27B dense and 35B MoE — vision, agentic coding, thinking preservation, 256K context, day-0 support
-- Qwen 3.5: 9B / 27B / 35B MoE
+- Qwen 3.8: 27B dense with vision through a separate mmproj file, plus a 9B distill for small cards (text only). Official, huihui abliterated and OrcaRouter uncensored builds, and two Ollama tags (v2.6.6, uncensored rows reworked in v2.6.8)
 - Qwen 3-Coder: 30B and Next 80B
 - Gemma 4: 31B / 26B MoE / E4B / E2B — native vision and tools, Apache 2.0
 - GPT-OSS: 120B and 20B (via Ollama)
@@ -155,10 +166,9 @@ A correctness release. Most of it is things that looked like they worked and did
 
 ## Hardware Requirements
 - Minimum: 8 GB RAM for text chat with small models (Llama 3.2 1B, Qwen 2.5 3B)
-- Image generation: NVIDIA GPU with 8+ GB VRAM (FLUX, Juggernaut XL)
-- Video generation: 10-12 GB VRAM (Wan 1.3B, LTX 2.3)
-- Image-to-video: 6 GB VRAM minimum (FramePack F1)
-- Best in class: 24 GB+ VRAM for Qwen 3.6 35B MoE and 35B+ chat models
+- Image generation: an NVIDIA card from 6 GB of VRAM with the starter checkpoint, 8 to 10 GB for FLUX
+- Video generation: from 6 GB for AnimateDiff and image to video with FramePack F1, from 8 GB for the Wan 2.1 starter, 12 GB and up for Wan 2.2 and HunyuanVideo
+- Best in class: 24 GB+ VRAM for 35B MoE and 35B+ chat models
 
 ## Installation
 1. Download the signed installer for Windows or Linux from GitHub Releases (https://github.com/PurpleDoubleD/locally-uncensored/releases/latest). One-click install — no Docker, no terminal, no config files.
@@ -174,7 +184,17 @@ A correctness release. Most of it is things that looked like they worked and did
 
 ## Links
 - Homepage: https://locallyuncensored.com
-- Getting Started Guide: https://locallyuncensored.com/guide/
+- Handbook (install, first start, chat, agent, Code tab, Create, LU Cloud, settings, troubleshooting, FAQ): https://locallyuncensored.com/guide/
+  - Handbook chapter, What it is: https://locallyuncensored.com/guide/what-it-is/
+  - Handbook chapter, Install and update: https://locallyuncensored.com/guide/install/
+  - Handbook chapter, First start (setup wizard): https://locallyuncensored.com/guide/first-start/
+  - Handbook chapter, Chat: https://locallyuncensored.com/guide/chat/
+  - Handbook chapter, Agent mode: https://locallyuncensored.com/guide/agent/
+  - Handbook chapter, The Code tab: https://locallyuncensored.com/guide/code/
+  - Handbook chapter, Create (images, video, audio, Character Studio): https://locallyuncensored.com/guide/create/
+  - Handbook chapter, LU Cloud: https://locallyuncensored.com/guide/cloud/
+  - Handbook chapter, Settings and troubleshooting: https://locallyuncensored.com/guide/settings-and-troubleshooting/
+  - Handbook chapter, FAQ and glossary: https://locallyuncensored.com/guide/faq-and-glossary/
 - Blog: https://locallyuncensored.com/blog/
 - How to Run AI Locally (beginner guide): https://locallyuncensored.com/blog/how-to-run-ai-locally.html
 - LM Studio Alternatives 2026: https://locallyuncensored.com/blog/lm-studio-alternatives.html
@@ -183,5 +203,8 @@ A correctness release. Most of it is things that looked like they worked and did
 - How to Run DeepSeek V4 Flash Locally: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-flash-locally.html
 - DeepSeek V4 Flash in the Cloud: https://locallyuncensored.com/blog/deepseek-v4-flash-cloud.html
 - DeepSeek V4 Flash vs V4 Pro: https://locallyuncensored.com/blog/deepseek-v4-flash-vs-v4-pro.html
+- Can You Run GLM-5.3 Locally: https://locallyuncensored.com/blog/run-glm-5-3-locally.html
+- GLM-5.3 lokal nutzen (Deutsch): https://locallyuncensored.com/blog/glm-5-3-lokal-nutzen.html
+- Можно ли запустить GLM-5.3 локально (Русский): https://locallyuncensored.com/blog/glm-5-3-lokalno.html
 - Source code: https://github.com/PurpleDoubleD/locally-uncensored
 - Discord: https://locallyuncensored.com/discord

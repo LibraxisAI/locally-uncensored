@@ -9,7 +9,9 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { canUseTools } from '../../lib/tool-support'
 import { FEATURE_FLAGS } from '../../lib/constants'
 import { AgentWorkspaceDialog } from './AgentWorkspaceDialog'
+import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import type { AgentWorkspace } from '../../types/agent-workspace'
+import { MOTION_S } from '../ui/motion'
 
 export function AgentModeToggle() {
   const [showNewChatModal, setShowNewChatModal] = useState(false)
@@ -20,6 +22,9 @@ export function AgentModeToggle() {
   // power users can point the agent at a real folder up front.
   const [showWorkspaceDialog, setShowWorkspaceDialog] = useState(false)
   const [workspaceDialogConvId, setWorkspaceDialogConvId] = useState<string | null>(null)
+  // Der Grund, warum der gemerkte Vorgabeordner nicht genommen wurde. Steht im
+  // Dialog, sonst geht er ohne erkennbaren Anlass auf.
+  const [workspaceDialogError, setWorkspaceDialogError] = useState<string | null>(null)
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const conversations = useChatStore((s) => s.conversations)
   const createConversation = useChatStore((s) => s.createConversation)
@@ -62,12 +67,30 @@ export function AgentModeToggle() {
    * workspace yet, open AgentWorkspaceDialog so the user can choose
    * between sandbox and a real folder. Skipped when a workspace is
    * already set (toggling back on after a deactivate) or when the user
-   * has a `settings.defaultWorkspace` configured.
+   * has a `settings.defaultWorkspace` the backend still accepts.
+   *
+   * Der Vorgabeordner ueberlebt im Speicher des Browsers, die Erlaubnisliste
+   * der Rust-Seite liegt daneben in einer Datei, und die beiden koennen
+   * auseinanderlaufen: frische Installation, geleerte Daten, oder ein Ordner
+   * direkt unter $HOME, den eine aeltere Fassung noch gesetzt hat. Uebersprang
+   * dieser Dialog die Frage trotzdem, arbeitete der Agent still in einem
+   * Ordner, den jede Dateioperation mit "pick it again to allow it"
+   * beantwortet, und es ging kein Dialog auf, in dem man genau das haette tun
+   * koennen. Ein abgelehnter Vorgabeordner oeffnet die Frage jetzt MIT dem
+   * Grund; gemerkt wird dabei nichts, auf die Erlaubnisliste kommt ein Ordner
+   * weiterhin nur ueber den nativen Dialog.
    */
-  const maybeOpenWorkspaceDialog = (convId: string) => {
+  const maybeOpenWorkspaceDialog = async (convId: string) => {
     const hasPerChat = !!useAgentModeStore.getState().workspaces[convId]
-    const hasDefault = !!useSettingsStore.getState().settings.defaultWorkspace
-    if (hasPerChat || hasDefault) return
+    if (hasPerChat) return
+    const fallback = useSettingsStore.getState().settings.defaultWorkspace
+    let refusal: string | null = null
+    if (fallback) {
+      if (fallback.kind !== 'folder' || !fallback.path) return
+      refusal = await rememberedFolderRefusal(fallback.path)
+      if (!refusal) return
+    }
+    setWorkspaceDialogError(refusal)
     setWorkspaceDialogConvId(convId)
     setShowWorkspaceDialog(true)
   }
@@ -77,7 +100,7 @@ export function AgentModeToggle() {
     const persona = useSettingsStore.getState().getActivePersona()
     const newId = createConversation(activeModel, persona?.systemPrompt || '')
     useAgentModeStore.getState().toggleAgentMode(newId)
-    maybeOpenWorkspaceDialog(newId)
+    void maybeOpenWorkspaceDialog(newId)
   }
 
   const handleToggle = () => {
@@ -99,7 +122,7 @@ export function AgentModeToggle() {
     toggleAgentMode(activeConversationId)
     // If the user just turned agent ON (was inactive, now active) and
     // hasn't picked a workspace for this conversation, prompt for one.
-    if (!isActive) maybeOpenWorkspaceDialog(activeConversationId)
+    if (!isActive) void maybeOpenWorkspaceDialog(activeConversationId)
   }
 
   const handleNewAgentChat = () => {
@@ -117,12 +140,23 @@ export function AgentModeToggle() {
     }
     setShowWorkspaceDialog(false)
     setWorkspaceDialogConvId(null)
+    setWorkspaceDialogError(null)
   }
 
   const handleWorkspaceClose = () => {
     // Cancel just dismisses — bridge will fall back to per-chat sandbox.
+    //
+    // Diese Zusage stimmt nur, solange kein Vorgabeordner gemerkt ist: sonst
+    // gewinnt er in `resolveWorkspace` ueber das leere Feld, und ein
+    // abgelehnter Vorgabeordner haette den Nutzer nach dem Wegklicken in genau
+    // die Sackgasse geschickt, aus der dieser Dialog ihn holen sollte. Wurde er
+    // abgelehnt, wird der Sandkasten hier also wirklich festgehalten.
+    if (workspaceDialogError && workspaceDialogConvId) {
+      useAgentModeStore.getState().setWorkspace(workspaceDialogConvId, { kind: 'sandbox' })
+    }
     setShowWorkspaceDialog(false)
     setWorkspaceDialogConvId(null)
+    setWorkspaceDialogError(null)
   }
 
   return (
@@ -153,23 +187,20 @@ export function AgentModeToggle() {
       </button>
 
       {/* New Chat Required Modal */}
-      <Modal open={showNewChatModal} onClose={() => { setShowNewChatModal(false); setNeverShowChecked(false) }} title="">
+      <Modal open={showNewChatModal} onClose={() => { setShowNewChatModal(false); setNeverShowChecked(false) }} title="" ariaLabel="New chat required">
         <div className="space-y-4">
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2 }}
+            transition={{ duration: MOTION_S.base }}
             className="text-center space-y-3"
           >
-            <div className="flex justify-center">
-              <div
-                className="w-3 h-3 rounded-full bg-amber-500 shadow-lg"
-                style={{ boxShadow: '0 0 20px 4px rgba(245, 158, 11, 0.4)' }}
-              />
-            </div>
-
+            {/* Hier leuchtete ein gelber Punkt mit Schein. Er war reine
+                Zierde: ein Zustandspunkt sagt an, aus oder kaputt, und
+                „dieser Dialog ist offen" ist keins davon. Der Titel darunter
+                sagt dasselbe in Worten (`lib/hinweis.ts`). */}
             <h3 className="text-base font-semibold text-white">New Chat Required</h3>
-            <p className="text-[0.75rem] text-gray-400 leading-relaxed">
+            <p className="text-[12px] text-gray-400 leading-relaxed">
               Agent Mode needs to be active from the start of a conversation to work properly. Start a new chat with Agent Mode enabled.
             </p>
           </motion.div>
@@ -182,7 +213,7 @@ export function AgentModeToggle() {
               onChange={(e) => setNeverShowChecked(e.target.checked)}
               className="w-3.5 h-3.5 rounded border-white/20 bg-white/5 text-green-500 focus:ring-green-500/30 focus:ring-offset-0 cursor-pointer"
             />
-            <span className="text-[0.65rem] text-gray-500 group-hover:text-gray-400 transition-colors select-none">
+            <span className="t-micro text-gray-500 group-hover:text-gray-400 transition-colors select-none">
               Don't show this again
             </span>
           </label>
@@ -213,6 +244,7 @@ export function AgentModeToggle() {
           conversationId={workspaceDialogConvId}
           onChoose={handleWorkspaceChoose}
           onClose={handleWorkspaceClose}
+          initialError={workspaceDialogError}
         />
       )}
     </>

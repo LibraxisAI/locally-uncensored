@@ -196,8 +196,44 @@ const THINKING_COMPATIBLE = [
  * Uses the shared `normalizeFamily` so dashed forms (`gemma-4-31B-it-abliterated`)
  * and dash-less forms (`gemma4:e4b`) both resolve to the same family key.
  */
+/**
+ * Modelle, bei denen die Engine das Denken ausdruecklich abgelehnt hat.
+ *
+ * Der Name ist die richtige ERSTE Antwort: synchron, ohne Netz, und die
+ * Oberflaeche muss beim Zeichnen des Think-Knopfes etwas sagen koennen. Er ist
+ * nur nicht die letzte. Am 03.09.2026 protokollierte ein Testlauf, dass JEDE
+ * Antwort zuerst eine verlorene Anfrage kostet —
+ * `400 "… does not support thinking"` — und danach erst die erfolgreiche
+ * kommt, waehrend ueber jeder Antwort weiter „Thinking" steht. „Qwen3" ist
+ * eine denkende Familie; dieses eine abliterierte GGUF ist es nicht, weil ihm
+ * die Vorlage fehlt.
+ *
+ * Die Engine hat also recht und sagt es auch — es hoerte nur niemand zu. Ab
+ * jetzt kostet eine solche Absage genau EINE Anfrage je Modell und Sitzung
+ * statt eine je Nachricht.
+ *
+ * Bewusst nur im Speicher: eine Absage gehoert zu einer Modelldatei, und die
+ * kann sich unter demselben Namen aendern (neu gezogen, neue Vorlage). Ueber
+ * einen Neustart hinweg zu behaupten, ein Modell koenne nicht denken, waere
+ * eine Vermutung mit laengerer Haltbarkeit als ihre Grundlage.
+ */
+const nichtDenkfaehig = new Set<string>()
+
+/** Die Engine hat fuer dieses Modell „kann nicht denken" gesagt. */
+export function markCannotThink(modelName: string | null | undefined): void {
+  if (modelName) nichtDenkfaehig.add(modelName)
+}
+
+/** Nur fuer Tests: die gemessenen Absagen vergessen. */
+export function resetThinkingMeasurements(): void {
+  nichtDenkfaehig.clear()
+}
+
 export function isThinkingCompatible(modelName: string | null): boolean {
   if (!modelName) return false
+  // Gemessen schlaegt geraten — und zwar zuerst, damit auch ein Anbieter mit
+  // nativen Werkzeugen eine Absage seiner eigenen Engine behaelt.
+  if (nichtDenkfaehig.has(modelName)) return false
   const providerId = getProviderIdFromModel(modelName)
   if (isNativeToolProvider(providerId)) return true
 
@@ -341,8 +377,11 @@ export function getRecommendedAgentModels(): RecommendedModel[] {
     { name: 'qwen3.5:35b-a3b', label: 'Qwen 3.5 35B MoE', reason: '35B brain, 3B active. Best agentic + 256K context. SWE-bench leader.', hot: true, provider: 'ollama' },
     { name: 'gemma4:26b', label: 'Gemma 4 26B MoE', reason: '26B brain, runs like 4B. Native tools + vision. Apache 2.0.', hot: true, provider: 'ollama' },
     { name: 'qwen3-coder:30b', label: 'Qwen3-Coder 30B MoE', reason: 'Built for code + agentic workflows. 256K context.', hot: true, provider: 'ollama' },
-    { name: 'hermes3:8b', label: 'Hermes 3 8B', reason: 'Uncensored + native tool calling. Best small agent.', hot: true, provider: 'ollama' },
-    // Local — solid picks
+    // Nothing under 9B is recommended to run locally: the small ones lose the
+    // thread on the second tool call and the user reads that as the product
+    // being broken. Whoever has no machine for the big ones takes the cloud,
+    // which is the entry below and not a smaller local model.
+    // Local: solid picks
     { name: 'deepseek-v3.2', label: 'DeepSeek V3.2', reason: 'Frontier reasoning + tool use. Open-source.', provider: 'ollama' },
     { name: 'glm4.7', label: 'GLM 4.7', reason: 'Strong coding, reasoning, agentic execution.', provider: 'ollama' },
     // Cloud

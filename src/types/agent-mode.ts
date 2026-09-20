@@ -1,6 +1,8 @@
 // Agent Mode — Type Definitions
 // Part of the Agent Mode feature (coding-orch branch)
 
+import type { JSONSchemaProp, ToolArgs } from '../api/mcp/types'
+
 // Permission tiers (auto-approve reads, confirm writes)
 export type ToolPermission = 'auto' | 'confirm'
 
@@ -8,14 +10,19 @@ export type ToolPermission = 'auto' | 'confirm'
 export interface AgentToolDef {
   name: string
   description: string
+  /**
+   * The same schema the MCP registry hands out (`MCPToolDefinition.inputSchema`),
+   * because that is literally where these come from (tool-registry.ts maps
+   * `inputSchema` onto this field). The local copy of the shape had drifted:
+   * it forced `type: string` and a mandatory `description`, so a tool with a
+   * union type (`['string','array']`, the multi-LoRA param) or a bare property
+   * could not be described here at all.
+   */
   parameters: {
     type: 'object'
-    properties: Record<string, {
-      type: string
-      description: string
-      enum?: string[]
-    }>
+    properties: Record<string, JSONSchemaProp>
     required: string[]
+    additionalProperties?: boolean
   }
   permission: ToolPermission
 }
@@ -26,10 +33,17 @@ export interface OllamaTool {
   function: {
     name: string
     description: string
+    /**
+     * The registry copies `MCPToolDefinition.inputSchema` in here verbatim
+     * (tool-registry.toOllamaTools), so the property map carries the same
+     * JSONSchemaProp shape rather than an untyped bag — which is what let the
+     * Hermes prompt builder be handed this object behind an `as any`.
+     */
     parameters: {
       type: 'object'
-      properties: Record<string, any>
+      properties: Record<string, JSONSchemaProp>
       required: string[]
+      additionalProperties?: boolean
     }
   }
 }
@@ -38,7 +52,11 @@ export interface OllamaTool {
 export interface OllamaToolCall {
   function: {
     name: string
-    arguments: Record<string, any>
+    /* Was `Record<string, any>`. It is the project's own ToolArgs — every
+       consumer already reads these through the argString/argNumber guards in
+       builtin-tools.ts, so the `any` was not carrying anything: swapping it
+       for the real type left tsc at 0 errors across the whole program. */
+    arguments: ToolArgs
   }
 }
 
@@ -70,7 +88,7 @@ export type ToolCallStatus = 'pending_approval' | 'running' | 'completed' | 'fai
 export interface AgentToolCall {
   id: string
   toolName: string
-  args: Record<string, any>
+  args: ToolArgs
   status: ToolCallStatus
   result?: string
   error?: string
@@ -146,13 +164,21 @@ export interface MemoryFile {
   createdAt: number
   updatedAt: number
   source: string      // conversationId | 'manual' | 'auto:extraction'
+  /** Input modality, separate from the legacy source conversation ID. */
+  sourceKind?: 'chat' | 'voice' | 'screen'
+  /** Explicit user review time; cleared when the remembered fact changes. */
+  confirmedAt?: number
+  /** User-marked sensitive entries stay out of AI requests and embeddings. */
+  sensitive?: boolean
+  /** Stable project ID. Undefined retains legacy global memory behavior. */
+  scope?: string
   // ── Staleness / supersession (Feature FF, v2.5.0) ─────────────
   // All OPTIONAL so pre-v2.5 persisted memories rehydrate unchanged; the
   // store's migrate() leaves them undefined and the retrieval layer treats
   // undefined as "not stale".
   /** Id of the newer entry that replaced this one (UPDATE write-decision). */
   supersededBy?: string
-  /** Id of the entry this one replaced — back-pointer for audit / UI. */
+  /** Id of the entry this one replaced: back-pointer for audit / UI. */
   supersedesId?: string
   /** Explicitly flagged outdated → excluded from live retrieval, kept on disk. */
   stale?: boolean
@@ -161,8 +187,14 @@ export interface MemoryFile {
 }
 
 export interface MemorySettings {
-  autoExtractEnabled: boolean    // default false — opt-in (costs extra inference)
-  autoExtractInAllModes: boolean // default false — whether to also extract outside agent mode
+  // Both ship ON: stores/memoryStore.ts sets them true for a fresh profile and
+  // for the migration of an old one. Auto-extraction is opt-OUT, and it costs
+  // a second inference call. David decided that on 12.09.2026 (R2-48, R5-27),
+  // together with the cloud gate that used to keep it silently dead on the
+  // desktop (settings.memoryCloudOptIn, lib/constants.ts). What it costs
+  // stands next to the switch that turns it off.
+  autoExtractEnabled: boolean    // default true, costs extra inference
+  autoExtractInAllModes: boolean // default true, also extract outside agent mode
   maxMemoriesInPrompt: number    // default 10 (legacy; retrieval uses the budget tier / override)
   maxMemoryChars: number         // default 3000
   // User override for how many memories get injected into the prompt. null =

@@ -2,7 +2,521 @@
 
 All notable changes to Locally Uncensored are documented here.
 
-## [Unreleased]
+## [3.0.0] - 2026-09-13
+
+**Cloud: 24 chat models with no refusals, 10 open video models, 3 open image
+models. We measured refusals in 5% of answers. Subscribers get about 1.5x more
+credits per euro and 500,000 free Flash tokens a day. Start at
+lu-labs.ai/pricing.**
+
+Measured instead of promised, and Flash chat that costs nothing on an active
+plan. Every cloud chat model was asked the same question twice, only the ones
+that answered in full carry a mark, your account has a content policy setting
+of its own, and the sampling controls sit next to the prompt.
+
+**Known in this release:** a 2 GB card can still turn a small model into
+garbage. The layer count is measured against the card now, and the engine reads
+its own first answer and restarts itself if it looks wrong. That should help,
+but no such card exists in the house, so the report stays open.
+
+### Added
+
+- **A "No refusals" mark that comes from a measurement.** 24 of the 46 cloud
+  chat models we measured answer in full without refusing, and only those carry
+  the No refusals mark. Each model was asked the same question twice and judged
+  on what came back, not on whether the reply started with a refusal sentence.
+  The catalogue holds 47 chat models; the one that joined after the run carries
+  no mark until it is measured. The mark sits in the model picker and above the
+  prompt, and it never comes from the model name.
+- **A Flash class that costs nothing inside the apps.** 12 of the 47 models in
+  the catalogue cost no credits at all in chat on an active paid plan, up to
+  500,000 input and output tokens per day. API keys keep paying credits, and
+  accounts without an active plan keep paying credits too. The ceiling resets at
+  00:00 UTC, one free request runs at a time, and the picker marks those models
+  with "No credits".
+- **A content policy setting in your account:** Strict, Standard, or off. It
+  applies to cloud image and video. The setting reads the same in the desktop
+  app and in the browser because it is one setting behind one route, not two
+  copies.
+- **Ten video models and three image models without a built-in content
+  restriction.** Every one of the video ones starts from a picture, so in the
+  browser studio a finished image has an Animate button that carries it straight
+  over.
+- **Sampling controls next to the model picker:** temperature, top P and answer
+  length. They open as a small window above the prompt row, with an x to close
+  it, so nothing you are typing moves out from under you; Escape and a click
+  beside it close it too. The current temperature is visible on the closed
+  button, and one reset covers all of them. A help line says that reasoning
+  models accept these and react less to them, instead of hiding the control. Top
+  K stays on the settings page, next to the backends that read it.
+- **The context window of a custom OpenAI-compatible backend is asked for, not
+  guessed.** The number carries a label saying where it came from, the context
+  picker is available for your own backend, and no guessed budget is sent as a
+  maximum answer length any more.
+- **A beginner handbook on locallyuncensored.com:** a hub plus ten chapters,
+  from what it is and installing through chat, agent, code, create, cloud,
+  settings and a glossary. Every fact in it comes from the code.
+
+### Changed
+
+- **The default persona has a real role again.** It used to be an empty system
+  prompt, and an empty prompt is not neutral: the model falls back to whatever it
+  was trained to be. It now states the role and nothing else, no content rule in
+  either direction, and Chat, Agent and Coding all send that same baseline.
+- **The old "(unrestricted)" suffix is gone from model names.** It was
+  inherited, it was wrong on at least two models, and a name is not evidence.
+- **The Cloud switch says what it is for, with real numbers.** Hovering it gives
+  three lines in a fixed order: 24 of the 46 chat models we measured answer
+  without refusing, 12 of the 47 in the catalogue cost no credits at all in chat
+  up to 500,000 tokens a day on an active paid plan, and 47 chat, 10 image and 11
+  video models run on our GPUs. Every number is tied to its source by a test, so
+  the switch cannot promise a number the catalogue no longer has.
+- **Your memories are two separate collections now,** one on this machine and
+  one on your signed-in account, and they stay apart. A memory can be marked
+  sensitive and is then left out of requests to a model, a memory can carry a
+  project so it is only used inside it, and an answer shows which memories it
+  used. Syncing the account collection stays off until you tick two boxes that
+  are never ticked for you, nothing syncs in the background, and a sync run can
+  be cancelled. Marking a memory sensitive does not remove copies that already
+  went to the cloud, and the panel says so.
+- **Remote Access starts, stops and restarts in order.** The commands no longer
+  overlap, stopping withdraws access straight away, and a changed memory
+  invalidates the sessions that were built on it.
+- **The package descriptions say what the app needs and what it does on the
+  network**, instead of promising a zero-setup, device-only install.
+- **The refusal message for cloud media names the setting and where to find
+  it.** It used to say hosted rendering cannot do this at all, which sent people
+  to a local backend for something that was a setting.
+- **Models under 7B carry a plain warning in the catalogue** and are no longer
+  offered as a starting pick for chat.
+- **The pricing page lists the credit packs before the plans.**
+- **locallyuncensored.com no longer promises a Mac build**, and two
+  documentation pages give the video model count of the current catalogue.
+
+### Fixed
+
+- **Every start checks for updates again, and the sentence about being up to
+  date carries its date.** The check on startup ran into the six-hour cap and
+  was swallowed on a machine that was already current, so someone who restarts
+  the app often never got an automatic check at all. The tester started LU three
+  times in a row and nothing went out. Startup now forces a check once the last
+  one is more than fifteen minutes old, and the settings panel prints "Last
+  checked 3m ago" next to the sentence about being up to date, so you can see
+  whether anyone looked.
+- **The Dismiss button on the stale model banner tells the truth.** It used to
+  say the notice would come back on the next launch, and it has not worked that
+  way since 2.5.9. It now reads "Dismiss. It comes back only when a different
+  model goes stale.", which is what the code does.
+- **Training a character LoRA no longer dies with the libuv error on Windows.**
+  The trainer started a distributed launcher that switched to multi-GPU mode on
+  machines with two cards; it now runs the training script directly, on one
+  card. The error text of a failed run is readable, scrollable and can be
+  copied.
+- **When the engine exits before it serves, the log file says why:** the full
+  command line, the exit code, the memory the card reported and the number of
+  layers it was given. A card that is too small for the model gets a measured
+  layer count instead of all of them, and if the first start still fails the
+  second runs on the processor and says so, in the status line and in the engine
+  details.
+- **The engine checks its own first answer and restarts itself if it is
+  garbage.** Right after the health probe it answers one fixed question on this
+  machine only, and a classifier judges the shape of the reply. If it looks
+  wrong the engine restarts, and the app says which step it took.
+- **Stop means stop.** A finished background agent no longer wakes the main
+  agent into a hidden turn, a stop between two loop passes ends the loop, and a
+  shell command the agent started is killed with it.
+- **The agent can leave a workspace folder.** The x on the folder pill drops it
+  and forgets the remembered default with it, in new chats and in old ones, and
+  the agent falls back to ~/agent-workspace until you pick a new one. That is
+  what made changing the folder feel useless before. Remembered folders are
+  checked before they are used, the folder lock names Stop as the way out and
+  only holds during a real run, and one folder is one entry in the list.
+- **The Code tab says why a folder was refused** instead of accepting it and
+  then failing on every file. A turn cut off at the token limit now says so in
+  the answer, with the plan step it stopped on, instead of ending without a
+  word, and the Agent tab reports a cut-off turn the same way.
+- **The Expert section in Create is hidden when it has nothing to show** for the
+  current lane, instead of being shown empty, and in local mode it keeps its
+  controls.
+- **The MLX image install that finished at the promised size with two empty
+  folders: the fix is in the source, not in this release.** The installer reads
+  the file list and the required set from the repository itself, spots missing,
+  empty, stale and truncated files, refetches only the broken one and checks it.
+  This is GitHub 127. MLX runs on macOS only, and 3.0.0 builds Windows and
+  Linux, so no download from this release carries it.
+- **The Get button asks the running image backend where its models go**, so a
+  download lands in the folder the picker actually reads, including installs
+  that were started with their own base directory.
+- **Repairing the image backend proves the start instead of claiming it.** After
+  the packages it runs the card through one real operation and then the
+  backend's own quick test, and a failure reports the real error line rather
+  than success.
+- **The refusal when a model site needs an API key points at the right screen**,
+  naming the exact settings section that holds the key field.
+- **A LAN OpenAI slot is no longer treated as a paid provider**, so its answers
+  are not capped as if they cost money.
+- **Linux: the window workarounds only run under Wayland now**, X11 is left
+  alone, and the console names the off switch for each one. A local copy of the
+  window library on the system is preferred over the bundled one.
+- **The runaway question mark output from the local engine has a stop.**
+- **A visible notice that personas travel from PC to phone and not back**, and
+  workspace security wording that describes the real boundary instead of a
+  stronger one.
+- **One typographic dash removed from shipped interface text**, plus two small
+  English fixes: the button text in the Local API panel, and the Remote Access
+  help text, which said three switches where there are four.
+
+## [2.6.9] - 2026-09-08
+
+### Fixed
+
+- **The update works on Arch, and on every other Linux install the built-in
+  updater could not reach.** LU from the AUR package `locally-uncensored-bin`
+  is our Debian package unpacked into `/usr`, and the updater could not tell
+  the two apart: it downloaded a `.deb` and ran `dpkg` on a system that has no
+  `dpkg`, so the password prompt arrived and the install failed right after the
+  password was typed. LU now asks the package managers on the machine who owns
+  the running file. Where the answer means the updater cannot install anything
+  (a package manager owns the files, nothing owns them, or the AppImage sits in
+  a folder you cannot write to), Download and Restart do the work themselves: a
+  signed AppImage lands in your own data folder, the start menu entry points at
+  it, and LU starts again from there. After that, updates are the usual one
+  click. Reported by a customer on Arch.
+- **The top navigation and the Create toolbar are back to the 2.6.7 layout
+  after feedback on Discord: entries stay where they are.** 2.6.8 turned both
+  rows into a wheel that scrolled the selected entry into the middle, so every
+  click moved the other tools somewhere else and the ones at the edge were cut
+  off. All six views and all twelve Create tools are back to fixed positions,
+  fully readable, and the Create row wraps onto a second line in a narrow
+  window instead of hiding anything.
+- **The Context menu in the chat opens in full instead of being cut off.** It
+  always opened downwards, and its button moved to the bottom of the window in
+  2.6.8, so half the list ran past the edge of the panel and the largest sizes
+  could not be picked. It now measures the room it has and opens upwards when
+  the space below is too small, scrolling inside its own box on a short window.
+
+## [2.6.8] - 2026-09-03
+
+The compact release. A long conversation folds its older turns into a summary
+instead of running out of room, an agent hands work to background agents that
+run while you carry on, a reasoning model gets a dial for how much thinking a
+reply may pay for, every local model answers on one OpenAI-compatible address,
+and the built-in engine has a name of its own, the LU Engine.
+
+**Known in this release:** after you switch Cloud off, the LU Engine stays stopped until you press Use on your model under Models. One click, a few seconds. A later release brings the engine back on its own when Cloud goes off.
+
+### Added
+
+- **The Cloud switch counts its presses anonymously.** Which way it was
+  pressed (gate, armed, into Cloud, back to Local), platform and app version
+  go into a daily count on lu-labs.ai, nothing else. It tells us whether
+  anyone finds the switch; local mode stays silent otherwise, and the privacy
+  text in Settings names the one call.
+
+- **Compact mode.** Type /compact and the older turns of the conversation are
+  folded into a summary while the recent ones stay as they are; a few words
+  after the command say what the summary should focus on. The chat model
+  writes the summary itself, in the language of the conversation, and it is
+  told never to translate, round or reformat a value. A block in the
+  transcript shows how many messages were summarised and how many tokens every
+  following request saves, the full conversation stays on disk, and a second
+  compaction keeps the first one instead of dropping the start of the chat.
+  Auto-compact is opt-in and off by default: set a percentage under Settings,
+  General, Generation and the older turns are summarised once the context is
+  that full, with a note in the transcript every time it fires. On a thinking
+  model the summary is written with thinking off, because with it on the whole
+  budget went into the thinking channel and no summary came out.
+- **Background agents.** In Agent and Code mode the agent can delegate a self-
+  contained task to a sub-agent that works in the background while the main
+  run goes on. A panel on the right lists the running agents, and when one
+  finishes the main agent is woken and continues with the result, whether the
+  chat runs on a cloud model or a local one. Delegating asks no question of
+  its own: a sub-agent inherits the permissions of the run that started it,
+  every tool call it makes still passes the same gate as the main run, and a
+  read-only run stays read-only. A sub-agent that hits its step cap or is
+  cancelled hands back what it gathered on the way, marked as raw material
+  rather than an answer. The caps have their own section under Settings,
+  Agent, Sub-agents.
+- **An effort control beside the Think button** on a reasoning model. Low,
+  Medium and High, with Max on GLM 5.3, set how many tokens a reply may spend
+  on thinking. The steps come from the server for each model, so a model that
+  offers two shows two, and a model with none keeps the plain Think button it
+  always had.
+- **GLM 5.3 (Pro) and GLM 5.3 Flash (Hosted)** in the cloud catalogue.
+- **A Local API.** Settings, Local API starts an OpenAI-compatible server on
+  your machine, port 8129 by default, that lists every local model from the LU
+  Engine, Ollama and LM Studio under one address and streams the answers
+  through, so any tool that talks to OpenAI can talk to your own machine. It
+  listens on localhost unless you allow the LAN, always asks for a token, and
+  the browser origins that may call it are an allow list that starts empty. A
+  tool on that API can also ask which LU tools this machine has, behind the
+  same token.
+- **A command palette on Ctrl+K** over the actions the app already has: the
+  views, the keyboard shortcuts, switching models, the side panel, and Quit
+  once you search for it. Right-click menus follow one pattern across the app.
+- **First-run setup runs in a small window of its own,** centred by the
+  operating system, and the main window appears the moment setup is done.
+- **Three uncensored models that were missing:** Qwen 3.8 27B Heretic, Gemma 4
+  12B Heretic and Qwen3-VL 8B Abliterated, the first uncensored image
+  understanding that fits an 8 GB card. GLM 5.3 is in the local catalogue in
+  the one variant the LU Engine can open; the Flash files carry an
+  architecture llama.cpp does not read yet, so they wait. A catalogue check
+  now reads the file header of every entry so that a model the engine cannot
+  open never gets listed again, and Hunyuan 3 295B left the list for that
+  reason.
+- **The collapsed side panel is an icon rail** with a way back rather than a
+  gap, the chat column can be dragged wider, and a chat title is shown in full
+  instead of cut at 30 characters.
+- **Document Chat works in Cloud mode.** Your files are indexed on your own
+  machine and only the passages that match your question travel with the
+  prompt. If indexing runs on an Ollama you pointed at another machine, the
+  panel says so.
+- **The side panel folds away**, and while it is closed your latest chats sit
+  on the main screen. They belong to the panel again the moment you open it.
+- **A Use button on an Installed tile.** It starts the LU Engine and loads that
+  model, rather than leaving you with a file you cannot reach.
+- **OrcaRouter's Qwen 3.8 27B Uncensored, and a Hugging Face token that
+  model downloads use.** The six uncensored 27B rows in the Model Manager now
+  come from OrcaRouter's abliteration (bartowski's ungated GGUF requant of it,
+  vision projector included), and Ollama users get OrcaRouter's own tag with
+  the projector inside. OrcaRouter's original GGUF repo is gated on Hugging
+  Face and answers HTTP 401 to anyone without an accepted licence and a token.
+  A download that runs into that now says so and names the fix instead of
+  "trying again cannot help": accept the licence on the repo page, put a
+  Hugging Face token under Settings, AI Backends, Hugging Face token, and
+  start the download again. That field exists on Windows and Linux now (it
+  lived only inside the Mac media panel), and the token goes to
+  huggingface.co with every model download, which also lifts the throttle
+  the hub puts on anonymous downloads.
+- **The Coding Agent's working directory can be removed again.** There is a
+  Remove button beside the folder picker and one in the header, both locked
+  while a run is going, and picking a different folder moves the current chat
+  over to it.
+- **The prompt history in Create can be cleared.** Every entry has its own
+  remove button, and Clear all at the top of the list wipes the lot after a
+  second click.
+- **The CivitAI API key has a field again**, under Settings, AI Backends,
+  Model Storage. Downloads from the CivitAI search carry the key, and a
+  download CivitAI refuses names the missing setting instead of a bare error
+  number.
+- **Settings shows the port the LU Engine actually runs on**, and the Model
+  Storage folder says when it could not be read or was too big to scan.
+- **A ComfyUI install or repair can be cancelled from Settings**, and it keeps
+  showing its progress while you look at other settings.
+
+### Changed
+
+- **The built-in engine goes by LU Engine.** Same engine, same models, same
+  folder; only the name in Settings, in the model list and in the messages
+  changed.
+- **Model Storage names the backend each folder belongs to.** It used to be one
+  field labelled "(auto-detect)" over a paragraph naming all three backends at
+  once. There are three rows now: the LU Engine folder you set, with the folder
+  that is actually being read spelled out while the field is empty; the LM
+  Studio folder, read only, or a sentence saying LM Studio is not installed;
+  and Ollama, which keeps its own store and has no folder to set.
+- **The cloud model list keeps one fixed order.** The upstream provider
+  shuffles its own list on every call, measured three times and returned in
+  three different orders, so a new chat opened on whatever happened to be
+  first. The catalogue order decides now.
+- **The model the open chat ran on lost its chip in the composer row.** It is a
+  small dot on the corner of the model picker, the full sentence sits in the
+  picker tooltip, and the dot only appears when the chat on screen and the pick
+  beside it disagree.
+- **On the Mac, picking a model folder under Desktop, Documents or Downloads
+  says up front that macOS will ask once for access to it**, instead of letting
+  that dialog arrive out of nowhere on the first scan.
+- **LU starts MCP servers through npx and uvx only.** The app window used to
+  be allowed to launch node, python, deno, bun, docker and the package
+  managers as well. Each of those takes a one line script or hands out the
+  whole disk, so any scripting bug anywhere in the window was code execution
+  on your machine. A server set to run through another launcher is named
+  before the start, with the two launchers that work and the option of
+  starting the server yourself and connecting by URL, and the message has a
+  button that takes you to the entry.
+- **One scale for the whole app.** It was rendered in four at once, an 18.4 px
+  root and three separate zoom factors, so a corner radius in Chat came in
+  five sizes. The light theme got the contrast fixes it was missing, the focus
+  ring passes the contrast rule on every background, the cursor blinks while a
+  reply streams, and Copy says that it copied.
+- **The tabs at the top and the tool row in Create scroll instead of
+  wrapping.** The entry you picked sits in the middle, the ones beside it fade
+  towards the edges, and a click slides your pick to the centre.
+- **A run on a local model waits for the card instead of fighting for it.**
+  Two local runs on one card swap memory back and forth and both end up slower
+  than one, so a second local run queues and starts when the first is done.
+  Cloud runs start at once.
+
+### Fixed
+
+- **The prompt box sits in the middle of what belongs to it.** Clicking into
+  the message field no longer draws a thick violet ring around the text line;
+  the soft violet border around the whole box in Cloud mode stays. The row
+  with Agent, context, memory and export lines up with the box instead of the
+  chat edge, the transcript may reach 40% past the box on each side, the
+  "Ask LU anything" landing in Code sits in the middle of the screen, the
+  Quality and Aspect row in Create (and Edit strength and the rest) is
+  centred over the box, and the Create subcategory row has a little air to
+  the main tabs.
+- **A ComfyUI that will not start names the cause.** A missing Visual C++
+  runtime, or a graphics driver older than the PyTorch that was installed,
+  used to arrive as "the Python environment looks broken" next to a Repair
+  button, and neither of those lives in the folder Repair rebuilds. The
+  message now says which of the two it is, and LU no longer starts a repair
+  that cannot fix it. Reported on Discord as ticket 0007.
+- **Every Python step LU starts now runs with UTF-8 output.** One step out of
+  eight did before, so on a Windows account whose name falls outside the
+  English alphabet, a single character in a path was enough to end an install
+  or a probe partway through. Reported on Discord as ticket 0003.
+- **AMD cards on Linux report their memory size without ROCm installed.** LU
+  read AMD memory only through rocm-smi, which comes with the ROCm developer
+  packages rather than with the driver, so the card was found and its size was
+  not. The size comes from the kernel now. An integrated AMD chip is
+  deliberately left out, because the number it reports there is the fixed
+  carve-out rather than what it can actually use. This reading has now been
+  measured on a rented AMD Instinct card, where the kernel number and the
+  number ComfyUI reports for itself are the same number.
+- **An AMD compute card shows up at all now, and with its name.** A card built
+  without a display output reports itself to the system as a processing
+  accelerator rather than as graphics, and LU accepted only the three graphics
+  classes, so an AMD Instinct was missing from the hardware list entirely.
+  rocm-smi also names its columns differently from one version to the next, so
+  the card that was found came out as "AMD GPU" and its gfx target was thrown
+  away, although rocm-smi prints it in a column of its own. Measured on a
+  rented AMD Instinct MI325X: the card is listed with its name, its gfx target
+  and 255.7 GiB, PyTorch installs from the ROCm channel LU picks, and Create
+  rendered an image, a video, a song, a 4x upscale and a cutout on it.
+- **When ComfyUI does fall back to the processor, the reason it names is the
+  real one.** The only line in the output panel read "No NVIDIA driver
+  detected", which is the wrong hardware to name in front of someone holding
+  an AMD card: what actually decided it was the PyTorch inside that ComfyUI
+  environment reporting no usable card. The line says that now, it says
+  something different when the check did not answer at all, and it names the
+  switch when you chose Force CPU yourself.
+- **German phrasing reaches the chat tools.** Plain chat offers its tools only
+  when it recognises what you asked for, and its German half misread two
+  common cases. The filler word "mal", which turns up in most casual German
+  sentences, was read as the command to paint, so ordinary questions were sent
+  to image generation. And no German word for the internet was on any list, so
+  a request like "schau im Netz nach" matched nothing and the model answered
+  from memory instead of looking anything up. Both are fixed, along with two
+  smaller gaps in the German verb lists.
+
+- **The LU Engine moves to a free port when 8127 is taken** or reserved by the
+  system, and after a start that fails it retries once instead of giving up
+  until the next restart. The next start begins at 8127 again rather than
+  staying on the port it had to move to. Windows port reservations are marked
+  as researched rather than proven, because no such reservation could be staged
+  here.
+- **A chat model you downloaded stays visible as Installed** even while the
+  engine is not running, and it becomes the active chat model the moment the
+  download is done. Measured on the Windows box on 2026-09-05: the download
+  started the engine on the new file, but the picker still named the previous
+  model, so the first message would have swapped the engine straight back,
+  and a Use click restarted the engine on the same file because the path the
+  frontend had glued together did not match the one the engine lists. The
+  download now goes through the picker's own activation, so the path comes
+  from the model list, the picker follows, and the engine starts once. The
+  Installed search also answers to catalogue spelling now, so "Llama 3.2 3B
+  Abliterated" finds Llama-3.2-3B-Instruct-abliterated.Q4_K_M.
+- **A running LM Studio stays in the model picker** after the chat has moved to
+  the LU Engine. Its models keep their own heading, and picking one hands the
+  local slot back to LM Studio with a line that says so. The way back is one
+  click, the same as the way out.
+- **The folder you set under Model Storage is read now, not only written to.**
+  Every GGUF in it, up to four levels down, appears under Installed and loads
+  from where it lies, whichever backend is serving your chat. On a machine
+  running Ollama, a GGUF in that folder was found on disk and then listed
+  nowhere.
+- **Subfolders named the way ComfyUI names its own**, loras or checkpoints, go
+  to ComfyUI through its extra model paths at the next start, so models on a
+  second drive show up there.
+- **The ComfyUI installer checks that the environment it just built can import
+  ComfyUI**, installs what is missing, and names a missing Visual C++ runtime
+  instead of ending in a silent crash.
+- **Repair environment runs the same check with a time limit and a Cancel
+  button that stops it**, and the trainer setup stopped blaming the network for
+  failures that had nothing to do with the network.
+- **Character Studio sets itself up on a machine whose Python is too new.**
+  The trainer needs Python 3.10 to 3.12 and LU built its environment from
+  whatever Python was newest, so a machine with 3.14 failed at step 4 of 4 on
+  every update since August, and 2.6.7 called it a network problem. The setup
+  now picks a Python from that range on its own, installs 3.12 on Windows when
+  there is none, rebuilds an environment that was built from the wrong one,
+  and the failure text under the button is no longer cut after one line.
+  Discord ticket 0004.
+- **The local trainer no longer hands out instructions.** Every dead end on
+  the way from Set up trainer to a finished character either fixes itself or
+  says exactly what is wrong: the trainer source arrives as an archive, so no
+  git is needed on the machine; the drive is checked for room before the first
+  byte instead of after 2.5 GB; a download that breaks off is retried twice; a
+  PyTorch whose Windows runtime library is missing gets the Visual C++ runtime
+  installed by LU instead of a link; the setup proves that PyTorch loads
+  before it calls the environment ready; a card below 12 GB is told so before
+  ten minutes of caching; the local chat model is paused for the run and
+  comes back afterwards, so it no longer squats the memory the recipe needs;
+  and a run that still runs out of memory on the card says what to close.
+  The step counter moves with every training step instead of once per epoch
+  (it used to sit on 0 for twenty minutes), and the base-file download keeps
+  showing its progress when you leave the tab and come back. Lines from winget
+  stay out of the note under the button.
+- **AMD on Windows is read from the HIP SDK itself.** The only ROCm probe ran
+  rocm-smi, which the Windows SDK does not ship, so an installed ROCm went
+  unseen. LU reads HIP_PATH and hipinfo now and names the card architecture,
+  and an image run that fails names that architecture and get_arch_list instead
+  of a HIP traceback. Marked as researched rather than proven, because there is
+  no RDNA4 card here.
+- **The Model Manager stopped putting system RAM in the GPU field.** ComfyUI
+  reports system memory on a CPU device in a field called vram_total, so a
+  machine with 64 GB of RAM read as if it had 62 GB of video memory.
+- **The Linux packages ask for the libraries the LU Engine links against.** The
+  deb and the rpm named the desktop libraries but not libvulkan1 and libgomp1,
+  so on a machine without them the install went through, the engine died in the
+  loader, and the message blamed your graphics card. The missing library is
+  named now, together with the command that installs it. The AppImage needs the
+  Vulkan loader from your system as well, because an AppImage cannot carry that
+  one itself.
+- **On the Mac, LU stopped searching your whole home folder for a ComfyUI it
+  never runs there.** That search touched the Desktop and Music folders, so
+  macOS asked for access to Apple Music and to the Desktop at first launch, and
+  the window sat on LOADING while the search ran. On Windows and Linux the same
+  search moved off the main thread, so a slow disk no longer freezes the
+  window.
+- **Error messages from Windows arrive in English**, and a ComfyUI
+  requirements.txt that cannot be used is named instead of silently skipped.
+- **Character training no longer stops at the first step on a Windows machine
+  with more than one GPU.** torch asked for libuv, which the Windows wheels do
+  not carry, and the run died with "use_libuv was requested but PyTorch was
+  build without libuv support". LU now sets USE_LIBUV=0 for every trainer
+  process on Windows. Reported in GitHub #121; nobody here has two GPUs, so
+  this is the documented torch workaround rather than a measured fix.
+- **Coming from 2.6.7 you find your conversation list open, as you left it.**
+  A fresh install now starts with the panel closed, an update inherited that
+  at first, and every existing chat sat behind an unlabelled icon button.
+- **Chat works without a mouse.** The conversation list is a real list you can
+  tab through and open with Enter, a dialog closes on Escape and keeps the
+  focus inside while it is open, a preselected button is never the destructive
+  one, Escape closes every overlay, and animation follows the reduced-motion
+  setting of your system.
+- **The read-only commands tell the model what it may still run.** /review,
+  /plan, /diff and the others said the model had no shell at all, while the
+  inspection commands, git status, git log, git diff and the like, were
+  allowed the whole time, which left /review unable to find the changes it was
+  asked to review.
+- **The Memory section reads its own Markdown export again.** Since 2.5.9 the
+  export wrote a comma between title and body while the import still looked
+  for a dash, so an exported file came back with half a raw line as the title
+  and the tags, source and date gone.
+- **A model you did not pick is announced.** When a provider goes away and the
+  model you had chosen goes with it, the app falls back to the first entry it
+  finds and says so in the status line above the message field. A click on a
+  model that is still loading says what it is waiting for.
+- **A click on a file the LU Engine cannot open no longer costs you the engine
+  that is running.** The first bytes of the file are read before anything is
+  stopped, and a file without the GGUF mark is named and left alone instead of
+  taking down a healthy engine for two failed attempts.
+- **Updates no longer leave the previous frontend behind.** On a machine that
+  has been updating since April this frees around 130 MB and a thousand files.
 
 ## [2.6.7] - 2026-08-31
 

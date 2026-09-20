@@ -7,6 +7,11 @@
 //! Context dropdown uses it to cap its presets — without it a 32k model
 //! happily "accepts" -c 131072 and degrades silently (llama.cpp only warns).
 //!
+//! The same header carries `<arch>.block_count`, the number of transformer
+//! layers `-ngl` counts in. The engine start needs it to answer "how much of
+//! this model fits on this card" with a layer count instead of the blanket
+//! 999 that put a 12B model onto an 8 GB board (3.0.0 list, bugs u and a).
+//!
 //! Deliberately paranoid: this runs against user-downloaded files inside
 //! `list_bundled_models`, so it must NEVER panic or stall the listing —
 //! every failure path is `None`, reads are bounded, and only the header is
@@ -66,8 +71,8 @@ fn fixed_size(ty: u32) -> Option<u64> {
     match ty {
         0 | 1 | 7 => Some(1), // u8 / i8 / bool
         2 | 3 => Some(2),     // u16 / i16
-        4 | 5 | 6 => Some(4), // u32 / i32 / f32
-        10 | 11 | 12 => Some(8), // u64 / i64 / f64
+        4..=6 => Some(4), // u32 / i32 / f32
+        10..=12 => Some(8), // u64 / i64 / f64
         _ => None,            // 8 = string, 9 = array, unknown
     }
 }
@@ -118,10 +123,47 @@ fn read_value(r: &mut R, ty: u32) -> Option<Val> {
     }
 }
 
+/// The numbers this app reads out of a GGUF header.
+///
+/// Every field is independently optional: a header can name its architecture
+/// and its context length and say nothing about its layers, and a file that
+/// is not a GGUF at all answers with all of them empty rather than an error.
+/// Nothing here is ever a reason to refuse a model.
+#[derive(Debug, Default, PartialEq)]
+pub struct HeaderFacts {
+    /// `<arch>.context_length`, the context the model was TRAINED with.
+    pub context_length: Option<u32>,
+    /// `<arch>.block_count`, how many transformer layers there are to
+    /// offload. This is the denominator of the per-layer size the engine
+    /// start divides the free graphics memory by.
+    pub block_count: Option<u32>,
+}
+
 /// The context length the model was TRAINED with (`<arch>.context_length`),
 /// or `None` when the file is missing, not GGUF, truncated, or simply does
 /// not carry the key. Never panics, never reads past the header.
 pub fn context_length(path: &str) -> Option<u32> {
+    // `list_bundled_models` calls this once per file in the models folder and
+    // wants nothing else, so the scan is told it may stop at the first answer.
+    scan_header(path, false).unwrap_or_default().context_length
+}
+
+/// Context length AND layer count in one pass. Costs more than
+/// `context_length` on a file that carries no `block_count`, because the scan
+/// then has to walk past the tokenizer vocabulary before it can say so; the
+/// engine start pays that once per start, not once per listed model.
+pub fn read_header(path: &str) -> HeaderFacts {
+    scan_header(path, true).unwrap_or_default()
+}
+
+/// One bounded pass over the KV block.
+///
+/// `need_blocks` decides when the scan is allowed to stop early. Returns
+/// `None` for anything that is not a readable GGUF header, which the callers
+/// turn into empty facts. A header that ends mid-field is not evidence of
+/// anything, and inventing a number from half a file is how a model gets
+/// loaded with arguments nobody can explain afterwards.
+fn scan_header(path: &str, need_blocks: bool) -> Option<HeaderFacts> {
     let file = File::open(path).ok()?;
     let mut buf = BufReader::new(file);
     let mut r = R(&mut buf);
@@ -143,6 +185,7 @@ pub fn context_length(path: &str) -> Option<u32> {
 
     let mut arch: Option<String> = None;
     let mut ctx_by_key: Option<(String, u64)> = None;
+    let mut blocks_by_key: Option<(String, u64)> = None;
 
     for _ in 0..kv_count {
         let key = r.string(MAX_STR)?;
@@ -153,20 +196,45 @@ pub fn context_length(path: &str) -> Option<u32> {
             Val::UInt(n) if key.ends_with(".context_length") => {
                 ctx_by_key = Some((key, n));
             }
+            Val::UInt(n) if key.ends_with(".block_count") => {
+                blocks_by_key = Some((key, n));
+            }
             _ => {}
         }
-        // Early exit once both halves are known and they agree.
-        if let (Some(a), Some((k, n))) = (&arch, &ctx_by_key) {
-            if k == &format!("{a}.context_length") {
-                return u32::try_from(*n).ok();
+        // Early exit once everything the caller asked for is known and agrees
+        // with the architecture. What follows in a real file is the tokenizer
+        // vocabulary, which is megabytes of skipping for nothing.
+        if let Some(a) = &arch {
+            let ctx_done = matches_arch(&ctx_by_key, a, "context_length");
+            let blocks_done = !need_blocks || matches_arch(&blocks_by_key, a, "block_count");
+            if ctx_done && blocks_done {
+                return Some(HeaderFacts {
+                    context_length: resolve(arch.as_deref(), ctx_by_key, "context_length"),
+                    block_count: resolve(arch.as_deref(), blocks_by_key, "block_count"),
+                });
             }
         }
     }
 
-    // Architecture key came AFTER the context key (order is unspecified), or
-    // the arch never showed up — accept any single *.context_length match.
-    match (arch, ctx_by_key) {
-        (Some(a), Some((k, n))) if k == format!("{a}.context_length") => u32::try_from(n).ok(),
+    // Architecture key came AFTER the numbers (order is unspecified), or the
+    // arch never showed up. `resolve` accepts a lone match in that case.
+    Some(HeaderFacts {
+        context_length: resolve(arch.as_deref(), ctx_by_key, "context_length"),
+        block_count: resolve(arch.as_deref(), blocks_by_key, "block_count"),
+    })
+}
+
+/// True when `found` is the key this architecture would write.
+fn matches_arch(found: &Option<(String, u64)>, arch: &str, suffix: &str) -> bool {
+    matches!(found, Some((k, _)) if k == &format!("{arch}.{suffix}"))
+}
+
+/// The number, if the key belongs to this model's architecture, or if no
+/// architecture was named at all, in which case a single `*.<suffix>` hit is
+/// the only candidate there is.
+fn resolve(arch: Option<&str>, found: Option<(String, u64)>, suffix: &str) -> Option<u32> {
+    match (arch, found) {
+        (Some(a), Some((k, n))) if k == format!("{a}.{suffix}") => u32::try_from(n).ok(),
         (None, Some((_, n))) => u32::try_from(n).ok(),
         _ => None,
     }
@@ -174,7 +242,7 @@ pub fn context_length(path: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::context_length;
+    use super::{context_length, read_header, HeaderFacts};
     use std::io::Write;
 
     // Tiny hand-rolled GGUF v3 writer — just enough for the header path.
@@ -219,54 +287,215 @@ mod tests {
         }
     }
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("lu-gguf-tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
+    /// A directory these fixtures own for the length of one test.
+    ///
+    /// It used to be the FIXED `<temp>/lu-gguf-tests/`, with the fixture names
+    /// fixed too (`ok.gguf`, `reversed.gguf`, …). Every concurrent copy of this
+    /// test binary therefore wrote the same files, and `W::write_to` opens with
+    /// `File::create` — which TRUNCATES. One copy truncating `reversed.gguf`
+    /// while another was parsing it is a header that ends mid-field, and
+    /// `context_length` correctly answers `None`.
+    ///
+    /// Measured on 01.09.2026 under three concurrent copies of the whole suite,
+    /// ten rounds: `context_key_before_architecture_still_resolves` failed 2 of
+    /// 30 and `reads_context_length_behind_skipped_values` 1 of 30, both with
+    /// `left: None`. Nothing about the parser was wrong — the file under it was
+    /// being rewritten mid-read.
+    ///
+    /// `test_dir` carries the process id and the thread id in the name and
+    /// sweeps itself up on `Drop`. The returned guard has to stay in scope: the
+    /// directory is removed when it is dropped.
+    fn fixtures(tag: &str) -> crate::os_paths::TestDir {
+        crate::os_paths::test_dir(&format!("gguf-{tag}"))
     }
 
     #[test]
     fn reads_context_length_behind_skipped_values() {
+        let dir = fixtures("skipped");
         let mut w = W::new(4);
         w.str_field("general.name", "unit test model");
         w.arr_str_field("tokenizer.ggml.tokens", &["a", "b", "c"]);
         w.str_field("general.architecture", "qwen2");
         w.u32_field("qwen2.context_length", 32768);
-        let p = tmp("ok.gguf");
+        let p = dir.join("ok.gguf");
         w.write_to(&p);
         assert_eq!(context_length(p.to_str().unwrap()), Some(32768));
     }
 
     #[test]
+    fn reads_the_layer_count_next_to_the_context_length() {
+        // What the engine start divides the file size by. Both numbers come
+        // out of one pass, and the tokenizer array between them is skipped.
+        let dir = fixtures("blocks");
+        let mut w = W::new(5);
+        w.str_field("general.architecture", "llama");
+        w.u32_field("llama.context_length", 8192);
+        w.arr_str_field("tokenizer.ggml.tokens", &["a", "b", "c"]);
+        w.u32_field("llama.block_count", 40);
+        w.str_field("general.name", "unit test model");
+        let p = dir.join("blocks.gguf");
+        w.write_to(&p);
+        assert_eq!(
+            read_header(p.to_str().unwrap()),
+            HeaderFacts { context_length: Some(8192), block_count: Some(40) }
+        );
+    }
+
+    #[test]
+    fn a_header_without_a_layer_count_says_so_instead_of_guessing() {
+        // The engine start has a fallback for this, and the fallback only
+        // works if the reader admits it found nothing. A number invented here
+        // would be spent as if it had been measured.
+        let dir = fixtures("no-blocks");
+        let mut w = W::new(2);
+        w.str_field("general.architecture", "llama");
+        w.u32_field("llama.context_length", 4096);
+        let p = dir.join("no-blocks.gguf");
+        w.write_to(&p);
+        let facts = read_header(p.to_str().unwrap());
+        assert_eq!(facts.context_length, Some(4096));
+        assert_eq!(facts.block_count, None);
+
+        // A block count belonging to ANOTHER architecture is not this model's.
+        let mut other = W::new(3);
+        other.str_field("general.architecture", "llama");
+        other.u32_field("llama.context_length", 4096);
+        other.u32_field("qwen2.block_count", 28);
+        let q = dir.join("foreign-blocks.gguf");
+        other.write_to(&q);
+        assert_eq!(read_header(q.to_str().unwrap()).block_count, None);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_gguf_answers_with_empty_facts() {
+        let dir = fixtures("blocks-garbage");
+        let p = dir.join("garbage.gguf");
+        std::fs::write(&p, b"MZ\x90definitely not a gguf").unwrap();
+        assert_eq!(read_header(p.to_str().unwrap()), HeaderFacts::default());
+        assert_eq!(read_header("/nonexistent/nope.gguf"), HeaderFacts::default());
+    }
+
+    #[test]
     fn context_key_before_architecture_still_resolves() {
+        let dir = fixtures("reversed");
         let mut w = W::new(2);
         w.u32_field("llama.context_length", 8192);
         w.str_field("general.architecture", "llama");
-        let p = tmp("reversed.gguf");
+        let p = dir.join("reversed.gguf");
         w.write_to(&p);
         assert_eq!(context_length(p.to_str().unwrap()), Some(8192));
     }
 
     #[test]
     fn garbage_missing_and_truncated_files_are_none() {
-        let p = tmp("garbage.gguf");
+        let dir = fixtures("garbage");
+        let p = dir.join("garbage.gguf");
         std::fs::write(&p, b"MZ\x90definitely not a gguf").unwrap();
         assert_eq!(context_length(p.to_str().unwrap()), None);
         assert_eq!(context_length("/nonexistent/nope.gguf"), None);
 
         // Valid magic, then the file just ends mid-header.
-        let t = tmp("truncated.gguf");
+        let t = dir.join("truncated.gguf");
         std::fs::write(&t, b"GGUF\x03\x00\x00\x00").unwrap();
         assert_eq!(context_length(t.to_str().unwrap()), None);
     }
 
+    // ── The one check in this file against a GGUF this module did not write ──
+    //
+    // Everything above parses bytes produced by `W`, the writer twenty lines
+    // up. That cannot catch the failure both halves share a wrong assumption
+    // about; only a file llama.cpp produced can. So this probe is worth
+    // keeping — but the way it was written, it was worth nothing:
+    //
+    //     let home = std::env::var("HOME").unwrap_or_default();
+    //     let p = format!("{home}/Library/Application Support/Locally \
+    //                      Uncensored/models/Qwen2.5-0.5B-Instruct-Q8_0.gguf");
+    //     if Path::new(&p).exists() { assert_eq!(...) }
+    //
+    // Two things were wrong with that.
+    //
+    // 1. It built the path by hand, so it was macOS-only and it named the
+    //    directory of the PRODUCTION app directly instead of going through
+    //    `os_paths`, which is the single place that knows the app directory
+    //    and, on this branch, its isolation suffix. Reading is not a violation
+    //    — but a hand-built copy of a path is how a WRITE ends up in the
+    //    user's real data later.
+    // 2. It turned itself off in silence. On every machine without that exact
+    //    file — CI, Windows, Linux, a fresh checkout — it passed while
+    //    asserting nothing, and said so nowhere. A test that quietly checks
+    //    nothing is worse than a red one: the red one gets fixed.
+    //
+    // What replaces it: the path build is pinned by a test that always runs
+    // and always asserts, and the file-dependent half announces its skip on a
+    // stream the test harness does not capture.
+
+    /// The model the built-in engine ships with. Its trained context length is
+    /// a property of the file, not of this repo.
+    const REAL_MODEL_FILE: &str = "Qwen2.5-0.5B-Instruct-Q8_0.gguf";
+    const REAL_MODEL_CONTEXT: u32 = 32768;
+
+    /// Wo ein echtes GGUF liegt: das Modellverzeichnis der eingebauten Engine,
+    /// direkt aus `os_paths`. Bewusst kein hier zusammengebauter Pfad — ein
+    /// von Hand gebauter Pfad ist genau der Weg, auf dem ein Testlauf spaeter
+    /// in die echten Daten des Nutzers schreibt.
+    fn real_gguf_path() -> std::path::PathBuf {
+        crate::os_paths::builtin_models_dir().join(REAL_MODEL_FILE)
+    }
+
+    /// Laeuft immer, prueft immer: die Sonde schaut dorthin, wo `os_paths` es
+    /// sagt, und nicht auf einen hier zusammengesetzten Namen.
     #[test]
-    fn real_bundled_gguf_if_present() {
-        // Best-effort against the dev machine's local test model; absent in CI.
-        let home = std::env::var("HOME").unwrap_or_default();
-        let p = format!("{home}/Library/Application Support/Locally Uncensored/models/Qwen2.5-0.5B-Instruct-Q8_0.gguf");
-        if std::path::Path::new(&p).exists() {
-            assert_eq!(super::context_length(&p), Some(32768));
+    fn the_real_gguf_probe_goes_through_the_central_path_builder() {
+        use crate::app_identity::APP_DISPLAY_DIR;
+
+        let pfad = real_gguf_path();
+        assert_eq!(
+            pfad,
+            crate::os_paths::builtin_models_dir().join(REAL_MODEL_FILE)
+        );
+        assert!(pfad.ends_with(REAL_MODEL_FILE));
+
+        // Und der Pfad steht wirklich unter dem Verzeichnis dieser App, nicht
+        // unter irgendeinem: <data_dir>/<APP_DISPLAY_DIR>/models/<datei>.
+        let app_dir = pfad
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+            .expect("kein App-Verzeichnis im gebauten Pfad");
+        assert_eq!(app_dir, APP_DISPLAY_DIR);
+    }
+
+    /// Parses a real GGUF when one is on this machine — and says out loud when
+    /// there is none, instead of passing in silence.
+    ///
+    /// The skip notice is written straight to `stderr` rather than through
+    /// `eprintln!`: libtest's capture swaps the sink the print macros use, so
+    /// a macro line from a PASSING test is swallowed, while a direct write to
+    /// the handle reaches the terminal. Verified on this machine, 2026-09-01.
+    #[test]
+    fn a_real_gguf_parses_or_the_run_says_why_it_could_not() {
+        let pfad = real_gguf_path();
+        match pfad.exists() {
+            true => {
+                let path = &pfad;
+                assert_eq!(
+                    context_length(path.to_str().expect("non-UTF-8 model path")),
+                    Some(REAL_MODEL_CONTEXT),
+                    "parsing the real model at {} gave the wrong context length",
+                    path.display()
+                );
+            }
+            false => {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "\n  SKIPPED gguf::a_real_gguf_parses_or_the_run_says_why_it_could_not\n  \
+                     reason: no real {REAL_MODEL_FILE} on this machine, so the parser was \
+                     not checked against a file llama.cpp produced.\n  looked at:\n    {}\n  \
+                     to run it for real, download the LU Engine's model once.\n",
+                    pfad.display()
+                );
+            }
         }
     }
 }

@@ -1,8 +1,21 @@
-import { comfyuiUrl, localFetch, fetchLocalhostBytes, isTauri, backendCall } from "./backend"
+import { comfyuiUrl, localFetch, fetchLocalhostBytes, isTauri, backendCall, isMacOS } from "./backend"
 import { log } from "../lib/logger"
 import { LU_CLIENT_PREFIX } from "./comfyui-ws"
 import { nodeComboOptions } from "./comfyui-enum"
 import { resolveRunSeed } from '../lib/run-seed'
+// Audit W-T2: videoDecodeNode/promptFilenamePrefix kamen hier bis eben per
+// `await import('./dynamic-workflow')` mitten in den Buildern herein — ein
+// dynamischer Import, der nur den Zyklus comfyui ↔ dynamic-workflow
+// verdeckt hat. Beide sind reine Graph-Bausteine und wohnen jetzt in
+// comfyui-graph.ts, das nichts importiert.
+import { videoDecodeNode, promptFilenamePrefix } from './comfyui-graph'
+import type { ComfyApiGraph, ComfyApiNode, ComfyHistoryEntry } from '../types/comfy-graph'
+import { isRecord, asString, asRecordArray } from '../types/json-guards'
+// Audit W-T2: der Katalog kam bis eben per `await import('./discover')` in
+// getKnownFileSizes() herein, „to break the cycle at runtime". Die
+// Bundle-Daten gehören weder hierher noch nach discover.ts — sie liegen
+// jetzt in model-bundles.ts, das beide Seiten statisch lesen.
+import { getImageBundles, getVideoBundles } from './model-bundles'
 
 // ─── Control-plane fetch timeouts ───
 //
@@ -164,15 +177,15 @@ export type AddonSource =
 /** Where a listed file actually sits, by the enum that listed it. The disk
  *  probe needs the folder, and the delete command resolves the same set.
  *
- *  The motion-module folder is spelled out rather than imported: discover.ts
- *  owns ANIMATEDIFF_SUBFOLDER and imports back into this module, so a static
- *  import here would be a cycle. A unit test pins the two spellings together
- *  so the duplicate cannot drift. */
+ *  The motion-module folder comes from ANIMATEDIFF_SUBFOLDER below rather than
+ *  being spelled out a second time: it used to live in discover.ts, which
+ *  imports back into this module, and the duplicate was held together by a unit
+ *  test instead of by there being only one of it. */
 export function subfolderForSource(source: ClassifiedModel['source']): string {
   switch (source) {
     case 'checkpoint': return 'checkpoints'
     case 'diffusion_model': return 'diffusion_models'
-    case 'motion_module': return 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
+    case 'motion_module': return ANIMATEDIFF_SUBFOLDER
     case 'lora': return 'loras'
     case 'vae': return 'vae'
     case 'text_encoder': return 'text_encoders'
@@ -550,6 +563,67 @@ export async function refreshComfyModels(maxAttempts = 3): Promise<boolean> {
 
 let cachedVRAM: number | null = null
 
+/**
+ * Is this /system_stats entry ComfyUI's CPU pseudo-device?
+ *
+ * When torch has no usable GPU backend ComfyUI still reports one device, and
+ * for that one `vram_total` is `psutil.virtual_memory().total`. It is system
+ * RAM wearing a VRAM field's name.
+ */
+function isCpuDevice(dev: unknown): boolean {
+  const d = (dev ?? {}) as { type?: unknown; name?: unknown }
+  const type = String(d.type ?? '').trim().toLowerCase()
+  const name = String(d.name ?? '').trim().toLowerCase()
+  return type === 'cpu' || name === 'cpu' || name.startsWith('cpu:') || name.startsWith('cpu ')
+}
+
+/**
+ * The largest real VRAM figure in a /system_stats payload, in bytes, or null.
+ *
+ * Zhorts, GitHub #123: the Model Manager fit check showed "62 GB GPU · 62 GB
+ * RAM" on a box with a 16 GB RX 9070 XT and 64 GB of RAM, the same number
+ * twice, while the Settings page a tab away had the correct 16 GB. This is
+ * where the 62 came from. ROCm was not detected, so his ComfyUI ran on the
+ * processor, so /system_stats carried exactly one device, the CPU one, whose
+ * `vram_total` is the machine's RAM. The old reader took `devices[0]` whatever
+ * it was, and DiscoverModels then kept the LARGER of that and the honest 16 GB
+ * from detect_gpus.
+ *
+ * Two rules, and the second matters as much as the first:
+ *  - CPU entries are not a GPU and never contribute a size.
+ *  - When nothing else is left the answer is null, which the UI renders as
+ *    "unknown". A fit check that says nothing is a fit check a user can still
+ *    trust; one that says 62 GB sends him to download a model that cannot run.
+ *
+ * Apple's `mps` device is NOT excluded. Unified memory really is the VRAM
+ * there, so the number is right for the machine it comes from.
+ *
+ * `unifiedMemory` is the same point one step further, and it is the reason
+ * macOS passes true. `detect_macos` reports no size at all, so /system_stats is
+ * the ONLY VRAM source on a Mac, and a ComfyUI started with --cpu reports a cpu
+ * device there. Dropping it would have turned the fit check on every such Mac
+ * into "GPU unknown" and taken the "Fits my PC" filter with it. On a machine
+ * where the graphics unit and the processor share one pool, the pool is the
+ * honest answer for both, which is exactly what makes the Windows case wrong:
+ * there the card has its own memory and the CPU figure is a different number
+ * about a different thing.
+ *
+ * Pure and exported so the case above can be a test instead of a screenshot.
+ */
+export function pickDeviceVramBytes(
+  devices: unknown,
+  opts: { unifiedMemory?: boolean } = {},
+): number | null {
+  if (!Array.isArray(devices)) return null
+  let best = 0
+  for (const dev of devices) {
+    if (!opts.unifiedMemory && isCpuDevice(dev)) continue
+    const bytes = (dev as { vram_total?: unknown } | null)?.vram_total
+    if (typeof bytes === 'number' && Number.isFinite(bytes) && bytes > best) best = bytes
+  }
+  return best > 0 ? best : null
+}
+
 export async function getSystemVRAM(): Promise<number | null> {
   if (cachedVRAM !== null) return cachedVRAM
   try {
@@ -557,9 +631,8 @@ export async function getSystemVRAM(): Promise<number | null> {
     if (!res.ok) return null
     const data = await res.json()
     // ComfyUI returns top-level devices[].vram_total in bytes
-    const devices = data?.devices ?? []
-    if (devices.length > 0) {
-      const vramBytes = devices[0]?.vram_total ?? 0
+    const vramBytes = pickDeviceVramBytes(data?.devices, { unifiedMemory: isMacOS() })
+    if (vramBytes !== null) {
       cachedVRAM = Math.round(vramBytes / (1024 * 1024 * 1024)) // bytes → GB
       return cachedVRAM
     }
@@ -634,37 +707,53 @@ export async function getDiffusionModels(): Promise<string[]> {
   return fetchNodeOptions('UNETLoader', 'unet_name', { strict: true })
 }
 
-export async function getVAEModels(): Promise<string[]> {
+/**
+ * One optional loader, with "the node is not registered here" told apart from
+ * "the node is registered and lists nothing".
+ *
+ * The difference decides whether a file may be called invisible. A loader that
+ * is simply absent (a ComfyUI older than the node, a distro that ships without
+ * it) has said nothing about the folder, and treating its silence as "ComfyUI
+ * cannot see your file" would send a perfectly installed bundle back to the
+ * download button. `null` is that silence; the folder is then left out of the
+ * lists below and nothing judges a file in it.
+ */
+async function nodeOptionsOrNull(node: string, field: string): Promise<string[] | null> {
   try {
-    return await fetchNodeOptions('VAELoader', 'vae_name')
+    const res = await localFetch(comfyuiUrl(`/object_info/${node}`), { timeoutMs: COMFY_LIST_TIMEOUT_MS })
+    if (!res.ok) return null
+    const data = await res.json()
+    // ComfyUI answers 200 with `{}` for a class it does not know.
+    if (!data || typeof data !== 'object' || !(node in (data as Record<string, unknown>))) return null
+    return nodeComboOptions(data, node, field)
   } catch (err) {
-    log.warn('comfyui.fetch_vae_failed', { err })
-    return []
+    log.warn('comfyui.fetch_folder_failed', { node, err })
+    return null
   }
+}
+
+/** The loader for one folder of COMFY_MODEL_FOLDERS, by subfolder. The node and
+ *  field of a folder are spelled ONCE, in that table. */
+async function folderOptions(subfolder: string): Promise<string[] | null> {
+  const entry = COMFY_MODEL_FOLDERS.find((f) => f.subfolder === subfolder)
+  return entry ? entry.read() : null
+}
+
+export async function getVAEModels(): Promise<string[]> {
+  return (await folderOptions('vae')) ?? []
 }
 
 export async function getCLIPModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('CLIPLoader', 'clip_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_clip_failed', { err })
-    return []
-  }
+  return (await folderOptions('text_encoders')) ?? []
 }
 
 /**
- * F2 (cinemazverev GH#4): list LoRA files ComfyUI knows about. Pulls
- * the same enum LoraLoader's `lora_name` dropdown shows — anything the
- * user dropped into `<comfyui>/models/loras/`. Soft-fails to `[]` when
- * the LoraLoader node isn't registered (custom-node ComfyUI distros).
+ * F2 (cinemazverev GH#4): list LoRA files ComfyUI knows about. Pulls the same
+ * enum LoraLoader's `lora_name` dropdown shows, which is anything the user
+ * dropped into `<comfyui>/models/loras/`.
  */
 export async function getLoraModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('LoraLoader', 'lora_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_lora_failed', { err })
-    return []
-  }
+  return (await folderOptions('loras')) ?? []
 }
 
 /** The five folders the R5 re-measure (2026-08-30) found missing entirely.
@@ -673,43 +762,29 @@ export async function getLoraModels(): Promise<string[]> {
  *  listed all ten at once; the app showed five of them and never mentioned the
  *  other five. Two real files were invisible with them, an 817 MB CLIP-Vision
  *  encoder and, once the partial filter below was fixed, a 2.4 GB text
- *  encoder. Each of these is a stock ComfyUI loader over a stock folder, and
- *  each soft-fails to an empty list, so a distro that lacks one of the nodes
- *  costs that folder and nothing around it. */
+ *  encoder. */
 export async function getCLIPVisionModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('CLIPVisionLoader', 'clip_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_clip_vision_failed', { err })
-    return []
-  }
+  return (await folderOptions('clip_vision')) ?? []
+}
+
+/** The audio encoders the Talking Character lane needs (Wav2Vec2). Our catalog
+ *  has written into `models\audio_encoders` since the 2.5.8 lanes and nothing
+ *  read it back, so the file could be neither confirmed after its download nor
+ *  listed among the things taking up the disk. */
+export async function getAudioEncoderModels(): Promise<string[]> {
+  return (await folderOptions('audio_encoders')) ?? []
 }
 
 export async function getControlNetModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('ControlNetLoader', 'control_net_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_controlnet_failed', { err })
-    return []
-  }
+  return (await folderOptions('controlnet')) ?? []
 }
 
 export async function getUpscaleModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('UpscaleModelLoader', 'model_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_upscale_failed', { err })
-    return []
-  }
+  return (await folderOptions('upscale_models')) ?? []
 }
 
 export async function getStyleModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('StyleModelLoader', 'style_model_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_style_models_failed', { err })
-    return []
-  }
+  return (await folderOptions('style_models')) ?? []
 }
 
 /** Embeddings are the one folder no loader node enumerates: ComfyUI serves
@@ -759,29 +834,20 @@ export async function getSchedulers(): Promise<string[]> {
  *  This is also the node that answers in the newer COMBO schema on a real box,
  *  so it is the one that used to hand a bare "COMBO" string to callers. */
 export async function getAnimateDiffModels(): Promise<string[]> {
-  try {
-    return await fetchNodeOptions('ADE_LoadAnimateDiffModel', 'model_name')
-  } catch (err) {
-    log.warn('comfyui.fetch_animatediff_failed', { err })
-    return []
-  }
+  return (await folderOptions('custom_nodes/ComfyUI-AnimateDiff-Evolved/models')) ?? []
 }
 
 // ─── Partial Download Filter ───
 // Filters out files that exist on disk but are incomplete (< 90% of expected size).
-// Uses known bundle file sizes from discover.ts. Unknown files pass through.
+// Uses known bundle file sizes from model-bundles.ts. Unknown files pass through.
 
 let _knownFileSizes: Map<string, { subfolder: string; expectedBytes: number }> | null = null
 
 async function getKnownFileSizes(): Promise<Map<string, { subfolder: string; expectedBytes: number }>> {
   if (_knownFileSizes) return _knownFileSizes
-  // Dynamic import (not CommonJS require) — discover.ts imports back into
-  // comfyui.ts for classification helpers, so we defer the import to break
-  // the cycle at runtime instead of at module init.
-  const { getImageBundles, getVideoBundles } = await import('./discover')
   _knownFileSizes = new Map()
   for (const bundle of [...getImageBundles(), ...getVideoBundles()]) {
-    for (const f of (bundle as any).files) {
+    for (const f of bundle.files) {
       if (f.filename && f.sizeGB && f.subfolder) {
         _knownFileSizes.set(f.filename, {
           subfolder: f.subfolder,
@@ -1124,6 +1190,89 @@ const INSTALLED_ADDON_LANES: Array<{ source: AddonSource; read: () => Promise<Cl
  *  of against the list that happens to be here. */
 export const INSTALLED_ADDON_SUBFOLDERS: string[] =
   INSTALLED_ADDON_LANES.map((lane) => subfolderForSource(lane.source))
+
+/** Where the AnimateDiff-Evolved pack keeps its motion modules. Not under
+ *  ComfyUI\models at all, which is exactly why the counter and the Installed
+ *  list used to miss a fully installed AnimateDiff bundle while its card said
+ *  Installed (counter-check on the Windows box, 2026-08-29). */
+export const ANIMATEDIFF_SUBFOLDER = 'custom_nodes/ComfyUI-AnimateDiff-Evolved/models'
+
+/**
+ * THE table: every folder the Get button writes into, and the loader that
+ * lists it back.
+ *
+ * .__nothing_ (Discord help-chat, 2026-09-02): FramePack F1 and Wan 2.1
+ * installed through the Get button and appeared in no picker. The folder half
+ * of that is fixed where a file is written (src-tauri/.../comfy_folders.rs,
+ * which asks the running ComfyUI instead of guessing). This is the other half:
+ * until now the folders the catalog WRITES to and the folders the app READS
+ * back were two hand-written lists in two files, and they had already drifted.
+ *
+ * Two Get targets were in no reader at all:
+ *   * `clip_vision`, FramePack F1's 900 MB SigCLIP encoder.
+ *   * `audio_encoders`, the Wav2Vec2 encoder both Talking Character bundles
+ *     need, added with the 2.5.8 lanes and never read back anywhere.
+ * A file in either could not be confirmed after its download, and the bundle
+ * card's fallback could never call those bundles installed, because it looked
+ * up a folder nothing had filled.
+ *
+ * The guard against the next drift is a test, not a promise:
+ * `src/api/__tests__/get-target-is-a-folder-we-read.test.ts` walks every file
+ * of every bundle in the catalog and fails on a subfolder that is not in here.
+ */
+export const COMFY_MODEL_FOLDERS: Array<{
+  subfolder: string
+  /** The files ComfyUI lists in that folder, or `null` when the loader that
+   *  lists it is not registered in this ComfyUI at all. See
+   *  `nodeOptionsOrNull` for why the two are not the same answer. */
+  read: () => Promise<string[] | null>
+}> = [
+  // The two main-model loaders are the strict ones: their absence does not mean
+  // an empty folder, it means ComfyUI is not answering, and every caller here
+  // already treats that as "no verdict about anything".
+  { subfolder: 'checkpoints', read: getCheckpoints },
+  // Two loaders, one folder: UNETLoader enumerates .safetensors and .sft,
+  // ComfyUI-GGUF's own loader the .gguf quants beside them. Our own catalog
+  // ships video models both ways, and the pack being absent is normal.
+  {
+    subfolder: 'diffusion_models',
+    read: async () => {
+      const [unets, ggufs] = await Promise.all([
+        getDiffusionModels(),
+        nodeOptionsOrNull('UnetLoaderGGUF', 'unet_name'),
+      ])
+      return [...unets, ...(ggufs ?? [])]
+    },
+  },
+  { subfolder: 'vae', read: () => nodeOptionsOrNull('VAELoader', 'vae_name') },
+  { subfolder: 'text_encoders', read: () => nodeOptionsOrNull('CLIPLoader', 'clip_name') },
+  { subfolder: 'clip_vision', read: () => nodeOptionsOrNull('CLIPVisionLoader', 'clip_name') },
+  { subfolder: 'audio_encoders', read: () => nodeOptionsOrNull('AudioEncoderLoader', 'audio_encoder_name') },
+  { subfolder: 'loras', read: () => nodeOptionsOrNull('LoraLoader', 'lora_name') },
+  { subfolder: 'controlnet', read: () => nodeOptionsOrNull('ControlNetLoader', 'control_net_name') },
+  { subfolder: 'upscale_models', read: () => nodeOptionsOrNull('UpscaleModelLoader', 'model_name') },
+  { subfolder: 'style_models', read: () => nodeOptionsOrNull('StyleModelLoader', 'style_model_name') },
+  { subfolder: ANIMATEDIFF_SUBFOLDER, read: () => nodeOptionsOrNull('ADE_LoadAnimateDiffModel', 'model_name') },
+]
+
+/** Subfolders whose contents ComfyUI enumerates, which is the same thing as
+ *  "folders the visibility check can reason about". The table, as a set. */
+export const ENUM_SUBFOLDERS = new Set(COMFY_MODEL_FOLDERS.map((f) => f.subfolder))
+
+/** What each folder of the table holds right now, by subfolder. One round trip
+ *  per folder, asked once and used by every caller that needs more than one.
+ *
+ *  A folder whose loader is not registered here is LEFT OUT rather than
+ *  reported empty. The keys are therefore also the answer to "which folders can
+ *  be judged at all", which is what `judgeableFolders` hands to the callers
+ *  that decide whether a file may be called invisible. */
+export async function readComfyFolderLists(): Promise<Record<string, string[]>> {
+  const entries = await Promise.all(
+    COMFY_MODEL_FOLDERS.map(async (f) => [f.subfolder, await f.read()] as const),
+  )
+  return Object.fromEntries(entries.filter((e): e is readonly [string, string[]] => e[1] !== null))
+}
+
 
 /** Everything installed in the image lane, for the INVENTORY surfaces: the
  *  Models rail counter and the Installed tab. The image twin of
@@ -1519,8 +1668,8 @@ async function findAnimateDiffModel(): Promise<string> {
 
 // ─── Workflow Submission ───
 
-export async function submitWorkflow(workflow: Record<string, any>, clientId?: string): Promise<string> {
-  const payload: Record<string, any> = { prompt: workflow }
+export async function submitWorkflow(workflow: ComfyApiGraph, clientId?: string): Promise<string> {
+  const payload: Record<string, unknown> = { prompt: workflow }
   if (clientId) payload.client_id = clientId
   // Use localFetch (Rust proxy in Tauri, direct fetch in dev). The previous
   // direct-only fetch broke for any ComfyUI not started by LU itself —
@@ -1543,14 +1692,23 @@ export async function submitWorkflow(workflow: Record<string, any>, clientId?: s
     const rawText = await res.text().catch(() => '')
     let errMsg = `HTTP ${res.status}`
     try {
-      const errData = JSON.parse(rawText)
+      // ComfyUI's rejection body. Foreign JSON: `error` is a string on some
+      // versions and an `{ message }` on others, and `node_errors` is only
+      // present for a validation failure — so every read is narrowed.
+      const errData: unknown = JSON.parse(rawText)
       const parts: string[] = []
-      if (typeof errData.error === 'string') parts.push(errData.error)
-      else if (errData.error?.message) parts.push(errData.error.message)
-      if (errData.node_errors) {
-        for (const [nodeId, data] of Object.entries(errData.node_errors) as [string, any][]) {
-          const errs = data.errors?.map((e: any) => e.message || e.details).join(', ') || 'unknown'
-          parts.push(`Node ${nodeId} (${data.class_type || '?'}): ${errs}`)
+      const rawErr = isRecord(errData) ? errData.error : undefined
+      const topLevel = asString(rawErr) ?? (isRecord(rawErr) ? asString(rawErr.message) : undefined)
+      if (topLevel) parts.push(topLevel)
+      const nodeErrors = isRecord(errData) ? errData.node_errors : undefined
+      if (isRecord(nodeErrors)) {
+        for (const [nodeId, data] of Object.entries(nodeErrors)) {
+          const errs = asRecordArray(isRecord(data) ? data.errors : undefined)
+            .map((e) => asString(e.message) ?? asString(e.details) ?? '')
+            .filter(Boolean)
+            .join(', ') || 'unknown'
+          const cls = (isRecord(data) ? asString(data.class_type) : undefined) ?? '?'
+          parts.push(`Node ${nodeId} (${cls}): ${errs}`)
         }
       }
       if (parts.length > 0) errMsg = parts.join(' | ')
@@ -1560,8 +1718,10 @@ export async function submitWorkflow(workflow: Record<string, any>, clientId?: s
     log.error('comfyui.workflow_rejected', { errMsg, workflow: JSON.stringify(workflow).slice(0, 2000) })
     throw new Error(`ComfyUI rejected workflow: ${errMsg}`)
   }
-  const data = await res.json()
-  return data.prompt_id
+  const data: unknown = await res.json()
+  const promptId = isRecord(data) ? asString(data.prompt_id) : undefined
+  if (!promptId) throw new Error('ComfyUI accepted the workflow but returned no prompt_id.')
+  return promptId
 }
 
 export async function cancelGeneration(): Promise<void> {
@@ -1671,7 +1831,7 @@ export async function freeMemory(): Promise<void> {
   } catch { /* best effort */ }
 }
 
-export async function getHistory(promptId: string): Promise<any> {
+export async function getHistory(promptId: string): Promise<ComfyHistoryEntry | null> {
   try {
     // localFetch routes through Rust proxy in Tauri to dodge CORS — same
     // reason as submitWorkflow above. Without this, a user-run ComfyUI
@@ -1679,8 +1839,9 @@ export async function getHistory(promptId: string): Promise<any> {
     // would silently 0-out and the UI hangs in "generating…" forever.
     const res = await localFetch(comfyuiUrl(`/history/${promptId}`), { timeoutMs: COMFY_POLL_TIMEOUT_MS })
     if (!res.ok) return null
-    const data = await res.json()
-    return data[promptId] ?? null
+    const data: unknown = await res.json()
+    const entry = isRecord(data) ? data[promptId] : undefined
+    return isRecord(entry) ? entry : null
   } catch {
     return null
   }
@@ -1911,7 +2072,7 @@ export function snapToVideoGrid(width: number, height: number): { width: number;
 
 // ─── Image Workflow: SDXL/SD (CheckpointLoaderSimple) ───
 
-export function buildSDXLImgWorkflow(params: GenerateParams): Record<string, any> {
+export function buildSDXLImgWorkflow(params: GenerateParams): ComfyApiGraph {
   validateParams(params)
   const seed = getSeed(params.seed)
   return {
@@ -1940,7 +2101,7 @@ export function buildSDXLImgWorkflow(params: GenerateParams): Record<string, any
  *  as GGUF). The city96 pack's `UnetLoaderGGUF` reads them. Same rule as the
  *  dynamic builder's addUnetLoader; this legacy path still carries the VRAM
  *  handoff and the agent's video tool. */
-async function unetLoaderNode(model: string): Promise<Record<string, any>> {
+async function unetLoaderNode(model: string): Promise<ComfyApiNode> {
   if (!model.toLowerCase().endsWith('.gguf')) {
     return { class_type: 'UNETLoader', inputs: { unet_name: model, weight_dtype: 'default' } }
   }
@@ -1952,7 +2113,7 @@ async function unetLoaderNode(model: string): Promise<Record<string, any>> {
   return { class_type: 'UnetLoaderGGUF', inputs: { unet_name: model } }
 }
 
-export async function buildFluxImgWorkflow(params: GenerateParams): Promise<Record<string, any>> {
+export async function buildFluxImgWorkflow(params: GenerateParams): Promise<ComfyApiGraph> {
   validateParams(params)
   const seed = getSeed(params.seed)
   const modelType = classifyModel(params.model)
@@ -1984,14 +2145,14 @@ export async function buildFluxImgWorkflow(params: GenerateParams): Promise<Reco
 
 // ─── Auto-select Image Workflow ───
 
-export async function buildTxt2ImgWorkflow(params: GenerateParams, modelType: ModelType): Promise<Record<string, any>> {
+export async function buildTxt2ImgWorkflow(params: GenerateParams, modelType: ModelType): Promise<ComfyApiGraph> {
   if (modelType === 'flux' || modelType === 'flux2') return buildFluxImgWorkflow(params)
   return buildSDXLImgWorkflow(params)
 }
 
 // ─── Video Workflow: Wan 2.1/2.2 (Hunyuan latent space) ───
 
-export async function buildWanVideoWorkflow(params: VideoParams): Promise<Record<string, any>> {
+export async function buildWanVideoWorkflow(params: VideoParams): Promise<ComfyApiGraph> {
   validateVideoParams(params)
   const seed = getSeed(params.seed)
 
@@ -2002,10 +2163,9 @@ export async function buildWanVideoWorkflow(params: VideoParams): Promise<Record
 
   const vae = await findMatchingVAE('wan')
   const clip = await findMatchingCLIP('wan')
-  const { videoDecodeNode } = await import('./dynamic-workflow')
   const hasTiledDecode = await nodeExists('VAEDecodeTiled')
 
-  const workflow: Record<string, any> = {
+  const workflow: ComfyApiGraph = {
     '1': { class_type: 'CLIPLoader', inputs: { clip_name: clip, type: 'wan', device: 'default' } },
     '2': await unetLoaderNode(params.model),
     '3': { class_type: 'VAELoader', inputs: { vae_name: vae } },
@@ -2026,7 +2186,6 @@ export async function buildWanVideoWorkflow(params: VideoParams): Promise<Record
   // Use SaveAnimatedWEBP if available, otherwise fall back to SaveImage (frame
   // sequence). Prompt-based prefix (David 2026-06-11) — the dynamic builder got
   // this in c40d13f, this legacy T2V path still wrote locally_uncensored_vid.
-  const { promptFilenamePrefix } = await import('./dynamic-workflow')
   const vidPrefix = promptFilenamePrefix(params.prompt, true)
   if (hasSaveWEBP) {
     workflow['9'] = {
@@ -2045,17 +2204,16 @@ export async function buildWanVideoWorkflow(params: VideoParams): Promise<Record
 
 // ─── Video Workflow: AnimateDiff ───
 
-export async function buildAnimateDiffWorkflow(params: VideoParams): Promise<Record<string, any>> {
+export async function buildAnimateDiffWorkflow(params: VideoParams): Promise<ComfyApiGraph> {
   validateVideoParams(params)
   const seed = getSeed(params.seed)
   const motionModel = await findAnimateDiffModel()
 
   // AnimateDiff: batch_size=1, motion model handles temporal dimension
   const hasVHS = await nodeExists('VHS_VideoCombine')
-  const { videoDecodeNode } = await import('./dynamic-workflow')
   const hasTiledDecode = await nodeExists('VAEDecodeTiled')
 
-  const workflow: Record<string, any> = {
+  const workflow: ComfyApiGraph = {
     '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: params.model } },
     '2': { class_type: 'ADE_LoadAnimateDiffModel', inputs: { model_name: motionModel } },
     '3': { class_type: 'ADE_ApplyAnimateDiffModelSimple', inputs: { motion_model: ['2', 0] } },
@@ -2100,7 +2258,7 @@ export async function buildAnimateDiffWorkflow(params: VideoParams): Promise<Rec
 
 // ─── Auto-select Video Workflow ───
 
-export async function buildTxt2VidWorkflow(params: VideoParams, backend: VideoBackend): Promise<Record<string, any>> {
+export async function buildTxt2VidWorkflow(params: VideoParams, backend: VideoBackend): Promise<ComfyApiGraph> {
   switch (backend) {
     case 'wan': return buildWanVideoWorkflow(params)
     case 'animatediff': return buildAnimateDiffWorkflow(params)

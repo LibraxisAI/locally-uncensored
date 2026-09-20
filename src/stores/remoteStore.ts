@@ -2,6 +2,69 @@ import { create } from 'zustand'
 import { backendCall, isTauri } from '../api/backend'
 import { useMemoryStore } from './memoryStore'
 import { useProviderStore } from './providerStore'
+import type { ProviderId } from '../api/providers/types'
+import type { MemoryFile } from '../types/agent-mode'
+
+export const REMOTE_MEMORY_CHANGED = 'Remote memory changed. Restart Remote Access and reconnect before continuing. Previously delivered data cannot be recalled.'
+const REMOTE_MEMORY_UNCONFIRMED = 'Remote memory changed, but blocking Remote Access could not be confirmed. Disconnect remote devices and stop Remote Access before continuing.'
+let memoryRevision = 0
+let lifecycleRevision = 0
+const REMOTE_START_CANCELLED = 'Remote startup was cancelled by a stop request.'
+let pendingStartup: Promise<void> | null = null
+let stopsInProgress = 0
+function trackStartup(): () => void {
+  let finish!: () => void
+  pendingStartup = new Promise<void>(resolve => { finish = resolve })
+  return () => { pendingStartup = null; finish() }
+}
+let revocationPending: Promise<void> = Promise.resolve()
+
+async function waitForMemoryRevocation(ignoreFailure = false): Promise<void> {
+  let pending: Promise<void>
+  do {
+    pending = revocationPending
+    if (ignoreFailure) await pending.catch(() => {})
+    else await pending
+    // Another mutation may have queued work while the preceding IPC awaited.
+  } while (pending !== revocationPending)
+}
+
+/** Additions cannot invalidate an older prompt. Conservatively revoke edits to
+ * any previously shareable global entry, even if the prompt budget omitted it.
+ * Scoped and sensitive entries are never included in Remote's global prompt.
+ */
+export function remoteMemoryChanged(before: MemoryFile[], after: MemoryFile[]): boolean {
+  if (before === after) return false
+  const current = new Map(after.map(entry => [entry.id, entry]))
+  return before.some(entry => !entry.sensitive && entry.scope === undefined &&
+    JSON.stringify(entry) !== JSON.stringify(current.get(entry.id)))
+}
+
+function revokeRemoteMemory(): Promise<void> {
+  const pendingNotice = 'Blocking Remote Access because memory changed...'
+  useRemoteStore.setState({ error: pendingNotice, memoryNotice: pendingNotice, qrVisible: false })
+  // Serialize failures and their stop fallback with the next start/restart.
+  // A delayed fallback must never stop a newer, successfully started session.
+  revocationPending = revocationPending.catch(() => {}).then(async () => {
+    try {
+      await backendCall('revoke_remote_memory')
+      useRemoteStore.setState({ error: REMOTE_MEMORY_CHANGED, memoryNotice: REMOTE_MEMORY_CHANGED, qrVisible: false })
+    } catch {
+      try {
+        await backendCall('stop_remote_server')
+        useRemoteStore.setState({
+          enabled: false, passcode: '', qrPngBase64: '', connectedDevices: [],
+          tunnelActive: false, tunnelUrl: '', awaitingTunnel: false, qrVisible: false,
+          error: REMOTE_MEMORY_CHANGED, memoryNotice: REMOTE_MEMORY_CHANGED,
+        })
+      } catch {
+        useRemoteStore.setState({ error: REMOTE_MEMORY_UNCONFIRMED, memoryNotice: REMOTE_MEMORY_UNCONFIRMED, qrVisible: false })
+        throw new Error(REMOTE_MEMORY_UNCONFIRMED)
+      }
+    }
+  })
+  return revocationPending
+}
 
 /**
  * #87: derive the backend the mobile proxy should reach for a dispatched
@@ -23,7 +86,10 @@ import { useProviderStore } from './providerStore'
 export function remoteBackendArgs(
   model: string | undefined,
   providers: Record<string, { baseUrl?: string } | undefined>,
-  getKey: (id: string) => string,
+  // `ProviderId`, not `string`: the store's own getProviderApiKey is keyed by
+  // the provider union, so a plain `string` here forced every caller to hand
+  // it an id its lookup does not accept.
+  getKey: (id: ProviderId) => string,
 ): { model?: string; backendKind: string; backendBase?: string; backendKey?: string } {
   if (!model) return { model, backendKind: 'ollama' }
   const hasPrefix = model.includes('::')
@@ -94,7 +160,7 @@ interface ConnectedDevice {
   last_seen: number
 }
 
-interface RemotePermissions {
+export interface RemotePermissions {
   filesystem: boolean
   downloads: boolean
   process_control: boolean
@@ -102,6 +168,40 @@ interface RemotePermissions {
    *  (RCE-class; kept separate from filesystem). Older state without it reads
    *  as false. */
   shell?: boolean
+}
+
+/**
+ * RA-1: the permission panel used to be decoration. The store initialised
+ * `permissions` all-false locally, `refreshStatus` never mapped the server's
+ * copy, and there is no persist middleware — so the UI showed a guess, while
+ * `impl Default for RemotePermissions` on the Rust side started
+ * filesystem/downloads/process_control at TRUE. A user who deliberately
+ * granted nothing still handed a paired phone workspace read/write,
+ * screenshots, process_list, model pull/delete and ComfyUI start/stop.
+ *
+ * The fix has two halves. Rust now defaults every scope to false, and every
+ * response that can tell us the server's mind (`start_remote_server`,
+ * `restart_remote_server`, `remote_server_status`) carries the effective
+ * `permissions`. This helper is the single mapping point.
+ *
+ * Returns `null` when the payload carries no usable permissions object — an
+ * older backend that predates the read-back. In that case callers must LEAVE
+ * the current store value alone rather than invent one; coercing to all-false
+ * would just move the lie to the other side.
+ *
+ * Pure + exported for unit tests.
+ */
+export function normalizeRemotePermissions(raw: unknown): RemotePermissions | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  // Anything not explicitly `true` reads as denied: a missing or malformed
+  // field must never render as a granted capability.
+  return {
+    filesystem: r.filesystem === true,
+    downloads: r.downloads === true,
+    process_control: r.process_control === true,
+    shell: r.shell === true,
+  }
 }
 
 interface RemoteState {
@@ -125,6 +225,7 @@ interface RemoteState {
   awaitingTunnel: boolean
   loading: boolean
   error: string | null
+  memoryNotice: string | null
   // Dispatch
   dispatchedConversationId: string | null
   // UI — Bug #16: QR panel is visible right after dispatch; collapses on
@@ -133,7 +234,7 @@ interface RemoteState {
   qrVisible: boolean
 
   startServer: (model?: string, systemPrompt?: string) => Promise<void>
-  stopServer: () => Promise<void>
+  stopServer: () => Promise<boolean>
   refreshStatus: () => Promise<void>
   refreshDevices: () => Promise<void>
   regenerateToken: () => Promise<void>
@@ -165,10 +266,12 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   awaitingTunnel: false,
   loading: false,
   error: null,
+  memoryNotice: null,
   dispatchedConversationId: null,
   qrVisible: false,
 
   startServer: async (model?: string, systemPrompt?: string) => {
+    if (get().loading || pendingStartup || stopsInProgress > 0) throw new Error('Remote Access is already starting or stopping. Wait for it to finish.')
     if (!isTauri()) {
       // Defense in depth: Sidebar.handleDispatch already short-circuits
       // before this point, but any other caller (tests, future components,
@@ -177,8 +280,14 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       set({ loading: false, enabled: false, error: REMOTE_DEV_MODE_ERROR })
       throw new Error(REMOTE_DEV_MODE_ERROR)
     }
+    const startupRevision = ++lifecycleRevision
+    const finishStartup = trackStartup()
     set({ loading: true, error: null })
+    let serverStarted = false
     try {
+      await waitForMemoryRevocation()
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
+      const revision = memoryRevision
       const args: Record<string, unknown> = {}
       // #87: tell the Rust proxy which backend serves the dispatched model so
       // remote reaches the real backend (built-in engine / LM Studio / Lemonade
@@ -193,6 +302,8 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // prompt, we still want the remembered context injected so cross-chat
       // memory reaches the Remote session.
       const enriched = await enrichSystemPromptWithMemory(systemPrompt || '')
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
+      if (revision !== memoryRevision) throw new Error(REMOTE_MEMORY_CHANGED)
       if (enriched) args.systemPrompt = enriched
       const result = await backendCall<{
         port: number
@@ -200,14 +311,33 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         passcodeExpiresAt: number
         lanUrl: string
         mobileUrl: string
+        permissions?: RemotePermissions
       }>('start_remote_server', args)
+      serverStarted = true
+      if (startupRevision !== lifecycleRevision) {
+        set({ enabled: true, qrVisible: false })
+        throw new Error(REMOTE_START_CANCELLED)
+      }
+      // A mutation may have revoked the old native guard before start reset
+      // it. Revoke again after the response, before exposing a new QR/passcode.
+      if (revision !== memoryRevision) {
+        set({ enabled: true })
+        await revokeRemoteMemory()
+        throw new Error(REMOTE_MEMORY_CHANGED)
+      }
+      // RA-1: read the server's effective permissions back in the SAME set()
+      // that flips `enabled: true`. There must be no window in which the panel
+      // renders one thing and the running server enforces another.
+      const startPerms = normalizeRemotePermissions(result.permissions)
       set({
+        memoryNotice: null,
         enabled: true,
         port: result.port,
         passcode: result.passcode,
         passcodeExpiresAt: result.passcodeExpiresAt,
         lanUrl: result.lanUrl,
         mobileUrl: result.mobileUrl,
+        ...(startPerms ? { permissions: startPerms } : {}),
         loading: false,
         qrVisible: true, // Bug #16: show QR right after a fresh dispatch
       })
@@ -219,16 +349,30 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // dispatchedConversationId on a server that never actually started —
       // user saw "Server stopped" with no explanation and Restart hit the
       // same silent failure.
-      set({ loading: false, enabled: false, error: String(err) })
+      const memoryFailure = err instanceof Error && [REMOTE_MEMORY_CHANGED, REMOTE_MEMORY_UNCONFIRMED, REMOTE_START_CANCELLED].includes(err.message)
+      set({ loading: stopsInProgress > 0, enabled: (serverStarted || memoryFailure) && get().enabled, error: String(err) })
       throw err
+    } finally {
+      finishStartup()
     }
   },
 
   stopServer: async () => {
+    lifecycleRevision += 1
+    stopsInProgress += 1
+    set({ loading: true, qrVisible: false })
     try {
+      // Stopping before native startup returns can miss the server handle.
+      // Fence its result first, then stop after that attempt has settled.
+      if (pendingStartup) await pendingStartup
       await backendCall('stop_remote_server')
+      // A confirmed explicit stop also permits recovery from failed IPC.
+      await waitForMemoryRevocation(true)
+      revocationPending = Promise.resolve()
       set({
         enabled: false,
+        error: null,
+        memoryNotice: null,
         passcode: '',
         passcodeExpiresAt: 0,
         lanUrl: '',
@@ -241,15 +385,23 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         dispatchedConversationId: null,
         qrVisible: false,
       })
+      return true
     } catch (err) {
       set({ error: String(err) })
+      return false
+    } finally {
+      stopsInProgress -= 1
+      set({ loading: stopsInProgress > 0 })
     }
   },
 
   refreshStatus: async () => {
+    if (get().loading) return
+    const revision = lifecycleRevision
     try {
       const status = await backendCall<{
         running: boolean
+        lifecycleBusy?: boolean
         port: number
         passcode: string
         passcodeExpiresAt: number
@@ -257,8 +409,25 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         mobileUrl: string
         tunnelActive: boolean
         tunnelUrl: string
+        permissions?: RemotePermissions
       }>('remote_server_status')
-      set({
+      // A response requested before a start/stop must not resurrect stale UI
+      // state or revoke the freshly started replacement session.
+      if (revision !== lifecycleRevision || get().loading) return
+      if (status.lifecycleBusy === true) {
+        // No local startup is active, so this operation belongs to an older
+        // frontend or another caller. Stop it before accepting its snapshot.
+        set({ enabled: true, qrVisible: false, passcode: '', qrPngBase64: '',
+          memoryNotice: 'Recovering an unfinished Remote operation. Stopping it before reconnecting...' })
+        const stopped = await get().stopServer()
+        const notice = stopped
+          ? 'An unfinished Remote operation was stopped during recovery. Start Remote Access again to continue.'
+          : 'An unfinished Remote operation could not be stopped. Stop Remote Access on the desktop before reconnecting.'
+        set({ memoryNotice: notice, error: stopped ? null : notice })
+        return
+      }
+      const unknownRunningSnapshot = status.running && !get().enabled
+      const next: Partial<RemoteState> = {
         enabled: status.running,
         port: status.port,
         passcode: status.passcode,
@@ -267,7 +436,17 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         mobileUrl: status.mobileUrl,
         tunnelActive: status.tunnelActive,
         tunnelUrl: status.tunnelUrl,
-      })
+      }
+      // RA-1: the server owns the permissions, the panel only renders them.
+      // This is also the path that surfaces a change a paired phone made
+      // through the mobile permissions panel. An older backend that doesn't
+      // report them leaves the current value untouched.
+      const perms = normalizeRemotePermissions(status.permissions)
+      if (perms) next.permissions = perms
+      set(next as RemoteState)
+      // After a WebView reload, local revision history is gone while Rust may
+      // still serve an old prompt. Require a fresh dispatch, not silent resume.
+      if (unknownRunningSnapshot) await revokeRemoteMemory()
     } catch {
       // Non-critical
     }
@@ -319,9 +498,21 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   },
 
   setPermissions: async (perms: RemotePermissions) => {
+    // RA-1: never send a partial payload. `shell` is optional on the TS type,
+    // and an undefined field would land on the Rust side as serde's default —
+    // the store must state every scope explicitly so what we push is exactly
+    // what the panel shows. On failure the store is left untouched, so the UI
+    // keeps showing the server's last known truth instead of an unapplied
+    // toggle.
+    const payload = normalizeRemotePermissions(perms) ?? {
+      filesystem: false,
+      downloads: false,
+      process_control: false,
+      shell: false,
+    }
     try {
-      await backendCall('set_remote_permissions', { permissions: perms })
-      set({ permissions: perms })
+      await backendCall('set_remote_permissions', { permissions: payload })
+      set({ permissions: payload })
     } catch (err) {
       set({ error: String(err) })
     }
@@ -397,12 +588,19 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   },
 
   restart: async (model?: string, systemPrompt?: string) => {
+    if (get().loading || pendingStartup || stopsInProgress > 0) throw new Error('Remote Access is already starting or stopping. Wait for it to finish.')
     if (!isTauri()) {
       set({ loading: false, enabled: false, error: REMOTE_DEV_MODE_ERROR })
       throw new Error(REMOTE_DEV_MODE_ERROR)
     }
+    const startupRevision = ++lifecycleRevision
+    const finishStartup = trackStartup()
     set({ loading: true, error: null })
+    let serverStarted = false
     try {
+      await waitForMemoryRevocation()
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
+      const revision = memoryRevision
       const args: Record<string, unknown> = {}
       // #87: same backend derivation as startServer so a restart keeps routing
       // to the desktop's real backend, not just Ollama.
@@ -415,6 +613,8 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // Refresh memory context on restart so newly-extracted memories from
       // the ongoing session propagate into the next mobile connection.
       const enriched = await enrichSystemPromptWithMemory(systemPrompt || '')
+      if (startupRevision !== lifecycleRevision) throw new Error(REMOTE_START_CANCELLED)
+      if (revision !== memoryRevision) throw new Error(REMOTE_MEMORY_CHANGED)
       if (enriched) args.systemPrompt = enriched
       const result = await backendCall<{
         port: number
@@ -422,14 +622,30 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
         passcodeExpiresAt: number
         lanUrl: string
         mobileUrl: string
+        permissions?: RemotePermissions
       }>('restart_remote_server', args)
+      serverStarted = true
+      if (startupRevision !== lifecycleRevision) {
+        set({ enabled: true, qrVisible: false })
+        throw new Error(REMOTE_START_CANCELLED)
+      }
+      if (revision !== memoryRevision) {
+        set({ enabled: true })
+        await revokeRemoteMemory()
+        throw new Error(REMOTE_MEMORY_CHANGED)
+      }
+      // RA-1: same read-back as startServer — restart_remote_server delegates
+      // to start_remote_server on the Rust side and reports them identically.
+      const restartPerms = normalizeRemotePermissions(result.permissions)
       set({
+        memoryNotice: null,
         enabled: true,
         port: result.port,
         passcode: result.passcode,
         passcodeExpiresAt: result.passcodeExpiresAt,
         lanUrl: result.lanUrl,
         mobileUrl: result.mobileUrl,
+        ...(restartPerms ? { permissions: restartPerms } : {}),
         loading: false,
         qrVisible: true, // Bug #16: fresh restart → fresh passcode → show QR
       })
@@ -441,8 +657,11 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
       // #29: rethrow so the click-handler (ChatView.handleRemoteReactivate
       // or Sidebar restart chip) can surface the actual reason instead of
       // looking like the button did nothing.
-      set({ loading: false, enabled: false, error: String(err) })
+      const memoryFailure = err instanceof Error && [REMOTE_MEMORY_CHANGED, REMOTE_MEMORY_UNCONFIRMED, REMOTE_START_CANCELLED].includes(err.message)
+      set({ loading: stopsInProgress > 0, enabled: (serverStarted || memoryFailure) && get().enabled, error: String(err) })
       throw err
+    } finally {
+      finishStartup()
     }
   },
 
@@ -450,3 +669,13 @@ export const useRemoteStore = create<RemoteState>()((set, get) => ({
   hideQr: () => set({ qrVisible: false }),
   clearError: () => set({ error: null }),
 }))
+
+const unsubscribeRemoteMemory = useMemoryStore.subscribe((state, previous) => {
+  if (!remoteMemoryChanged(previous.entries, state.entries) && state.settings === previous.settings) return
+  memoryRevision += 1
+  const remote = useRemoteStore.getState()
+  if (isTauri() && (remote.enabled || remote.loading)) {
+    void revokeRemoteMemory().catch(() => { /* Failure is explicitly visible in the store. */ })
+  }
+})
+if (import.meta.hot) import.meta.hot.dispose(unsubscribeRemoteMemory)

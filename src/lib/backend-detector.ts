@@ -15,6 +15,27 @@ export interface DetectedBackend {
   port: number
 }
 
+/**
+ * Which detected backend the selection dialog has marked, given the user's own
+ * pick (null until they click) and the list as it currently stands.
+ *
+ * AppShell mounts the dialog with an EMPTY list and fills it seconds later,
+ * once the idle-time detection has run, so a position taken from the list
+ * before the list exists is the bug this exists to prevent: the dialog opened
+ * with no row marked, and "Use selected" found nothing under that name,
+ * dismissed itself and configured nothing (same class as the picker bug of
+ * R10). The rule has two halves and always had: keep the user's pick while the
+ * list still holds it, otherwise fall to the first row there is.
+ *
+ * It lives here, as a pure function, because the repo has no render harness —
+ * this is the part worth testing, and it is the part that used to be an effect
+ * writing the answer back into state one render after it was knowable.
+ */
+export function selectedBackendId(picked: string | null, backends: { id: string }[]): string {
+  if (picked !== null && backends.some((b) => b.id === picked)) return picked
+  return backends[0]?.id || ''
+}
+
 const PROBE_TIMEOUT = 2000 // 2 seconds — backend probe must be fast or skipped
 
 /**
@@ -81,14 +102,26 @@ function extractPort(url: string): number {
 }
 
 /**
+ * Die Eintraege, die ein Scan wirklich abklopft.
+ *
+ * Warum das exportiert ist: der Assistent schrieb waehrend des Scans
+ * "Checking 12 backends on their default ports" und zaehlte dafuer seine
+ * EIGENE Liste (`BackendsStep.tsx`, `LOCAL_BACKENDS`), die Hilfeliste mit den
+ * Downloadlinks fuer den Fall, dass nichts gefunden wurde. Geklopft wird aber
+ * an dieser Liste hier, und in ihr steht unter anderem die eingebaute Maschine
+ * auf 8127, die in jener gar nicht vorkommt. Die Zahl auf dem Bildschirm war
+ * damit schlicht eine andere als die Zahl der Sonden. Jetzt zaehlt der Satz
+ * das, was er behauptet.
+ */
+export const PROBE_TARGETS = PROVIDER_PRESETS.filter(p => p.isLocal && p.baseUrl)
+
+/**
  * Detect all running local LLM backends by probing their default ports.
  * All probes run in parallel for speed.
  */
 export async function detectLocalBackends(): Promise<DetectedBackend[]> {
-  const localPresets = PROVIDER_PRESETS.filter(p => p.isLocal && p.baseUrl)
-
   const results = await Promise.allSettled(
-    localPresets.map(async (preset) => {
+    PROBE_TARGETS.map(async (preset) => {
       const isOllama = preset.providerId === 'ollama'
       const reachable = await probeBackend(preset.baseUrl, isOllama)
 

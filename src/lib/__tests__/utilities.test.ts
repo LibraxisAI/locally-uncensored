@@ -1,119 +1,20 @@
 /**
  * Utility Function Tests
  *
- * Tests formatters.ts, privacy.ts, and systemCheck.ts pure logic functions.
+ * Tests privacy.ts und systemCheck.ts pure logic functions.
+ *
+ * formatBytes, formatDate und truncate standen hier ein zweites Mal, Wort fuer
+ * Wort dieselben Faelle wie in ./formatters.test.ts. Zwei Kopien einer
+ * Zusicherung sind keine doppelte Sicherheit, sondern eine Stelle, die beim
+ * naechsten Mal vergessen wird: beim Wechsel auf die richtigen Einheitennamen
+ * (Fund 5) haette eine von beiden stehenbleiben koennen. Sie stehen jetzt
+ * einmal, in der Datei, die nach der Sache heisst.
  *
  * Run: npx vitest run src/lib/__tests__/utilities.test.ts
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { formatBytes, formatDate, truncate } from '../formatters'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getRecommendations } from '../systemCheck'
 import type { SystemTier } from '../systemCheck'
-
-// ── formatBytes ──────────────────────────────────────────────────
-
-describe('formatBytes', () => {
-  it('returns "0 B" for 0 bytes', () => {
-    expect(formatBytes(0)).toBe('0 B')
-  })
-
-  it('formats bytes', () => {
-    expect(formatBytes(500)).toBe('500.0 B')
-  })
-
-  it('formats kilobytes', () => {
-    expect(formatBytes(1024)).toBe('1.0 KB')
-    expect(formatBytes(1536)).toBe('1.5 KB')
-  })
-
-  it('formats megabytes', () => {
-    expect(formatBytes(1048576)).toBe('1.0 MB')
-    expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
-  })
-
-  it('formats gigabytes', () => {
-    expect(formatBytes(1073741824)).toBe('1.0 GB')
-    expect(formatBytes(2.5 * 1024 ** 3)).toBe('2.5 GB')
-  })
-
-  it('formats terabytes', () => {
-    expect(formatBytes(1024 ** 4)).toBe('1.0 TB')
-  })
-})
-
-// ── formatDate ───────────────────────────────────────────────────
-
-describe('formatDate', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it('returns "Just now" for timestamps less than a minute ago', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    expect(formatDate(now)).toBe('Just now')
-    expect(formatDate(now - 30_000)).toBe('Just now') // 30 seconds ago
-  })
-
-  it('returns minutes ago for timestamps under an hour', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    expect(formatDate(now - 5 * 60_000)).toBe('5m ago')
-    expect(formatDate(now - 30 * 60_000)).toBe('30m ago')
-  })
-
-  it('returns hours ago for timestamps under a day', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    expect(formatDate(now - 2 * 3600_000)).toBe('2h ago')
-    expect(formatDate(now - 12 * 3600_000)).toBe('12h ago')
-  })
-
-  it('returns days ago for timestamps under a week', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    expect(formatDate(now - 3 * 86400_000)).toBe('3d ago')
-    expect(formatDate(now - 6 * 86400_000)).toBe('6d ago')
-  })
-
-  it('returns locale date string for timestamps over a week', () => {
-    const now = Date.now()
-    vi.setSystemTime(now)
-    const oldTimestamp = now - 14 * 86400_000
-    const result = formatDate(oldTimestamp)
-    // Should be a date string, not a relative time
-    expect(result).not.toContain('ago')
-    expect(result).not.toBe('Just now')
-  })
-})
-
-// ── truncate ─────────────────────────────────────────────────────
-
-describe('truncate', () => {
-  it('returns short string unchanged', () => {
-    expect(truncate('hello', 10)).toBe('hello')
-  })
-
-  it('returns string unchanged when exactly at maxLength', () => {
-    expect(truncate('hello', 5)).toBe('hello')
-  })
-
-  it('truncates long string with "..."', () => {
-    expect(truncate('hello world', 5)).toBe('hello...')
-  })
-
-  it('handles empty string', () => {
-    expect(truncate('', 10)).toBe('')
-  })
-
-  it('handles maxLength of 0', () => {
-    expect(truncate('hello', 0)).toBe('...')
-  })
-})
 
 // ── proxyImageUrl ────────────────────────────────────────────────
 
@@ -198,10 +99,14 @@ describe('getRecommendations', () => {
     const high = getRecommendations('high')
 
     const lowNames = low.map((r) => r.name)
+    const mediumNames = medium.map((r) => r.name)
     const highNames = high.map((r) => r.name)
 
-    // Low and high should have at least some different models
+    // Every tier recommends a different set — medium was fetched but never
+    // asserted on before, so a medium list identical to low/high slipped through.
     expect(lowNames).not.toEqual(highNames)
+    expect(mediumNames).not.toEqual(lowNames)
+    expect(mediumNames).not.toEqual(highNames)
   })
 
   it('low tier recommends smaller models', () => {

@@ -12,6 +12,7 @@
  * Run: npx vitest run src/lib/__tests__/constants-validation.test.ts
  */
 import { describe, it, expect } from 'vitest'
+import { DEFAULT_EFFORT } from '../effort'
 import {
   DEFAULT_SETTINGS,
   BUILT_IN_PERSONAS,
@@ -61,6 +62,16 @@ describe('constants-validation', () => {
 
     it('has thinkingEnabled as boolean', () => {
       expect(typeof DEFAULT_SETTINGS.thinkingEnabled).toBe('boolean')
+    })
+
+    it('has reasoningEffort on the rung the client has always sent', () => {
+      // Not a taste. The default IS the old behaviour: 'high' is what the
+      // provider put on the wire for thinking ON before the control existed,
+      // so a profile that rides the v22 migration sends byte-for-byte the same
+      // request it sent before. Any other default moves an existing customer's
+      // token bill without them touching anything.
+      expect(DEFAULT_SETTINGS.reasoningEffort).toBe('high')
+      expect(DEFAULT_SETTINGS.reasoningEffort).toBe(DEFAULT_EFFORT)
     })
 
     it('has cavemanMode as a valid level', () => {
@@ -117,7 +128,14 @@ describe('constants-validation', () => {
       expect(coder).toBeDefined()
     })
 
-    it('contains the "unrestricted" persona with empty system prompt', () => {
+    // Bis 10.09.2026 stand hier `toBe('')`. Ein leerer Systemtext ist aber
+    // nicht neutral: das Modell faellt dann auf seine eigene Grundhaltung
+    // zurueck, und gemessen an 46 Katalogmodellen hat genau das sechs Modelle
+    // vom Antworten aufs Ablehnen gebracht. Die Rolle steht jetzt drin, der
+    // Test haelt fest, dass sie da ist und keine Inhaltsregel enthaelt.
+    // R5-3: leer, damit der Grundtext greift und der Hausteil genau einmal
+    // rausgeht. Die Rolle steht in CHAT_BASE_SYSTEM_PROMPT, nicht hier.
+    it('contains the "unrestricted" persona, and it carries no text of its own', () => {
       const unrestricted = BUILT_IN_PERSONAS.find(p => p.id === 'unrestricted')
       expect(unrestricted).toBeDefined()
       expect(unrestricted!.systemPrompt).toBe('')
@@ -302,7 +320,7 @@ describe('constants-validation', () => {
 
     it('all flags are booleans', () => {
       for (const [key, value] of Object.entries(FEATURE_FLAGS)) {
-        expect(typeof value).toBe('boolean')
+        expect(typeof value, `FEATURE_FLAGS.${key}`).toBe('boolean')
       }
     })
   })

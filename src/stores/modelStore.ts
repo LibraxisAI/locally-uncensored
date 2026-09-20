@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { safeJSONStorage } from '../lib/storage-quota'
+import { canAutoSelectChat } from '../lib/chat-model-minimum'
 import type { AIModel, PullProgress, ModelCategory } from '../types/models'
 import { unloadModel } from '../api/ollama'
 import { unloadLmStudioModel } from '../api/lmstudio'
@@ -8,6 +10,24 @@ import { isLmStudioProvider } from '../lib/hf-to-provider'
 import { isTauri, backendCall } from '../api/backend'
 import { useChatStore } from './chatStore'
 import { log } from '../lib/logger'
+import { isLuEngineName } from '../lib/engine-name'
+// Which provider slot a model name routes to. There is exactly one answer to
+// that question in this app and it lives in api/providers/registry, the same
+// function getProviderForModel uses to pick the client that actually sends the
+// turn. A second implementation here disagreed with it on real names
+// ('sdxl::x.safetensors' → null vs 'sdxl', 'a::b::c' → null vs 'ollama'), which
+// is the worst possible place for two answers: the guard below would decline to
+// clear a pick that the send path would then route to a dead backend.
+import { getProviderIdFromModel } from '../api/providers/model-name'
+import { onProviderSlotsDarkened } from '../lib/provider-slot-darkening'
+import {
+  announceChatPickLostItsEngine,
+  onBuiltinSlotLostToForeignBackend,
+  onBuiltinSlotRegained,
+} from '../lib/builtin-slot-handover'
+import { ensureBuiltinEngineAlive, builtinSlotSwitchedOff } from '../api/builtin-ensure'
+import { isBuiltinEngineEntry, type InstalledModelLike } from '../lib/lmstudio-match'
+import type { ProviderId } from '../api/providers/types'
 
 export interface PullState {
   progress: PullProgress
@@ -19,6 +39,29 @@ export interface PullState {
 interface ModelState {
   models: AIModel[]
   activeModel: string | null
+  /**
+   * Die letzte LOKALE Chatwahl, damit sie den Ausflug in die Cloud ueberlebt.
+   *
+   * Fund 1 der Kampagne 3.0.0 (T3, Box, 11.09.2026): Cloud an, Cloud aus, und
+   * der Waehler stand auf `Select a chat model`. `activeModel` traegt in der
+   * Cloud den Wolkennamen, der lokale Name war damit weg, und die Ersatzregel
+   * in lib/active-model-mode darf von sich aus nur Modelle ab 7B waehlen. Das
+   * Modell der Box hat 3B, also blieb nichts uebrig. Hier steht, was der
+   * Nutzer zuletzt lokal gewaehlt hatte; gelesen wird es NUR beim Moduswechsel.
+   */
+  lastLocalModel: string | null
+  /**
+   * Dasselbe fuer die Wolke, damit der Hinweg nicht von selbst umschaltet.
+   *
+   * T1, Nebenfund 7 (Box, 11.09.2026, 15:23 bis 17:12 Boxzeit): "Der
+   * Cloud-Modus schaltet das Modell selbstaendig um. Beim Eintritt stand
+   * zweimal `Llama 3.1 8B Turbo` da, ohne dass ich es gewaehlt hatte." Das war
+   * der Kopf des Katalogs, der einsprang,
+   * weil die vorherige Wolkenwahl beim Rueckweg von der lokalen ueberschrieben
+   * worden war. Zwei Erinnerungen, eine je Modus, und keiner ueberschreibt die
+   * des anderen.
+   */
+  lastCloudModel: string | null
   activePulls: Record<string, PullState>
   isModelLoading: boolean
   categoryFilter: ModelCategory
@@ -30,6 +73,27 @@ interface ModelState {
    *  because fetchModels is called from several mounted components at once
    *  and the first one to finish must not declare the count settled. */
   inventoryRefreshes: number
+  /**
+   * Welche Zeilen eingeklappt wurden, weil ein anderes Backend dieselbe Datei
+   * schon anbietet: wessen Zeilen es waren, wie viele, und wer sie stattdessen
+   * bedient.
+   *
+   * Persona P5, 03./04.09.2026: LM Studio meldete ueber die eigene
+   * Schnittstelle 7 Modelle, der Waehler zeigte unter LM STUDIO nur 4. Die
+   * drei fehlenden sind genau die, deren Datei auch als LU-Engine-Zeile
+   * dasteht. Das Einklappen ist richtig, das Schweigen darueber nicht: fuer
+   * den Nutzer sehen drei seiner Modelle einfach verschwunden aus.
+   *
+   * Gegenprobe G1, 04.09.2026: dieselbe Sache in der anderen Richtung, und
+   * dort war es schlimmer. Sobald LM Studio den Steckplatz haelt, faellt
+   * `Qwen3-4B-Q4_K_M` weg, eine echte, installierte Datei des Kunden von
+   * 2,3 GB, aus dem Waehler UND von der Models-Seite. Kein Hinweis, keine
+   * Erklaerung, waehrend fuer die Gegenrichtung ein Satz existierte und
+   * angezeigt wurde. Ein Feld statt zwei, damit die beiden Richtungen nicht
+   * wieder auseinanderlaufen koennen.
+   */
+  foldedRows: { backend: string; count: number; servedBy: string } | null
+  setFoldedRows: (folded: { backend: string; count: number; servedBy: string } | null) => void
   beginInventoryRefresh: () => void
   endInventoryRefresh: () => void
   setModels: (models: AIModel[]) => void
@@ -52,6 +116,41 @@ interface ModelState {
   dismissPull: (name: string) => void
   setIsModelLoading: (loading: boolean) => void
   setCategoryFilter: (category: ModelCategory) => void
+  /** Nothing across these two stores enforced that the picked model belongs to
+   *  a backend that is still switched on. `setModels` only re-checks the pick
+   *  against the next NON-EMPTY inventory, so between switching a provider off
+   *  and the next successful refresh the composer showed a model whose backend
+   *  was gone and every send failed with model-not-found. providerStore calls
+   *  this the moment a slot goes dark. */
+  dropActiveModelIfServedBy: (providerId: ProviderId) => void
+  /** Der geteilte lokale Steckplatz ist an ein eingeschaltetes fremdes Backend
+   *  gegangen. Der Chip im Chat nennt danach weiter das GGUF, das auf 8127 lag,
+   *  auf dem Port liegt nichts mehr, und die Selbstheilung des Absendewegs
+   *  haengt hinter `config.managed === true`, das jetzt false ist. Bleibt die
+   *  Wahl stehen, ist die einzige Antwort auf ein Absenden eine Fremdmeldung
+   *  ueber eine unbekannte Modell-Kennung.
+   *
+   *  Entschieden wird nach der ZEILE, nicht nach dem Steckplatz, und gelesen
+   *  wird sie erst bei der Zustellung, eine Mikrotask nach dem Wechsel. Das
+   *  deckt genau EINEN der beiden Klickwege ab: `useModels.activateModel` gibt
+   *  den Steckplatz ab und setzt die Zeile des uebernehmenden Backends ohne
+   *  `await` unmittelbar danach, dort steht dann eine fremde Zeile, die diese
+   *  Aktion nichts angeht. Der zweite Weg, die Auto-Ladung im Waehler, laedt
+   *  erst in LM Studio und setzt die Wahl erst hinterher, auf der Box 12,4 s
+   *  spaeter; dort faellt sie wirklich, und bis zum Ende der Ladung bedient
+   *  auch niemand das GGUF.
+   *
+   *  `taker` ist nur fuer die Zeile da, die der Nutzer danach liest, und ist
+   *  eine Momentaufnahme vom Steckplatzwechsel selbst. Angesagt wird der Wechsel
+   *  von lib/builtin-slot-eviction ueber lib/builtin-slot-handover. */
+  dropPickServedByTheBuiltinEngine: (taker: string | undefined) => void
+  /** Der Steckplatz gehoert wieder der eigenen Engine, nachdem sie ihr Modell
+   *  schon losgelassen hatte (Gegenprobe G2: nach Enable und Remove lief auf
+   *  8127 nichts mehr und startete auch nach dreimaligem Ansichtswechsel nicht
+   *  nach). `ensureBuiltinEngineAlive` ist genau der Weg, den auch das Absenden
+   *  einer Nachricht geht: Zustand fragen, Datei suchen, mit der Feineinstellung
+   *  des Nutzers starten. */
+  reviveBuiltinEngineForActivePick: () => Promise<void>
 }
 
 export const useModelStore = create<ModelState>()(
@@ -59,6 +158,8 @@ export const useModelStore = create<ModelState>()(
     (set, get) => ({
       models: [],
       activeModel: null,
+      lastLocalModel: null,
+      lastCloudModel: null,
       activePulls: {},
       isModelLoading: false,
       categoryFilter: 'all',
@@ -76,23 +177,28 @@ export const useModelStore = create<ModelState>()(
           // model name persists in the picker after the underlying provider
           // (e.g. Ollama) was uninstalled or the model was deleted — the
           // dropdown then shows a dead name and clicking it opens an empty
-          // list. Falls back to the first available model, mirroring the
-          // first-launch behavior so a user is never stuck with no
-          // selection while a model exists.
+          // list. Automatic replacement uses the first eligible chat model;
+          // if none has a known size of at least 7B, require an explicit pick.
           // An empty list validates nothing. fetchModels writes its result
           // here even when every provider failed, and dropping the pick on
           // that answer is how a transient failure turned into a silently
           // different model in the picker (Befund 3, abnahme counter-check
           // 2026-08-29). The pick has its own guard on the way in and its
           // own moment to be re-checked: the next non-empty list.
+          //
+          // Und getauscht wird hier nicht mehr stumm. Der Tausch steht in
+          // derselben set() wie die neue Liste, also liest jeder Effekt
+          // danach schon den Ersatz und kann nicht mehr erkennen, dass
+          // getauscht wurde. Gesagt wird es deshalb dort, wo beide Seiten
+          // noch dastehen: bei dem, der die Liste hereingibt
+          // (hooks/useModels, announceChatModelReplaced).
           const stillValid =
             !!state.activeModel &&
             (models.length === 0 || models.some((m) => m.name === state.activeModel))
-          // Chat models only for the auto-select — ComfyUI image/video
-          // checkpoints share this list and must never become the active CHAT
-          // model (an unprefixed checkpoint name routes to Ollama and every
-          // send fails with model-not-found).
-          const firstChat = models.find((m) => m.type !== 'image' && m.type !== 'video')
+          // Automatic choices need a known size of at least 7B. Image/video,
+          // small models and opaque aliases require no implicit chat pick.
+          // The valid persisted choice above remains the user's decision.
+          const firstChat = models.find(canAutoSelectChat)
           return {
             models,
             inventoryLoaded: true,
@@ -115,7 +221,20 @@ export const useModelStore = create<ModelState>()(
       setActiveModel: (name) => {
         const prev = get().activeModel
         const prevModel = prev ? get().models.find((m) => m.name === prev) : undefined
-        set({ activeModel: name })
+        // Dieselbe Tuer, durch die JEDE Wahl geht, legt sie in die Erinnerung
+        // IHRES Modus. Eine Zeile, die gar keine Chatzeile ist, gehoert in
+        // keine von beiden; eine geraeumte Wahl (null) loescht keine, denn
+        // gelesen werden sie nur gegen die lebende Liste, und was dort fehlt,
+        // kommt ueber sie auch nicht zurueck.
+        const neueZeile = name ? get().models.find((m) => m.name === name) : undefined
+        const istChatzeile =
+          !!neueZeile && neueZeile.type !== 'image' && neueZeile.type !== 'video'
+        const merken = !istChatzeile
+          ? {}
+          : neueZeile.provider === 'lu-cloud'
+            ? { lastCloudModel: name }
+            : { lastLocalModel: name }
+        set({ activeModel: name, ...merken })
         // Befund 4 of the abnahme counter-check (2026-08-29): the open chat
         // kept the model it was created with while the wire of that same turn
         // already carried the new one. Every path that changes the selection
@@ -139,14 +258,15 @@ export const useModelStore = create<ModelState>()(
         const prevIsLms = isLmStudioProvider(
           (prevModel && 'providerName' in prevModel && prevModel.providerName) as string | undefined,
         )
-        // The built-in engine (llama.cpp sidecar) occupies the `openai::` slot
-        // with providerName 'Built-in Engine' and holds its GGUF in VRAM with
+        // The LU Engine (llama.cpp sidecar) occupies the `openai::` slot
+        // with providerName 'LU Engine' ('Built-in Engine' before 2.6.8, still
+        // on disk in older chats) and holds its GGUF in VRAM with
         // -ngl 999. It is NOT caught by the LM-Studio or the bare-Ollama branch
         // below, so before 2.5.7 wired this in, switching away from a built-in
         // model to an Ollama/LM-Studio model left the sidecar resident → two
         // models in VRAM at once (the exact case this guard exists to prevent).
         const prevIsBuiltin =
-          !!prevModel && 'providerName' in prevModel && prevModel.providerName === 'Built-in Engine'
+          !!prevModel && 'providerName' in prevModel && isLuEngineName(prevModel.providerName)
         if (prevIsLms) {
           const bareKey = prev.replace(/^[^:]+::/, '') // strip LU's routing prefix
           unloadLmStudioModel(bareKey).catch((e) =>
@@ -155,23 +275,30 @@ export const useModelStore = create<ModelState>()(
         } else if (prevIsBuiltin) {
           const nextModel = get().models.find((m) => m.name === name)
           const nextIsBuiltin =
-            !!nextModel && 'providerName' in nextModel && nextModel.providerName === 'Built-in Engine'
+            !!nextModel && 'providerName' in nextModel && isLuEngineName(nextModel.providerName)
           if (!nextIsBuiltin) {
             backendCall('stop_bundled_engine').catch((e) =>
-              log.warn('[modelStore] failed to stop built-in engine on switch-away', { err: e }),
+              log.warn('[modelStore] failed to stop the LU Engine on switch-away', { err: e }),
             )
           } else if (name) {
             // built-in → DIFFERENT built-in: llama-server serves exactly ONE
             // gguf and ignores the request's model field, and the send-path
-            // self-heal only revives a DEAD server — so without a swap right
+            // self-heal only revives a DEAD server, so without a swap right
             // here, a pick on the Models page would keep every chat silently
             // answering from the OLD model. The composer picker awaits this
-            // same call itself before setting the store; Rust's argv
-            // idempotence turns that double-swap into a no-op. (A cleared
-            // selection, name = null, has nothing to swap to; nextIsBuiltin
-            // is false then anyway, this branch just spells it out for tsc.)
+            // same call itself before setting the store, so every activation
+            // reaches the engine twice. Rust's argv idempotence swallows the
+            // second call only for a model that LOADS: a GGUF that fails to
+            // load leaves no running engine to compare argv against, and the
+            // second command runs the whole try-and-retry routine again (four
+            // llama-server spawns per click, measured 2026-09-03). The
+            // coalescing that makes the double call harmless therefore lives
+            // in api/engine.ts (activationsInFlight), at the one door both
+            // callers come through. (A cleared selection, name = null, has
+            // nothing to swap to; nextIsBuiltin is false then anyway, this
+            // branch just spells it out for tsc.)
             activateBuiltinModel(name).catch((e) =>
-              log.warn('[modelStore] failed to swap built-in engine to the picked model', { model: name, err: e }),
+              log.warn('[modelStore] failed to swap the LU Engine to the picked model', { model: name, err: e }),
             )
           }
         } else if (!prev.includes('::')) {
@@ -256,12 +383,132 @@ export const useModelStore = create<ModelState>()(
         })
       },
 
+      foldedRows: null,
+      setFoldedRows: (folded) => set({ foldedRows: folded }),
+
       setIsModelLoading: (loading) => set({ isModelLoading: loading }),
       setCategoryFilter: (category) => set({ categoryFilter: category }),
+
+      dropActiveModelIfServedBy: (providerId) => {
+        const active = get().activeModel
+        if (!active || getProviderIdFromModel(active) !== providerId) return
+        log.warn('[modelStore] the picked model\'s backend was switched off, clearing the pick', {
+          model: active, provider: providerId,
+        })
+        // Through setActiveModel, not a bare set(): the model that is going
+        // away is also the one holding VRAM, and that release lives there.
+        get().setActiveModel(null)
+      },
+
+      dropPickServedByTheBuiltinEngine: (taker) => {
+        const gewaehlt = get().activeModel
+        if (!gewaehlt) return
+        const zeile = get().models.find((m) => m.name === gewaehlt)
+        if (!isBuiltinEngineEntry(zeile as unknown as InstalledModelLike | undefined)) return
+        // Geraeumt wird mit set(), NICHT ueber `setActiveModel`: an dessen Weg
+        // weg von einer Engine-Zeile haengt ein sofortiges
+        // `stop_bundled_engine`, und das wuerde die 30 Sekunden Nachsicht
+        // ueberholen, die lib/builtin-slot-eviction verwaltet.
+        set({ activeModel: null })
+        log.info('[modelStore] the local slot went to another backend, dropped the pick it served')
+        // Zuerst raeumen, dann reden. Die Zeile darf das Raeumen weder
+        // verzoegern noch mit sich reissen, wenn niemand sie annimmt.
+        //
+        // Das eigene catch ist kein Zierrat. `zustellen` in
+        // lib/builtin-slot-handover schluckt stumm, damit ein Zuhoerer den
+        // Steckplatzwechsel nicht mitreisst, und der Rueckweg gleich darunter
+        // hat sein log.warn. Ohne dieses hier haette ein Wurf auf DIESEM Weg
+        // gar keine Zeile hinterlassen, und das war er vor dem Umbau am
+        // 04.09.2026 nicht: lib/builtin-slot-eviction hat an derselben Stelle
+        // '[builtin-slot] could not drop the pick of the displaced engine'
+        // geschrieben. Eine Faehigkeit, die beim Umbau leise verschwindet,
+        // faellt erst beim Kunden auf, und dann ohne Spur.
+        try {
+          announceChatPickLostItsEngine(gewaehlt, taker)
+        } catch (e) {
+          log.warn('[modelStore] could not say that the pick lost its engine', { err: e })
+        }
+      },
+
+      reviveBuiltinEngineForActivePick: async () => {
+        try {
+          const gewaehlt = get().activeModel
+          if (!gewaehlt) return
+          // Der Nutzer hat die Engine in den Einstellungen ausgeschaltet. Der
+          // Steckplatz gehoert ihr wieder, aber niemand hat sie zurueckgebeten.
+          // Gefragt wird zum Zustellzeitpunkt, nicht bei der Ansage.
+          if (builtinSlotSwitchedOff()) return
+          await ensureBuiltinEngineAlive(gewaehlt)
+          log.info('[modelStore] the engine has the local slot again, brought its model back')
+        } catch (e) {
+          // Kein Grund, den Steckplatzwechsel scheitern zu lassen. Der
+          // Absendeweg versucht dasselbe noch einmal, sobald jemand schreibt.
+          log.warn('[modelStore] could not bring the engine back', { err: e })
+        }
+      },
     }),
     {
       name: 'chat-models',
-      partialize: (state) => ({ activeModel: state.activeModel, categoryFilter: state.categoryFilter }),
+      storage: safeJSONStorage(),
+      // Beide Erinnerungen liegen mit im Speicher, weil ein Ausflug einen
+      // App-Neustart ueberdauern kann: wer die App in der Cloud schliesst und
+      // am naechsten Tag lokal weiterarbeitet, bekommt dieselbe Wahl zurueck.
+      partialize: (state) => ({
+        activeModel: state.activeModel,
+        lastLocalModel: state.lastLocalModel,
+        lastCloudModel: state.lastCloudModel,
+        categoryFilter: state.categoryFilter,
+      }),
+      /**
+       * R2-27: die beiden Erinnerungen sind neu in 3.0.0, `activeModel` nicht.
+       * Ein Speicherstand aus 2.6.9 traegt deshalb ein aktives Modell und
+       * zweimal `null`, und es gab weder `migrate` noch `onRehydrateStorage`.
+       * Der erste Ausflug in die Cloud fand damit nichts zum Zurueckkommen, und
+       * der Rueckweg landete auf "Select a chat model" statt auf dem Modell,
+       * mit dem der Nutzer die App gerade noch benutzt hatte.
+       *
+       * Der Anbieter des NAMENS entscheidet, in welches Feld die Vorbelegung
+       * geht, und geschrieben wird nur, wo noch nichts steht: ein wirklich
+       * gespeicherter Wert ist immer die bessere Auskunft.
+       */
+      onRehydrateStorage: () => (state) => {
+        if (!state?.activeModel) return
+        const istCloud = state.activeModel.startsWith('lu-cloud::')
+        if (istCloud) {
+          if (!state.lastCloudModel) state.lastCloudModel = state.activeModel
+        } else if (!state.lastLocalModel) {
+          state.lastLocalModel = state.activeModel
+        }
+      },
     }
   )
 )
+
+// Audit W-T2: Der providerStore hat sich diesen Store frueher selbst geholt
+// (`void import('./modelStore')`), um bei abgeschalteten Slots die Modellwahl
+// zu raeumen, ein dynamischer Import, der den Kreis providerStore zu
+// modelStore und zurueck nur verdeckt hat. Jetzt wird dort angesagt und hier
+// zugehoert; die Anmeldung passiert beim Laden dieses Moduls, wie
+// registerBuiltinTools() sich beim Tool-Registry anmeldet.
+onProviderSlotsDarkened((darkened) => {
+  for (const id of darkened) useModelStore.getState().dropActiveModelIfServedBy(id)
+})
+
+// Audit W-T2, zweite Runde: lib/builtin-slot-eviction hat sich diesen Store mit
+// `await import('../stores/modelStore')` selbst geholt, und diese eine Kante
+// trug drei der fuenf Kreise, die `npm run cycles` gemeldet hat. Dieselbe
+// Umkehr wie oben, dieselbe Stelle: die Regel kennt den Steckplatz, dieser
+// Store kennt die Wahl, und die Leitung dazwischen (lib/builtin-slot-handover)
+// gehoert keinem von beiden.
+//
+// Die Ladereihenfolge traegt das. Beide Webviews haben diesen Store eager im
+// Baum, bevor sich ein Steckplatz bewegen kann (main.tsx laedt AppShell im
+// Hauptfenster, OnboardingWindow im kleinen Fenster, und beide ziehen ihn),
+// und der Rumpf hier laeuft garantiert NACH dem der Eviction, weil diese Datei
+// ueber api/engine auf sie zeigt und nicht umgekehrt.
+onBuiltinSlotLostToForeignBackend((taker) => {
+  useModelStore.getState().dropPickServedByTheBuiltinEngine(taker)
+})
+onBuiltinSlotRegained(() => {
+  void useModelStore.getState().reviveBuiltinEngineForActivePick()
+})

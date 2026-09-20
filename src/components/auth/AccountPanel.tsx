@@ -10,7 +10,36 @@ import { useCloudAuth } from '../../hooks/useCloudAuth'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
 import { loginWithProvider } from '../../api/cloud/supabase'
 import { CLOUD_BASE } from '../../api/cloud/config'
+import { MONOGRAM } from '../layout/brand'
 import { openExternal } from '../../api/backend'
+import { formatCount } from '../../lib/formatters'
+import { countUnsyncedAccountMemories } from '../../lib/memory-unsynced'
+import { Modal } from '../ui/Modal'
+
+/**
+ * Run a sign-out and report what happened, in that order.
+ *
+ * `signOutAccount` throws when the saved session survived the delete — and it
+ * deliberately leaves the store SIGNED IN, because the account really is still
+ * usable on this machine. That is the safe half. The visible half was missing:
+ * the throw was dropped by `void logout()`, so the panel simply kept showing
+ * the account and the click looked like it had done nothing. The user walks
+ * away from a shared machine believing they are signed out.
+ *
+ * Exported so the contract can be asserted without a DOM — the panel itself is
+ * a React tree and the suite runs in the `node` environment.
+ */
+export async function runSignOut(
+  logout: () => Promise<void>,
+  report: (message: string | null) => void,
+): Promise<void> {
+  report(null)
+  try {
+    await logout()
+  } catch (err) {
+    report(err instanceof Error ? err.message : String(err))
+  }
+}
 
 function Meter({ label, used, limit }: { label: string; used: number; limit: number }) {
   const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
@@ -19,7 +48,7 @@ function Meter({ label, used, limit }: { label: string; used: number; limit: num
       <div className="flex items-center justify-between text-[0.65rem]">
         <span className="text-gray-600 dark:text-gray-400">{label}</span>
         <span className="text-gray-500 dark:text-gray-500 tabular-nums">
-          {used.toLocaleString()} / {limit.toLocaleString()}
+          {formatCount(used)} / {formatCount(limit)}
         </span>
       </div>
       <div className="h-1 rounded-full bg-gray-200 dark:bg-white/10 overflow-hidden">
@@ -109,6 +138,39 @@ export function AccountPanel() {
   const [mode, setMode] = useState<'signin' | 'signup'>('signin')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
+  /**
+   * Wie viele Kontoerinnerungen noch nicht in der Wolke stehen, waehrend die
+   * Nachfrage offen ist. `null` heisst: keine Nachfrage.
+   *
+   * R3-19, Entscheid David vom 12.09.2026. Das Abmelden raeumt die
+   * Kontosammlung aus der Ansicht. Wer nie synchronisiert hat, sieht seine
+   * Eintraege auf dem naechsten Geraet nicht wieder, und das kam ohne
+   * Nachfrage als Verlust an. Bei null offenen Eintraegen wird nicht gefragt:
+   * eine Nachfrage, die immer kommt, wird weggeklickt wie ein Banner.
+   */
+  const [offeneErinnerungen, setOffeneErinnerungen] = useState<number | null>(null)
+
+  const abmelden = async () => {
+    setOffeneErinnerungen(null)
+    setSigningOut(true)
+    try {
+      await runSignOut(logout, setSignOutError)
+    } finally {
+      setSigningOut(false)
+    }
+  }
+
+  const onSignOut = async () => {
+    if (signingOut || offeneErinnerungen !== null) return
+    const offen = await countUnsyncedAccountMemories()
+    if (offen > 0) {
+      setOffeneErinnerungen(offen)
+      return
+    }
+    await abmelden()
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -161,18 +223,20 @@ export function AccountPanel() {
           <button
             type="submit"
             disabled={busy || !email || !password}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[0.7rem] font-medium bg-gray-900 text-white dark:bg-white dark:text-gray-900 disabled:opacity-40 hover:opacity-90 transition-opacity"
+            className="lu-primary flex items-center gap-1.5 px-3 py-1.5 rounded text-[0.7rem] disabled:opacity-40 transition-colors"
           >
             {busy ? <Loader2 size={11} className="animate-spin" /> : (
-              /* Monogram, not the stock cloud glyph. The button is dark on light
-                 and light on dark, so the invert flips the other way here. */
+              /* Monogram, not the stock cloud glyph. Der Knopf traegt jetzt in
+                 BEIDEN Modi die Akzentflaeche mit dunklem Text (.lu-primary),
+                 also muss das Monogramm auch in beiden Modi dunkel sein —
+                 vorher kippte es mit dem Modus, weil der Knopf das tat. */
               <img
-                src="/LU-monogram-bw.png"
+                src={MONOGRAM}
                 alt=""
                 width={12}
                 height={12}
                 draggable={false}
-                className="shrink-0 select-none invert-0 dark:invert"
+                className="shrink-0 select-none invert"
               />
             )}
             {mode === 'signin' ? 'Sign in' : 'Create account'}
@@ -205,12 +269,47 @@ export function AccountPanel() {
           </div>
         </div>
         <button
-          onClick={() => void logout()}
-          className="flex items-center gap-1 px-2 py-1 rounded text-[0.65rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
+          onClick={() => void onSignOut()}
+          disabled={signingOut}
+          className="flex items-center gap-1 px-2 py-1 rounded text-[0.65rem] text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors disabled:opacity-40"
         >
-          <LogOut size={10} /> Sign out
+          {signingOut ? <Loader2 size={10} className="animate-spin" /> : <LogOut size={10} />} Sign out
         </button>
       </div>
+
+      <Modal
+        open={offeneErinnerungen !== null}
+        onClose={() => setOffeneErinnerungen(null)}
+        title={`${offeneErinnerungen ?? 0} memories are not synced yet. Sign out anyway?`}
+        maxWidth="max-w-md"
+      >
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setOffeneErinnerungen(null)}
+            className="rounded-xl px-4 py-2 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void abmelden()}
+            className="rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold px-4 py-2 text-sm transition-colors"
+          >
+            Sign out
+          </button>
+        </div>
+      </Modal>
+
+      {/* A sign-out that did not happen has to say so HERE. The account is
+          still shown above (the store stays signed-in on purpose), so without
+          this line the failure is invisible and the panel reads like a
+          sign-out that simply took no effect. */}
+      {signOutError && (
+        <p role="alert" className="text-[0.65rem] text-red-500 dark:text-red-400">
+          {signOutError}
+        </p>
+      )}
 
       {licenseActive && quota ? (
         <div className="space-y-2">

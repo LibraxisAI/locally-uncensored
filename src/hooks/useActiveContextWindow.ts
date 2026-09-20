@@ -8,9 +8,17 @@ import { getModelMaxTokens } from '../lib/context-compaction'
 import { effectiveContextWindow } from '../lib/context-window'
 import { effectiveSendWindow } from '../lib/send-window'
 import { isManagedBuiltinSlot } from '../api/builtin-ensure'
+import { ENGINE_DEFAULT_CTX } from '../lib/builtin-ctx'
 import { bundledEngineStatus, bundledCtxTrain } from '../api/engine'
+import { getProviderForModel } from '../api/providers'
+import type { ContextSource } from '../lib/context-source'
+import type { ProviderClient } from '../api/providers/types'
+import { resolveActiveWindow } from '../lib/context-source'
+import { isLanOpenAiBackend, sendsToALanBackend } from '../lib/lan-openai-slot'
 
-export type CtxProvider = 'ollama' | 'lmstudio' | 'builtin' | 'cloud' | 'unknown'
+/** `custom` ist jeder andere OpenAI-kompatible Server auf diesem Rechner oder
+ *  im LAN: llama.cpp, vLLM, KoboldCpp, text-generation-webui (GH #129). */
+export type CtxProvider = 'ollama' | 'lmstudio' | 'builtin' | 'cloud' | 'custom' | 'unknown'
 
 export interface ActiveContext {
   /** Which backend the active model runs on. */
@@ -32,6 +40,40 @@ export interface ActiveContext {
   isTrue: boolean
   /** Whether the user can change it from the dropdown (local backends only). */
   adjustable: boolean
+  /**
+   * Woher die Zahl stammt: vom Server, vom Nutzer, oder geraten (GH #129).
+   * Der Zaehler schreibt es in seinen Werkzeugtext, und `applyMaxTokens`
+   * leitet nur aus den ersten beiden ein `max_tokens` ab.
+   */
+  source: ContextSource
+  /**
+   * Der Schluessel, unter dem die Wahl des Nutzers gespeichert wird
+   * (`<baseUrl>|<modelId>`). Leer, wo es keine modellgenaue Wahl gibt.
+   */
+  windowKey: string
+  /**
+   * Die gespeicherte Wahl, die ueber dem laufenden Fenster des Servers lag und
+   * darauf geklemmt wurde (0 oder fehlend = nichts geklemmt). Nur der eigene
+   * OpenAI-kompatible Endpunkt kennt diesen Fall: Ollama, LM Studio und der
+   * LU-Motor laden bei einer Wahl neu, ein fremder Server nicht.
+   */
+  clampedFrom?: number
+}
+
+/** What the hook reports while there is no model, or none resolved yet. */
+const NO_CONTEXT: ActiveContext = {
+  provider: 'unknown', contextWindow: 0, modelMax: 0, sendWindow: 0, isTrue: false,
+  adjustable: false, source: 'guess', windowKey: '',
+}
+
+/** Der Client zu einem Modellnamen, ohne zu werfen, wenn der Slot fehlt. */
+function safeProviderFor(modelName: string): { provider: ProviderClient | null; modelId: string } {
+  try {
+    const { provider, modelId } = getProviderForModel(modelName)
+    return { provider, modelId }
+  } catch {
+    return { provider: null, modelId: displayModelName(modelName) }
+  }
 }
 
 /**
@@ -44,15 +86,42 @@ export interface ActiveContext {
  *
  * `reloadTick` lets the dropdown force a re-read right after it reloads a model.
  */
+/**
+ * Woher das Fenster eines ferngesteuerten Modells stammt.
+ *
+ * R2-5: hier stand `?? 'probe'`, und "probe" heisst im Werkzeugtext des
+ * Zaehlers "from server". Antwortet der Anbieter gar nicht, faellt `max` aber
+ * auf die KNOWN_CONTEXT-Tabelle dieses Hauses, auf die Namensheuristik oder
+ * ganz auf die 4096 aus `context-compaction.ts`. Der Nutzer las dann eine
+ * geratene Zahl als Auskunft des Betreibers und richtete seinen Sendedeckel
+ * danach. Eine Auskunft ist es nur, wenn der Anbieter sie wirklich gegeben hat
+ * oder wenn es der eigene Katalog ist; sonst steht dort "estimated", was
+ * `SOURCE_LABEL.guess` schon sagt.
+ */
+export function remoteWindowSource(
+  providerId: string,
+  resolved: ContextSource | undefined,
+  max: number,
+): ContextSource {
+  if (resolved) return resolved
+  return providerId === 'lu-cloud' && max > 0 ? 'probe' : 'guess'
+}
+
 export function useActiveContextWindow(reloadTick = 0): ActiveContext {
   const activeModel = useModelStore((s) => s.activeModel)
   const override = useSettingsStore((s) => s.settings.contextWindowOverride)
   const builtinCtx = useSettingsStore((s) => s.settings.builtinEngine.ctx)
   const sendWindowTokens = useSettingsStore((s) => s.settings.codexSendWindowTokens)
   const capEnabled = useSettingsStore((s) => s.settings.contextDecay)
-  const [state, setState] = useState<ActiveContext>({
-    provider: 'unknown', contextWindow: 0, modelMax: 0, sendWindow: 0, isTrue: false, adjustable: false,
-  })
+  // The resolved window carries the model it was resolved FOR. That tag does
+  // two jobs: the "no model" case becomes a derivation instead of a setState
+  // fired from the effect body (React 19 `set-state-in-effect`), and a model
+  // switch no longer reports the PREVIOUS model's window during the probe.
+  // The second one matters for this hook in particular — everything above is
+  // about the counter never lying, and "62k of 262k" under a model that has
+  // 8k is exactly the lie. Unresolved reads as unknown, which is the state
+  // every consumer already handles on mount.
+  const [resolved, setResolved] = useState<{ model: string; ctx: ActiveContext } | null>(null)
 
   // Re-read whenever a model reload finishes anywhere (the Context dropdown
   // fires this), so every consumer — counter AND dropdown — reflects the new
@@ -65,12 +134,10 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
   }, [])
 
   useEffect(() => {
-    if (!activeModel) {
-      setState({ provider: 'unknown', contextWindow: 0, modelMax: 0, sendWindow: 0, isTrue: false, adjustable: false })
-      return
-    }
+    if (!activeModel) return
     let cancelled = false
     const providerId = getProviderIdFromModel(activeModel)
+    const setState = (ctx: ActiveContext) => setResolved({ model: activeModel, ctx })
 
     ;(async () => {
       // ── Ollama: num_ctx is per-request, so what we send == what runs. ──
@@ -86,6 +153,8 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
           sendWindow: ollamaCtx,
           isTrue: true,
           adjustable: true,
+          source: override > 0 ? 'user' : max > 0 ? 'probe' : 'guess',
+          windowKey: '',
         })
         return
       }
@@ -110,11 +179,18 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             sendWindow: status.ctx,
             isTrue: true,
             adjustable: true,
+            // Der laufende Motor hat gesagt, mit welchem -c er startete.
+            source: 'probe',
+            windowKey: '',
           })
         } else {
           // Managed but not up (offloaded / before first send): the next
           // start uses the tuning value, so that IS the honest prediction.
-          const nextCtx = builtinCtx > 0 ? builtinCtx : 8192
+          // Dieselbe Konstante, mit der der Motor wirklich startet
+          // (lib/builtin-ctx). Hier stand 8192 als Zahl: wer die Konstante auf
+          // 16384 setzt, bekaeme sonst eine Klapplade, die 16K sagt, und einen
+          // Zaehler, der weiter durch 8192 teilt.
+          const nextCtx = builtinCtx > 0 ? builtinCtx : ENGINE_DEFAULT_CTX
           setState({
             provider: 'builtin',
             contextWindow: nextCtx,
@@ -122,6 +198,9 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             sendWindow: nextCtx,
             isTrue: false,
             adjustable: true,
+            // Eine Vorhersage des naechsten Starts, kein Messwert.
+            source: 'guess',
+            windowKey: '',
           })
         }
         return
@@ -146,6 +225,43 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
             sendWindow: lmCtx,
             isTrue: loaded > 0,
             adjustable: true,
+            source: loaded > 0 ? 'probe' : override > 0 ? 'user' : 'guess',
+            windowKey: '',
+          })
+          return
+        }
+      }
+
+      /*
+       * GH #129: jeder ANDERE OpenAI-kompatible Server auf diesem Rechner oder
+       * im LAN. llama.cpp, vLLM, KoboldCpp, text-generation-webui, Jan.
+       *
+       * Bis hierher fielen sie alle in den Cloud-Zweig unten, und der tut
+       * zweierlei, was fuer eine eigene Maschine falsch ist: er nennt das
+       * Fenster nicht verstellbar (also kein Waehler, obwohl der Nutzer der
+       * Einzige ist, der die Zahl kennt), und er zieht den BEZAHLTEN
+       * Sendedeckel ab, obwohl hier niemand etwas bezahlt. Beim Melder ergab
+       * das aus einer geratenen 8192 die Anzeige "6.4K" (8192 mal 0,8, geteilt
+       * durch 1024) neben einem Modell mit 262144.
+       */
+      if (providerId === 'openai' && isLanOpenAiBackend()) {
+        const { provider, modelId } = safeProviderFor(activeModel)
+        const resolved = provider?.getContextWindow
+          ? await provider.getContextWindow(modelId).catch(() => null)
+          : null
+        if (cancelled) return
+        if (provider && resolved && resolved.tokens > 0) {
+          const win = resolveActiveWindow({ resolved, localBackend: true })
+          setState({
+            provider: 'custom',
+            contextWindow: win.contextWindow,
+            modelMax: win.modelMax,
+            sendWindow: win.sendWindow,
+            isTrue: win.isTrue,
+            adjustable: win.adjustable,
+            source: win.source,
+            windowKey: provider.contextWindowKey?.(modelId) ?? '',
+            clampedFrom: win.clampedFrom,
           })
           return
         }
@@ -155,7 +271,11 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
       // DEFAULT_CONTEXT_CAP and the local num_ctx override are local-runtime
       // levers — applying them here would falsify the denominator for
       // 128k-context hosted models. ──
-      const max = await getModelMaxTokens(activeModel).catch(() => 4096)
+      const { provider: cloudClient, modelId: cloudId } = safeProviderFor(activeModel)
+      const cloudResolved = cloudClient?.getContextWindow
+        ? await cloudClient.getContextWindow(cloudId).catch(() => null)
+        : null
+      const max = cloudResolved?.tokens || await getModelMaxTokens(activeModel).catch(() => 4096)
       if (cancelled) return
       setState({
         provider: 'cloud',
@@ -168,14 +288,24 @@ export function useActiveContextWindow(reloadTick = 0): ActiveContext {
           modelWindow: max,
           sendWindowTokens,
           capEnabled,
+          // Der Zweig oben kehrt nur um, wenn der eigene Server ein Fenster
+          // GENANNT hat. Sagt er keins, faellt er bis hierher durch, und ohne
+          // diese Zeile bekaeme er dann doch den bezahlten Deckel.
+          localBackend: sendsToALanBackend(providerId),
         }),
         isTrue: false,
+        // Aus der Ferne ist das Fenster keine Sache des Nutzers: es gehoert
+        // einer fremden Bereitstellung, und der Sendedeckel ist hier der
+        // Hebel, der den Nenner regelt.
         adjustable: false,
+        // Woher die Zahl kommt, auch wenn sie hier niemand verstellen kann.
+        source: remoteWindowSource(providerId, cloudResolved?.source, max),
+        windowKey: '',
       })
     })()
 
     return () => { cancelled = true }
   }, [activeModel, override, builtinCtx, sendWindowTokens, capEnabled, reloadTick, reloadBump])
 
-  return state
+  return activeModel && resolved?.model === activeModel ? resolved.ctx : NO_CONTEXT
 }

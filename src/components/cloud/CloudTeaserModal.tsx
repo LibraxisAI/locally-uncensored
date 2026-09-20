@@ -5,7 +5,9 @@
 // explicitly cloud-tagged surfaces), never shows in cloud mode, and the
 // footer link turns the whole discovery layer off (Settings can re-enable).
 
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import { X, Cloud, Sparkles, MonitorDown } from 'lucide-react'
 import { useUIStore, type CloudTeaserTarget } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -13,6 +15,9 @@ import { cloudModelById } from '../../stores/cloudCatalogStore'
 import { useCreateStore, type CreateIntent } from '../../stores/createStore'
 import { isIntentAvailable } from '../create/experimental/intents'
 import { isMlxImageHost } from '../../api/mlx-image'
+import { openExternal } from '../../api/backend'
+import { CLOUD_BASE } from '../../api/cloud/config'
+import { getMaxVramGb } from '../../lib/hardware'
 
 interface TeaserCopy {
   title: string
@@ -53,14 +58,26 @@ const INTENT_COPY: Record<Extract<CloudTeaserTarget, { surface: 'intent' }>['int
 export function CloudTeaserModal() {
   const target = useUIStore((s) => s.cloudTeaser)
   const setCloudTeaser = useUIStore((s) => s.setCloudTeaser)
-  const setCloudGateOpen = useUIStore((s) => s.setCloudGateOpen)
   const setIntent = useCreateStore((s) => s.setIntent)
   const { updateSettings } = useSettingsStore()
   const teasersEnabled = useSettingsStore((s) => s.settings.cloudTeasersEnabled)
+  // The card's own number (David, 2026-09-07): "Your GPU has 6 GB" says why
+  // the tool is greyed out better than any adjective. Read once per opening,
+  // from the same detect_gpus the hardware settings use; null when nothing
+  // was found, and then the line falls back to the wording without a number.
+  const [gpuGb, setGpuGb] = useState<number | null>(null)
+  useEffect(() => {
+    if (!target) return
+    let alive = true
+    void getMaxVramGb().then((gb) => {
+      if (alive) setGpuGb(gb > 0 ? Math.round(gb) : null)
+    })
+    return () => { alive = false }
+  }, [target])
 
   // One-time onboarding (David 2026-07-19): the Cloud discovery layer is meant
   // to appear ONCE per user, never again — not after updates either. Any
-  // dismissal of this sheet (button, backdrop, X, Try local / Try cloud) retires
+  // dismissal of this sheet (button, backdrop, X, Try local / Get LU Cloud) retires
   // the whole discovery layer permanently; the persisted flag survives updates,
   // and Settings can re-enable it. Cloud-only *features* (upscale / eraser) stay
   // accessible regardless — their sheet renders on tap, not on this flag.
@@ -91,6 +108,8 @@ export function CloudTeaserModal() {
           }
         : null
 
+
+  useDismissOnEscape(!!target && !!copy, close)
   return (
     <AnimatePresence>
       {target && copy && (
@@ -132,23 +151,27 @@ export function CloudTeaserModal() {
               </div>
               <p className="text-[0.7rem] leading-relaxed text-gray-400">{copy.line}</p>
               <p className="text-[0.62rem] leading-relaxed text-gray-500">
+                {gpuGb !== null && `Your GPU has ${gpuGb} GB. `}
                 {localLane
                   ? 'Runs on your PC with downloaded models, or on LU Cloud where datacenter GPUs do the heavy lifting.'
-                  : 'Runs on LU Cloud. Your PC stays cool while datacenter GPUs do the heavy lifting.'}
+                  : 'Runs on LU Cloud, where datacenter GPUs do the heavy lifting and VRAM is not the limit.'}
               </p>
               <div className="flex items-center gap-2 pt-1">
                 <button
                   onClick={() => {
-                    // 2.6.3 B5: intent teasers used to detour through an
-                    // example-video popup before the gate. That stage is gone
-                    // (David 2026-08-04), so both surfaces take the same path
-                    // the model rows always took, one click shorter.
+                    // Straight into signup and checkout with Hosted preselected
+                    // (David, 2026-09-07: "die Pricing-Seite ist eine
+                    // Entscheidung zu viel"). Until 2.6.8 this opened
+                    // CloudGateModal, which asks for a login before it shows a
+                    // single price. The src tag names the card size, so the
+                    // funnel on the server can say what this button brings.
                     close()
-                    setCloudGateOpen(true)
+                    const src = gpuGb !== null ? `gpu${gpuGb}` : 'gpu-unknown'
+                    void openExternal(`${CLOUD_BASE}/checkout/start?plan=hosted&src=${src}`)
                   }}
                   className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg bg-white text-black text-[0.7rem] font-semibold hover:bg-gray-200 transition-colors"
                 >
-                  <Sparkles size={12} /> {localLane ? 'Try cloud' : 'See plans'}
+                  <Sparkles size={12} /> Get LU Cloud
                 </button>
                 {localLane && (
                   <button
@@ -219,8 +242,12 @@ function EraserDemo() {
   return (
     <Stage>
       <div className="relative w-24 h-16 rounded-lg bg-gradient-to-br from-emerald-800/60 to-emerald-600/40">
+        {/* Der Gegenstand, den der Radierer wegnimmt. Er war gelb, ohne dass
+            hier irgendetwas zu warnen waere: reine Deko. Sky gehoert zur
+            Palette dieses Fensters (violet, sky, fuchsia, rose) und ist als
+            volle Flaeche noch an keinen anderen Demo-Gegenstand vergeben. */}
         <motion.div
-          className="absolute left-3 bottom-3 w-6 h-8 rounded-sm bg-amber-400/80"
+          className="absolute left-3 bottom-3 w-6 h-8 rounded-sm bg-sky-300/90"
           animate={{ opacity: [1, 1, 0, 0, 1] }}
           transition={{ ...LOOP, duration: 3, times: [0, 0.35, 0.55, 0.85, 1] }}
         />

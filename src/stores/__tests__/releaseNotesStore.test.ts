@@ -12,7 +12,8 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
-import { RELEASE_NOTES, releaseNoteFor } from '../../lib/release-notes'
+import { RELEASE_NOTES, releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
+import { CLOUD_PITCH, CLOUD_REFUSAL_LINE, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
@@ -22,6 +23,17 @@ const KNOWN = RELEASE_NOTES[0].version
 const UNKNOWN = '9.9.9'
 
 beforeEach(() => useReleaseNotesStore.setState({ lastNotesVersion: null }))
+
+function proseOf(version: string): string {
+  const note = releaseNoteFor(version)
+  return [
+    note?.headline ?? '',
+    ...(note?.lines ?? []),
+    ...(note?.details ?? []).flatMap((s) => s.items),
+  ]
+    .join('\n')
+    .toLowerCase()
+}
 
 describe('the notes table', () => {
   it('has at least one entry, so the rest of this file means something', () => {
@@ -54,39 +66,279 @@ describe('the notes table', () => {
       readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
     ).version as string
     expect(releaseNoteFor(shipping), `no release note for ${shipping}`).toBeDefined()
-    expect(RELEASE_NOTES[0].version, 'the shipping version belongs at the top').toBe(shipping)
+    // Ueber der laufenden Version darf ein ENTWURF stehen, und nur ein
+    // Entwurf: alles davor muss eine hoehere Version sein. Damit bleibt die
+    // urspruengliche Absicherung (kein stilles Release) und die naechste
+    // Notiz kann trotzdem fertig im Baum liegen, bevor jemand die Nummer
+    // hochzieht.
+    const order = RELEASE_NOTES.map((n) => n.version)
+    const at = order.indexOf(shipping)
+    expect(at, 'the shipping version is missing from the table').toBeGreaterThanOrEqual(0)
+    const cmp = (v: string) => v.split('.').map(Number)
+    for (const draft of order.slice(0, at)) {
+      const [a, b, c] = cmp(draft)
+      const [x, y, z] = cmp(shipping)
+      expect(a * 1e6 + b * 1e3 + c, `${draft} sits above ${shipping} but is not newer`)
+        .toBeGreaterThan(x * 1e6 + y * 1e3 + z)
+    }
   })
 
   it('the shipping entry covers what actually shipped, not the state it was written in', () => {
     // The existence guard above has a blind spot: an entry written early stays
     // green while the branch moves on, so the shipping note is pinned to the
-    // headline features of the release it ships with. For 2.6.7 those are the
-    // honest installed verdict, the built-in engine start on a fresh install,
-    // the update that keeps chats with rotating backups, the system prompt
-    // order for strict templates, the AMD/ROCm and cu130 channels, the Debian
-    // file collision and the hosted history trim, and each anchor below names
-    // one of them, so a note that forgets them fails here.
-    // The late rounds added three more that the early entry could not know:
-    // the honest render phases (sampling), the ComfyUI that restarts itself,
-    // and the AMD detection on Windows after Microsoft removed wmic.
+    // headline features of the release it ships with. For 2.6.8 those are the
+    // effort control on reasoning models, GLM 5.3 in the cloud catalogue, the
+    // built-in engine renamed to LU Engine, the engine that steps off a taken 8127, the model that stays Installed, the
+    // ComfyUI installer that repairs its own environment, the model folder
+    // that is finally read, the CivitAI key field, the HIP SDK on Windows with
+    // its vram_total mix-up, the Linux packages that name libvulkan1, the
+    // Coding Agent working directory, Document Chat in Cloud mode, the prompt
+    // history that clears, the side panel that folds away, and the ComfyUI
+    // requirements.txt that is named when it cannot be used. Each anchor
+    // below names one of them, so a note that forgets one fails here.
+    // The house formula for hardware nobody here owns is pinned too: a claim
+    // we could not run on real hardware says so in those words.
+    // 2.6.9 shipped on top of it, so the 2.6.8 anchors now pin the 2.6.8 entry
+    // by version and the shipping entry gets its own list below.
+    const shipping = '2.6.8'
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      'effort', 'glm 5.3', 'installed', 'lu engine', '8127',
+      'repair environment', 'model storage', 'civitai', 'hip sdk',
+      'vram_total', 'libvulkan1', 'working directory', 'document chat',
+      'prompt history', 'side panel', 'researched rather than proven', 'apple music', 'too big to scan',
+      'requirements.txt',
+      // A14 third review: "moves to a free port when 8127 is taken" reads on
+      // its own as if the engine then lives there. It does not, and the note
+      // has to say which one of the two it is.
+      'begins at 8127 again',
+      // A16 (A14-3a): the trip back to LM Studio is new visible behaviour, so
+      // it is in the note and pinned here.
+      'the way back is one click',
+      // A16 counter-check follow-up: the Ollama half of the same paragraph
+      // said the way back was "the provider card it always was". Ollama has a
+      // slot of its own and never leaves the picker, so the way back is a
+      // click, and sending a reader to Settings for it is a wrong instruction.
+      'never leave the picker',
+      // Discord-Ticket 007 (falcon bob, 01.09.): der Startfehler schickte ihn
+      // in eine Reparatur, die den Fehler gar nicht beheben kann. Beide
+      // Haelften gehoeren in die Notiz, die Ursache UND dass die Reparatur
+      // hier nicht mehr von selbst anlaeuft.
+      'the folder repair rebuilds',
+      'a repair that cannot fix it',
+      // Discord-Ticket 003 (anglefire, 03.09.): sein Windows-Benutzername
+      // steht ausserhalb des englischen Alphabets. Die Zahl bleibt mit
+      // Bezugspunkt, eine von acht, sonst sagt sie nichts.
+      'one step out of eight',
+      // Reddit (zenmasterdredd, 02.09.): AMD-Karte gefunden, Groesse nicht.
+      // Der Grund gehoert dazu, sonst liest es sich wie eine Marotte.
+      'without rocm installed',
+      'fixed carve-out',
+      // AMD-Messung auf echter Hardware (MI325X, 03.09.): aus "ungeprueft"
+      // wird "gemessen", und die zwei Funde, die nur echte Hardware liefert.
+      'measured on a rented amd instinct card',
+      'processing accelerator rather than as graphics',
+      'its gfx target was thrown away',
+      // Und die Zeile im Ausgabefenster, die die falsche Hardware nannte.
+      'no nvidia driver detected',
+      'reporting no usable card',
+      // Persona-Lauf 03.09.: deutsche Alltagssaetze erreichten die Werkzeuge
+      // nicht. Beide Faelle sind benannt, weil ein Kunde nur den Effekt sieht.
+      'schau im netz nach',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
+    // And the wrong instruction itself, named so it cannot quietly return.
+    expect(prose, 'the note sends Ollama users to the provider card again')
+      .not.toContain('the way back to ollama is the provider card')
+  })
+
+  it('the 2.6.9 entry names the rollback, the context menu and the Linux self-heal', () => {
+    // Same blind spot, next release: the shipping note is pinned to what
+    // 2.6.9 actually carries. Two Discord complaints about the wheel (the
+    // tools moved, the edge was cut off), the context menu David saw clipped
+    // himself, the AUR customer whose update asked for a password and died,
+    // the teaser that names the card's own VRAM, and the per-account count of
+    // the Cloud switch, which is new telemetry and therefore said out loud.
+    // 3.0.0 shipped on top of it, so these anchors pin the 2.6.9 entry by
+    // version and the shipping entry gets its own list below.
+    const shipping = '2.6.9'
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      'back to the 2.6.7 layout', 'nothing is cut off', 'opens upwards',
+      'signed appimage', 'without a password', 'pacman, dpkg and rpm',
+      'system password prompt', 'how much vram your own gpu has', 'hosted checkout',
+      'counted per account',
+      // The limitation 2.6.8 announced is still there, so it is still said.
+      'stays stopped until you press use',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
+    // 2.6.8 promised the engine would come back on its own in 2.6.9. It does
+    // not, so no entry may keep that promise alive.
+    for (const version of ['2.6.8', '2.6.9']) {
+      expect(proseOf(version), `${version} still promises the engine fix for 2.6.9`)
+        .not.toContain('2.6.9 brings the engine back')
+    }
+  })
+
+  it('the 3.0.0 entry names the measurement, the free Flash chat, the policy, the fixes and the open card', () => {
+    // Same blind spot, next release. The measurement says how many models
+    // carry the mark and that the newest one does not yet; Flash chat names
+    // its ceiling and that keys keep paying; the policy names the age step;
+    // and every fix merged on 11.09. (trainer, engine log and layers, the way
+    // back out of the cloud, Stop, Stop per chat, Code tab, the max tokens
+    // field, custom backend context and its running window, download
+    // progress) gets an anchor, plus the one report that stays open because
+    // nobody here owns the card.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    expect(shipping).toBe('3.0.0')
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      'without refusing', 'we asked them', 'carries no mark yet',
+      'no credits', '500,000', 'api keys always pay',
+      'content policy', 'decided by the server', 'animate button', 'sampling controls',
+      'libuv', 'exit code', 'runs on the cpu', 'stop means stop',
+      'why a folder was refused', 'cut off at the token limit',
+      'real context window', 'no guessed budget', '2 gb card',
+      // Welle 6, gemessen und gebaut am 11.09.: jeder Nachtrag im Fixes-Block
+      // bekommt seinen eigenen Anker, sonst faellt einer bei der naechsten
+      // Ueberarbeitung still heraus.
+      'small window above the prompt row', 'an x closes the window',
+      'forgets the remembered default', '~/agent-workspace',
+      'switching cloud off starts the lu engine again',
+      'stop in one chat no longer stops',
+      'another chat is still answering',
+      'replaces what is in it', '0512',
+      'the running one wins', 'shared chunk cache',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
+    // The old suffix must not be sold as a feature again.
+    expect(prose).not.toContain('(unrestricted)" mark')
+    // Kritiker 2, Rang A: drei Saetze des Blatts waren am Auslieferungskopf
+    // gemessen falsch. Jeder einzelne wird hier namentlich ferngehalten, denn
+    // ein Satz, der einmal zurueckkommt, kommt beim naechsten Zusammenfuehren
+    // wieder mit.
+    for (const wrong of [
+      // Bauer U: die Regler klappen nicht mehr auf, sie sind ein Fenster mit X.
+      'collapsed until you want them',
+      'sit next to the model picker, collapsed',
+      // T4 Punkt 5: der Arbeitsordner-Dialog hat drei Eintraege, keinen zum
+      // Vergessen. Vergessen wird ueber das x an der Pille.
+      'forgotten in the workspace dialog',
+      // Der Messer hat V4.1 Flash gemessen.
+      'no mark until it is measured',
+      // R6-2: niemand wird benachrichtigt. SAFETY_ALERT_WEBHOOK_URL steht auf
+      // dem Droplet nicht, `alertCsamBlock` steigt ohne Ziel sofort aus, und
+      // keine der 45 Migrationen legt eine Tabelle dafuer an. Uebrig bleibt
+      // eine Containerzeile, die niemand abonniert hat. Der Block selbst wird
+      // davon nicht schwaecher: die Ablehnung steht unveraendert im Satz.
+      'and reported',
+    ]) {
+      expect(prose, `${shipping}: still says "${wrong}"`).not.toContain(wrong)
+    }
+    // Die Ablehnung bleibt, und die zweite Haelfte des Satzes steht wortgleich.
+    expect(prose).toContain('refused on every request')
+    expect(prose).toContain('photograph of a real, identifiable person without their consent')
+  })
+
+  it('the Flash allowance on the sheet hangs on a RUNNING plan, not on money that once arrived', () => {
+    // Entscheid V3 vom 12.09.2026. Das Blatt mass die Freimenge daran, ob je
+    // gezahlt wurde ("an account that has never paid"), der Server misst sie
+    // seit heute am laufenden Abo. Ein gekuendigtes Abo las auf dem Blatt also
+    // weiter eine Zusage, die es nicht mehr bekommt. Der Satz steht hier
+    // zeichengleich mit der Kaufseite im Web.
+    const prose = proseOf('3.0.0')
+    expect(prose, 'the sheet does not carry the decided Flash sentence').toContain(
+      `${CLOUD_PITCH.flashModels} of the ${CLOUD_PITCH.chatModels} models in the catalogue cost no credits at all`
+      + ' in chat on an active paid plan, up to 500,000 input and output tokens per day.'
+      + ' api keys keep paying credits, and accounts without an active plan keep paying credits too.',
+    )
+    expect(prose, 'the sheet still measures the benefit by whether money ever arrived')
+      .not.toMatch(/never paid/)
+    expect(prose, 'the detail line still measures it that way').toContain('benefit of an active paid plan')
+  })
+
+  it('the model numbers on the 3.0.0 sheet are read from the catalogue, never typed', () => {
+    // Der Fund, der diesen Waechter erzwungen hat: das Blatt sagte "27 of the
+    // 46", waehrend das Freigabe-Tor auf DEMSELBEN Commit "27/47 chat"
+    // ausgab. Eine Zahl in der Prosa kann nicht laut falsch sein, sie sitzt
+    // einfach da, nachdem der Katalog weitergezogen ist.
+    //
+    // Darum zwei Haelften. Erstens: die Saetze werden aus den Konstanten
+    // gebaut, ein falsch getippter Nenner faellt hier auf. Zweitens: der
+    // Quelltext darf die Form "N of the N" gar nicht mehr enthalten, sonst
+    // liesse sich auch die HEUTE richtige Zahl wieder eintippen und bliebe
+    // stehen, wenn der Katalog sich bewegt.
+    const prose = proseOf('3.0.0')
+    // R2-10 und R6-5: der Nenner der Marke ist der MESSLAUF, nicht der
+    // Katalog. 27 von 47 behauptete, 20 Katalogmodelle seien gemessen worden
+    // und durchgefallen; gemessen wurden 46, und V4.1 Flash kam danach dazu.
+    // Der Katalog steht weiter im Blatt, aber in einem eigenen Halbsatz.
+    expect(SHEET_CHAT_MODELS, 'the mark denominator is the measurement run')
+      .toBe(CLOUD_PITCH.measuredChatModels)
+    expect(SHEET_CATALOGUE_MODELS, 'the catalogue half-sentence counts the catalogue')
+      .toBe(CLOUD_PITCH.chatModels)
+    expect(SHEET_MARKED_MODELS, 'sheet mark count is not the measured one')
+      .toBe(CLOUD_PITCH.unfilteredChatModels)
+
+    // R2-11: der Waechter baut seinen eigenen Satz aus denselben zwei
+    // Konstanten. Vorher stand der Nenner des Katalogs darin, der Waechter
+    // haette den falschen Nenner also mitgetragen statt ihn zu melden.
+    const phrase = `${CLOUD_PITCH.unfilteredChatModels} of the ${CLOUD_PITCH.measuredChatModels}`
+    expect(phrase).toBe('24 of the 46')
+    // Entscheid vom 12.09.2026: EIN Satz traegt die Aussage, und er sagt
+    // "in full". Vorher standen zwei Saetze mit zwei Formulierungen derselben
+    // Messung auf demselben Blatt, einer im Kurztext, einer im Ausklapper.
+    const satz = `${phrase.toLowerCase()} cloud chat models we measured answer in full without refusing, and only those carry the no refusals mark.`
+    expect(prose, 'the sheet does not carry the one mark sentence').toContain(satz)
+    expect(prose.split(satz).length - 1, 'the mark sentence stands exactly once').toBe(1)
+    expect(prose, 'the loose wording of the mark claim is back')
+      .not.toContain(`${phrase.toLowerCase()} answer in full.`)
+    expect(prose, 'the catalogue denominator is back on the mark sentence')
+      .not.toContain(`${CLOUD_PITCH.unfilteredChatModels} of the ${CLOUD_PITCH.chatModels}`)
+
+    const src = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../lib/release-notes.ts'), 'utf8',
+    )
+    const typed = [...src.matchAll(/\d+ of the \d+/g)].map((m) => m[0])
+    expect(typed, 'a model count typed into the sheet instead of read from CLOUD_PITCH')
+      .toEqual([])
+    const interpolations = src.split('${SHEET_MARKED_MODELS} of the ${SHEET_CHAT_MODELS}').length - 1
+    expect(interpolations, 'the one mention has to come from the constants').toBe(1)
+    // R2-45 und R5-44: keine ausgeschriebene Zahl und keine getippte
+    // Tausenderzahl mehr. Beide standen als Prosa neben derselben Zahl aus
+    // CLOUD_PITCH und konnten still auseinanderlaufen.
+    // Eng gefasst auf die Stelle, die getippt danebenstand: die Flash-Zahl als
+    // Zahlwort vor "models" oder "of those". Ein blankes /Twelve/ traefe auch
+    // die zwoelf Sekunden der Ladephase, die mit keinem Katalog wandern.
+    expect(src.match(/\bTwelve\b\s+(models|of those)/i),
+      'the flash model count written out instead of read').toBeNull()
+    expect(src.match(/\d{1,3}(,\d{3})+/), 'a token ceiling typed instead of read').toBeNull()
+  })
+
+  it('says nothing in the shipping note twice, word for word', () => {
+    // A14 third review: "The built-in engine is called LU Engine from now on."
+    // stood in `lines` and again in `details.Local`, identical to the letter.
+    // Two copies of one sentence drift apart at the next edit, and until they
+    // do, the reader meets the same statement twice in one popup. The summary
+    // lines are a summary; the details are the detail.
     const shipping = JSON.parse(
       readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
     ).version as string
     const note = releaseNoteFor(shipping)
-    const prose = [
-      note?.headline ?? '',
-      ...(note?.lines ?? []),
-      ...(note?.details ?? []).flatMap((s) => s.items),
-    ]
-      .join('\n')
-      .toLowerCase()
-    for (const anchor of [
-      'installed', 'built-in engine', 'backups', 'system prompt',
-      'rocm', 'cu130', 'microphone', 'debian', 'trimmed',
-      'sampling', 'restarts itself', 'wmic',
-    ]) {
-      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
-    }
+    // Long sentences only: a short one can legitimately repeat.
+    const sentences = (text: string) =>
+      text.split(/(?<=\.)\s+/).map((x) => x.trim().toLowerCase()).filter((x) => x.length > 30)
+    const inLines = new Set((note?.lines ?? []).flatMap(sentences))
+    const repeated = (note?.details ?? [])
+      .flatMap((s) => s.items)
+      .flatMap(sentences)
+      .filter((x) => inLines.has(x))
+    expect(repeated, 'said word for word in both places').toEqual([])
   })
 
   it('every file that carries the version carries the same one', () => {
@@ -116,12 +368,70 @@ describe('the notes table', () => {
     }
   })
 
+  /**
+   * David, 13.09.2026: das Blatt fuehrt mit dem Cloud-Block.
+   *
+   * Der Block ist die einzige Stelle, an der ein BESTEHENDER Kunde nach einer
+   * Aktualisierung vom Angebot erfaehrt, also steht er vor allem anderen und
+   * faellt staerker aus als der Rest. Seine Zahlen sind dieselben Konstanten
+   * wie im Verkaufs-Panel am Schalter; zwei Fassungen derselben drei Zahlen
+   * waeren genau der Fund, den dieser Waechter seit R2-11 fernhaelt.
+   */
+  it('the sheet leads with the Cloud block, and it is read, never typed', () => {
+    const note = releaseNoteFor('3.0.0')
+    expect(note?.cloud, 'the 3.0.0 sheet carries no Cloud block').toBeDefined()
+    expect(note!.cloud!.lines, 'the block writes its own version of the three lines')
+      .toEqual(cloudSalesLines())
+    // Nachtrag a: der Messsatz steht im selben Block wie im CHANGELOG, aus
+    // derselben Konstante, damit die zwei Flaechen nicht auseinanderlaufen.
+    expect(note!.cloud!.measured, 'the sheet carries no measured refusal sentence')
+      .toBe(CLOUD_REFUSAL_LINE)
+    expect(note!.cloud!.note, 'the subscriber sentence is not the shared one')
+      .toBe(CLOUD_SUBSCRIBER_LINE)
+
+    const src = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../lib/release-notes.ts'), 'utf8',
+    )
+    expect(src).toContain('lines: cloudSalesLines()')
+    expect(src).toContain('note: CLOUD_SUBSCRIBER_LINE')
+
+    const modal = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../components/release/ReleaseNotesModal.tsx'),
+      'utf8',
+    )
+    expect(modal).toContain('release-cloud-block')
+    expect(modal, 'the block has no way into the cloud').toContain('Turn on Cloud')
+    // Vor allem anderen: der Block steht im Quelltext vor der Ueberschrift
+    // des Blatts, und die Ueberschrift ist das erste, was sonst kam.
+    //
+    // Gegen die gerenderte Ueberschrift, nicht gegen die Zeichenkette: die
+    // Datei beginnt mit einem Kommentar, der "What is new" ebenfalls nennt,
+    // und gegen den stand der Block immer hinten.
+    expect(modal.indexOf('release-cloud-block'))
+      .toBeLessThan(modal.indexOf('What is new</h3>'))
+    // Der Knopf faellt auf denselben Weg zurueck wie der Schalter im Kopf.
+    expect(modal).toContain('setCloudGateOpen(true)')
+    expect(modal).toContain("updateSettings({ appMode: 'cloud' })")
+  })
+
+  it('and the rest of the sheet is unchanged, to the character', () => {
+    // Der Cloud-Block ist ein eigenes Feld und darf NICHT in die Prosa
+    // gerutscht sein: sonst haette er die Anker oben verschoben, und die
+    // bestehenden Saetze waeren nicht mehr zeichengleich.
+    const prose = proseOf('3.0.0')
+    expect(prose, 'the Cloud block leaked into the sheet prose')
+      .not.toContain('chat models with no refusals')
+    expect(prose, 'the subscriber sentence leaked into the sheet prose')
+      .not.toContain('more credits per euro')
+  })
+
   it('the modal renders the expander and the sections', () => {
     // Source guard, same pattern as the settings guards: the sheet must offer
     // Show all changes and map note.details, or the table above is dead data.
-    const { readFileSync } = require('node:fs')
-    const { resolve } = require('node:path')
-    const src = readFileSync(resolve(__dirname, '../../components/release/ReleaseNotesModal.tsx'), 'utf8')
+    const src = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../components/release/ReleaseNotesModal.tsx'),
+      'utf8',
+    )
     expect(src).toContain('Show all changes')
     expect(src).toContain('note.details.map')
     expect(src).toContain('section.items.map')

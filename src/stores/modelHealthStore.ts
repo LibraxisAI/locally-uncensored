@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { safeJSONStorage } from '../lib/storage-quota'
 
 /**
  * Tracks which installed Ollama models have stale manifests (rejected by
@@ -10,8 +11,9 @@ import { persist } from 'zustand/middleware'
  *   - Header Lichtschalter — knows without a load attempt that the model is stale
  *   - DiscoverModels — shows "Needs Refresh" badge instead of green "Installed"
  *
- * `dismissed` is session-only so the banner reappears next launch if stale
- * models remain. `lastScanTime` is persisted so we can skip re-scan for a
+ * `dismissed` is PERSISTED, as of 2.5.9 (a3b05a44): see the note on
+ * `partialize` below for why, and `setStaleModels` for the one thing that
+ * clears it again. `lastScanTime` is persisted so we can skip re-scan for a
  * cool-down window on app restart.
  */
 
@@ -39,17 +41,19 @@ export const useModelHealthStore = create<ModelHealthState>()(
       // runs once per launch, so clearing the flag unconditionally meant the
       // banner returned on every start over the same untouched model and
       // "dismiss" was decorative.
+      //
+      // R2-40: `same` fiel bei jeder Laengenaenderung, also auch beim
+      // SCHRUMPFEN. Wer ein veraltetes Modell aktualisierte, bekam den eben
+      // weggeklickten Hinweis fuer die uebrigen sofort wieder, obwohl die
+      // Beschriftung genau das ausschliesst: "Dismiss. It comes back only when
+      // a different model goes stale." Zurueckgesetzt wird deshalb nur, wenn
+      // wirklich ein Modell dazugekommen ist, das vorher nicht dabei war.
       setStaleModels: (models) =>
-        set((s) => {
-          const same =
-            s.staleModels.length === models.length &&
-            models.every((m) => s.staleModels.includes(m))
-          return {
-            staleModels: models,
-            lastScanTime: Date.now(),
-            dismissed: same ? s.dismissed : false,
-          }
-        }),
+        set((s) => ({
+          staleModels: models,
+          lastScanTime: Date.now(),
+          dismissed: models.some((m) => !s.staleModels.includes(m)) ? false : s.dismissed,
+        })),
       markFresh: (name) =>
         set((s) => ({ staleModels: s.staleModels.filter((m) => m !== name) })),
       setScanning: (scanning) => set({ scanning }),
@@ -59,6 +63,7 @@ export const useModelHealthStore = create<ModelHealthState>()(
     }),
     {
       name: 'locally-uncensored-model-health',
+      storage: safeJSONStorage(),
       // `dismissed` persists as of 2.5.9: the banner re-ran its startup scan and
       // came back on EVERY launch while a stale model sat on disk, so closing it
       // meant nothing. A fresh scan that finds stale models clears the flag

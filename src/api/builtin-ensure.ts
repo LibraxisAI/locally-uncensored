@@ -20,6 +20,7 @@ import { log } from '../lib/logger'
 import { useProviderStore } from '../stores/providerStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { builtinSlotStatus, type SlotStatus } from '../lib/builtin-slot-status'
+import { baseUrlNeedingEnginePort } from '../lib/engine-port'
 import { AGENT_CONTEXT_CAP } from '../lib/context-window'
 import { ENGINE_DEFAULT_CTX, preservedSwapCtx } from '../lib/builtin-ctx'
 import {
@@ -28,6 +29,8 @@ import {
   builtinModelMismatchMessage,
   builtinModelNameFromPath,
 } from '../lib/builtin-model-identity'
+import { hostOf, isLocalTransportFailure } from '../lib/local-backend-transport'
+import { announceEngineCpuFallback } from '../lib/engine-offload'
 
 interface EngineStatusLite {
   running: boolean
@@ -38,10 +41,23 @@ interface EngineStatusLite {
    *  not running. The ONLY honest answer to "which model is loaded": the
    *  `model` field of a request is a label llama-server ignores. */
   model_path?: string | null
+  /** Which port it really holds, and whether the app had to drop GPU offload
+   *  to get it serving. Both only so the fallback note below can be said from
+   *  the send path, which is the only status read the chat ever makes. */
+  port?: number | null
+  cpuOnly?: boolean
 }
 
 interface BundledList {
   models?: Array<{ name: string; path: string; ctx_train?: number | null }>
+}
+
+/** What `start_bundled_engine` / `swap_bundled_model` answer. `port` is the
+ *  port the engine ACTUALLY came up on, which since GH #118 need not be the
+ *  preferred one. */
+interface EngineStartResult {
+  status?: string
+  port?: number
 }
 
 // Coalesce concurrent sends (chat + title generation) into ONE health-check /
@@ -86,20 +102,64 @@ export function explainDeadEngine(err: unknown, baseUrl: string): unknown {
  */
 export function explainEngineTransportMessage(message: string, baseUrl: string): string | null {
   const msg = String(message ?? '')
-  const host = baseUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '')
-  const isTransport = /error sending request|connection refused|failed to fetch|ECONNREFUSED|tcp connect|proxy_localhost/i.test(msg)
-  if (!isTransport || !msg.includes(host.split(':')[0])) return null
+  const host = hostOf(baseUrl)
+  if (!isLocalTransportFailure(msg, baseUrl)) return null
   // The raw line still exists for a bug report, it just lives in the app log
   // now instead of in the chat bubble. House rule: no raw Rust error in front
   // of a user.
   log.warn('[builtin-engine] transport failure hidden behind a plain sentence', { raw: msg, host })
-  return `The built-in engine is not answering on ${host}. It is either still loading a model, failed to start, or was shut down. Wait for the model to finish loading and send again, or open Settings, AI Backends, Built-in Engine and start it there.`
+  return `The LU Engine is not answering on ${host}. It is either still loading a model, failed to start, or was shut down. Wait for the model to finish loading and send again, or open Settings, AI Backends, LU Engine and start it there.`
 }
 
 /** True when the `openai` slot is the app-managed built-in engine. */
 export function isManagedBuiltinSlot(): boolean {
   const cfg = useProviderStore.getState().providers.openai
   return !!cfg?.enabled && cfg.managed === true
+}
+
+/**
+ * The built-in slot exists, but the user turned it off in Settings.
+ *
+ * This is the second half of `isManagedBuiltinSlot`, and it matters because the
+ * two false cases mean opposite things. A slot that is not managed at all is
+ * someone else's endpoint and we have nothing to say about it. A managed slot
+ * that is switched off is our engine, deliberately stopped, and a send aimed at
+ * it can only fail. Saying so beats letting the request run into a dead port
+ * and explaining the wreck afterwards.
+ */
+export function builtinSlotSwitchedOff(): boolean {
+  const cfg = useProviderStore.getState().providers.openai
+  return !!cfg && cfg.managed === true && !cfg.enabled
+}
+
+/** What the chat says when the send was aimed at a switched-off engine. */
+export const BUILTIN_SLOT_OFF_MESSAGE =
+  'The LU Engine is switched off in Settings, AI Backends. Turn it back on there, or pick a model from another provider.'
+
+/**
+ * Point the managed slot at the port the engine really came up on.
+ *
+ * GH #118: the Rust side may now take the next free port when 8127 is held, so
+ * the one place that knows the answer is the start/status result. Without this
+ * the slot would keep asking 8127 and the user would get a refused connection
+ * to a healthy engine, which is the ticket's symptom with a different cause.
+ *
+ * Only the app's OWN managed slot on a loopback URL is ever touched, and only
+ * when the port really differs. Never throws: a slot that cannot be updated is
+ * not a reason to fail a start.
+ */
+export function syncBuiltinEnginePort(port: unknown): void {
+  try {
+    const store = useProviderStore.getState()
+    const cfg = store.providers.openai
+    if (!cfg?.enabled || cfg.managed !== true) return
+    const next = baseUrlNeedingEnginePort(cfg.baseUrl, port)
+    if (!next) return
+    log.info('[builtin-engine] the engine moved port, the slot follows', { from: cfg.baseUrl, to: next })
+    store.setProviderConfig('openai', { baseUrl: next })
+  } catch (err) {
+    log.warn('[builtin-engine] could not follow the engine port', { err })
+  }
 }
 
 /**
@@ -142,6 +202,12 @@ export async function builtinReloadNeeded(modelName: string): Promise<string | n
  * says, so "the engine is healthy" was never enough to send.
  */
 export async function ensureBuiltinEngineAlive(modelName: string): Promise<void> {
+  // Switched off by hand: nothing here may start it again, and nothing may let
+  // the send through either. Without this the request went to the dead port,
+  // the proxy failure lost its race against the stream's end marker, and the
+  // chat blamed the user's network for a switch the user had flipped
+  // (counter-check P1, 2026-09-04).
+  if (builtinSlotSwitchedOff()) throw new Error(BUILTIN_SLOT_OFF_MESSAGE)
   if (!isManagedBuiltinSlot()) return
   // Self-heal before an error message: a swap the app itself started is still
   // tearing down and restarting llama-server, and a send fired into that gap
@@ -176,6 +242,10 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
   } catch {
     return // non-Tauri context (tests/browser) — nothing to manage
   }
+  // The chat draws the standing line and never polls the engine, so this is
+  // the one read on that side of the app. Says nothing when there is nothing
+  // to say, and nothing twice about the same engine (lib/engine-offload).
+  announceEngineCpuFallback(status)
   // Healthy AND holding what the caller wants: the only case that may skip
   // out. An engine whose status carries no model_path cannot be judged, so it
   // counts as a match and the send proceeds exactly as it did before.
@@ -208,7 +278,7 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
     // on Windows 10 — they gave up on the built-in engine and moved to
     // Ollama). Say what is actually wrong instead.
     throw new Error(
-      `The built-in engine has no model file named "${bare}". It may have been deleted, moved, or the download did not finish. Open Models, install it again, then pick it in the chat.`,
+      `The LU Engine has no model file named "${bare}". It may have been deleted, moved, or the download did not finish. Open Models, Get new and download it again, then pick it in the chat.`,
     )
   }
 
@@ -222,6 +292,7 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
   // promised 32K (counter-check round 2, 2026-08-29). See lib/builtin-ctx.ts.
   const keepCtx = preservedSwapCtx({
     tuningCtx: settingsTuning?.ctx,
+    tuningChosen: settingsTuning?.ctxChosen,
     currentCtx: status?.ctx,
     ctxTrain: hit.ctx_train,
   })
@@ -231,7 +302,9 @@ async function loadBuiltinModel(modelName: string): Promise<void> {
   // the same model and tuning, so an engine that is merely still warming up is
   // never torn down and restarted for nothing.
   const cmd = status?.running && !rightModel ? 'swap_bundled_model' : 'start_bundled_engine'
-  await trackEngineSwap(backendCall(cmd, { modelPath: hit.path, tuning }))
+  syncBuiltinEnginePort(
+    (await trackEngineSwap(backendCall<EngineStartResult>(cmd, { modelPath: hit.path, tuning })))?.port,
+  )
   // The engine is a different process with a different ctx now. Tell the
   // header and the token counter to re-read it, so the number on screen is the
   // one llama-server actually started with even when the raise above was
@@ -282,7 +355,12 @@ export async function ensureBuiltinAgentCtx(modelName: string): Promise<void> {
   if (!isManagedBuiltinSlot()) return
   const settings = useSettingsStore.getState().settings
   const tuning = settings.builtinEngine as (typeof settings.builtinEngine) | undefined
-  if (tuning && typeof tuning.ctx === 'number' && tuning.ctx > 0 && tuning.ctx !== ENGINE_DEFAULT_CTX) {
+  // GH #129: die Marke zuerst. Ohne sie war "Nutzer hat 8K gewaehlt" von "nie
+  // angefasst" nicht zu unterscheiden, und der Deckel hob den Motor auf
+  // min(ctx_train, 32768) gegen den ausdruecklichen Wunsch. Jede andere Zahl
+  // war schon vorher eine Entscheidung.
+  if (tuning && typeof tuning.ctx === 'number' && tuning.ctx > 0 &&
+      (tuning.ctxChosen === true || tuning.ctx !== ENGINE_DEFAULT_CTX)) {
     return // explicit expert choice, do not second-guess it
   }
 
@@ -320,16 +398,27 @@ export async function ensureBuiltinAgentCtx(modelName: string): Promise<void> {
 
   const raised = { ...(tuning ?? {}), ctx: want }
   try {
-    await trackEngineSwap(backendCall(status?.running ? 'swap_bundled_model' : 'start_bundled_engine', {
-      modelPath: hit.path,
-      tuning: raised,
-    }))
+    // S2: this restart moves the engine like any other, so the slot has to be
+    // told. Without it an agent run that raised the context could leave the
+    // slot pointing at the port the engine had before a fallback.
+    syncBuiltinEnginePort(
+      (await trackEngineSwap(
+        backendCall<EngineStartResult>(
+          status?.running ? 'swap_bundled_model' : 'start_bundled_engine',
+          { modelPath: hit.path, tuning: raised },
+        ),
+      ))?.port,
+    )
     announceContextReload()
   } catch {
     refusedCtxByPath.set(hit.path, want)
     // Fall back to the previous tuning so the chat engine is not left dead.
     try {
-      await trackEngineSwap(backendCall('start_bundled_engine', { modelPath: hit.path, tuning }))
+      syncBuiltinEnginePort(
+        (await trackEngineSwap(
+          backendCall<EngineStartResult>('start_bundled_engine', { modelPath: hit.path, tuning }),
+        ))?.port,
+      )
       announceContextReload()
     } catch { /* the lazy self-heal on the next send takes over */ }
   }
@@ -399,7 +488,7 @@ export async function diagnoseBuiltinEngine(
     return {
       ok: false,
       repaired: false,
-      reason: `The built-in engine is not running and its model folder could not be read: ${errText(e)}`,
+      reason: `The LU Engine is not running and its model folder could not be read: ${errText(e)}`,
     }
   }
 
@@ -409,7 +498,7 @@ export async function diagnoseBuiltinEngine(
       ok: false,
       repaired: false,
       reason:
-        'The built-in engine is installed but has no chat model to load yet. Open Models, Discover and install one, then test again.',
+        'The LU Engine is installed but has no chat model to load yet. Open Models, Get new and install one, then test again.',
     }
   }
 
@@ -417,7 +506,7 @@ export async function diagnoseBuiltinEngine(
     return {
       ok: false,
       repaired: false,
-      reason: `The built-in engine is not running. ${runnable.length} model${runnable.length === 1 ? ' is' : 's are'} installed. Pick one in the chat model picker to start the engine.`,
+      reason: `The LU Engine is not running. ${runnable.length} model${runnable.length === 1 ? ' is' : 's are'} installed. Pick one in the chat model picker to start the engine.`,
     }
   }
 
@@ -426,16 +515,35 @@ export async function diagnoseBuiltinEngine(
       ? opts.preferModel.split('::')[1]
       : opts.preferModel
     : ''
-  const pick = runnable.find((m) => m.name === bare) ?? runnable[0]
+  // A caller that NAMES a model gets that model or an honest no. Falling
+  // through to runnable[0] would load a stranger's GGUF into VRAM and report
+  // success, and the caller's own pick would swap it right back out (review
+  // B1). Only a caller that named nothing accepts whatever is installed.
+  const pick = bare ? runnable.find((m) => m.name === bare) : runnable[0]
+  if (!pick) {
+    return {
+      ok: false,
+      repaired: false,
+      reason: `The LU Engine has no model file named "${bare}". It may have been deleted, moved, or the download did not finish. Open Models, Get new and download it again.`,
+    }
+  }
   try {
     const tuning = useSettingsStore.getState().settings.builtinEngine
-    await backendCall('start_bundled_engine', { modelPath: pick.path, tuning })
+    // Through the swap gate (S6): a send that arrives while this start is
+    // still loading has to wait it out instead of hitting the dead port. Every
+    // other start in this file is registered, and this one starts the engine
+    // from a button the user just pressed, so it is the likeliest of all to
+    // overlap with a send.
+    const started = await trackEngineSwap(
+      backendCall<EngineStartResult>('start_bundled_engine', { modelPath: pick.path, tuning }),
+    )
+    syncBuiltinEnginePort(started?.port)
     return { ok: true, reason: '', repaired: true }
   } catch (e) {
     return {
       ok: false,
       repaired: false,
-      reason: `The built-in engine could not start "${pick.name}": ${errText(e)}`,
+      reason: `The LU Engine could not start "${pick.name}": ${errText(e)}`,
     }
   }
 }

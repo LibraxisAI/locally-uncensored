@@ -1,4 +1,5 @@
 import type { AgentWorkspace } from './agent-workspace'
+import type { EffortLevel } from '../lib/effort'
 
 export type SearchProvider = 'auto' | 'brave' | 'tavily'
 
@@ -11,6 +12,23 @@ export type AppMode = 'local' | 'cloud'
 export interface BuiltinEngineTuning {
   /** `--ctx-size`. 0 = app default (8192). */
   ctx: number
+  /**
+   * Hat der Nutzer dieses `ctx` selbst gewaehlt?
+   *
+   * GH #129: die Voreinstellung dieses Feldes IST 8192, also war "vom Nutzer
+   * auf 8192 gesetzt" von "nie angefasst" nicht zu unterscheiden, und der
+   * Agentendeckel (AGENT_CONTEXT_CAP) hob den Motor trotzdem auf
+   * min(ctx_train, 32768). Wer auf einem schwachen Geraet ausdruecklich 8K
+   * waehlte, bekam beim Agentenlauf 32K und das Ruckeln, das der Melder
+   * beschreibt. Jeder ANDERE Wert war schon vorher als Entscheidung erkennbar,
+   * nur dieser eine nicht.
+   *
+   * Die Marke statt einer Aenderung der Voreinstellung: ein bestehendes Profil
+   * traegt die 8192 seit dem ersten Start, und sie nachtraeglich als Wahl zu
+   * lesen wuerde jeden Agentenlauf auf 8192 festnageln. Das war genau der
+   * Fehler Z36.
+   */
+  ctxChosen?: boolean
   /** Flash Attention: 'auto' (binary default), 'on', 'off'. */
   flashAttn: 'auto' | 'on' | 'off'
   /** KV-cache quantization for K/V. 'f16' = off. Quantized V needs flash attention. */
@@ -57,6 +75,18 @@ export interface Settings {
   personasEnabled: boolean
   thinkingEnabled: boolean
   /**
+   * How hard a reasoning model should think (2.6.8). One global rung, the same
+   * way thinkingEnabled is one global switch, and it reaches Chat, Agent mode
+   * and the Coding Agent alike.
+   *
+   * It only ever leaves the app for a model whose catalogue entry declares its
+   * own rungs (`reasoning_effort_levels`); everything else keeps sending what
+   * it sent before. The value is clamped onto the model's ladder in
+   * lib/effort.ts, so a wish this model has never heard of cannot become a 400
+   * and cannot become "think as hard as you possibly can" either.
+   */
+  reasoningEffort: EffortLevel
+  /**
    * Small-Model Mode (v2.5.0). Evidence-backed lean profile that maximises
    * tool-call reliability + context retention on small local models (3B-8B,
    * e.g. gemma4:e4b, Llama-3.2-3B, Qwen3-8B). When on it flips: a tighter
@@ -88,6 +118,22 @@ export interface Settings {
   /** Hard cap on ReAct loop iterations per user turn. 0 = unlimited. */
   agentMaxIterations: number
   /**
+   * Dieselben zwei Schranken, aber fuer einen delegierten Sub-Agenten.
+   *
+   * Getrennt von den beiden darueber, und das ist der Punkt: die Kappen des
+   * Hauptlaufs (400/200) sind grosszuegig, weil der Nutzer daneben sitzt und
+   * Stop druecken kann. Ein Sub-Agent laeuft ohne Zuschauer, in fremdem
+   * Auftrag, und seine Kappen sind darum eng (10/5). Beide aus einem Topf zu
+   * bedienen hiesse, entweder den Hauptlauf zu fesseln oder die Delegation
+   * von der Leine zu lassen.
+   *
+   * 0 heisst hier NICHT unbegrenzt, sondern "nimm die Vorgabe" — bei einer
+   * unbeaufsichtigten Schleife ist Unbegrenztheit kein Wunsch, den man aus
+   * Versehen aeussern koennen sollte.
+   */
+  subAgentMaxToolCalls: number
+  subAgentMaxIterations: number
+  /**
    * How many passes a `/loop` may run. 0 = unlimited, which is the default:
    * a loop the user asked to keep going should keep going until it is done or
    * they stop it (David 2026-07-25). The stop button is the brake, not a cap.
@@ -111,6 +157,21 @@ export interface Settings {
   /** User-side context-window override (forwarded as Ollama's num_ctx). 0 = auto. */
   contextWindowOverride: number
   /**
+   * Die Fensterwahl des Nutzers je Endpunkt UND Modell, in Tokens.
+   * Schluessel: `<baseUrl>|<modelId>` (lib/context-source.ts).
+   *
+   * GH #129: ein eigener OpenAI-kompatibler Server hat kein LU-seitiges
+   * Wissen ueber sein Fenster. Wo keine Abfrage antwortet, ist die Wahl des
+   * Nutzers die einzige Zahl, die stimmen kann. Je Modell und nicht global,
+   * weil `contextWindowOverride` Ollamas num_ctx ist und ein zweites Modell
+   * am selben Server ein anderes Fenster hat.
+   *
+   * Kein STORE_VERSION-Sprung noetig: das migrate im settingsStore mischt
+   * additiv, ein fehlender Schluessel liest sich als undefined, und
+   * `storedWindow` beantwortet das mit 0 ("Auto").
+   */
+  contextWindowByModel?: Record<string, number>
+  /**
    * Age decay for tool results plus the paid-provider send cap (2.6.6, plan
    * A1/A2). ON is the shipped behaviour: results older than the newest
    * iteration go out head+tail-capped and a step never sends more than
@@ -128,6 +189,24 @@ export interface Settings {
    * costs more. Local backends ignore it.
    */
   codexSendWindowTokens: number
+  /**
+   * Auto-compact trigger, as a fraction of the send window. 2.6.8.
+   *
+   * 0 IS THE FEATURE SWITCH, not a tuning value. Owner decision 2026-09-02,
+   * "einstellbar sonst aus": auto-compact replaces conversation history with a
+   * model's summary of it, and when that summary is wrong the user loses work
+   * silently. Nothing fires until someone sets a number here.
+   *
+   * Valid range [0.3, 0.95]; anything outside — including a stored profile
+   * from before this field existed, where it arrives as `undefined` — reads as
+   * off. The range and the reading both live in lib/compact-trigger.ts
+   * (MIN_THRESHOLD / MAX_THRESHOLD / usableThreshold), so this is a value, not
+   * a second rule.
+   *
+   * The manual `/compact` command does NOT consult this. It is the user asking
+   * for one compaction on purpose; the threshold governs only the automatic one.
+   */
+  autoCompactThreshold: number
   /**
    * Auto memory extraction on lu-cloud only with explicit opt-in (2.6.6, plan
    * A7): every extraction is a paid model call. Local and BYOK providers are

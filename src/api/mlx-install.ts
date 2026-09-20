@@ -74,10 +74,10 @@ async function awaitSlot(
 }
 
 /** Smallest model wins: the setup path should not pull 14 GB to prove it works. */
-function smallest<T extends { sizeGB: number; installed: boolean }>(models: T[]): T | null {
+function smallest<T extends { sizeBytes: number; installed: boolean }>(models: T[]): T | null {
   const missing = models.filter((m) => !m.installed)
   if (missing.length === 0) return null
-  return missing.reduce((a, b) => (b.sizeGB < a.sizeGB ? b : a))
+  return missing.reduce((a, b) => (b.sizeBytes < a.sizeBytes ? b : a))
 }
 
 /** The image-engine install already pre-pulls the smallest model. If any image
@@ -113,7 +113,7 @@ export async function installMlxStack(
     // The engine installer pre-pulls the starter. Null therefore means the
     // local image lane is already usable; do not fetch a second model.
     if (!pick) return
-    onProgress?.(`Downloading ${pick.name} (${pick.sizeGB} GB)…`)
+    onProgress?.(`Downloading ${pick.name} (${formatBytes(pick.sizeBytes)})…`)
     await installMlxImageModel(pick.id)
     useMlxInstallStore.getState().watch('image-model', pick.name)
     await awaitSlot(getMlxImageInstallStatus, `${pick.name} download`, onProgress, signal)
@@ -132,7 +132,7 @@ export async function installMlxStack(
   }
   const pick = smallest(await listVideoModels())
   if (!pick) return
-  onProgress?.(`Downloading ${pick.name} (${pick.sizeGB} GB)…`)
+  onProgress?.(`Downloading ${pick.name} (${formatBytes(pick.sizeBytes)})…`)
   await installVideoModel(pick.id)
   useMlxInstallStore.getState().watch('video-model', pick.name)
   await awaitSlot(getModelInstallStatus, `${pick.name} download`, onProgress, signal)

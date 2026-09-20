@@ -83,9 +83,12 @@ function idbRequest<T>(req: IDBRequest<T>): Promise<T> {
 }
 
 /** Save (or overwrite) the embedding for a memory entry. No-op without IDB. */
-export async function saveVector(id: string, record: MemoryVectorRecord): Promise<void> {
+export async function saveVector(id: string, record: MemoryVectorRecord, isCurrent: () => boolean = () => true): Promise<void> {
   if (!hasIDB()) return
   const store = await tx("readwrite")
+  // Check after opening the transaction, without yielding before the write.
+  // A delete or edit may have happened while the database was opening.
+  if (!isCurrent()) return
   await idbRequest(store.put(record, id))
 }
 
