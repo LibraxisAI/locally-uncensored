@@ -1,7 +1,17 @@
 // Desktop port: shared render types + intent mapping. The HTTP client (upload/
 // submit/poll/cancel against lu-labs.ai) lives in api/cloud/jobs.ts.
 
-import type { CreateIntent } from '../../stores/createStore'
+// intentToJob's parameter, kept as a LOCAL literal union rather than an
+// `import type { CreateIntent } from '../../stores/createStore'`. createStore
+// now imports the cloud catalog (cloudCatalogStore, itself typed against
+// RenderKind/RenderOp from this file) for addToGallery's backend gate, and a
+// type-only import back to createStore here would close that into a module
+// cycle (`npm run cycles`, madge, counts type-only edges too). The two sets
+// must be kept in sync by hand; CreateIntent in stores/createStore.ts is the
+// source of truth.
+type CreateIntentLike =
+  | 'image' | 'edit' | 'removebg' | 'video' | 'animate' | 'upscale' | 'eraser'
+  | 'character' | 'lipsync' | 'music' | 'extend' | 'motion'
 
 export type RenderKind = 'image' | 'video' | 'audio'
 // 'upscale'/'eraser' are WaveSpeed utility endpoints (super-resolution /
@@ -9,9 +19,12 @@ export type RenderKind = 'image' | 'video' | 'audio'
 // 2.5.8 adds the specialized ops behind the new Create categories: 'lipsync'
 // (talking character), 'extend' (continue a clip), 'motion' (motion transfer,
 // NOT face-swap — banned), 'music', 'tts' and 'lora-train' (Character-Studio).
+// 'studio' (2026-09): the guided Create-Studio path, a schema-driven
+// endpoint booked with `studio_options` and a server-confirmed quote, rather
+// than one of the fixed param shapes above.
 export type RenderOp =
   | 'generate' | 'edit' | 'removebg' | 'animate' | 'upscale' | 'eraser'
-  | 'lipsync' | 'extend' | 'motion' | 'music' | 'tts' | 'lora-train'
+  | 'studio' | 'lipsync' | 'extend' | 'motion' | 'music' | 'tts' | 'lora-train'
 
 // One shared compute-credit wallet — text + media draw from the same budget
 // (server shape: uselu /api/jobs/quota).
@@ -41,7 +54,7 @@ export interface CloudQuota {
  *  'character' maps per characterTab (train vs use) — see useCloudCreate; the
  *  default here is the training op, the use-surface submits a plain image
  *  generate with a `loras` reference. */
-export function intentToJob(intent: CreateIntent): { kind: RenderKind; op: RenderOp } {
+export function intentToJob(intent: CreateIntentLike): { kind: RenderKind; op: RenderOp } {
   switch (intent) {
     case 'edit':
       return { kind: 'image', op: 'edit' }
@@ -67,5 +80,50 @@ export function intentToJob(intent: CreateIntent): { kind: RenderKind; op: Rende
       return { kind: 'video', op: 'motion' }
     default:
       return { kind: 'image', op: 'generate' }
+  }
+}
+
+/** The neutral gallery-entry shape a finished cloud job produces before the
+ *  caller layers its own fields on top (prompt, label, and, for the
+ *  Composer's classic path, the actual local render params: sampler, steps,
+ *  seed, cfgScale, width, height, intent).
+ *
+ *  Web equivalent: lib/render/cloud-jobs.ts's `galleryItemFromJob`, which P5
+ *  did not port (studio-p5.md, "Offen fuer P9"). It ended up built twice
+ *  independently instead: once in PresetWorkshop.tsx (P6) and once inline in
+ *  useCloudCreate.ts (P7). P9 folds both into this single function, the one
+ *  place the portplan names for it.
+ *
+ *  Typed structurally against the job fields it actually reads, not against
+ *  `CloudJob` from api/cloud/jobs.ts: that file already imports RenderKind/
+ *  RenderOp FROM this one, so a type import back here would close a module
+ *  cycle (same reasoning as CreateIntentLike above). */
+export function galleryItemFromJob(job: {
+  id: string
+  kind: RenderKind
+  model: string
+  result_url: string | null
+  attestation: { quote: string; verify_url: string } | null
+}) {
+  return {
+    id: job.id,
+    type: job.kind,
+    filename: '',
+    subfolder: '',
+    negativePrompt: '',
+    model: job.model,
+    modelType: 'unknown' as const,
+    seed: 0,
+    steps: 0,
+    cfgScale: 0,
+    sampler: '',
+    scheduler: '',
+    width: 0,
+    height: 0,
+    batchSize: 1,
+    createdAt: Date.now(),
+    remoteUrl: job.result_url ?? undefined,
+    attestation: job.attestation,
+    jobId: job.id,
   }
 }

@@ -7,6 +7,28 @@ All notable changes to Locally Uncensored are documented here.
 A GPU without a measured free reading gets a safer plan, and Linux/AppImage
 installs stop losing environment variables to it.
 
+### Added
+
+- **Create-Studio, a new guided path on the cloud track.** A preset shelf next
+  to the usual Create tab walks a render from image to motion to sound, in
+  steps, each backed by any model that can do that step's job. Each step's
+  controls come straight from the picked model's own provider schema, and the
+  price shown is the one the provider actually confirms before Start, never a
+  formula guessed on this side. This needs a server change that has not
+  shipped on lu-labs.ai yet; until it does, the shelf stays hidden and every
+  Create tab behaves exactly as before. If a future server ever advertises
+  Studio without also fixing the two price-check routes, Create shows "This
+  feature needs a newer LU Cloud server. Try again later." instead of
+  guessing a price or booking one.
+- **Cloud video renders now offer exactly the clip lengths the picked model
+  actually supports**, read from the live catalog, instead of a fixed 5s/8s
+  pair for every model.
+- **A cloud render without a prompt (a presenter reading a script, for
+  example) still gets a real name in the gallery**, instead of an empty tile.
+- **Character LoRAs in Create now only offer the models actually trained for
+  that character's family**, so the picker cannot suggest a combination that
+  would fail to generate.
+
 ### Fixed
 
 - **The local engine now picks its CPU code path at startup**, so older

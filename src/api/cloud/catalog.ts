@@ -29,6 +29,11 @@ export async function getCatalog(): Promise<CloudCatalog> {
   // v=2: this build understands op-specialized models (trainers, lipsync,
   // voice, music, extend, motion) — without the flag the server serves only
   // the classic list so pre-2.5.8 clients never mis-list them.
+  //
+  // P3: no query bump for Studio. A server that knows Studio simply adds
+  // `api_schema`/`pricing`/`quote_required` to the entries this same v=2
+  // response already carries, and cloudCatalogStore/runCredits key off the
+  // PRESENCE of those fields, never a version number (portplan Abschnitt 4/7).
   const res = await cloudFetch('/api/jobs/catalog?v=2')
   return jsonOrError<CloudCatalog>(res)
 }

@@ -8,27 +8,35 @@ import { isMlxImageHost } from '../../../api/mlx-image'
 import { refreshResultUrl } from '../../../api/cloud/jobs'
 import { ICON_LG, ICON_STROKE_MARK } from '../../ui/icon-size'
 import { markGalleryItemAvailable } from './galleryUrl'
+import { galleryLabel } from '../../../lib/render/gallery-label'
 import { useComfyMedia } from './useComfyMedia'
 import { cn } from '../ui/cn'
 
 // The icon in the waiting circle says which PHASE the render is in, never
 // which device it runs on. The chip is the loading phase, the spark is
-// sampling. R14 Nebenbefund 2 read the chip as a CPU marker that had gone
-// missing, because the R13 screenshot caught a load and the R14 pair caught
-// two samplings. Checked in git: this mapping has not changed since the
-// surface was ported (eaeff304, 2026-07-04), so nothing was lost. The device
-// is said in words, by the line at the top of the Create tab.
+// sampling/idle, the arrow is decoding. R14 Nebenbefund 2 read the chip as a
+// CPU marker that had gone missing, because the R13 screenshot caught a load
+// and the R14 pair caught two samplings. The device is said in words, by the
+// line at the top of the Create tab.
 //
-// Das Chipsymbol und sein Ring waren gelb. Das war Schmuck fuer eine Phase
-// und nie eine Warnung, und genau solche Stellen haben Gelb in der App
-// bedeutungslos gemacht. Jetzt Sky, weil es im Wartekreis noch frei war:
-// Gruen gehoert dem Sampling, der Akzent dem Dekodieren, Grau dem Warten.
-// Die Regel dazu steht in lib/hinweis.ts.
+// 19.09.2026, Entscheid von David: das Warten traegt dasselbe Lila wie der
+// Rest der App, damit sichtbar ist, dass da etwas passiert. Sky fuer Laden,
+// Gruen fuer Sampling waren Schmuck fuer eine Phase, keine Warnung, und genau
+// solche Stellen haben Farbe in der App bedeutungslos gemacht. Die Phase sagt
+// jetzt allein das Symbol, nicht mehr die Farbe.
 function phaseIcon(phase: ProgressPhase) {
-  if (phase === 'loading-model' || phase === 'loading-clip' || phase === 'loading-vae') return <Cpu size={20} className="text-sky-300" />
-  if (phase === 'sampling') return <Sparkles size={20} className="text-green-300" />
+  if (phase === 'loading-model' || phase === 'loading-clip' || phase === 'loading-vae') return <Cpu size={20} className="text-lu-accent" />
   if (phase === 'decoding') return <ImageDown size={20} className="text-lu-accent" />
-  return <Sparkles size={20} className="text-gray-400" />
+  return <Sparkles size={20} className="text-lu-accent" />
+}
+
+// Wie schnell die Wellen laufen, sagt die Phase weiterhin. Laden ist der
+// laengste, unbestimmte Schritt (der langsamste Takt), Sampling der
+// sichtbarste Fortschritt (der schnellste).
+function phaseBeat(phase: ProgressPhase): number {
+  if (phase === 'loading-model' || phase === 'loading-clip' || phase === 'loading-vae') return 3
+  if (phase === 'sampling') return 1.2
+  return 2
 }
 
 /**
@@ -62,33 +70,37 @@ export function GeneratingView() {
   const progressText = useCreateStore((s) => s.progressText)
   const progress = useCreateStore((s) => s.progress)
   const isLoading = progressPhase === 'loading-model' || progressPhase === 'loading-clip' || progressPhase === 'loading-vae'
+  const beat = phaseBeat(progressPhase)
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8">
       <div className="space-y-6 flex flex-col items-center">
         <div className="relative w-16 h-16">
-          {isLoading ? (
-            <>
-              <motion.div className="absolute inset-0 rounded-full border border-sky-400/30" animate={{ scale: [1, 1.6], opacity: [0.5, 0] }} transition={{ duration: 3, repeat: Infinity, ease: 'easeOut' }} />
-              <div className="absolute inset-0 rounded-full border border-sky-400/20 flex items-center justify-center">
-                <motion.div animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}>{phaseIcon(progressPhase)}</motion.div>
-              </div>
-            </>
-          ) : progressPhase === 'sampling' ? (
-            <>
-              <motion.div className="absolute inset-0 rounded-full border border-green-400/30" animate={{ scale: [1, 1.8], opacity: [0.4, 0] }} transition={{ duration: 1.2, repeat: Infinity, ease: 'easeOut' }} />
-              <motion.div className="absolute inset-0 rounded-full border border-green-400/20" animate={{ scale: [1, 1.5], opacity: [0.3, 0] }} transition={{ duration: 1.2, repeat: Infinity, ease: 'easeOut', delay: 0.3 }} />
-              <div className="absolute inset-0 rounded-full border border-green-400/10 flex items-center justify-center">{phaseIcon(progressPhase)}</div>
-            </>
-          ) : (
-            <>
-              <motion.div className="absolute inset-0 rounded-full border border-white/20" animate={{ scale: [1, 1.8], opacity: [0.4, 0] }} transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' }} />
-              <motion.div className="absolute inset-0 rounded-full border border-white/15" animate={{ scale: [1, 1.5], opacity: [0.3, 0] }} transition={{ duration: 2, repeat: Infinity, ease: 'easeOut', delay: 0.5 }} />
-              <div className="absolute inset-0 rounded-full border border-white/10 flex items-center justify-center">{phaseIcon(progressPhase)}</div>
-            </>
-          )}
+          {/* Der Schein dahinter. Er atmet langsamer als die Wellen, sonst
+              flackert die ganze Flaeche im Takt mit. */}
+          <motion.div
+            aria-hidden
+            className="absolute -inset-8 rounded-full bg-lu-accent/25 blur-2xl"
+            animate={{ opacity: [0.3, 0.7, 0.3] }}
+            transition={{ duration: beat * 2, repeat: Infinity, ease: 'easeInOut' }}
+          />
+          {[0, 1, 2].map((i) => (
+            <motion.div
+              key={i}
+              aria-hidden
+              className="absolute inset-0 rounded-full border border-lu-accent/45"
+              style={{ boxShadow: '0 0 16px rgba(160, 148, 248, 0.45)' }}
+              animate={{ scale: [1, 1.95], opacity: [0.6, 0] }}
+              transition={{ duration: beat, repeat: Infinity, ease: 'easeOut', delay: (beat / 3) * i }}
+            />
+          ))}
+          <div className="absolute inset-0 rounded-full border border-lu-accent/30 bg-lu-accent/[0.07] flex items-center justify-center" style={{ boxShadow: '0 0 24px rgba(160, 148, 248, 0.3) inset' }}>
+            {isLoading ? (
+              <motion.div animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}>{phaseIcon(progressPhase)}</motion.div>
+            ) : phaseIcon(progressPhase)}
+          </div>
         </div>
-        <p className="t-body text-gray-400 tracking-wide">{progressText || 'Generating…'}</p>
+        <p className="t-body text-gray-300 tracking-wide">{progressText || 'Generating…'}</p>
         {isLoading && !isMlxImageHost() && <ColdLoadLine />}
         {progress > 0 && (
           <div className="w-56 h-1 bg-white/10 rounded-full overflow-hidden">
@@ -235,9 +247,7 @@ export function ResultView({ item, onFullscreen, onSendToEditor, onAnimate }: Re
         {isAudio ? (
           <div className="w-[420px] max-w-full flex flex-col items-center gap-3 p-6 rounded-[var(--radius-panel)] border border-white/[0.06] bg-white/[0.02]">
             <AudioLines size={26} className="text-gray-400" strokeWidth={ICON_STROKE_MARK} />
-            {item.prompt && (
-              <p className="t-body text-gray-400 text-center line-clamp-2">{item.prompt}</p>
-            )}
+            <p className="t-body text-gray-400 text-center line-clamp-2">{galleryLabel(item)}</p>
             <audio src={url} controls onError={onError} className="w-full" onLoadedData={() => markGalleryItemAvailable(item)} />
           </div>
         ) : isVideo ? (

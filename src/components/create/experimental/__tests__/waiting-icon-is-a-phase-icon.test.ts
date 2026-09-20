@@ -16,6 +16,15 @@
  * call it a repair. The device is stated in words by the Create tab banner
  * (comfyCpuBannerText), which round 14 made honest.
  *
+ * 19.09.2026 (Portplan Studio, Paket P5): David dropped the per-phase COLOR
+ * (sky for loading, green for sampling) in favor of one lu-accent purple
+ * everywhere, "damit sichtbar ist, dass da etwas passiert", see
+ * OutputView.tsx's phaseIcon/phaseBeat. Sampling and idle always rendered the
+ * same Sparkles icon as the fallback branch, so the now-pointless standalone
+ * `phase === 'sampling'` check was dropped with the color, not the mapping:
+ * the assertion below follows that fallback instead of a branch that no
+ * longer exists.
+ *
  * Run: npx vitest run src/components/create/experimental/__tests__/waiting-icon-is-a-phase-icon.test.ts
  */
 import { describe, it, expect } from 'vitest'
@@ -36,12 +45,16 @@ const body = (() => {
 })()
 
 describe('the waiting circle icon', () => {
-  it('marks the loading phases with the chip and sampling with the spark', () => {
+  it('marks the loading phases with the chip and sampling (the fallback) with the spark', () => {
     expect(body).toMatch(/phase === 'loading-model'[\s\S]*?<Cpu /)
     expect(body).toMatch(/phase === 'loading-clip'/)
     expect(body).toMatch(/phase === 'loading-vae'/)
-    expect(body).toMatch(/phase === 'sampling'[\s\S]*?<Sparkles /)
     expect(body).toMatch(/phase === 'decoding'[\s\S]*?<ImageDown /)
+    // No standalone 'sampling' branch any more: it fell through to the
+    // fallback Sparkles before the color unification too, so dropping the
+    // dead check changed nothing sampling ever showed.
+    expect(body).not.toMatch(/phase === 'sampling'/)
+    expect(body).toMatch(/return <Sparkles size=\{20\} className="text-lu-accent" \/>\s*$/)
   })
 
   it('NEGATIVE: it reads no device fact, so it cannot claim one', () => {
