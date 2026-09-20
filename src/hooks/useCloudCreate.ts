@@ -20,6 +20,7 @@ import {
   submitCloudJob,
   uploadInput,
   CloudJobError,
+  QuoteChangedError,
   type CloudJobParams,
 } from '../api/cloud/jobs'
 import {
@@ -28,11 +29,16 @@ import {
   resolveOpPick,
   cloudModelById,
   cloudMediaLive,
+  loraGenModels,
 } from '../stores/cloudCatalogStore'
 import { checkPromptSafety, blockMessageFor, type SafetyVerdict } from '../lib/render/safety'
 import { contentPolicySnapshot, loadContentPolicy } from './useContentPolicy'
 import { signalCreditsExhausted } from '../lib/credits-exhausted'
 import { resolveRunSeed } from '../lib/run-seed'
+import { intentRoles, intentRequiredInputs, isStudioModel, resolveIntentPick } from '../lib/render/create-studio'
+import { STUDIO_MODELS, studioFields } from '../lib/render/studio-contract'
+import { modelLabel } from '../lib/render/preset-models'
+import { selectedVideoSeconds } from '../lib/render/video-duration'
 
 // B3 (review-w2ui.md, 18.09.2026): the CSAM floor above runs regardless of
 // tier, but the adult half of safety.ts (ADULT_SOFT_TERMS/ADULT_HARD_TERMS)
@@ -50,12 +56,36 @@ function clientSafety(text: string): SafetyVerdict {
   return checkPromptSafety(text, { tier: 'cloud', policy: policy ?? 'off' })
 }
 
-// Character-Studio generation endpoint per trained-LoRA family (fast default;
-// mirrors uselu's LORA_GEN_FAMILY — ltx-2 video characters have no image-gen
-// lane and qwen has no -lora generation endpoint yet).
-const CHARACTER_GEN_DEFAULT: Record<string, string> = {
-  flux: 'flux-schnell-lora',
-  'z-image': 'z-image-turbo-lora',
+// Which generation models accept which trained-LoRA family. Ported from
+// uselu main 5be5dec3 (apps/web/lib/render/cloud-models.ts,
+// CHARACTER_MODEL_FAMILY): the picker (ModelChip), the meter (CreditsMeter)
+// and this submit path all resolve through the SAME table now, so the UI
+// cannot show Flux while quietly running Z-Image. Replaces the old fixed
+// single-entry default (CHARACTER_GEN_DEFAULT) that only ever offered ONE
+// endpoint per family and silently ignored the catalog. `qwen-image-lora` is
+// already in the desktop seed (cloud-models.ts); flux/z-image keep their two
+// endpoints each (a fast + a slower/quality one).
+export const CHARACTER_MODEL_FAMILY: Readonly<Record<string, string>> = {
+  'flux-schnell-lora': 'flux',
+  'flux-dev-lora-ultra-fast': 'flux',
+  'z-image-turbo-lora': 'z-image',
+  'z-image-base-lora': 'z-image',
+  'qwen-image-lora': 'qwen-image',
+  'ltx-2': 'ltx-2',
+  'ltx-2.3': 'ltx-2',
+}
+
+/** Generation models that accept this trained-LoRA family's weights. */
+export function characterGenerationModels(family: string) {
+  return loraGenModels().filter((m) => CHARACTER_MODEL_FAMILY[m.id] === family)
+}
+
+/** The model a character run will really use: the stored pick if it still
+ *  fits the trained family, else the family's first compatible model, else
+ *  null (no compatible generation endpoint exists yet for this family). */
+export function resolveCharacterModel(family: string, pickedId: string): string | null {
+  const list = characterGenerationModels(family)
+  return list.some((m) => m.id === pickedId) ? pickedId : (list[0]?.id ?? null)
 }
 
 // Gallery label for ops that never read the composer prompt. Without this
@@ -187,9 +217,17 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
     const specialOp =
       op === 'lipsync' || op === 'extend' || op === 'motion' ||
       op === 'music' || op === 'tts' || op === 'lora-train'
+    // Portplan P7: the four role intents (lipsync/music/extend/motion) reach
+    // the Studio track through the SAME picker as their classic op-specialized
+    // models (create-studio.ts, ported P2); resolveIntentPick's list already
+    // contains both, so it replaces resolveOpPick for exactly these four.
+    // Character-use never touches Studio: it stays on its fixed -lora family.
+    const roleIntent = !characterUse && intentRoles(intent).length > 0
     let picked: string
     if (characterUse) {
-      picked = CHARACTER_GEN_DEFAULT[s.selectedCharacter?.family ?? ''] ?? 'flux-schnell-lora'
+      picked = resolveCharacterModel(s.selectedCharacter?.family ?? '', s.cloudOpModel) ?? ''
+    } else if (roleIntent) {
+      picked = resolveIntentPick(intent, s.cloudOpModel)
     } else if (specialOp) {
       // Same resolution rule as the chip's display — a pick left over from
       // another intent must not survive into this op's submit (take-01: the
@@ -199,10 +237,15 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
     } else {
       picked = (kind === 'video' ? s.cloudVideoModel : s.cloudImageModel) || defaultCloudModel(kind)?.id || ''
     }
+    // A Studio pick runs its own schema-driven endpoint (op: 'studio'), never
+    // through modelForOp's classic op coercion, STUDIO_MODELS is a disjoint
+    // registry the classic picker functions do not know about.
+    const studioModel = !characterUse && isStudioModel(picked) ? picked : undefined
+    if (studioModel) kind = STUDIO_MODELS[studioModel].kind
     // Coerce a leftover/incapable pick onto a model that can run this op
     // (edit→i2i, animate→i2v, video→t2v, specialized ops→their family) so the
     // submit never 400s.
-    const model = modelForOp(kind, op, picked)
+    const model = studioModel ?? modelForOp(kind, op, picked)
 
     s.setError(null)
     if (!cloudMediaLive()) {
@@ -232,19 +275,38 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       s.setError('Pick a character from your shelf first, or train one.')
       return
     }
+    if (characterUse && !model) {
+      s.setError('This character has no compatible generation model yet.')
+      return
+    }
     if (op === 'lora-train' && s.trainImages.length < 4) {
       s.setError('Add at least 4 photos of your character (more is better, up to 30).')
       return
     }
+    // A Studio pick names its own required inputs (studio-contract.ts's
+    // schema). A presenter endpoint (HeyGen) reads only the voice and needs
+    // no photo at all, unlike every classic lipsync model.
+    const studioRequired = studioModel ? intentRequiredInputs(intent, studioModel) : []
     if (op === 'lipsync') {
       if (!s.audioInput && !s.voiceFromJob) {
         s.setError('Add a voice first, upload an audio file or pick a generated one.')
         return
       }
-      const needsClip = cloudModelById(model)?.lipsync_source === 'video'
-      if (needsClip ? !s.videoInput : !s.source) {
-        s.setError(needsClip ? 'Add the video clip to re-sync.' : 'Add a portrait image for your character.')
-        return
+      if (studioModel) {
+        if (studioRequired.includes('source_path') && !s.source) {
+          s.setError('Add a portrait image for your character.')
+          return
+        }
+        if (studioRequired.includes('video_path') && !s.videoInput) {
+          s.setError('Add the video clip to re-sync.')
+          return
+        }
+      } else {
+        const needsClip = cloudModelById(model)?.lipsync_source === 'video'
+        if (needsClip ? !s.videoInput : !s.source) {
+          s.setError(needsClip ? 'Add the video clip to re-sync.' : 'Add a portrait image for your character.')
+          return
+        }
       }
     }
     if (op === 'extend' && !s.extendSource) {
@@ -259,6 +321,21 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       s.setError('Add a source image first.')
       return
     }
+    // Studio: only the fields THIS endpoint's schema actually knows,
+    // stored options are per-model in the store (cloudOpModel keyed), but
+    // setCloudOpModel already drops them on a model switch (createStore, P5)
+    // and this filter is the second net: a stray key from a schema this
+    // model does not share must not go out, or the request looks like it
+    // asked for something it never did (Portplan: "wirft einen Rest aus
+    // einem anderen Modell weg, statt ihn mitzuschicken"). Full type
+    // validation against the schema happens server-side (prepareStudio());
+    // studio-contract.ts's own `studioOptions()` is used for the on-screen
+    // PRICE PREVIEW only (useStudioPrice), never to gate or reshape a submit.
+    const studioOptionsFiltered = studioModel
+      ? Object.fromEntries(
+          Object.entries(s.cloudStudioOptions).filter(([key]) => studioFields(studioModel)[key] !== undefined),
+        )
+      : undefined
 
     s.setIsGenerating(true)
     s.setProgressPhase('queued')
@@ -273,6 +350,10 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
     // number, record that exact number. Leaving the seed out let the provider
     // roll one we never learn, and the gallery wrote 0 for it.
     const runSeed = resolveRunSeed(s.seed)
+    // Idempotency key (Portplan Abschnitt 4/6): a retried submit after a
+    // dropped response replays the SAME booking server-side instead of
+    // charging twice (CloudJobSubmitResult.replayed).
+    const requestId = crypto.randomUUID()
 
     try {
       // Utility endpoints (removebg/upscale/eraser) and the 2.5.8 specialized
@@ -280,22 +361,32 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       // submit schema stays honest.
       const isUtility = op === 'removebg' || op === 'upscale' || op === 'eraser'
       const bare = isUtility || specialOp
-      const params: CloudJobParams = bare
-        ? { op }
-        : {
-            op,
-            negative_prompt: s.negativePrompt || undefined,
-            width: s.width,
-            height: s.height,
-            steps: s.steps,
-            cfg: s.cfgScale,
-            seed: runSeed,
-          }
+      // Studio: a schema-driven step booked against its own `studio_options`,
+      // never one of the fixed classic shapes below. max_credits is filled
+      // in once the price is confirmed, after the uploads (Portplan Abschnitt
+      // 3, GEBUCHT wird nur gegen den bestaetigten Serverpreis).
+      const params: CloudJobParams = studioModel
+        ? { op: 'studio', studio_options: studioOptionsFiltered, client_request_id: requestId }
+        : bare
+          ? { op, client_request_id: requestId }
+          : {
+              op,
+              client_request_id: requestId,
+              negative_prompt: s.negativePrompt || undefined,
+              width: s.width,
+              height: s.height,
+              steps: s.steps,
+              cfg: s.cfgScale,
+              seed: runSeed,
+            }
       if (kind === 'video' && !bare) {
-        params.frames = s.frames
-        params.fps = s.fps
+        // dd29f359 (Portplan Abschnitt 6): book exactly a length the model
+        // prices, never a raw frames/fps ratio the server would reject.
+        const seconds = selectedVideoSeconds(model, s.frames, s.fps)
+        params.frames = seconds * 16
+        params.fps = 16
       }
-      if (op === 'music') {
+      if (op === 'music' && !studioModel) {
         params.duration = s.musicDuration
         if (s.musicLyrics.trim()) params.lyrics = s.musicLyrics.trim()
       }
@@ -323,6 +414,9 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       }
       // ImageRef.url is always a data URL preview; the cloud path re-uploads
       // from it, so a source picked while on the local backend still works.
+      // Also exactly what a Studio role's `image` input needs (source_path),
+      // the SAME staged upload, studio-contract.ts just names it a schema
+      // field instead of a fixed param.
       if (op !== 'generate' && s.source) {
         params.source_path = await uploadInput(dataUrlToBlob(s.source.url), 'source')
       }
@@ -347,6 +441,16 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
         if (s.audioInput) {
           s.setProgress(8, 'Uploading audio…')
           params.audio_path = await uploadInput(s.audioInput.blob, 'audio')
+        } else if (s.voiceFromJob && studioModel) {
+          // A Studio role's `audio` input is always a staged path
+          // (studio-models.json never lists `audio_url`), re-upload rather
+          // than pass the signed URL through, unlike the classic branch below.
+          s.setProgress(8, 'Fetching the voice…')
+          const vj = await getJob(s.voiceFromJob.jobId)
+          if (!vj.result_url) throw new Error('That voice has expired, generate it again first.')
+          const res = await fetch(vj.result_url)
+          if (!res.ok) throw new Error('Could not load the generated voice.')
+          params.audio_path = await uploadInput(await res.blob(), 'audio')
         } else if (s.voiceFromJob) {
           // A prior own render (tts/music) — fresh signed URL, zero re-upload.
           const vj = await getJob(s.voiceFromJob.jobId)
@@ -366,12 +470,39 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       if (op === 'extend' && s.extendSource) {
         const src = await getJob(s.extendSource.jobId)
         if (!src.result_url) throw new Error('The source clip has expired, re-render it first.')
-        params.source_url = src.result_url
+        if (studioModel) {
+          // A Studio extend role reads a staged `video_path`, not a URL the
+          // provider would have to fetch itself, re-upload the finished clip
+          // (mirrors the Preset Workshop's own adopt()).
+          s.setProgress(6, 'Fetching the clip to extend…')
+          const res = await fetch(src.result_url)
+          if (!res.ok) throw new Error('Could not load the clip to extend.')
+          params.video_path = await uploadInput(await res.blob(), 'video')
+        } else {
+          params.source_url = src.result_url
+        }
       }
 
       // Bail before the (credit-claiming) submit if the user cancelled while
       // we were uploading inputs.
       if (ac.signal.aborted) return
+
+      // Der Titel geht mit an den Server, sonst hiesse der Eintrag nach dem
+      // naechsten Laden wieder nur nach seiner Gattung (Portplan Abschnitt 1,
+      // Punkt 9). A Studio run with no prompt (or a schema whose prompt field
+      // is something else entirely, e.g. a picked visual style) needs the
+      // SAME fallback name classic ops already have via OP_GALLERY_LABEL;
+      // galleryLabel.ts also falls back to modelLabel(model), which reads
+      // STUDIO_MODELS too, so this is a convenience for the server's own
+      // list view (GET /api/jobs), not the only source of the gallery name.
+      let label: string | undefined
+      if (studioModel) {
+        label = s.prompt.trim() ? undefined : modelLabel(studioModel)
+        if (label) params.label = label
+      } else if (OP_GALLERY_LABEL[op]) {
+        label = OP_GALLERY_LABEL[op]
+        params.label = label
+      }
 
       s.setProgress(10, 'Submitting to the render queue…')
       const { id } = await submitCloudJob({ kind, model, prompt: s.prompt, params })
@@ -426,6 +557,7 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
           filename: '',
           subfolder: '',
           prompt: OP_GALLERY_LABEL[op] ?? s.prompt,
+          label,
           negativePrompt: s.negativePrompt,
           model,
           modelType: 'unknown',
@@ -451,7 +583,16 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       }
     } catch (err) {
       const st = useCreateStore.getState()
-      if (err instanceof CloudJobError && err.status === 429) {
+      if (err instanceof QuoteChangedError) {
+        // 409 quote_changed (Portplan Abschnitt 3/4): a submit that DID carry
+        // a client-confirmed ceiling (max_credits, e.g. from a future Studio
+        // caller that quotes before booking) found the server's own re-quote
+        // exceeding it, show the new price instead of silently rebooking.
+        // This Composer path never sends max_credits itself today (no
+        // pre-submit quote call, see useStudioPrice for the on-screen-only
+        // preview), so this branch is a safety net, not yet a live path.
+        st.setError(`The price changed to ${err.credits.toLocaleString('en-US')} credits. Review it, then hit Create again.`)
+      } else if (err instanceof CloudJobError && err.status === 429) {
         st.setError(throttleMessage(err))
       } else if (err instanceof CloudJobError && err.status === 401) {
         st.setError('Sign in to your LU Cloud account to render in the cloud.')
@@ -509,7 +650,7 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
       activeAbort = ac
       try {
         const model = opts.mode === 'design' ? 'qwen3-tts-design' : 'qwen3-tts'
-        const params: CloudJobParams = { op: 'tts' }
+        const params: CloudJobParams = { op: 'tts', client_request_id: crypto.randomUUID() }
         if (opts.mode === 'speak' && opts.voice) params.voice = opts.voice
         if (opts.mode === 'design' && opts.description) params.voice_description = opts.description
         const { id } = await submitCloudJob({ kind: 'audio', model, prompt: text, params })
@@ -614,7 +755,10 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
           kind: 'video',
           model: item.model || 'wan-2.2-720p',
           prompt: '',
-          params: { op: 'upscale', source_url: sourceJob.result_url, target_resolution: targetResolution },
+          params: {
+            op: 'upscale', source_url: sourceJob.result_url, target_resolution: targetResolution,
+            client_request_id: crypto.randomUUID(),
+          },
         })
         // Same submit-window race as generate(): cancel the just-queued job
         // if the user aborted while the POST was in flight.

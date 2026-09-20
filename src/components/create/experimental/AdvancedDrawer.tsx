@@ -7,13 +7,22 @@ import {
   isT2VCapable,
 } from '../../../api/comfyui'
 import { ParamGroups } from './ParamGroups'
+import { StudioParams } from './StudioParams'
 
 export function AdvancedDrawer({
   open,
   onClose,
+  studioModel,
 }: {
   open: boolean
   onClose: () => void
+  /** Set only on the cloud Studio track (Portplan Abschnitt 3b): a Studio
+   *  model has no sampler, scheduler, VAE or LoRA list from ComfyUI, so it
+   *  REPLACES WorkflowFinder + ParamGroups below rather than adding to them.
+   *  ParamGroups.tsx itself stays untouched, e2e/create-expert-section.spec.ts
+   *  is the guard that this stays an ersetzung, not a new condition inside
+   *  ParamGroups' own showExpert. */
+  studioModel?: string
 }) {
   const mode = useCreateStore((state) => state.mode)
   const backend = useCreateStore((state) => state.backend)
@@ -73,15 +82,21 @@ export function AdvancedDrawer({
       title="Advanced settings"
       width={320}
     >
-      <ParamGroups />
+      {studioModel ? (
+        <StudioParams model={studioModel} />
+      ) : (
+        <>
+          <ParamGroups />
 
-      {backend === 'local' && modelName && (
-        <div className="border-t border-white/10 px-1 pb-4 pt-4">
-          <WorkflowFinder
-            modelName={modelName}
-            modelType={modelType}
-          />
-        </div>
+          {backend === 'local' && modelName && (
+            <div className="border-t border-white/10 px-1 pb-4 pt-4">
+              <WorkflowFinder
+                modelName={modelName}
+                modelType={modelType}
+              />
+            </div>
+          )}
+        </>
       )}
     </Drawer>
   )

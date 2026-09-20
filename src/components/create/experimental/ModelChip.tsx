@@ -1,11 +1,36 @@
 import { useCreateStore } from '../../../stores/createStore'
-import { useCloudCatalogStore, defaultCloudModel, opPickerModels, modelCostHint, isEditModel } from '../../../stores/cloudCatalogStore'
+import {
+  useCloudCatalogStore, cloudModelById, defaultCloudModel, opPickerModels, modelCostHint, isEditModel, shortCount,
+} from '../../../stores/cloudCatalogStore'
+import { intentPickerModels, intentRoles, createStudioCost, isStudioModel } from '../../../lib/render/create-studio'
+import { resolveCharacterModel, characterGenerationModels } from '../../../hooks/useCloudCreate'
+import type { RenderOp } from '../../../lib/render/cloud-jobs'
+import type { PresetModel } from '../../../lib/render/preset-models'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { useUIStore } from '../../../stores/uiStore'
 import { useContentPolicy } from '../../../hooks/useContentPolicy'
 import { Select, type SelectOption } from '../ui/Select'
 import { TYPE_BADGE } from './badges'
 import { resolveLocalOpPick, videoLaneModels } from '../../../api/comfyui'
+
+// Portplan P7: lipsync/music/extend/motion reach the Studio track through the
+// SAME picker as their classic op-specialized twins, one list, matching what
+// useCloudCreate.ts and CreditsMeter.tsx already resolve through.
+// intentPickerModels() (create-studio.ts, P2) already merges both worlds;
+// this only prices each row, since a PresetModel carries no `credits` field.
+function pickerCostHint(m: PresetModel, musicDuration: number): string | undefined {
+  const classic = cloudModelById(m.id)
+  if (classic) return modelCostHint(classic, m.op as RenderOp, m.op === 'music' ? musicDuration : undefined)
+  if (isStudioModel(m.id)) {
+    // No options chosen yet (this is the picker row, not the run), so use the
+    // model's own baseline preview, same figure studio-contract.ts's
+    // studioBaseCredits() would compute, just inlined to avoid a second
+    // import for one call site.
+    const cr = createStudioCost(m.id, {}, 100)
+    return `${shortCount(cr)} cr`
+  }
+  return undefined
+}
 
 const CLOUD_BADGE = { label: 'Cloud', color: 'bg-violet-500/15 text-violet-500 dark:text-violet-200' }
 // C2: the "No refusals" mark on models the provider ships with its own
@@ -37,6 +62,8 @@ export function ModelChip() {
 function CloudModelChip() {
   const mode = useCreateStore((s) => s.mode)
   const intent = useCreateStore((s) => s.intent())
+  const characterTab = useCreateStore((s) => s.characterTab)
+  const selectedCharacter = useCreateStore((s) => s.selectedCharacter)
   const cloudImageModel = useCreateStore((s) => s.cloudImageModel)
   const cloudVideoModel = useCreateStore((s) => s.cloudVideoModel)
   const cloudOpModel = useCreateStore((s) => s.cloudOpModel)
@@ -51,11 +78,22 @@ function CloudModelChip() {
 
   const isVideo = mode === 'video'
   const kind = isVideo ? 'video' : 'image'
+  const characterUse = intent === 'character' && characterTab === 'use'
   // The 2.5.8 specialized intents pick from their op's own family (both
-  // trainer kinds together for Character-Studio) and store into cloudOpModel.
+  // trainer kinds together for Character-Studio TRAIN) and store into
+  // cloudOpModel. Character-Studio USE is its own thing: it picks a
+  // GENERATION endpoint compatible with the trained LoRA's family, not a
+  // trainer. A picker showing trainers there would be a lie (uselu main
+  // 5be5dec3).
   const special =
-    intent === 'character' || intent === 'lipsync' || intent === 'music' ||
+    (intent === 'character' && !characterUse) || intent === 'lipsync' || intent === 'music' ||
     intent === 'extend' || intent === 'motion'
+  // Portplan P7: lipsync/music/extend/motion reach the Studio track through
+  // the SAME picker as their classic op-specialized twins.
+  // intentPickerModels() (create-studio.ts, P2) already merges both worlds.
+  const roleIntent = !characterUse && intentRoles(intent).length > 0
+  const roleModels: PresetModel[] = roleIntent ? intentPickerModels(intent) : []
+  const characterModels = characterUse ? characterGenerationModels(selectedCharacter?.family ?? '') : []
   // List only the models that can run the current op — otherwise the picker
   // offers checkpoints that useCloudCreate silently swaps out at submit, so the
   // user's choice was a lie. Edit needs masked-img2img (flux-dev); Animate needs
@@ -68,23 +106,25 @@ function CloudModelChip() {
     intent === 'edit' ? models.filter((m) => m.kind === 'image' && isEditModel(m))
     : intent === 'animate' ? models.filter((m) => m.kind === 'video' && m.i2v !== false)
     : intent === 'video' ? models.filter((m) => m.kind === 'video' && m.t2v !== false)
-    : intent === 'character' ? opPickerModels('lora-train')
-    : intent === 'lipsync' ? opPickerModels('lipsync')
-    : intent === 'music' ? opPickerModels('music')
-    : intent === 'extend' ? opPickerModels('extend')
-    : intent === 'motion' ? opPickerModels('motion')
+    : intent === 'character' && !characterUse ? opPickerModels('lora-train')
     : models.filter((m) => m.kind === kind && !m.ops)
-  const current = special
-    ? cloudOpModel
-    : (isVideo ? cloudVideoModel : cloudImageModel) || defaultCloudModel(kind)?.id || ''
+  const current = characterUse
+    ? (resolveCharacterModel(selectedCharacter?.family ?? '', cloudOpModel) ?? '')
+    : special || roleIntent
+      ? cloudOpModel
+      : (isVideo ? cloudVideoModel : cloudImageModel) || defaultCloudModel(kind)?.id || ''
   // Reflect the model the run will really use, so a leftover pick the current op
   // can't perform doesn't show as "selected".
-  const value = list.some((m) => m.id === current) ? current : (list[0]?.id ?? current)
+  const roleOrCharacterIds = roleIntent ? roleModels : characterModels
+  const value = roleIntent || characterUse
+    ? (roleOrCharacterIds.some((m) => m.id === current) ? current : (roleOrCharacterIds[0]?.id ?? current))
+    : list.some((m) => m.id === current) ? current : (list[0]?.id ?? current)
 
   // The op this picker's models will run as, so the sublabel prices correctly
   // (a trainer bills a training run, not an image).
-  const op =
-    intent === 'character' ? 'lora-train'
+  const op: RenderOp =
+    characterUse ? 'generate'
+    : intent === 'character' ? 'lora-train'
     : intent === 'lipsync' ? 'lipsync'
     : intent === 'music' ? 'music'
     : intent === 'extend' ? 'extend'
@@ -92,16 +132,34 @@ function CloudModelChip() {
     : intent === 'edit' ? 'edit'
     : intent === 'animate' ? 'animate'
     : 'generate'
-  const options: SelectOption[] = list.map((m) => ({
-    value: m.id,
-    label: m.label,
-    sublabel: modelCostHint(m, op, op === 'music' ? musicDuration : undefined),
-    // adult models keep the standard Cloud badge everywhere EXCEPT the row
-    // itself, where "No refusals" is strictly more informative, matching web.
-    badge: m.adult
-      ? { label: 'No refusals', color: contentPolicy === 'off' ? NO_REFUSALS_COLOR.open : NO_REFUSALS_COLOR.filtering }
-      : CLOUD_BADGE,
-  }))
+  const options: SelectOption[] = roleIntent
+    ? roleModels.map((m) => ({
+        value: m.id,
+        label: m.label,
+        sublabel: pickerCostHint(m, musicDuration),
+        badge: m.adult
+          ? { label: 'No refusals', color: contentPolicy === 'off' ? NO_REFUSALS_COLOR.open : NO_REFUSALS_COLOR.filtering }
+          : CLOUD_BADGE,
+      }))
+    : characterUse
+      ? characterModels.map((m) => ({
+          value: m.id,
+          label: m.label,
+          sublabel: modelCostHint(m, 'generate', undefined),
+          badge: m.adult
+            ? { label: 'No refusals', color: contentPolicy === 'off' ? NO_REFUSALS_COLOR.open : NO_REFUSALS_COLOR.filtering }
+            : CLOUD_BADGE,
+        }))
+      : list.map((m) => ({
+          value: m.id,
+          label: m.label,
+          sublabel: modelCostHint(m, op, op === 'music' ? musicDuration : undefined),
+          // adult models keep the standard Cloud badge everywhere EXCEPT the row
+          // itself, where "No refusals" is strictly more informative, matching web.
+          badge: m.adult
+            ? { label: 'No refusals', color: contentPolicy === 'off' ? NO_REFUSALS_COLOR.open : NO_REFUSALS_COLOR.filtering }
+            : CLOUD_BADGE,
+        }))
 
   return (
     <Select
@@ -112,7 +170,7 @@ function CloudModelChip() {
       options={options}
       value={value}
       onChange={(v) =>
-        special ? setCloudOpModel(v) : isVideo ? setCloudVideoModel(v) : setCloudImageModel(v)
+        special || roleIntent || characterUse ? setCloudOpModel(v) : isVideo ? setCloudVideoModel(v) : setCloudImageModel(v)
       }
     />
   )
