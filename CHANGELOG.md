@@ -36,6 +36,10 @@ installs stop losing environment variables to it.
   tells you what to install before starting the roughly 2 GB PyTorch download,
   instead of that download running for minutes and then failing with pip's own
   generic error.
+- **Windows: installing to a very long folder path no longer stops the
+  bundled engine from starting, and when Windows cannot shorten that path,
+  the app now names the install path as the cause instead of showing a bare
+  OS error.**
 - **The LU Engine crashing immediately on an old CPU now says which instruction
   set is missing**, measured from the CPU itself rather than guessed, and stops
   retrying the same binary a second time since it would only fail the same way
@@ -162,7 +166,8 @@ installs stop losing environment variables to it.
   that.
 - **Reinstall trainer in Character Studio now opens a confirmation dialog
   first**, showing the current trainer folder, instead of starting the
-  reinstall the moment the button is clicked.
+  reinstall the moment the button is clicked. A reinstall never changes the
+  trainer folder itself.
 - **The model marks now live in the model list only**, the line above the
   message box is gone; the Flash notice sits next to the Agent toggle.
 - **At a narrow window width, picking a model or opening the sampling or

@@ -202,6 +202,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'The Hardware tab no longer freezes while a model is starting.',
             detail: 'Opening the Hardware tab in Settings while a local model or the trainer was starting up could freeze it for a moment; it no longer waits on that GPU detection.',
           },
+          {
+            title: 'Windows: a very long install path no longer stops the engine from starting.',
+            detail: 'Windows: installing to a very long folder path no longer stops the bundled engine from starting, and when Windows cannot shorten that path, the app now names the install path as the cause instead of showing a bare OS error.',
+          },
         ],
       },
       {
@@ -339,7 +343,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           },
           {
             title: 'Reinstall trainer now confirms before it starts.',
-            detail: 'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder, instead of starting the reinstall the moment the button is clicked.',
+            detail: 'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder, instead of starting the reinstall the moment the button is clicked. A reinstall never changes the trainer folder itself.',
           },
           {
             title: 'The model marks now live in the model list only.',
