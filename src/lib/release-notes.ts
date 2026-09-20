@@ -287,6 +287,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             title: 'A workflow now tells you where it stopped instead of claiming success.',
             detail: 'A step whose web search or page fetch failed, or whose model answered nothing, ends the run with "Workflow stopped at step 2 of 6: ..." instead of carrying on and finishing with "Workflow complete"; a run that really did finish leads with its actual result rather than the "Saved to memory" receipt.',
           },
+          {
+            title: 'Running a workflow from chat now shows its progress, step by step.',
+            detail: 'Running a workflow from chat ("run workflow ...") now shows its own progress, clickable and expandable exactly like a tool call: every step listed as waiting, running, done or failed, each finished step\'s result, and the currently running step\'s answer streaming in live. Before this it showed no more than three static dots for the whole run, sometimes several minutes, with no way to tell it was still working. A model step also no longer reasons all the way to the end of its context window by default; it now asks for the same output limit a normal chat turn asks for.',
+          },
         ],
       },
       {

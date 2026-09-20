@@ -226,9 +226,15 @@ function ToolCallBlockImpl({ toolCall, onApprove, onReject }: Props) {
   // Default: collapsed (closed)
   const [open, setOpen] = useState(toolCall.status === 'pending_approval')
 
+  // A workflow-progress step (klein 2, bau/wfprogress.md) carries its own
+  // dynamic label ("Step 2 of 6: <name>") as toolName, so it can never match
+  // TOOL_ICONS by exact key the way a real tool call does. Same GitBranch
+  // face the "run_workflow" tool itself already wears.
   const ToolIcon = toolCall.toolName === 'shell_execute'
     ? (SHELL_COMMAND_ICONS[shellIconKey(toolCall)] ?? Terminal)
-    : (TOOL_ICONS[toolCall.toolName] || Terminal)
+    : toolCall.toolName.startsWith('Step ')
+      ? GitBranch
+      : (TOOL_ICONS[toolCall.toolName] || Terminal)
   const StatusIcon = STATUS_ICONS[toolCall.status]
   const isRunning = toolCall.status === 'running'
   const isPending = toolCall.status === 'pending_approval'

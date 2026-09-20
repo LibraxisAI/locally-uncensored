@@ -600,7 +600,7 @@ export class WorkflowEngine {
     try {
       switch (step.type) {
         case 'prompt':
-          return await this.executePromptStep(step, startedAt)
+          return await this.executePromptStep(step, startedAt, stepIndex)
 
         case 'tool':
           return await this.executeToolStep(step, startedAt)
@@ -634,7 +634,7 @@ export class WorkflowEngine {
 
   // ── Prompt Step ───────────────────────────────────────────
 
-  private async executePromptStep(step: WorkflowStep, startedAt: number): Promise<StepResult> {
+  private async executePromptStep(step: WorkflowStep, startedAt: number, stepIndex: number): Promise<StepResult> {
     const { activeModel } = useModelStore.getState()
     if (!activeModel) throw new Error('No active model')
 
@@ -652,6 +652,53 @@ export class WorkflowEngine {
       (c) => c.id === this.conversationId,
     )?.sampling
     const sampling = buildSamplingRequest(settings, convSampling)
+
+    // Harter Befund von der Box (bau/wfprogress.md, 20.09.2026): a prompt step
+    // sent none of `maxTokens`/`thinking`/`reasoningEffort`/`effortLevels`/
+    // `effortDefault` — every field a normal chat/agent turn resolves before
+    // calling the SAME provider (useAgentChat.ts's `chatOptions`, useCodex.ts's
+    // `codexThinkMode`/`codexEffort`). Without `maxTokens` the OpenAI-
+    // compatible provider's own fallback (openai-provider.ts's
+    // `body.max_tokens = Math.min(headroom, 32768)`) asks for the ENTIRE
+    // remaining context window. Measured on the box: `llama-server` /slots
+    // showed n_decoded 30090 at n_predict 31619 on a 32768 ctx, and the run
+    // ended with "Workflow stopped at step 3 of 6: The model returned no
+    // content for this prompt step." — the model spent the WHOLE budget
+    // inside <think> and never reached an answer.
+    //
+    // Nachtrag (Eigner, 20.09.2026): raising the effort ladder for an
+    // "always thinks" model (as an earlier version of this fix did, sending
+    // `thinking: true` because the catalogue says thinkMode 'always') makes
+    // that failure MORE likely under a bounded `maxTokens`, not less — the
+    // model now explicitly reasons at full depth and can burn the entire cap
+    // before ever emitting content. The house already has the right policy
+    // for exactly this shape of call: `compact-run.ts`'s auto-compaction
+    // summarizer measured the SAME failure on the SAME model family
+    // (Qwen3.5-9B, "the model consumed all 1200 tokens in the think channel
+    // — 4553 chars of reasoning — and wrote NOT ONE line of answer") and
+    // fixed it by asking for `thinking: false` outright: a workflow step,
+    // like a compaction summary, is a mechanical execution of the workflow
+    // author's instruction, not a conversation the user is having WITH the
+    // model that benefits from visible deliberation. The provider's own
+    // effort-ladder clamp (`thinkingEffort`, openai-provider.ts) turns that
+    // into `reasoning_effort: 'none'` (or the walked-down 'minimal' once a
+    // server has already refused 'none' for this model) — on a model that
+    // cannot truly disable reasoning ("on GLM 5.3 'none' does not stop the
+    // thinking, it only stops the upstream from separating it" — same
+    // provider comment) the monologue lands inline in `content` instead of a
+    // separate channel this loop never read anyway, and `settleThinking`
+    // below still strips it from the final output either way.
+    const modelMeta = useModelStore.getState().models.find((m) => m.name === activeModel)
+    const effortLevels = modelMeta && 'effortLevels' in modelMeta ? modelMeta.effortLevels : undefined
+    const effortDefault = modelMeta && 'effortDefault' in modelMeta ? modelMeta.effortDefault : undefined
+    const reasoningOptions = {
+      thinking: false,
+      reasoningEffort: settings.reasoningEffort,
+      effortLevels,
+      effortDefault,
+      maxTokens: sampling.maxTokens,
+    }
+
     let output = ''
 
     if (step.allowedTools && step.allowedTools.length === 0) {
@@ -662,12 +709,19 @@ export class WorkflowEngine {
       // 404s the moment the model lives on LM Studio.
       const stream = provider.chatStream(modelToUse, messages, {
         temperature: sampling.temperature,
+        ...reasoningOptions,
         // Bug AA v2.5.0 — keep num_ctx override for workflow steps too.
         contextWindow: settings.contextWindowOverride || undefined,
         signal: this.abortController.signal,
       })
       for await (const chunk of stream) {
-        if (chunk.content) output += chunk.content
+        if (chunk.content) {
+          output += chunk.content
+          // klein 3 (bau/wfprogress.md): relay the growing answer to whoever
+          // is watching this run (the chat trigger's progress block), so a
+          // long-thinking model shows LIVE text instead of a silent wait.
+          this.callbacks.onStepProgress?.(stepIndex, output)
+        }
         if (chunk.done) break
       }
     } else {
@@ -690,11 +744,15 @@ export class WorkflowEngine {
       if (strategy === 'native') {
         const turn = await provider.chatWithTools(modelToUse, messages, allowedTools, {
           temperature: sampling.temperature,
+          ...reasoningOptions,
           // Bug AA v2.5.0 — same num_ctx override on tool calls.
           contextWindow: settings.contextWindowOverride || undefined,
           signal: this.abortController.signal,
         })
         output = turn.content || ''
+        // `chatWithTools` returns one turn, not a stream — no per-chunk
+        // progress to relay, but the field the block shows still updates
+        // once this call resolves (onStepComplete carries the final output).
 
         // Execute any tool calls, gated the same as a tool step (see
         // executeToolStep below): the catalog above already hides a blocked
@@ -727,9 +785,16 @@ export class WorkflowEngine {
           hermesMessages.map(m => ({ role: m.role, content: m.content })),
           {
             temperature: sampling.temperature,
+            ...reasoningOptions,
             contextWindow: settings.contextWindowOverride || undefined,
             signal: this.abortController.signal,
           },
+          // klein 3: `streamProviderTurn` already streams under the hood
+          // (it wraps `provider.chatStream`) — relaying its cumulative
+          // content is the same live-progress hookup the plain-prompt
+          // branch above gets, just through this transport's own callback
+          // instead of a hand-rolled for-await loop.
+          (full) => this.callbacks.onStepProgress?.(stepIndex, full),
         )
         const rawContent = hermesTurn.content
 

@@ -197,6 +197,14 @@ installs stop losing environment variables to it.
   ComfyUI code back to the version it had before if you cancel partway
   through; Python packages already installed during that attempt are not
   undone.
+- **Running a workflow from chat ("run workflow ...") now shows its own
+  progress**, clickable and expandable exactly like a tool call: every step
+  listed as waiting, running, done or failed, each finished step's result, and
+  the currently running step's answer streaming in live. Before this it showed
+  no more than three static dots for the whole run, sometimes several minutes,
+  with no way to tell it was still working. A model step also no longer
+  reasons all the way to the end of its context window by default; it now asks
+  for the same output limit a normal chat turn asks for.
 
 ## [3.0.0] - 2026-09-13
 
