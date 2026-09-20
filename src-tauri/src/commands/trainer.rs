@@ -1900,6 +1900,12 @@ fn fetch_musubi_source(
         Err(e) if e == "cancelled" => return Err(e),
         Err(e) => e,
     };
+    // Linux setup stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13 and
+    // Fedora 43 cloud/desktop images ship no git at all, so name the exact
+    // package manager command instead of a bare "could not download".
+    if let Some(hint) = crate::commands::install::git::git_download_preflight() {
+        return Err(format!("Could not download the trainer source: {archive_err}\n\n{hint}"));
+    }
     let mut git = crate::process_util::foreign_system_command("git");
     git.arg("--version");
     #[cfg(target_os = "windows")]

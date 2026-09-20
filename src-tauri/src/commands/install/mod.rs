@@ -59,7 +59,7 @@ pub(crate) mod pip;
 mod torch;
 mod venv;
 mod download;
-mod git;
+pub(crate) mod git;
 mod comfy_job;
 mod comfy_install;
 mod comfy_repair;

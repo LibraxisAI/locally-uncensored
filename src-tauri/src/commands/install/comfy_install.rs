@@ -323,6 +323,15 @@ pub fn install_comfyui(
             }
         }
 
+        // Linux setup stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13
+        // and Fedora 43 cloud/desktop images ship no git at all. Probe
+        // before spending any bytes on the clone and name the exact
+        // package manager command instead of dying with a generic error.
+        if let Some(hint) = super::git::git_download_preflight() {
+            update("error", &hint);
+            return;
+        }
+
         // Step 1: Git clone — spawn+poll instead of cmd.output() so the
         // Cancel button can kill an in-flight clone (Bug #1).
         println!("[Install] Cloning ComfyUI to {:?}", target_dir);

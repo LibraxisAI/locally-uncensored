@@ -149,6 +149,13 @@ fn install_custom_node_blocking(
         }
     }
 
+    // Linux setup stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13 and
+    // Fedora 43 cloud/desktop images ship no git at all. Probe before
+    // spending any bytes on the clone/pull below.
+    if let Some(hint) = super::git::git_download_preflight() {
+        return Err(hint);
+    }
+
     // #72 (bob, discussion 72): three silent failure modes lived here.
     //  1. A leftover non-repo dir (aborted clone, manual unzip) made `git pull`
     //     fail forever, and the failure came back as Ok(status="update_failed")

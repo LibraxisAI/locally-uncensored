@@ -109,6 +109,8 @@
 <pre><code>chmod +x Locally.Uncensored_3.0.0_amd64.AppImage
 ./Locally.Uncensored_3.0.0_amd64.AppImage</code></pre>
 <p>The AppImage bundles the LU Engine and the media framework. It needs the Vulkan loader (<code>libvulkan1</code> on Debian and Ubuntu, <code>vulkan-loader</code> on Fedora) and the OpenMP runtime (<code>libgomp1</code> or <code>libgomp</code>) on the system, because the engine loads them at start. Most desktop installs have both. If one is missing, the engine tells you the package name, and chapter 9 lists the sentence.</p>
+<p>The AppImage also needs FUSE to mount itself. Most desktops already have it; a fresh cloud or minimal install may not. Debian 13 and Ubuntu 24.04 and newer renamed the package from <code>libfuse2</code> to <code>libfuse2t64</code> (the time64 transition), so an older guide that says "install libfuse2" fails there with "package not found". Install the one that matches your system: <code>sudo apt install libfuse2t64</code> on Debian 13 or Ubuntu 24.04 and newer, <code>sudo apt install libfuse2</code> on older Debian and Ubuntu, <code>sudo dnf install fuse-libs</code> on Fedora. Without it the AppImage does not start at all, with no window and no error dialog, only a mount failure on the command line.</p>
+<p>A fresh Fedora install (in particular the Cloud Edition image) also ships without the WebKitGTK runtime the window needs: install <code>sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3</code> first if the app never shows a window.</p>
 </div>
 </div>
 

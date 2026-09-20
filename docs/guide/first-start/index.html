@@ -172,6 +172,8 @@ In the Models tab every model tile has a small dot that compares the model's siz
 
 <p><strong>"Installing Python did not finish."</strong> (Windows) The app uses winget to fetch Python 3.12. If winget is missing or blocked on your machine, install Python 3.12 from python.org yourself, then click "Install ComfyUI (Recommended)" again.</p>
 
+<p><strong>"Git is not installed."</strong> (Linux) ComfyUI is downloaded with git, and a fresh cloud or minimal desktop image often does not have it yet. The message names the exact command for your distribution, for example <code>sudo apt install git</code> on Debian and Ubuntu, <code>sudo dnf install git</code> on Fedora and RHEL, <code>sudo pacman -S git</code> on Arch, or <code>sudo zypper install git</code> on openSUSE. Run it, then click "Install ComfyUI (Recommended)" again.</p>
+
 <p><strong>"Installing ComfyUI did not finish."</strong> The last installer line is shown. A red line beginning with a warning triangle during the install means the drive is short of space; the install needs several gigabytes free. Free some space and click the button again; files that finished are kept.</p>
 
 <p><strong>"Install cancelled."</strong> You pressed Cancel. The install options return and you can start again or skip.</p>

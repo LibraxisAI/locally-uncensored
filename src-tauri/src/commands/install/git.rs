@@ -102,8 +102,8 @@ pub fn windows_git_install_hint(state: &WindowsGitState) -> Option<String> {
         WindowsGitState::Native => None,
         WindowsGitState::Missing => Some(
             "Git is not installed or not on PATH. Install Git for Windows from \
-             https://git-scm.com/download/win and restart LU so the new PATH \
-             is picked up.".to_string(),
+             https://git-scm.com/download/win (or run `winget install Git.Git` in a \
+             terminal) and restart LU so the new PATH is picked up.".to_string(),
         ),
         WindowsGitState::NonNative => Some(
             "A non-native `git` binary is first on PATH (likely WSL or a Linux \
@@ -165,6 +165,140 @@ fn git_download_url() -> &'static str {
     {
         "https://git-scm.com/download/linux"
     }
+}
+
+/// Linux package manager guess, read from `/etc/os-release`'s `ID` and
+/// `ID_LIKE` fields. Both are documented (os-release(5)) to be
+/// lowercase-ish identifiers; `ID_LIKE` is a space-separated fallback list
+/// for derivatives that do not want to repeat every check their upstream
+/// already covers (e.g. Linux Mint carries `ID_LIKE=ubuntu debian`).
+/// Dead on every non-Linux target and deliberately so: the only production
+/// caller is `git_download_preflight`, which is `cfg(target_os = "linux")`.
+/// Keeping this half uncfg'd is what lets the unit tests below prove the
+/// distro classification on a macOS run.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxPackageManager {
+    Apt,
+    Dnf,
+    Pacman,
+    Zypper,
+    Unknown,
+}
+
+/// Pure: `/etc/os-release` text in, package manager guess out. Never reads
+/// the filesystem itself, so this is exercised directly by unit tests on
+/// any host, not only Linux.
+///
+/// Same token-matching shape as `python.rs`'s `linux_python_install_hint`
+/// (exact family tokens out of `ID`/`ID_LIKE`, not a substring search), kept
+/// as its own copy here rather than shared: the two hints classify into
+/// different, unrelated result sets (a package manager command here, a
+/// full install line there) and the pull would cost more than the four
+/// duplicated match arms save.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn linux_package_manager_from_os_release(os_release: &str) -> LinuxPackageManager {
+    let mut families: Vec<String> = Vec::new();
+    for line in os_release.lines() {
+        let trimmed = line.trim();
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_lowercase();
+        if key != "id" && key != "id_like" {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        for token in value.split_whitespace() {
+            families.push(token.to_lowercase());
+        }
+    }
+    let has = |needle: &str| families.iter().any(|f| f == needle);
+
+    if has("debian") || has("ubuntu") || has("linuxmint") || has("pop") || has("elementary") {
+        LinuxPackageManager::Apt
+    } else if has("fedora") || has("rhel") || has("centos") || has("rocky") || has("almalinux") {
+        LinuxPackageManager::Dnf
+    } else if has("arch") || has("manjaro") || has("endeavouros") || has("garuda") {
+        LinuxPackageManager::Pacman
+    } else if has("opensuse") || has("opensuse-tumbleweed") || has("opensuse-leap") || has("suse") || has("sles") {
+        LinuxPackageManager::Zypper
+    } else {
+        LinuxPackageManager::Unknown
+    }
+}
+
+/// Pure: `/etc/os-release` text in, the English "git is missing" message
+/// out, naming the one install command that actually applies on this
+/// distro (or, when the distro cannot be classified, all four so the user
+/// can pick).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn linux_git_missing_message(os_release: &str) -> String {
+    match linux_package_manager_from_os_release(os_release) {
+        LinuxPackageManager::Apt => {
+            "Git is not installed. Install it first with `sudo apt install git`, then retry."
+                .to_string()
+        }
+        LinuxPackageManager::Dnf => {
+            "Git is not installed. Install it first with `sudo dnf install git`, then retry."
+                .to_string()
+        }
+        LinuxPackageManager::Pacman => {
+            "Git is not installed. Install it first with `sudo pacman -S git`, then retry."
+                .to_string()
+        }
+        LinuxPackageManager::Zypper => {
+            "Git is not installed. Install it first with `sudo zypper install git`, then retry."
+                .to_string()
+        }
+        LinuxPackageManager::Unknown => {
+            "Git is not installed. Install it with your distro's package manager, for example \
+             `sudo apt install git` (Debian/Ubuntu), `sudo dnf install git` (Fedora/RHEL), \
+             `sudo pacman -S git` (Arch), or `sudo zypper install git` (openSUSE), then retry."
+                .to_string()
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn read_os_release() -> String {
+    std::fs::read_to_string("/etc/os-release").unwrap_or_default()
+}
+
+/// Pure core of [`git_download_preflight`]: whether git is present in, the
+/// hint to abort with (or `None` to proceed) out. Kept separate from the OS
+/// probe so the "git missing -> block before any download" behaviour is a
+/// plain unit test on every host, not only Linux.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn git_download_preflight_core(is_git_present: bool, os_release: &str) -> Option<String> {
+    if is_git_present {
+        None
+    } else {
+        Some(linux_git_missing_message(os_release))
+    }
+}
+
+/// Cross-platform preflight for every code path that shells out to `git`
+/// for a network download (ComfyUI install/update, custom-node
+/// install/update, trainer source clone). Only Linux gets a new check
+/// here: fresh cloud/desktop images (measured: Debian 13 and Fedora 43
+/// Cloud Edition, 2026-09, see e2e/linux/BERICHT-5-APPIMAGE.md) frequently
+/// do not ship `git` at all, so a bare `git clone` used to die deep inside
+/// the install worker with a generic "No such file or directory" instead
+/// of a message that names the exact command to run.
+///
+/// Windows keeps its own `windows_git_probe`/`windows_git_install_hint`
+/// pair (unchanged, called separately at each site) and macOS keeps the
+/// existing spawn-error fallback (unchanged); this returns `None` on both
+/// so callers see no behaviour change there.
+#[cfg(target_os = "linux")]
+pub fn git_download_preflight() -> Option<String> {
+    git_download_preflight_core(git_version_string().is_some(), &read_os_release())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn git_download_preflight() -> Option<String> {
+    None
 }
 
 /// Cross-platform git availability check for the Codex view's install banner.
@@ -359,4 +493,151 @@ mod tests {
         assert!(lower.contains("git-scm.com/download/win"), "got: {}", hint);
     }
 
+    // ── Linux distro detection: os-release text in, package manager out ───
+
+    #[test]
+    fn linux_pm_debian_is_apt() {
+        let os_release = "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nID=debian\nID_LIKE=\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Apt
+        );
+    }
+
+    #[test]
+    fn linux_pm_ubuntu_is_apt() {
+        let os_release = "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Apt
+        );
+    }
+
+    #[test]
+    fn linux_pm_debian_derivative_via_id_like_is_apt() {
+        // Linux Mint style: ID is its own name, ID_LIKE carries the upstream.
+        let os_release = "NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Apt
+        );
+    }
+
+    #[test]
+    fn linux_pm_fedora_is_dnf() {
+        let os_release = "NAME=\"Fedora Linux\"\nID=fedora\nID_LIKE=\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Dnf
+        );
+    }
+
+    #[test]
+    fn linux_pm_rhel_derivative_via_id_like_is_dnf() {
+        let os_release = "NAME=\"Rocky Linux\"\nID=rocky\nID_LIKE=\"rhel centos fedora\"\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Dnf
+        );
+    }
+
+    #[test]
+    fn linux_pm_arch_is_pacman() {
+        let os_release = "NAME=\"Arch Linux\"\nID=arch\nID_LIKE=\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Pacman
+        );
+    }
+
+    #[test]
+    fn linux_pm_opensuse_is_zypper() {
+        let os_release = "NAME=\"openSUSE Leap\"\nID=opensuse-leap\nID_LIKE=\"suse opensuse\"\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Zypper
+        );
+    }
+
+    #[test]
+    fn linux_pm_unknown_distro_is_unknown() {
+        let os_release = "NAME=\"Some New Distro\"\nID=somenewdistro\nID_LIKE=\n";
+        assert_eq!(
+            linux_package_manager_from_os_release(os_release),
+            LinuxPackageManager::Unknown
+        );
+    }
+
+    #[test]
+    fn linux_pm_missing_os_release_is_unknown() {
+        assert_eq!(
+            linux_package_manager_from_os_release(""),
+            LinuxPackageManager::Unknown
+        );
+    }
+
+    // ── Linux distro detection: os-release text in, install command out ───
+
+    #[test]
+    fn linux_git_missing_message_names_apt_on_debian() {
+        let os_release = "ID=debian\n";
+        let msg = linux_git_missing_message(os_release);
+        assert!(msg.contains("sudo apt install git"), "got: {}", msg);
+        assert!(!msg.to_lowercase().contains("dnf"), "got: {}", msg);
+    }
+
+    #[test]
+    fn linux_git_missing_message_names_dnf_on_fedora() {
+        let os_release = "ID=fedora\n";
+        let msg = linux_git_missing_message(os_release);
+        assert!(msg.contains("sudo dnf install git"), "got: {}", msg);
+        assert!(!msg.to_lowercase().contains("apt"), "got: {}", msg);
+    }
+
+    #[test]
+    fn linux_git_missing_message_names_pacman_on_arch() {
+        let os_release = "ID=arch\n";
+        let msg = linux_git_missing_message(os_release);
+        assert!(msg.contains("sudo pacman -S git"), "got: {}", msg);
+    }
+
+    #[test]
+    fn linux_git_missing_message_names_zypper_on_opensuse() {
+        let os_release = "ID=opensuse-leap\nID_LIKE=\"suse opensuse\"\n";
+        let msg = linux_git_missing_message(os_release);
+        assert!(msg.contains("sudo zypper install git"), "got: {}", msg);
+    }
+
+    #[test]
+    fn linux_git_missing_message_names_all_four_when_unknown() {
+        let os_release = "ID=somenewdistro\n";
+        let msg = linux_git_missing_message(os_release);
+        assert!(msg.contains("sudo apt install git"), "got: {}", msg);
+        assert!(msg.contains("sudo dnf install git"), "got: {}", msg);
+        assert!(msg.contains("sudo pacman -S git"), "got: {}", msg);
+        assert!(msg.contains("sudo zypper install git"), "got: {}", msg);
+    }
+
+    // ── "git fehlt ergibt die Meldung und es wird nichts geladen" ─────────
+    //
+    // git_download_preflight_core is the pure decision point every clone
+    // site calls through git_download_preflight() before spawning `git
+    // clone`/`git pull`. Missing git must produce Some(hint) so the caller
+    // returns before touching the network; present git must produce None
+    // so the existing flow is untouched.
+
+    #[test]
+    fn preflight_blocks_with_hint_when_git_missing() {
+        let hint = git_download_preflight_core(false, "ID=debian\n");
+        assert_eq!(
+            hint,
+            Some("Git is not installed. Install it first with `sudo apt install git`, then retry.".to_string())
+        );
+    }
+
+    #[test]
+    fn preflight_allows_download_when_git_present() {
+        let hint = git_download_preflight_core(true, "ID=debian\n");
+        assert_eq!(hint, None, "git present must not block the download");
+    }
 }

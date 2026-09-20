@@ -1072,6 +1072,14 @@ pub fn update_comfyui(state: State<'_, AppState>, app: tauri::AppHandle) -> Resu
             }
         }
 
+        // Linux setup stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13
+        // and Fedora 43 cloud/desktop images ship no git at all. Probe
+        // before the `git pull --ff-only` below touches anything.
+        if let Some(hint) = super::git::git_download_preflight() {
+            update("error", &hint);
+            return;
+        }
+
         // Runde 6, F8 (review Runde 5, same objection as Runde 4 raised for
         // the Install path): this preflight used to sit AFTER `git pull
         // --ff-only`, so an update on a venv with no compatible interpreter
