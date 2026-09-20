@@ -737,12 +737,18 @@ export class WorkflowEngine {
     const canThinkStep = stepThinkMode ? stepThinkMode === 'toggle' : isThinkingCompatible(activeModel)
     const effortLevels = modelMeta && 'effortLevels' in modelMeta ? modelMeta.effortLevels : undefined
     const effortDefault = modelMeta && 'effortDefault' in modelMeta ? modelMeta.effortDefault : undefined
+    const userSetMaxTokens = sampling.maxTokens && sampling.maxTokens > 0
     const reasoningOptions = {
       thinking: canThinkStep ? false : undefined,
       reasoningEffort: settings.reasoningEffort,
       effortLevels,
       effortDefault,
-      maxTokens: sampling.maxTokens && sampling.maxTokens > 0 ? sampling.maxTokens : DEFAULT_PROMPT_STEP_MAX_TOKENS,
+      maxTokens: userSetMaxTokens ? sampling.maxTokens : DEFAULT_PROMPT_STEP_MAX_TOKENS,
+      // Runde 3 klein 1 (bau/wfprogress.md): tells openai-provider.ts's
+      // unmeasured-context branch this is OUR fallback, not something the
+      // user typed, so it stays off the wire there instead of being sent
+      // uncapped to a server whose real window was never measured.
+      maxTokensIsDefault: !userSetMaxTokens,
     }
 
     let output = ''

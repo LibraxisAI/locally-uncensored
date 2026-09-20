@@ -749,7 +749,12 @@ export class OpenAIProvider implements ProviderClient {
      * Fenster ist gemessen, also bleibt die Rechnung unten.
      */
     if (!derivable || ctxLen <= 0) {
-      if (requested > 0) body.max_tokens = requested
+      // Runde 3 klein 1 (bau/wfprogress.md): a caller's own FALLBACK default
+      // (workflow-engine.ts's DEFAULT_PROMPT_STEP_MAX_TOKENS, sent when the
+      // user set nothing) is not the "ausdruecklicher Wunsch des Nutzers"
+      // this branch exists to trust; only a real one still passes through
+      // unclamped here, same as before this field existed.
+      if (requested > 0 && !options?.maxTokensIsDefault) body.max_tokens = requested
       else delete body.max_tokens
       return
     }

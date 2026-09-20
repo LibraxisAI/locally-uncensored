@@ -114,14 +114,70 @@ export function isWorkflowProgressToolName(name: string): boolean {
  * again on an already-fixed block is harmless: it only touches blocks that
  * are BOTH a workflow-progress block AND still 'running'.
  *
+ * `workflowName`, when known (Runde 3 klein 2, review-wfprogress.md: the
+ * generic "Workflow stopped before finishing" this used to write lost which
+ * workflow it even was), is folded into the new label. Never available from
+ * `call` itself: while a step is running, `toolName` is only ever "Step N of
+ * M: <step label>" (`workflowProgressHeader`), the workflow's own NAME lives
+ * on the parent chat message instead (`extractWorkflowNameFromProgressMessage`
+ * below) - callers pass it through when they have it, and this still degrades
+ * to the generic label when they do not.
+ *
  * Mutates `call` in place (matching `migrateBlockInPlace`'s own style) and
  * returns whether it changed anything, mainly so callers/tests can assert
  * on it directly.
  */
-export function markStaleWorkflowProgressStopped(call: { toolName: string; status: string }): boolean {
+export function markStaleWorkflowProgressStopped(call: { toolName: string; status: string }, workflowName?: string): boolean {
   if (call.status !== 'running') return false
   if (!isWorkflowProgressToolName(call.toolName)) return false
   call.status = 'stopped'
-  call.toolName = 'Workflow stopped before finishing'
+  call.toolName = workflowName ? `Workflow: ${workflowName} (stopped before finishing)` : 'Workflow stopped before finishing'
   return true
+}
+
+/**
+ * Pulls the workflow's name back out of the chat trigger's own leading
+ * message ("Running workflow: **<name>**", `useAgentChat.ts`), the only
+ * place that name is written down anywhere near this block. Returns
+ * undefined for anything else (a normal chat message, a missing/blank
+ * content), which is exactly when `markStaleWorkflowProgressStopped` above
+ * falls back to its generic label.
+ */
+export function extractWorkflowNameFromProgressMessage(content: unknown): string | undefined {
+  if (typeof content !== 'string') return undefined
+  const match = content.match(/^Running workflow: \*\*(.+?)\*\*/)
+  return match?.[1]
+}
+
+/**
+ * bau/wfprogress.md Runde 3, B2 (review-wfprogress.md): the chat surface
+ * (`MessageBubble.tsx` -> `groupAgentBlocks`, `tool-call-groups.ts` lines
+ * 59-68) reads ONLY the legacy singular `block.toolCall`, never `toolCalls`.
+ * A workflow-progress block writes both fields to the SAME object while the
+ * run is live (`useAgentChat.ts`'s `pushProgressBlock`), but a JSON persist
+ * round-trip (save, then a later load) turns them into two SEPARATE objects
+ * with the same starting content. `migratePersistedChat` used to call
+ * `markStaleWorkflowProgressStopped` only through `getBlockToolCalls(block)`,
+ * which returns `toolCalls` whenever it is populated and never `toolCall` in
+ * that case - so the fix landed on the one field nothing renders, and the
+ * spinner it was meant to kill stayed on screen after every restart (Opus's
+ * own measurement: `toolCalls[0].status = stopped` right next to
+ * `toolCall.status = running`, and the chat rendered `running`).
+ *
+ * Rewrites BOTH slots directly instead of going through `getBlockToolCalls`,
+ * so whichever one (or both) a persisted block happens to carry gets fixed.
+ * Idempotent and safe on a normal tool-call block for the same reason
+ * `markStaleWorkflowProgressStopped` is: it is a no-op unless BOTH the name
+ * looks like a workflow-progress block AND the status is still 'running'.
+ */
+export function markStaleWorkflowProgressStoppedOnBlock(
+  block: { toolCall?: { toolName: string; status: string }; toolCalls?: Array<{ toolName: string; status: string }> },
+  workflowName?: string,
+): boolean {
+  let changed = false
+  if (block.toolCall && markStaleWorkflowProgressStopped(block.toolCall, workflowName)) changed = true
+  for (const tc of block.toolCalls ?? []) {
+    if (markStaleWorkflowProgressStopped(tc, workflowName)) changed = true
+  }
+  return changed
 }

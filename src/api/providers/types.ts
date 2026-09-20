@@ -175,6 +175,20 @@ export interface ChatOptions {
   // an extension field, the same way it already sends top_p.
   topK?: number
   maxTokens?: number
+  /**
+   * True when `maxTokens` above is THIS caller's own fallback default, not a
+   * value the user actually typed into a slider (bau/wfprogress.md Runde 3,
+   * klein 1: `workflow-engine.ts`'s `DEFAULT_PROMPT_STEP_MAX_TOKENS` sets
+   * this). `openai-provider.ts`'s `applyMaxTokens` reserves its unmeasured-
+   * context branch (GH #129: "ein ausdruecklicher Wunsch des Nutzers geht
+   * weiterhin raus... ohne einen solchen bleibt das Feld WEG") for a real
+   * user wish only; without this flag a caller's own default would look
+   * exactly like one and could get sent uncapped to a server whose real
+   * window nobody measured. Every existing caller leaves this unset, so
+   * `requested > 0` alone keeps meaning "the user asked for this" for them,
+   * same as before this field existed.
+   */
+  maxTokensIsDefault?: boolean
   thinking?: boolean    // Enable model thinking/reasoning mode
   /**
    * Which rung of the reasoning ladder to ask for while thinking is on
