@@ -164,6 +164,12 @@ installs stop losing environment variables to it.
   now waits until every local run in progress has ended (normally, by Stop, or
   by failing), and it is skipped entirely if you switch back to Local before
   that.
+- **A workflow now tells you where it stopped instead of claiming success.**
+  A step whose web search or page fetch failed, or whose model answered
+  nothing, ends the run with "Workflow stopped at step 2 of 6: ..." instead
+  of carrying on and finishing with "Workflow complete"; a run that really
+  did finish leads with its actual result rather than the "Saved to memory"
+  receipt.
 - **Reinstall trainer in Character Studio now opens a confirmation dialog
   first**, showing the current trainer folder, instead of starting the
   reinstall the moment the button is clicked. A reinstall never changes the

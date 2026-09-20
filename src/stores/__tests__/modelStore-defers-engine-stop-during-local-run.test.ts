@@ -39,7 +39,7 @@ vi.mock('../../api/lmstudio', () => ({
   unloadLmStudioModel: (...a: unknown[]) => unloadLmStudioModel(...a),
 }))
 
-import { useModelStore } from '../modelStore'
+import { useModelStore, __resetDeferredLocalUnloadsForTests } from '../modelStore'
 import { useGenerationStore } from '../generationStore'
 import type { AIModel } from '../../types/models'
 
@@ -61,6 +61,11 @@ beforeEach(() => {
   backendCall.mockClear()
   unloadModel.mockClear()
   unloadLmStudioModel.mockClear()
+  // R2-6 (lu-301/bau/review-offload2.md, Runde 2): `pendingLocalUnloads` is
+  // module state with no test resetter until now. Every test below ends its
+  // own booking before it finishes, so nothing has leaked yet, but this
+  // guards the next test that does not.
+  __resetDeferredLocalUnloadsForTests()
   useModelStore.setState({
     models: [builtin('qwenA'), builtin('qwenB'), cloudModel('claude-x'), lmsModel('mistral'), ollamaModel('llama3')],
     activeModel: 'openai::qwenA',
@@ -217,5 +222,31 @@ describe('the Ollama unload (Auflage 1.1)', () => {
     unloadModel.mockClear()
     useGenerationStore.getState().endRun(CONV_ID, RUN_TOKEN)
     expect(unloadModel).not.toHaveBeenCalledWith('llama3')
+  })
+})
+
+describe('__resetDeferredLocalUnloadsForTests (R2-6)', () => {
+  it('cancels a pending unload left over from a run this test never ends', () => {
+    useModelStore.setState({ activeModel: 'llama3' })
+    useGenerationStore.getState().bookRun(CONV_ID, 'local', RUN_TOKEN)
+    useModelStore.getState().setActiveModel('claude-x') // defers, never ended
+    expect(unloadModel).not.toHaveBeenCalled()
+
+    __resetDeferredLocalUnloadsForTests()
+    // Ending the run now must NOT fire the cancelled unload: the reset threw
+    // away the subscription, so `offloadWhenLocalLaneFree`'s listener is gone
+    // and nothing is left to fire when the lane frees up.
+    useGenerationStore.getState().endRun(CONV_ID, RUN_TOKEN)
+    expect(unloadModel).not.toHaveBeenCalled()
+  })
+
+  it('Gegenprobe: without the reset, that same leftover unload DOES fire once the lane frees', () => {
+    useModelStore.setState({ activeModel: 'llama3' })
+    useGenerationStore.getState().bookRun(CONV_ID, 'local', RUN_TOKEN)
+    useModelStore.getState().setActiveModel('claude-x') // defers, never ended
+    expect(unloadModel).not.toHaveBeenCalled()
+
+    useGenerationStore.getState().endRun(CONV_ID, RUN_TOKEN)
+    expect(unloadModel).toHaveBeenCalledWith('llama3')
   })
 })

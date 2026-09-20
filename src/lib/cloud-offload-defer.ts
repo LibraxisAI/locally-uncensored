@@ -53,6 +53,13 @@
  * ein haengender Lauf haelt jetzt VRAM fest statt eine fremde Unterhaltung
  * zu toeten. Der einzige Ausweg aus diesem Zustand ist Stop auf dem
  * haengenden Lauf selbst.
+ *
+ * Zweiter Preis (R2-4, lu-301/bau/review-offload2.md, Runde 2): beendet der
+ * Nutzer die App, waehrend ein Entladen wartet, raeumt `shutdown_subprocesses`
+ * nur die eigenen Kindprozesse des eingebauten Motors weg, nie ein
+ * LM-Studio- oder Ollama-Modell, das dadurch nie entladen wird. Ollama holt
+ * das ueber sein eigenes `keep_alive` irgendwann von selbst nach, LM Studio
+ * je nach dortiger Einstellung gar nicht.
  */
 
 /** Die eine Tatsache, an der sich alles hier entscheidet. */

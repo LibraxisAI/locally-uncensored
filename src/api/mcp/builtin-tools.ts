@@ -1637,7 +1637,14 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?:
       // THAT engine's own `onComplete` then wrapped it in its own
       // "Workflow complete" header, a false positive one level removed from
       // the one Auflage 2.1 fixed at the tool layer.
-      finalOutput = `Error: ${describeWorkflowStepFailure(workflow, idx, error)}`
+      // R2-5 (lu-301/bau/review-offload2.md, Runde 2): `error` itself is
+      // often already the tool's own "Error: ..." text (see the comment
+      // above), so prefixing blindly used to read "Error: Workflow stopped
+      // at step 1 of 5: Error: Web search failed: ...". One "Error:" is the
+      // detection prefix this tool result needs, the other is noise; strip a
+      // leading one from the inner text before adding the outer one.
+      const innerError = error.startsWith('Error: ') ? error.slice('Error: '.length) : error
+      finalOutput = `Error: ${describeWorkflowStepFailure(workflow, idx, innerError)}`
     },
     onWaitingForInput: () => {},
     onComplete: (allResults: StepResult[]) => {

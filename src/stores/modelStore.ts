@@ -70,6 +70,17 @@ function deferLocalUnload(target: string, stillWanted: () => boolean, unload: ()
   if (!fired) pendingLocalUnloads.set(target, cancel)
 }
 
+/** Test-only (R2-6, lu-301/bau/review-offload2.md, Runde 2): forget every
+ *  pending deferred unload so tests stay isolated, the same role
+ *  `__resetBuiltinSlotOffloadForTests` plays for `builtin-slot-eviction.ts`'s
+ *  own module state. Today's test file always ends its own bookings, so
+ *  nothing leaks yet, but the next test that leaves a run unfinished would
+ *  otherwise carry a stale cancel function into the following test. */
+export function __resetDeferredLocalUnloadsForTests(): void {
+  for (const cancel of pendingLocalUnloads.values()) cancel()
+  pendingLocalUnloads.clear()
+}
+
 export interface PullState {
   progress: PullProgress
   controller: AbortController
@@ -289,7 +300,13 @@ export const useModelStore = create<ModelState>()(
         // Exactly ONE local model stays in VRAM at a time (David 2026-06-12:
         // "darf niemals 2 gleichzeitig geladen sein, außer man macht Compare").
         // Compare uses its own store + provider calls, NOT setActiveModel, so it
-        // is unaffected. Unload the PREVIOUS local model via the right provider.
+        // is unaffected. EXCEPTION (R2-3, lu-301/bau/review-offload2.md, Runde 2):
+        // while a deferred unload is waiting (see `deferLocalUnload` below), the
+        // old local model can briefly sit in VRAM alongside a newly activated
+        // one, because the old one's unload is held back until every local run
+        // still using it has ended. That is not a break of this rule; it is the
+        // documented price of never dropping a run out from under itself.
+        // Unload the PREVIOUS local model via the right provider.
         //   - Ollama (no provider prefix)  → unloadModel
         //   - LM Studio (openai:: + LM-Studio providerName) → unloadLmStudioModel
         //   - Cloud (anthropic:: / OpenRouter / OpenAI etc.) → no local VRAM, skip
