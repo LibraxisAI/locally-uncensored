@@ -156,6 +156,23 @@ function memoryWorkflow(): AgentWorkflow {
   }
 }
 
+function zweiSchritteWorkflow(): AgentWorkflow {
+  // Zwei memory_save-Schritte, keiner davon `user_input`: der Abbruch soll
+  // NICHT waehrend eines wartenden Schritts passieren (das deckt der Test
+  // oben schon ab), sondern GENAU in der Luecke zwischen Schritt 1 und
+  // Schritt 2, wo `runSteps` (workflow-engine.ts:431) nur noch seinen
+  // eigenen `abortController.signal.aborted` prueft und ohne jedes
+  // `onStepError` abbricht (A1, review-teil17-lintfix.md).
+  return {
+    id: 'wf3', name: 'zwei-schritte', description: '', icon: 'Zap',
+    steps: [
+      { id: 'erst', type: 'memory_save', label: 'erst', memorySave: { type: 'reference', titleTemplate: 't1', contentTemplate: 'x1', tags: [] } },
+      { id: 'zweit', type: 'memory_save', label: 'zweit', memorySave: { type: 'reference', titleTemplate: 't2', contentTemplate: 'x2', tags: [] } },
+    ],
+    variables: {}, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+  }
+}
+
 describe('run_workflow: das signal-Argument bricht die WorkflowEngine wirklich ab (engine.cancel())', () => {
   beforeEach(() => {
     registerBuiltinTools(toolRegistry)
@@ -201,6 +218,29 @@ describe('run_workflow: das signal-Argument bricht die WorkflowEngine wirklich a
     const out = await toolRegistry.execute('run_workflow', { name: 'haengt' }, 1, undefined, controller.signal)
 
     expect(out).toMatch(/cancelled by the user before "run_workflow" started/)
+    expect(localLaneHolder()).toBeNull()
+  })
+
+  it('A1 (review-teil17-lintfix.md): Abbruch ZWISCHEN zwei Schritten gibt dieselbe englische Abbruchmeldung zurueck, nicht ein leeres Ergebnis', async () => {
+    useAgentWorkflowStore.setState({ workflows: [zweiSchritteWorkflow()] })
+    const controller = new AbortController()
+    // Der Mock feuert den Abbruch als Seiteneffekt VON Schritt 1, nicht von
+    // aussen per Timer: `addMemory` laeuft synchron in `executeMemorySaveStep`,
+    // also ist der Abbruch schon geschehen, bevor `runSteps` zum Schleifenkopf
+    // fuer Schritt 2 zurueckkehrt -- genau die Luecke aus A1, nicht der
+    // wartende Schritt, den der Test oben schon abdeckt.
+    const addMemory = vi.spyOn(useMemoryStore.getState(), 'addMemory')
+      .mockImplementationOnce(() => { controller.abort(); return 'mem-1' })
+      .mockImplementation(() => 'mem-2')
+    // Ein frueherer Test in dieser Datei spioniert dieselbe Funktion aus und
+    // stellt sie nie zurueck (kein globales `restoreMocks`); ohne
+    // `mockClear()` zaehlt `toHaveBeenCalledTimes` dessen Aufrufe mit.
+    addMemory.mockClear()
+
+    const out = await toolRegistry.execute('run_workflow', { name: 'zwei-schritte' }, 1, undefined, controller.signal)
+
+    expect(addMemory).toHaveBeenCalledTimes(1) // Schritt 2 lief NICHT mehr.
+    expect(out).toBe('Workflow error: Cancelled')
     expect(localLaneHolder()).toBeNull()
   })
 })

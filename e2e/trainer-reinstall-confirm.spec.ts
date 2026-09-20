@@ -151,9 +151,13 @@ test('confirming a reinstall of an already customized install keeps sending that
 
 test('a rejected install still counts as one call -- the note shows the error, not a second attempt', async ({ page }, testInfo) => {
   // The Rust validation runs on whatever path install_character_trainer gets
-  // handed, independent of whether a human typed it. This uses a broken
-  // suggestedRoot to reach that path without an editable field.
-  await gotoReadyTrainer(page, { customized: false, suggestedRoot: 'relative-path-not-allowed', root: 'C:\\test-trainer' })
+  // handed, independent of whether a human typed it. B1-Korruktur
+  // (review-teil17-lintfix.md): a reinstall now ignores `suggestedRoot`
+  // entirely -- it only ever sends a path when the trainer is already
+  // customized, and that path is `status.root`. So a broken `root` on an
+  // already customized install is the only way left to reach this
+  // rejection without an editable field.
+  await gotoReadyTrainer(page, { customized: true, suggestedRoot: null, root: 'relative-path-not-allowed' })
   await page.getByRole('button', { name: 'Reinstall trainer', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Reinstall the trainer?' })
   await dialog.getByRole('button', { name: 'Reinstall', exact: true }).click()

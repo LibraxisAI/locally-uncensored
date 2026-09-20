@@ -374,7 +374,17 @@ function LocalTrainControls() {
   // installer that downloads multiple GB. Left empty, install_character_trainer
   // keeps its existing default (the app data folder), so this changes
   // nothing for a customer who never touches it.
-  const [installPath, setInstallPath] = useState('')
+  //
+  // `typedPath` holds only what the customer actually typed. Lint-Fix
+  // (react-hooks/set-state-in-effect, 19.09.2026): this used to be a second
+  // piece of state (`installPath`) kept in sync with `status` through a
+  // `useEffect` that called `setInstallPath` on every status/pathTouched
+  // change. That is exactly the anti-pattern the rule flags -- state derived
+  // from other state belongs in render, not in an effect that races the
+  // render it is meant to feed. `installPath` below is now computed directly
+  // from `typedPath`, `pathTouched` and `status` on every render; see
+  // bau/lintfix.md for the truth table proving this is not a behavior change.
+  const [typedPath, setTypedPath] = useState('')
   // K5 Nachbesserung, point 3: once the customer has typed anything (or the
   // field was pre-filled and they clear it on purpose), stop overwriting
   // their edit with the backend's current root on every poll.
@@ -391,7 +401,7 @@ function LocalTrainControls() {
   // valid path, not stay blank while a customized root is already active
   // (the old bug behind Blocker 2 -- a broken customized install re-showed
   // this gate with an empty field and a caption that still claimed the app
-  // data default). Runs once per status load, before the customer edits.
+  // data default).
   //
   // Teil 10, point 3 (Opus review of `3ef38668`): a customer who never opens
   // this gate never learns that `suggestedRoot` exists at all -- it used to
@@ -401,11 +411,7 @@ function LocalTrainControls() {
   // clearable value, and only while there is no trainer yet (this whole
   // gate only renders before `envReady`) and no customized root of the
   // customer's own to preserve.
-  useEffect(() => {
-    if (pathTouched) return
-    if (status?.customized) setInstallPath(status.root)
-    else if (status?.suggestedRoot) setInstallPath(status.suggestedRoot)
-  }, [status, pathTouched])
+  const installPath = pathTouched ? typedPath : status?.customized ? status.root : (status?.suggestedRoot ?? '')
 
   // A base-file download outlives this panel. Leave the tab and come back and
   // the button read "Download base files" again with no note, while the 19 GB
@@ -455,25 +461,33 @@ function LocalTrainControls() {
     return () => clearInterval(t)
   }, [busy])
 
-  const startInstall = async () => {
+  const runInstall = async (path: string) => {
     setBusy('install')
     setNote('Setting up the trainer...')
-    try { await installCharacterTrainer(installPath.trim() || undefined) } catch (e) {
+    try { await installCharacterTrainer(path.trim() || undefined) } catch (e) {
       setNote(e instanceof Error ? e.message : 'Install could not start.')
       setBusy(null)
     }
   }
-  // Blocker-Korrektur (Final Review, 19.09.2026): der Reinstall-Dialog hat
-  // keinen eigenen Pfad mehr. Bestaetigen schickt GENAU das Argument, das der
-  // Knopf vor dem Z5-Umbau schickte -- `installPath.trim() || undefined`, der
-  // Zustand des Erstsetup-Gates oben, den ein Kunde, der das Feld nie
-  // angefasst hat, nie auf einen nicht-leeren Wert gebracht hat. Ohne diese
-  // Wiederverwendung wuerde jeder gewoehnliche Reinstall `trainer_root` auf
-  // einen nicht-leeren String setzen und `trainer_root_is_customized()`
-  // ungewollt auf true kippen.
+  // The setup-gate button keeps using whatever the customer typed there
+  // (or the pre-filled suggestion, or their own customized root).
+  const startInstall = () => runInstall(installPath)
+  // B1-Korrektur (Final Review Teil 17, review-teil17-lintfix.md): a
+  // reinstall must NEVER move the trainer folder. `installPath` above also
+  // carries `suggestedRoot` once no customized root exists (so the
+  // erstsetup gate can show it), but that suggestion is for the FIRST
+  // installation only. Sending it here on a bare "confirm the reinstall"
+  // click wrote it into `trainer_root`, flipped
+  // `trainer_root_is_customized()` to true for a customer who never
+  // touched this setting, and moved the pip/HF/torch caches away from an
+  // existing installation -- exactly the migration this dialog's text
+  // ("training photos and downloaded base models are not touched")
+  // promises will not happen. A reinstall therefore sends the customer's
+  // own root only if the trainer is already customized, and `undefined`
+  // (the default, i.e. today's location) in every other case.
   const confirmReinstall = async () => {
     setReinstallOpen(false)
-    await startInstall()
+    await runInstall(status?.customized ? status.root : '')
   }
   const startBases = async () => {
     if (!status) return
@@ -512,7 +526,7 @@ function LocalTrainControls() {
         {busy !== 'install' && (
           <TrainerPathField
             value={installPath}
-            onChange={(v) => { setInstallPath(v); setPathTouched(true) }}
+            onChange={(v) => { setTypedPath(v); setPathTouched(true) }}
             status={status}
           />
         )}
