@@ -64,6 +64,20 @@ describe('runCredits, Studio-Zweig', () => {
     useCloudCatalogStore.getState().setCatalog(studioCatalog)
     expect(runCredits('video', 'generate', 'wan-9', 5, 1)).toBe(8000)
   })
+
+  // P9: the guard used to sit before every op branch, so a Studio-originated
+  // video reaching the gallery Lightbox's separate "Sharpen/Enhance" action
+  // (Lightbox.tsx: runCredits('video', 'upscale', item.model, ...)) fell
+  // through to the caller's fallback too, hiding the real per-second
+  // WaveSpeed rate for a wholly unrelated endpoint. The guard now sits only
+  // in front of the generic model-credits branch it was written to protect;
+  // 'upscale'/'eraser'/'removebg'/'music' price from the flat `ops` table or
+  // their own per_s/base fields, never from a Studio model's own formula, so
+  // they must stay reachable even for a quote_required model.
+  it('a Studio-originated video still prices the classic video-upscale enhance action', () => {
+    useCloudCatalogStore.getState().setCatalog(studioCatalog)
+    expect(runCredits('video', 'upscale', 'preset-horror', 8, 777_777)).toBe(4000)
+  })
 })
 
 describe('runCredits, by_duration', () => {

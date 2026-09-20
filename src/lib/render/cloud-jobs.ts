@@ -82,3 +82,48 @@ export function intentToJob(intent: CreateIntentLike): { kind: RenderKind; op: R
       return { kind: 'image', op: 'generate' }
   }
 }
+
+/** The neutral gallery-entry shape a finished cloud job produces before the
+ *  caller layers its own fields on top (prompt, label, and — for the
+ *  Composer's classic path — the actual local render params: sampler, steps,
+ *  seed, cfgScale, width, height, intent).
+ *
+ *  Web equivalent: lib/render/cloud-jobs.ts's `galleryItemFromJob`, which P5
+ *  did not port (studio-p5.md, "Offen fuer P9"). It ended up built twice
+ *  independently instead: once in PresetWorkshop.tsx (P6) and once inline in
+ *  useCloudCreate.ts (P7). P9 folds both into this single function, the one
+ *  place the portplan names for it.
+ *
+ *  Typed structurally against the job fields it actually reads, not against
+ *  `CloudJob` from api/cloud/jobs.ts: that file already imports RenderKind/
+ *  RenderOp FROM this one, so a type import back here would close a module
+ *  cycle (same reasoning as CreateIntentLike above). */
+export function galleryItemFromJob(job: {
+  id: string
+  kind: RenderKind
+  model: string
+  result_url: string | null
+  attestation: { quote: string; verify_url: string } | null
+}) {
+  return {
+    id: job.id,
+    type: job.kind,
+    filename: '',
+    subfolder: '',
+    negativePrompt: '',
+    model: job.model,
+    modelType: 'unknown' as const,
+    seed: 0,
+    steps: 0,
+    cfgScale: 0,
+    sampler: '',
+    scheduler: '',
+    width: 0,
+    height: 0,
+    batchSize: 1,
+    createdAt: Date.now(),
+    remoteUrl: job.result_url ?? undefined,
+    attestation: job.attestation,
+    jobId: job.id,
+  }
+}

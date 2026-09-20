@@ -12,7 +12,7 @@
 
 import { useCallback } from 'react'
 import { useCreateStore, type GalleryItem } from '../stores/createStore'
-import { intentToJob } from '../lib/render/cloud-jobs'
+import { intentToJob, galleryItemFromJob } from '../lib/render/cloud-jobs'
 import {
   cancelJob,
   getJob,
@@ -552,15 +552,10 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
         st.setProgressPhase('complete')
         st.setProgress(100, 'Complete!')
         st.addToGallery({
-          id: job.id,
-          type: kind,
-          filename: '',
-          subfolder: '',
+          ...galleryItemFromJob(job),
           prompt: OP_GALLERY_LABEL[op] ?? s.prompt,
           label,
           negativePrompt: s.negativePrompt,
-          model,
-          modelType: 'unknown',
           seed: runSeed,
           steps: s.steps,
           cfgScale: s.cfgScale,
@@ -568,11 +563,6 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
           scheduler: s.scheduler,
           width: s.width,
           height: s.height,
-          batchSize: 1,
-          createdAt: Date.now(),
-          remoteUrl: job.result_url,
-          attestation: job.attestation,
-          jobId: job.id,
           intent,
         })
       } else if (job.status === 'canceled') {
@@ -681,26 +671,8 @@ export function useCloudCreate(opts: { onQuotaChange?: () => void } = {}) {
           st.setProgress(100, 'Voice ready!')
           const label = text.length > 40 ? `${text.slice(0, 40)}…` : text
           st.addToGallery({
-            id: job.id,
-            type: 'audio',
-            filename: '',
-            subfolder: '',
+            ...galleryItemFromJob(job),
             prompt: text,
-            negativePrompt: '',
-            model,
-            modelType: 'unknown',
-            seed: 0,
-            steps: 0,
-            cfgScale: 0,
-            sampler: '',
-            scheduler: '',
-            width: 0,
-            height: 0,
-            batchSize: 1,
-            createdAt: Date.now(),
-            remoteUrl: job.result_url,
-            attestation: job.attestation,
-            jobId: job.id,
             intent: 'lipsync',
           })
           st.setVoiceFromJob({ jobId: job.id, label })

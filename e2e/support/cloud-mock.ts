@@ -31,7 +31,54 @@ export interface CloudScenario {
    * sagt es hier.
    */
   paidPlan?: boolean
+  /**
+   * P9: the extended /api/jobs/catalog contract the Create-Studio port reads
+   * (Portplan Abschnitt 4, Punkt 5): a Studio model entry carrying
+   * `api_schema`/`pricing`/`quote_required`, plus `clip.durations` and
+   * `credits.by_duration` on the classic video entry (dd29f359). The Preset
+   * shelf and StudioParams gate purely on `quote_required` being present on
+   * AT LEAST ONE entry (never a version number, Portplan Abschnitt 4) —
+   * leaving this unset reproduces an OLDER server's catalog (no entry knows
+   * Studio at all), the shelf must stay hidden.
+   */
+  studioCatalog?: boolean
+  /**
+   * Status /api/jobs/studio-quote answers with. 200 (default) returns a
+   * flat, deterministic price; 404 reproduces "the route exists but this
+   * server build predates Studio" (Portplan Abschnitt 4: "This feature needs
+   * a newer LU Cloud server. Try again later."); 'unreachable' does not
+   * register the route at all, reproducing the pre-P0 CORS gap the same way
+   * (both collapse to the identical client-side message).
+   */
+  studioQuoteStatus?: 200 | 404 | 'unreachable'
 }
+
+// P9: one Studio model, shaped like a real /api/jobs/catalog entry once P0's
+// CORS fix and the live server both carry the Studio fields. `minimax-music`
+// matches a real STUDIO_MODELS id (src/lib/render/studio-models.json) so the
+// app's own bundled provider schema (SchemaControl's source of truth, never
+// the server) renders the same fields a live run would use: a flat-rate
+// model with a bare `prompt` input, no upload, the simplest full booking path
+// for an e2e run. `pricing`/`api_schema` mirror studio-contract.ts's own
+// StudioModel/Schema shape (Portplan Abschnitt 2.1) — present on the wire so
+// a future server-truth switch is a data change, not a contract change; nothing
+// on the client reads them yet (studioQuote() is the price source of record).
+const STUDIO_CATALOG_MODEL = {
+  id: 'minimax-music',
+  label: 'MiniMax Music',
+  kind: 'audio' as const,
+  edit: false,
+  cfg: false,
+  negative_prompt: false,
+  quote_required: true,
+  pricing: { mode: 'flat', rates: { default: 0.15 } },
+  api_schema: {
+    type: 'object',
+    properties: { prompt: { type: 'string', description: 'Prompt for the music generation.' } },
+    required: ['prompt'],
+  },
+}
+
 
 const CORS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -120,7 +167,19 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
           models: [
             { id: 'flux-schnell', label: 'Flux Schnell (fast)', kind: 'image', edit: false, cfg: true, negative_prompt: false, credits: { base: 300 } },
             { id: 'flux-dev', label: 'Flux Dev (quality)', kind: 'image', edit: true, cfg: true, negative_prompt: false, credits: { base: 1200 } },
-            { id: 'wan-2.2-720p', label: 'Wan 2.2 720p', kind: 'video', edit: false, cfg: false, negative_prompt: true, clip: { short: 5, long: 8 }, credits: { base: 40000, long: 64000 } },
+            {
+              id: 'wan-2.2-720p', label: 'Wan 2.2 720p', kind: 'video', edit: false, cfg: false, negative_prompt: true,
+              // dd29f359: clip.durations/credits.by_duration let a model book
+              // any advertised length, not just a fixed short/long pair.
+              // 4/6/9 are deliberately NOT the 5/8 short/long pair, so a spec
+              // asserting these three buttons proves the Length control
+              // really reads the catalog and not a hardcoded fallback.
+              clip: scenario.studioCatalog ? { short: 5, long: 8, durations: [4, 6, 9] } : { short: 5, long: 8 },
+              credits: scenario.studioCatalog
+                ? { base: 40000, long: 64000, by_duration: { '4': 32000, '6': 48000, '9': 72000 } }
+                : { base: 40000, long: 64000 },
+            },
+            ...(scenario.studioCatalog ? [STUDIO_CATALOG_MODEL] : []),
           ],
           ops: { removebg: 1000, eraser: 2500, upscale_image: 1000, upscale_video_per_s: 500, upscale_video_min: 2500 },
           voice: { stt: 600, tts_per_1k_chars: 8000 },
@@ -129,6 +188,28 @@ export async function routeCloud(page: Page, scenario: CloudScenario): Promise<v
           monthly_credits: 2_550_000,
         }),
       )
+    }
+
+    // P9: POST /api/jobs/studio-quote, the provider-confirmed price a Studio
+    // run asks for before it books (Portplan Abschnitt 4, Punkt 1). A flat,
+    // deterministic number — real per-model pricing is studio-contract.ts's
+    // job, not this mock's.
+    if (path === '/api/jobs/studio-quote') {
+      if (scenario.studioQuoteStatus === 404) return route.fulfill(json(404, { error: 'not found' }))
+      // 'unreachable': the pre-P0 state (no withCors/OPTIONS at all) — the
+      // browser never lets a response reach the app, so the mock aborts
+      // instead of fulfilling, the same failure shape a real CORS block
+      // produces (studio.ts's own comment: this collapses to the identical
+      // "newer LU Cloud server" text as a 404).
+      if (scenario.studioQuoteStatus === 'unreachable') return route.abort('failed')
+      return route.fulfill(json(200, { credits: 1500 }))
+    }
+
+    // P9: GET /api/jobs/runtime (Portplan Abschnitt 4, Punkt 2). Empty is a
+    // valid, common answer (MIN_SAMPLES: silence over a guess) — no spec
+    // needs a populated runtime map, so this mock never returns one.
+    if (path === '/api/jobs/runtime') {
+      return route.fulfill(json(200, { runtimes: {} }))
     }
 
     if (path === '/api/inference/v1/models') {

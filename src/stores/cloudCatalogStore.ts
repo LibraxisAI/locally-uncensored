@@ -181,15 +181,6 @@ export function runCredits(
   fallback: number,
   resolution?: string,
 ): number {
-  // P3, Studio-Zweig: a Studio model (`quote_required` on the catalog entry)
-  // prices live from POST /api/jobs/studio-quote, see studio.ts and
-  // studio-contract.ts's own `studioCredits()` formula, which is a PREVIEW,
-  // not this function's job. Computing anything below for one would drift
-  // from the provider's real price the moment it changes there, and a run
-  // must never book a different number than what got shown, so this guard
-  // sits before every other branch and returns the caller's own fallback
-  // instead of guessing (Portplan Abschnitt 7, Risiko 1).
-  if (cloudModelById(pickedModel)?.quote_required) return fallback
   const { ops } = useCloudCatalogStore.getState()
   // Music bills per second: catalog per_s × the requested duration (60 s
   // default, mirroring the server's MUSIC_SECONDS fallback).
@@ -211,7 +202,32 @@ export function runCredits(
     return rate ?? fallback
   }
   const model = modelForOp(kind, op, pickedModel)
-  const credits = cloudModelById(model)?.credits
+  const entry = cloudModelById(model)
+  // P3, Studio-Zweig (P9 rescoped): a Studio model (`quote_required` on the
+  // catalog entry) prices its OWN generation run live from POST
+  // /api/jobs/studio-quote, see studio.ts and studio-contract.ts's own
+  // `studioCredits()` formula, which is a PREVIEW, not this function's job.
+  // Computing this generic base/long/by_duration figure for a Studio
+  // generation would drift from the provider's real price the moment it
+  // changes there, and a run must never book a different number than what
+  // got shown (Portplan Abschnitt 7, Risiko 1) — no UI path does this today
+  // (Composer/CreditsMeter route a Studio pick around runCredits entirely,
+  // preset-models.ts/create-presets.ts only call runCredits for non-studio
+  // steps), this guard is the safety net for the day one of them slips.
+  //
+  // The guard sits HERE, not before the op branches above, on purpose: a
+  // Studio-originated video can still reach the generic video-upscale
+  // 'enhance' action from the gallery Lightbox — a wholly separate WaveSpeed
+  // utility endpoint, priced from the flat per-second `ops` rate table, not
+  // from this model's own Studio price. Blocking that call too (the
+  // original, wider guard did) forced the enhance-credits gate onto the
+  // quota's generic per-kind fallback for every Studio-originated clip,
+  // silently hiding the real per-second rate. Scoping the guard to only the
+  // generic-model-credits branch below fixes that and is what actually makes
+  // Lightbox's `runCredits('video', 'upscale', item.model, ...)` call
+  // correct for a Studio clip.
+  if (entry?.quote_required) return fallback
+  const credits = entry?.credits
   if (!credits) return fallback
   // P3, by_duration: dd29f359 lets a video model book any advertised length,
   // not just the short/long pair; an exact catalog price for the requested

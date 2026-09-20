@@ -13,14 +13,6 @@ import { STUDIO_MODELS, studioSchema } from './studio-contract'
 import { cloudModelById, cloudModelsFor, i2vModels, runCredits } from '../../stores/cloudCatalogStore'
 import type { RenderKind, RenderOp } from './cloud-jobs'
 
-// Desktop port (P2): the web's RenderOp union already carries 'studio' (see
-// lib/render/provider.ts in the portplan). The desktop's RenderOp (in
-// cloud-jobs.ts) does not yet: that file is P5's exclusively, and 'studio'
-// lands there when P5 merges. Until then this local union stands in so tsc
-// stays green without touching a file this package does not own. P9: fold
-// PresetOp away once cloud-jobs.ts's RenderOp includes 'studio'.
-export type PresetOp = RenderOp | 'studio'
-
 export type StepRole =
   | 'image' | 'animate' | 'soundtrack' | 'speech' | 'music' | 'talking' | 'presenter'
   | 'duo' | 'extend' | 'motion' | 'restyle' | 'angles' | 'edit' | 'upscale'
@@ -29,13 +21,13 @@ export interface PresetModel {
   id: string
   label: string
   kind: RenderKind
-  op: PresetOp
+  op: RenderOp
   adult: boolean
 }
 
 /** The op a NON-studio member of this role runs under. Studio members always
  *  run under 'studio' and carry their own schema. */
-const ROLE_OP: Record<StepRole, PresetOp> = {
+const ROLE_OP: Record<StepRole, RenderOp> = {
   image: 'generate', animate: 'animate', soundtrack: 'studio', speech: 'tts',
   music: 'music', talking: 'lipsync', presenter: 'studio', duo: 'studio',
   extend: 'extend', motion: 'motion', restyle: 'studio', angles: 'studio',

@@ -15,15 +15,21 @@ import { STUDIO_MODELS, studioBaseCredits, studioPreviewCredits } from './studio
 import { presetModels, requiredRoleInputs, roleInputs, type PresetModel, type StepRole } from './preset-models'
 import { opPickerModels } from '../../stores/cloudCatalogStore'
 
-// Desktop port (P2): the web's CreateIntent already carries 'video_upscale'
-// as a distinct intent from the plain 'upscale' (image upscale). The
-// desktop's CreateIntent (in stores/createStore.ts, P5's file) has a single
-// 'upscale' that serves BOTH image and video upscale today via the older
-// utility-op path; splitting it into its own value is a store/Composer
-// decision (P5/P7), not this package's. StudioIntent stands in locally so
-// tsc stays green without touching createStore.ts. P9: once P5/P7 decide how
-// video upscale reaches the Composer (new CloudOp, or a kind check on
-// 'upscale'), fold this back into CreateIntent and drop the shim below.
+// Desktop port (P2, checked again in P9): the web's CreateIntent already
+// carries 'video_upscale' as a distinct intent from the plain 'upscale'
+// (image upscale). The desktop's CreateIntent (in stores/createStore.ts,
+// P5's file, merged) still has a single 'upscale' that serves BOTH image and
+// video upscale via the older utility-op path. This is not a leftover type
+// gap: components/create/experimental/intents.ts documents (comment at the
+// 'upscale' intent, predates the Studio port) that a separate video-upscale
+// intent is "a feature decision for David ... out of scope here" — it needs
+// a new IntentBar tile and Composer wiring, a UI feature addition, not an
+// integration fold. StudioIntent stays as the local shim until that decision
+// is made; the video_upscale role list below (STUDIO_MODELS entries
+// video-upscaler, flashvsr, video-upscaler-pro, ultimate-video-upscaler,
+// crystal-upscaler, flux-3-upscale) is correctly wired and tested, but
+// reachable only by calling these functions directly with 'video_upscale',
+// which no UI path does today.
 export type StudioIntent = CreateIntent | 'video_upscale'
 
 /** Die Rolle, die eine Create-Unterkategorie faehrt. Absichten ohne Eintrag

@@ -36,6 +36,7 @@ const PresetWorkshop = lazy(() =>
   import('./PresetWorkshop').then((m) => ({ default: m.PresetWorkshop })),
 )
 import { INTENT_MAP, isIntentAvailable } from './intents'
+import { intentRoles, isStudioModel, resolveIntentPick } from '../../../lib/render/create-studio'
 import { modelForOp } from '../../../stores/cloudCatalogStore'
 import { stageShowsSetupCard, laneModelCount } from './stageGate'
 import { isMlxImageHost } from '../../../api/mlx-image'
@@ -71,6 +72,27 @@ function CreateExperimentalInner() {
   const lipsyncModelList = useCreateStore((s) => s.lipsyncModelList)
   const motionModelList = useCreateStore((s) => s.motionModelList)
   const { modelLoadError, connected, modelsLoaded, mlxMissing, comfyOnCpu, comfyCpuBanner } = useCreateExp()
+
+  // P9: AdvancedDrawer needs the same studioModel Composer.tsx derives
+  // (Portplan Abschnitt 3b), so the Expert drawer shows StudioParams instead
+  // of WorkflowFinder+ParamGroups whenever a Studio pick is active. P7's
+  // report flagged this as still open: Composer computes studioPick itself
+  // and never passed it up, so CreateExperimental rendered AdvancedDrawer
+  // with no studioModel at all and the drawer always fell back to the
+  // ComfyUI expert block even on a Studio pick. Same read-only derivation as
+  // Composer.tsx, kept in sync by hand (both read the same store getters and
+  // pure functions, no new state).
+  const intent = useCreateStore((s) => s.intent())
+  const characterTab = useCreateStore((s) => s.characterTab)
+  const cloudOpModel = useCreateStore((s) => s.cloudOpModel)
+  // characterUse never resolves to a Studio pick (Composer.tsx: roleIntent
+  // excludes it outright, character-use stays on its fixed -lora family via
+  // resolveCharacterModel), so this derivation does not need
+  // selectedCharacter at all.
+  const characterUse = intent === 'character' && characterTab === 'use'
+  const roleIntent = backend === 'cloud' && !characterUse && intentRoles(intent).length > 0
+  const rolePick = roleIntent ? resolveIntentPick(intent, cloudOpModel) : undefined
+  const studioPick = rolePick && isStudioModel(rolePick) ? rolePick : undefined
 
   const [shownId, setShownId] = useState<string | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -182,8 +204,8 @@ function CreateExperimentalInner() {
   }, [gallery])
 
   // Switching intent/mode returns the Stage to empty — the newest gallery item
-  // must not reappear just because the axis changed.
-  const intent = useCreateStore((s) => s.intent())
+  // must not reappear just because the axis changed. (`intent` is read once,
+  // near the top of the component, for the studioModel derivation below.)
   useEffect(() => { setShownId(null) }, [intent])
 
   const displayed = shownId ? gallery.find((g) => g.id === shownId) : undefined
@@ -417,7 +439,7 @@ function CreateExperimentalInner() {
         onOpenWorkflows={() => { setWorkflowsOpen(true); setManagerNoticeSeen(true) }}
       />
 
-      <AdvancedDrawer open={advancedOpen} onClose={() => setAdvancedOpen(false)} />
+      <AdvancedDrawer open={advancedOpen} onClose={() => setAdvancedOpen(false)} studioModel={studioPick} />
       <WorkflowsModal open={workflowsOpen} onClose={() => setWorkflowsOpen(false)} />
       <MaskEditor open={maskOpen} onClose={() => setMaskOpen(false)} />
 
