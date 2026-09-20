@@ -62,6 +62,14 @@ installs stop losing environment variables to it.
   its own default.
 - **Pressing Stop while the Coding Agent is running code now actually stops
   that run**, the same way it already stopped a shell command.
+- **Workflow steps now go through the same tool approval as the rest of Agent
+  mode, and only offer the tools your permissions allow.** Built-in workflows
+  now take their input from the call itself instead of waiting forever for an
+  answer nobody could give, and the Play button in Settings under Agent
+  Workflows that never did anything is gone.
+- **A sub-agent delegated in the foreground is no longer cut off after 60
+  seconds**, and a timeout or Stop now actually ends the tool call it was
+  running instead of leaving it running in the background.
 - **The Troubleshoot panel now tests the LM Studio address you actually
   configured in Settings**, instead of always trying the default
   127.0.0.1:1234.

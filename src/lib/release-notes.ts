@@ -228,6 +228,14 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             detail: 'Pressing Stop while the Coding Agent is running code now actually stops that run, the same way it already stopped a shell command.',
           },
           {
+            title: 'Workflow steps now ask for approval like the rest of Agent mode.',
+            detail: 'Workflow steps now go through the same tool approval as the rest of Agent mode, and only offer the tools your permissions allow. Built-in workflows now take their input from the call itself instead of waiting forever for an answer nobody could give, and the Play button in Settings under Agent Workflows that never did anything is gone.',
+          },
+          {
+            title: 'A foreground sub-agent is no longer cut off after 60 seconds.',
+            detail: 'A sub-agent delegated in the foreground is no longer cut off after 60 seconds, and a timeout or Stop now actually ends the tool call it was running instead of leaving it running in the background.',
+          },
+          {
             title: 'Multi-line memory entries survive export and import again.',
             detail: 'A memory entry with more than one line survives export and import again, both separator styles the web writes are read back, and one sensitive memory entry no longer blocks the whole sync.',
           },
