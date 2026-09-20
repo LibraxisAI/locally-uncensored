@@ -78,7 +78,12 @@ export interface AgentChatChunk {
 }
 
 // Tool call lifecycle status
-export type ToolCallStatus = 'pending_approval' | 'running' | 'completed' | 'failed' | 'rejected' | 'cached'
+// 'stopped' (bau/wfprogress.md, Runde 2): the workflow-progress block's own
+// honest terminal state when Stop ends a run without any step itself failing
+// or throwing: distinct from 'failed' (something went wrong) and 'rejected'
+// (a user declined an approval). No real tool call uses it today; it exists
+// so a stopped run reads as "you stopped this" rather than "this broke".
+export type ToolCallStatus = 'pending_approval' | 'running' | 'completed' | 'failed' | 'rejected' | 'cached' | 'stopped'
 
 // Internal tracking of a tool call.
 // Observability fields (startedAt / completedAt / cacheHit / parentToolCallId /

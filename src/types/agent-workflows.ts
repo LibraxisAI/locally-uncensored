@@ -110,4 +110,28 @@ export interface WorkflowEngineCallbacks {
   onWaitingForInput: (stepIndex: number, prompt: string) => void
   onComplete: (results: StepResult[]) => void
   onError: (error: string) => void
+  /**
+   * Fired with the CUMULATIVE output text as a `prompt` step's model answer
+   * streams in (bau/wfprogress.md, harter Befund von der Box: a prompt step
+   * used to give no feedback at all while the model produced tokens for
+   * minutes). Optional so `builtin-tools.ts`'s `run_workflow` callers, which
+   * do not need live text, need not implement it. Never fires for `tool`,
+   * `condition`, `loop`, `user_input` or `memory_save` steps, and does not
+   * fire for a `prompt` step that calls tools through the native
+   * (non-streaming) tool-calling path.
+   */
+  onStepProgress?: (stepIndex: number, partialOutput: string) => void
+  /**
+   * Fired EXACTLY ONCE when a run ends because it was aborted (Stop), and
+   * no `onStepError`/`onError` already reported a terminal state for it
+   * (bau/wfprogress.md Runde 2, B1: `runSteps` used to leave a run that was
+   * cancelled between two steps, or during a step that finished normally
+   * despite the abort signal, with NO terminal callback at all: the chat
+   * trigger's progress block then stayed on 'running' forever, spinner
+   * included, and that stuck state was what got persisted). Optional for
+   * the same reason `onStepProgress` is: `run_workflow`'s own nested engine
+   * (builtin-tools.ts) does not need it. `results` carries whatever steps
+   * did complete before the stop.
+   */
+  onStopped?: (results: StepResult[]) => void
 }
