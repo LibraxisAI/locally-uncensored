@@ -213,7 +213,7 @@ describe('Waechter: `run_workflow` (builtin-tools.ts) uebergibt ein ECHTES Gate,
     // spy sees its own outer call too); shell_execute must never be among
     // the calls the workflow's own step made.
     expect(execSpy.mock.calls.map((c) => c[0])).not.toContain('shell_execute')
-    expect(output).toMatch(/Workflow error/)
+    expect(output).toMatch(/Workflow stopped at step/)
     expect(output).toMatch(/not approved|rejected/i)
   })
 })

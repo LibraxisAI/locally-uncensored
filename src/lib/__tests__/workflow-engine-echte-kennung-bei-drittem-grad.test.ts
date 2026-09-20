@@ -98,7 +98,7 @@ describe('dritter Verschachtelungsgrad reicht die ECHTE Unterhaltung durch, nich
     dequeueApproval('real-conv-2')?.resolve(false)
     const output = await outputPromise
 
-    expect(output).toMatch(/Workflow error/)
+    expect(output).toMatch(/Workflow stopped at step/)
     expect(output).toMatch(/not approved|rejected/i)
   })
 })

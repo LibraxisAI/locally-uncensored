@@ -5,16 +5,22 @@
  * The tester's "run workflow Research Topic: the history of tea" showed only
  * a second line, "Saved to memory: Research: the history of tea", and then
  * nothing for 5+ minutes with the send button back to idle, read as a hang.
- * Quelltextlage: it was not a hang. `runSteps` (workflow-engine.ts) only
- * reaches `onComplete` after every step has run (or one of them failed, in
- * which case `onStepError` already posted "Workflow error: ..." first), and
- * the built-in "Research Topic" workflow ends in a `memory_save` step whose
- * own output is, by construction, never empty ("Saved to memory: ${title}",
- * `executeMemorySaveStep`). The old `onComplete` in BOTH callers
- * (`useAgentChat.ts`'s chat trigger and `builtin-tools.ts`'s `run_workflow`
- * tool) picked `results.filter(r => r.output).pop()`, the LAST step with
- * any output, which for a workflow ending in `memory_save` is ALWAYS that
- * receipt, never the actual content a `prompt` step produced.
+ * Quelltextlage: it was not a hang for a run where every step genuinely
+ * succeeded. `runSteps` (workflow-engine.ts) only reaches `onComplete` after
+ * every step has run, and the built-in "Research Topic" workflow ends in a
+ * `memory_save` step whose own output is, by construction, never empty
+ * ("Saved to memory: ${title}", `executeMemorySaveStep`). The old
+ * `onComplete` in BOTH callers (`useAgentChat.ts`'s chat trigger and
+ * `builtin-tools.ts`'s `run_workflow` tool) picked
+ * `results.filter(r => r.output).pop()`, the LAST step with any output,
+ * which for a workflow ending in `memory_save` is ALWAYS that receipt,
+ * never the actual content a `prompt` step produced.
+ *
+ * A run that stops on a genuine step failure (a broken web search, an empty
+ * model answer) is a SEPARATE concern, covered in
+ * workflow-stops-honestly-on-tool-failure.test.ts and
+ * web-tools-fail-honestly.test.ts (review-offload2.md Auflage 2.1): this
+ * file only covers the "everything genuinely worked" completion message.
  *
  * This test drives the REAL `WorkflowEngine`, not a copy: a `prompt` step
  * (real `chatStream` inference, mocked only at the provider boundary, same
@@ -150,12 +156,4 @@ describe('describeWorkflowCompletion: the real content wins over a trailing memo
     expect(message).toContain('Saved to memory: Research: tea')
   })
 
-  it('a failed step is named honestly in the fallback when nothing else produced content', () => {
-    const workflow = workflowOf([{ id: 'x', type: 'tool', label: 'x', toolName: 'shell_execute' }])
-    const results = [
-      { stepId: 'x', status: 'failed' as const, output: '', startedAt: 0, completedAt: 1, error: 'not approved' },
-    ]
-    const message = describeWorkflowCompletion(workflow, results)
-    expect(message).toContain('the last one failed: not approved')
-  })
 })

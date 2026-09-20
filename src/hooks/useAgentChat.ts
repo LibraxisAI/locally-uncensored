@@ -57,7 +57,7 @@ import { getProviderIdFromModel } from '../api/providers'
 import { markToolsUnsupported } from '../api/tool-capability'
 import { extractMemoriesFromPair } from './useMemory'
 import { useAgentWorkflowStore } from '../stores/agentWorkflowStore'
-import { WorkflowEngine, describeWorkflowCompletion } from '../lib/workflow-engine'
+import { WorkflowEngine, describeWorkflowCompletion, describeWorkflowStepFailure } from '../lib/workflow-engine'
 import type { AgentBlock, AgentToolCall } from '../types/agent-mode'
 import { selectRelevantToolsAsync, toolSelectionOpts, ALWAYS_INCLUDE } from '../lib/tool-selection'
 import { renderToolRoster, renderToolNames } from '../lib/tool-roster'
@@ -416,19 +416,27 @@ export function useAgentChat() {
         // `builtin-tools.ts`'s `run_workflow` tool so the two do not drift.
         //
         // `hadStepError` mirrors that same shared engine's other caller: a
-        // failed step's `onStepError` already posts "Workflow error: ...",
-        // and `runSteps` (workflow-engine.ts) still calls `onComplete`
-        // right after that break, so without this flag a second message
-        // would follow, repeating whatever ran before the failure.
+        // failed step's `onStepError` already posts a message, and `runSteps`
+        // (workflow-engine.ts) still calls `onComplete` right after that
+        // break, so without this flag a second message would follow,
+        // repeating whatever ran before the failure.
+        //
+        // Auflage 2.1 (review-offload2.md): the box's "Research Topic" run
+        // finished "successfully" in seconds with idle GPU because
+        // `executeWebSearch`/`executeWebFetch` returned failure text that did
+        // not start with "Error:", so `executeToolStep` never marked the step
+        // failed. Those tool responses are fixed at the source now
+        // (builtin-tools.ts), and a failure IS reported here with WHERE it
+        // happened, not a bare "Workflow error: ...".
         let hadStepError = false
         const callbacks: WorkflowEngineCallbacks = {
           onStepStart: () => {},
           onStepComplete: () => {},
-          onStepError: (_i, error) => {
+          onStepError: (i, error) => {
             hadStepError = true
             if (convId) {
               useChatStore.getState().addMessage(convId, {
-                id: uuid(), role: 'assistant', content: `Workflow error: ${error}`, timestamp: Date.now(),
+                id: uuid(), role: 'assistant', content: describeWorkflowStepFailure(workflow, i, error), timestamp: Date.now(),
               })
             }
           },
