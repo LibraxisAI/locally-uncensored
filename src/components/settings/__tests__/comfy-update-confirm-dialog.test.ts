@@ -217,6 +217,126 @@ describe('R3-1 (final review Runde 3): the running-instance guard refuses throug
   })
 })
 
+describe('R4-1 (final review Runde 4): a stale status from an earlier run must not survive into this one', () => {
+  // `install_status` on the Rust side is never reset to "idle" on its own --
+  // it just carries whatever the LAST install/repair/update run left in it
+  // (`complete`, `error`, or `cancelled`) until something overwrites it. The
+  // running-instance guard added in R3-1 can now take up to 13s
+  // (R2-1/R2-2) before the worker thread writes its own first status, so the
+  // panel's first poll (2s after the click, comfyInstallStore's `POLL_MS`)
+  // used to land squarely on that stale leftover and read it as THIS run's
+  // own outcome: a leftover "complete" ended the poll right there with
+  // "Update finished", and a refusal the guard produced moments later was
+  // never shown because nothing was watching anymore. The fix resets the
+  // slot to "idle" on the CALLER's thread, before the worker thread (and
+  // its guard) even starts, so the very first poll can only ever see "idle"
+  // or the worker's own progress -- never a stale terminal state from a run
+  // that has nothing to do with this one.
+  afterEach(() => { vi.useRealTimers() })
+
+  it('an old "complete" from an earlier run is gone by the time the first poll runs, and a later refusal still shows through', async () => {
+    const guardMessage =
+      'ComfyUI is generating something right now. Wait for it to finish, or stop the render ' +
+      'yourself, then run Update ComfyUI again. Nothing was changed.'
+    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: true }
+
+    // What a run from earlier in the session left behind -- exactly what
+    // `install_comfyui_status` would still answer the instant before this
+    // click, if the Rust side did not reset it.
+    let installStatus: Record<string, unknown> = {
+      status: 'complete',
+      logs: ['Update finished. Restart ComfyUI to load the new nodes.'],
+    }
+    let pollsSinceUpdateClicked = 0
+    backendCall.mockImplementation(async (cmd: string) => {
+      if (cmd === 'comfyui_status') return comfyStatus
+      if (cmd === 'update_comfyui') {
+        // The real Rust command resets install_status to "idle" on the
+        // caller's thread before it ever returns (R4-1's fix) -- so by the
+        // time this promise resolves, the stale "complete" above is
+        // already gone, well before the guard's own wait even starts.
+        installStatus = { status: 'idle', logs: [] }
+        return { status: 'installing' }
+      }
+      if (cmd === 'install_comfyui_status') {
+        pollsSinceUpdateClicked += 1
+        // The guard's refusal, landing on the second poll -- it could just
+        // as well take longer (up to 13s), the point here is only that it
+        // is never masked by the stale value from before this run.
+        if (pollsSinceUpdateClicked >= 2) {
+          installStatus = { status: 'error', logs: ['Updating ComfyUI...', guardMessage] }
+        }
+        return installStatus
+      }
+      return {}
+    })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    await mountPanel()
+    await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update' })) })
+
+    // First poll: the reset already landed, so this reads "idle", never
+    // the stale "complete" -- the run must not read as already finished.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useComfyInstallStore.getState().phase).toBe('comfyui')
+    expect(useComfyInstallStore.getState().notice).toBe('')
+
+    // Second poll: the worker's own refusal, still watched for because
+    // nothing stopped the poll on the way here.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useComfyInstallStore.getState().phase).toBe('error')
+    expect(useComfyInstallStore.getState().error).toContain(guardMessage)
+  })
+
+  it('GEGENPROBE: without the reset, the stale "complete" reads as this run finishing, and the later refusal is never seen', async () => {
+    // Same backend sequence as above, EXCEPT update_comfyui no longer
+    // performs the reset -- exactly the pre-fix behaviour. This is the bug
+    // R4-1 describes: proves the test above is not vacuously green, and
+    // documents why the reset has to happen on the Rust side at all (the
+    // store cannot recover from this on its own -- a `complete` poll stops
+    // the timer for good, so a real refusal one tick later would never be
+    // seen either way).
+    const guardMessage =
+      'ComfyUI is generating something right now. Wait for it to finish, or stop the render ' +
+      'yourself, then run Update ComfyUI again. Nothing was changed.'
+    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: true }
+
+    let installStatus: Record<string, unknown> = {
+      status: 'complete',
+      logs: ['Update finished. Restart ComfyUI to load the new nodes.'],
+    }
+    let pollsSinceUpdateClicked = 0
+    backendCall.mockImplementation(async (cmd: string) => {
+      if (cmd === 'comfyui_status') return comfyStatus
+      // No reset here -- the stale "complete" from before this run survives.
+      if (cmd === 'update_comfyui') return { status: 'installing' }
+      if (cmd === 'install_comfyui_status') {
+        pollsSinceUpdateClicked += 1
+        if (pollsSinceUpdateClicked >= 2) {
+          installStatus = { status: 'error', logs: ['Updating ComfyUI...', guardMessage] }
+        }
+        return installStatus
+      }
+      return {}
+    })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    await mountPanel()
+    await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update' })) })
+
+    // The first poll already reads the stale "complete" and stops watching.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useComfyInstallStore.getState().phase).toBe('idle')
+
+    // The refusal that would have landed on the next tick is never seen.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useComfyInstallStore.getState().phase).toBe('idle')
+    expect(useComfyInstallStore.getState().error).toBe('')
+  })
+})
+
 describe('a ComfyUI this app did not start blocks the click, negative control included', () => {
   it('a foreign, running ComfyUI shows a message instead of opening the dialog', async () => {
     comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: false }

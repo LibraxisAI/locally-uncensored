@@ -860,6 +860,31 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
     }
 }
 
+/// Clear `install_status` back to its startup shape before a new run's
+/// worker thread is even spawned.
+///
+/// final review Runde 4, R4-1: without this, `install_status` keeps
+/// whatever the previous install/repair/update run left in it (`idle` is
+/// only ever set once, in `InstallState::default`) for as long as the
+/// running-instance guard is still deciding whether this run gets to start
+/// at all -- up to 13s (R2-1/R2-2) before the worker thread writes anything
+/// of its own. A poll landing in that window reads the STALE status as this
+/// run's own outcome: a leftover `complete` reads as "already finished",
+/// a leftover `error` or `cancelled` reads as this run having failed or
+/// been cancelled before it even started, and every one of those three
+/// stops the store's poll for good, so a genuine refusal the guard produces
+/// afterward is never shown. `idle` is deliberately not a stop condition for
+/// the poll (only `complete`/`error`/`cancelled` are), so watching carries
+/// on right through the guard's wait until the worker writes "installing" or
+/// its own refusal.
+fn reset_install_status_for_new_run(state: &AppState) {
+    let mut install = state.install_status.lock().unwrap();
+    install.status = "idle".to_string();
+    install.logs.clear();
+    install.notice.clear();
+    install.notice_kind.clear();
+}
+
 /// Update an existing ComfyUI install in place: `git pull --ff-only` plus a
 /// venv-aware `pip install -r requirements.txt`. The 2.5.8 local Create lanes
 /// (music / talking character / extend / motion) need node classes that ship
@@ -899,6 +924,28 @@ pub fn update_comfyui(state: State<'_, AppState>, app: tauri::AppHandle) -> Resu
     // thread rather than moving into the worker below.
     state.comfyui_install_cancel.store(false, Ordering::SeqCst);
     let cancel_flag = state.comfyui_install_cancel.clone();
+
+    // final review Runde 4, R4-1: this command returns immediately, but
+    // `install.status` is only set to "installing" inside the worker thread
+    // below, AFTER the running-instance guard (up to 3s queue check plus up
+    // to 10s port-free poll, R2-1/R2-2). `install_status` is never reset to
+    // "idle" between runs (`state.rs`'s `InstallState::default` is the only
+    // place that ever writes "idle", and only at process startup) -- it just
+    // carries whatever the LAST install/repair/update run left behind. The
+    // panel starts polling `install_comfyui_status` 2s after this call
+    // (comfyInstallStore's POLL_MS), which can land well inside the guard's
+    // wait, and the poll's own `complete`/`error`/`cancelled` branches all
+    // stop watching right there: a stale "complete" from an earlier run read
+    // as this run's own end, "Update finished" shown for an update that had
+    // not even started yet, and any refusal the guard produces afterward
+    // never reaches the screen because nothing is watching anymore. Clearing
+    // the slot back to "idle" here, on the caller's thread, is one Mutex
+    // write with no wait of its own, so R3-1 (nothing here blocks the main
+    // thread) stays intact; "idle" itself is not one of the terminal states
+    // the store's poll treats as the run being over, so it keeps watching
+    // right through the guard's wait until the worker writes "installing" or
+    // an "error" refusal.
+    reset_install_status_for_new_run(state.inner());
 
     std::thread::spawn(move || {
         let _job_guard = job_guard;
@@ -1819,6 +1866,70 @@ mod tests {
             .expect("update_comfyui no longer marks the status slot as installing");
 
         assert!(at_guard < at_installing, "the running-instance guard must run before the status slot is claimed");
+    }
+
+    /// final review Runde 4, R4-1: `update_comfyui` returns immediately, but
+    /// `install.status` is only ever set to "installing" INSIDE the worker
+    /// thread, after the running-instance guard -- up to 13 s away
+    /// (R2-1/R2-2). `install_status` is never reset to "idle" between runs
+    /// on its own (`InstallState::default` is the only other writer, and
+    /// that only ever runs once, at process startup), so without a reset
+    /// here it keeps showing whatever the LAST install/repair/update run
+    /// left behind for that whole wait. The panel's first poll lands 2 s
+    /// after this call (`comfyInstallStore`'s `POLL_MS`), squarely inside
+    /// that window on a slow guard, and a stale `complete`/`error`/
+    /// `cancelled` there reads as THIS run already being over -- see the
+    /// Vitest case in `comfy-update-confirm-dialog.test.ts` for the
+    /// panel-side proof of that reading. This test proves the fix directly,
+    /// not just its position in the source: a real `AppState` carrying an
+    /// old `complete` does not survive the call.
+    #[test]
+    fn reset_install_status_for_new_run_clears_a_stale_complete_before_anything_else_runs() {
+        let state = crate::state::AppState::new();
+        {
+            let mut install = state.install_status.lock().unwrap();
+            install.status = "complete".to_string();
+            install.notice = "Update finished. Restart ComfyUI to load the new nodes.".to_string();
+            install.notice_kind = "ok".to_string();
+            install.logs.push("a line from the run before this one".to_string());
+        }
+
+        reset_install_status_for_new_run(&state);
+
+        let install = state.install_status.lock().unwrap();
+        assert_eq!(install.status, "idle", "a stale 'complete' from an earlier run survived into the guard's wait");
+        assert!(install.notice.is_empty(), "the previous run's closing notice survived");
+        assert!(install.notice_kind.is_empty(), "the previous run's notice kind survived");
+        assert!(install.logs.is_empty(), "the previous run's log lines survived");
+    }
+
+    /// Gegenprobe for the test above: `reset_install_status_for_new_run`
+    /// existing and working is not enough on its own if `update_comfyui`
+    /// never actually calls it, or calls it too late (after the worker
+    /// thread already started writing). Source guard, same shape as
+    /// `ensure_comfyui_stopped_for_update_runs_inside_the_worker_thread_not_
+    /// on_the_main_thread` above: the call must sit textually BEFORE
+    /// `std::thread::spawn` opens, i.e. on the caller's thread, so it always
+    /// finishes before anyone starts watching.
+    #[test]
+    fn update_comfyui_resets_the_status_slot_before_spawning_its_worker_thread() {
+        let src = include_str!("comfy_repair.rs");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let thread_spawn = "std::thread::spawn(move || {";
+        let reset_call = "reset_install_status_for_new_run(state.inner());";
+
+        let at_reset = src[update_fn_start..].find(reset_call).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer resets the status slot before its worker thread");
+        let at_spawn = src[update_fn_start..].find(thread_spawn).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer spawns its worker thread");
+
+        assert!(
+            at_reset < at_spawn,
+            "the status slot must be reset on the caller's thread, before the worker thread spawns -- \
+             resetting it from inside the worker leaves the exact window (up to 13 s) open for a poll \
+             to read a stale status from the previous run",
+        );
     }
 
     /// final review Runde 3, R3-1: `ensure_comfyui_stopped_for_update` can
