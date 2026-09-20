@@ -461,25 +461,33 @@ function LocalTrainControls() {
     return () => clearInterval(t)
   }, [busy])
 
-  const startInstall = async () => {
+  const runInstall = async (path: string) => {
     setBusy('install')
     setNote('Setting up the trainer...')
-    try { await installCharacterTrainer(installPath.trim() || undefined) } catch (e) {
+    try { await installCharacterTrainer(path.trim() || undefined) } catch (e) {
       setNote(e instanceof Error ? e.message : 'Install could not start.')
       setBusy(null)
     }
   }
-  // Blocker-Korrektur (Final Review, 19.09.2026): der Reinstall-Dialog hat
-  // keinen eigenen Pfad mehr. Bestaetigen schickt GENAU das Argument, das der
-  // Knopf vor dem Z5-Umbau schickte -- `installPath.trim() || undefined`, der
-  // Zustand des Erstsetup-Gates oben, den ein Kunde, der das Feld nie
-  // angefasst hat, nie auf einen nicht-leeren Wert gebracht hat. Ohne diese
-  // Wiederverwendung wuerde jeder gewoehnliche Reinstall `trainer_root` auf
-  // einen nicht-leeren String setzen und `trainer_root_is_customized()`
-  // ungewollt auf true kippen.
+  // The setup-gate button keeps using whatever the customer typed there
+  // (or the pre-filled suggestion, or their own customized root).
+  const startInstall = () => runInstall(installPath)
+  // B1-Korrektur (Final Review Teil 17, review-teil17-lintfix.md): a
+  // reinstall must NEVER move the trainer folder. `installPath` above also
+  // carries `suggestedRoot` once no customized root exists (so the
+  // erstsetup gate can show it), but that suggestion is for the FIRST
+  // installation only. Sending it here on a bare "confirm the reinstall"
+  // click wrote it into `trainer_root`, flipped
+  // `trainer_root_is_customized()` to true for a customer who never
+  // touched this setting, and moved the pip/HF/torch caches away from an
+  // existing installation -- exactly the migration this dialog's text
+  // ("training photos and downloaded base models are not touched")
+  // promises will not happen. A reinstall therefore sends the customer's
+  // own root only if the trainer is already customized, and `undefined`
+  // (the default, i.e. today's location) in every other case.
   const confirmReinstall = async () => {
     setReinstallOpen(false)
-    await startInstall()
+    await runInstall(status?.customized ? status.root : '')
   }
   const startBases = async () => {
     if (!status) return

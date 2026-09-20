@@ -94,8 +94,13 @@ describe('K5: der Installationspfad des Trainers erreicht den Aufruf', () => {
     // installPath immer weg, trainer_root_is_customized() konnte nie wahr
     // werden. Nagelt fest, dass der Aufruf jetzt IMMER ein (moeglicherweise
     // leeres) Argument mitgibt, nicht die alte parameterlose Form.
+    //
+    // B1-Korrektur (Final Review Teil 17, review-teil17-lintfix.md): der
+    // eigentliche Aufruf sitzt jetzt in `runInstall(path)`, gemeinsam fuer
+    // das Erstsetup-Gate (`installPath`) und den Reinstall-Dialog (der NIE
+    // den Vorschlag schickt, siehe trainer-install-path-derived-state.test.tsx).
     expect(quelle).not.toContain('installCharacterTrainer()')
-    expect(quelle).toContain('installCharacterTrainer(installPath.trim() || undefined)')
+    expect(quelle).toContain('installCharacterTrainer(path.trim() || undefined)')
   })
 
   it('das Feld ist die kleinste vorhandene Form: dieselbe Musterzeile wie der ComfyUI-Pfad', () => {
@@ -107,6 +112,6 @@ describe('K5: der Installationspfad des Trainers erreicht den Aufruf', () => {
     // Installationsziel" wie Settings > ComfyUI, nicht ein zweites
     // Bedienkonzept fuer denselben Zweck.
     expect(settings).toContain("runInstall(customPath.trim() || status?.path || '')")
-    expect(quelle).toContain("installPath.trim() || undefined")
+    expect(quelle).toContain("path.trim() || undefined")
   })
 })
