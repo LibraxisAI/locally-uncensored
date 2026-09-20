@@ -8,8 +8,6 @@ import { useMemoryStore } from '../../stores/memoryStore'
 function resetStores() {
   useAgentWorkflowStore.setState({
     workflows: [...BUILT_IN_WORKFLOWS],
-    executions: [],
-    activeExecutionId: null,
   })
   useMemoryStore.setState({
     entries: [],
@@ -166,70 +164,13 @@ describe('Workflow Store CRUD', () => {
 })
 
 // ── Workflow Execution Store ───────────────────────────────────
-
-describe('Workflow Execution Store', () => {
-  beforeEach(resetStores)
-
-  it('startExecution creates execution record', () => {
-    const builtInId = BUILT_IN_WORKFLOWS[0].id
-    const execId = useAgentWorkflowStore.getState().startExecution(builtInId, 'conv-123')
-
-    expect(execId).toBeTruthy()
-    const { executions, activeExecutionId } = useAgentWorkflowStore.getState()
-    expect(executions).toHaveLength(1)
-    expect(executions[0].workflowId).toBe(builtInId)
-    expect(executions[0].status).toBe('running')
-    expect(executions[0].conversationId).toBe('conv-123')
-    expect(activeExecutionId).toBe(execId)
-  })
-
-  it('startExecution returns null for non-existent workflow', () => {
-    const result = useAgentWorkflowStore.getState().startExecution('non-existent')
-    expect(result).toBeNull()
-  })
-
-  it('updateExecution modifies execution fields', () => {
-    const execId = useAgentWorkflowStore.getState().startExecution(BUILT_IN_WORKFLOWS[0].id)!
-    useAgentWorkflowStore.getState().updateExecution(execId, { status: 'waiting_input' })
-    expect(useAgentWorkflowStore.getState().executions[0].status).toBe('waiting_input')
-  })
-
-  it('addStepResult appends result and increments step index', () => {
-    const execId = useAgentWorkflowStore.getState().startExecution(BUILT_IN_WORKFLOWS[0].id)!
-    useAgentWorkflowStore.getState().addStepResult(execId, {
-      stepId: 'step-1', status: 'completed', output: 'Step 1 done', startedAt: Date.now(), completedAt: Date.now(),
-    })
-
-    const exec = useAgentWorkflowStore.getState().executions[0]
-    expect(exec.stepResults).toHaveLength(1)
-    expect(exec.currentStepIndex).toBe(1)
-  })
-
-  it('cancelExecution sets status and clears active', () => {
-    const execId = useAgentWorkflowStore.getState().startExecution(BUILT_IN_WORKFLOWS[0].id)!
-    useAgentWorkflowStore.getState().cancelExecution(execId)
-
-    const exec = useAgentWorkflowStore.getState().executions[0]
-    expect(exec.status).toBe('cancelled')
-    expect(exec.completedAt).toBeGreaterThan(0)
-    expect(useAgentWorkflowStore.getState().activeExecutionId).toBeNull()
-  })
-
-  it('caps execution history at 50', () => {
-    for (let i = 0; i < 55; i++) {
-      useAgentWorkflowStore.getState().startExecution(BUILT_IN_WORKFLOWS[0].id, `conv-${i}`)
-    }
-    expect(useAgentWorkflowStore.getState().executions.length).toBeLessThanOrEqual(50)
-  })
-
-  it('clearExecutionHistory removes all', () => {
-    useAgentWorkflowStore.getState().startExecution(BUILT_IN_WORKFLOWS[0].id)
-    useAgentWorkflowStore.getState().startExecution(BUILT_IN_WORKFLOWS[1].id)
-    useAgentWorkflowStore.getState().clearExecutionHistory()
-    expect(useAgentWorkflowStore.getState().executions).toHaveLength(0)
-    expect(useAgentWorkflowStore.getState().activeExecutionId).toBeNull()
-  })
-})
+//
+// Auflage 7, bau/review-wfgate.md: this describe block used to exercise the
+// store's execution-history slice (`startExecution`, `updateExecution`,
+// `addStepResult`, `cancelExecution`, `clearExecutionHistory`), deleted as
+// dead code alongside the `useWorkflow.ts` hook that was its only
+// production caller (commit 8ca0df85). WorkflowEngine (workflow-engine.ts)
+// tracks a run's own state independently of this store.
 
 // ── Variable Interpolation (indirect via built-in workflow templates) ──
 
@@ -289,19 +230,10 @@ describe('Workflow Lifecycle E2E', () => {
     const copyId = useAgentWorkflowStore.getState().duplicateWorkflow(id)!
     expect(useAgentWorkflowStore.getState().getWorkflow(copyId)!.name).toBe('My Workflow v2 (copy)')
 
-    // Start execution
-    const execId = useAgentWorkflowStore.getState().startExecution(id)!
-    expect(useAgentWorkflowStore.getState().executions[0].status).toBe('running')
-
-    // Simulate step completion
-    useAgentWorkflowStore.getState().addStepResult(execId, {
-      stepId: 's1', status: 'completed', output: 'user typed something', startedAt: Date.now(),
-    })
-    expect(useAgentWorkflowStore.getState().executions[0].stepResults).toHaveLength(1)
-
-    // Complete execution
-    useAgentWorkflowStore.getState().updateExecution(execId, { status: 'completed', completedAt: Date.now() })
-    expect(useAgentWorkflowStore.getState().executions[0].status).toBe('completed')
+    // Run: WorkflowEngine tracks a run's own state independently of this
+    // store (Auflage 7, bau/review-wfgate.md removed the store's own
+    // execution-history slice as dead code), so lifecycle coverage of an
+    // actual run lives in workflow-engine-*.test.ts, not here.
 
     // Delete custom
     useAgentWorkflowStore.getState().removeWorkflow(id)

@@ -25,6 +25,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { WorkflowEngine } from '../workflow-engine'
+import { APPROVE_ALL } from '../../api/agents/tool-executor'
 import { runInLane } from '../run-slot'
 import { localLaneHolder, queuedRunIds, __resetRunLanesForTests } from '../run-lanes'
 import { useGenerationStore } from '../../stores/generationStore'
@@ -79,7 +80,7 @@ describe('ein run_workflow-Schritt reicht den eigenen echten Beweis an die inner
     const outer = workflowOf('outer-id', 'outer', [
       { id: 'call-inner', type: 'tool', label: 'call-inner', toolName: 'run_workflow', toolArgs: { name: 'inner' } },
     ])
-    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks())
+    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks(), APPROVE_ALL)
     const results = await engine.run()
 
     expect(results.map((r) => r.status)).toEqual(['completed'])
@@ -105,7 +106,7 @@ describe('ein run_workflow-Schritt reicht den eigenen echten Beweis an die inner
       // aufruft) beginnt: ein dritter Aufrufer meldet sich jetzt an.
       dritterLauf = runInLane({ conversationId: 'dritter', lane: 'local' }, async () => { dritterLief = true })
     }
-    const engine = new WorkflowEngine(outer, 'wf-outer', cb)
+    const engine = new WorkflowEngine(outer, 'wf-outer', cb, APPROVE_ALL)
     await engine.run()
     await dritterLauf
 
@@ -126,7 +127,7 @@ describe('ein run_workflow-Schritt reicht den eigenen echten Beweis an die inner
     const outer = workflowOf('outer-id', 'outer', [
       { id: 'call-inner', type: 'tool', label: 'call-inner', toolName: 'run_workflow', toolArgs: { name: 'inner' } },
     ])
-    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks())
+    const engine = new WorkflowEngine(outer, 'wf-outer', callbacks(), APPROVE_ALL)
     const results = await engine.run()
 
     expect(results.map((r) => r.status)).toEqual(['completed'])

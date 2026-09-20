@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { WorkflowEngine } from '../workflow-engine'
+import { APPROVE_ALL } from '../../api/agents/tool-executor'
 import { localLaneHolder, queuedRunIds, __resetRunLanesForTests } from '../run-lanes'
 import { useGenerationStore } from '../../stores/generationStore'
 import { useModelStore } from '../../stores/modelStore'
@@ -64,7 +65,7 @@ describe('einmal je Lauf, nicht je Schritt', () => {
     // angestellt, statt in derselben Buchung mitzulaufen).
     const cb = callbacks()
     cb.onStepStart = () => { gesehen.push(localLaneHolder()) }
-    const engine = new WorkflowEngine(workflowOf(steps), 'wf-conv', cb)
+    const engine = new WorkflowEngine(workflowOf(steps), 'wf-conv', cb, APPROVE_ALL)
 
     const laufend = engine.run()
     expect(localLaneHolder()).toBe('wf-conv')
@@ -80,7 +81,7 @@ describe('einmal je Lauf, nicht je Schritt', () => {
     // sonst ist der synchrone memory_save-Schritt schon durch, bevor der
     // zweite Lauf ueberhaupt anstellt.
     const step: WorkflowStep = { id: 'warte', type: 'user_input', label: 'warte', userInputPrompt: 'weiter?' }
-    const engine = new WorkflowEngine(workflowOf([step]), 'wf-conv', callbacks())
+    const engine = new WorkflowEngine(workflowOf([step]), 'wf-conv', callbacks(), APPROVE_ALL)
     const laufend = engine.run()
     await Promise.resolve()
 
@@ -113,7 +114,7 @@ describe('Stop wirkt, wartend wie laufend', () => {
     const errors: string[] = []
     const cb = callbacks((e) => errors.push(e))
     cb.onStepStart = () => { stepLief = true }
-    const engine = new WorkflowEngine(workflowOf([noteStep('a')]), 'wf-conv', cb)
+    const engine = new WorkflowEngine(workflowOf([noteStep('a')]), 'wf-conv', cb, APPROVE_ALL)
     const laufend = engine.run()
 
     expect(queuedRunIds()).toEqual(['wf-conv'])
@@ -142,7 +143,7 @@ describe('Stop wirkt, wartend wie laufend', () => {
         useGenerationStore.getState().abortConversation('wf-conv')
       }
     }
-    const engine = new WorkflowEngine(workflowOf([noteStep('a'), noteStep('b'), noteStep('c')]), 'wf-conv', cb)
+    const engine = new WorkflowEngine(workflowOf([noteStep('a'), noteStep('b'), noteStep('c')]), 'wf-conv', cb, APPROVE_ALL)
     const results = await engine.run()
 
     // Abgebrochen NACH dem ersten Schritt, VOR dem zweiten: die Abbruchpruefung

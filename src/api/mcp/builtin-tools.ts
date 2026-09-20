@@ -11,7 +11,7 @@ import { backendCall, fetchExternal } from '../backend'
 import { getActiveChatId, getActiveConversationId, getActiveWorkspace, isChatArtifactMode, captureChatArtifact, isReadOnlyShellTurn } from '../agent-context'
 import type { AgentRunContext } from '../agent-context'
 import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
-import { WorkflowEngine } from '../../lib/workflow-engine'
+import { WorkflowEngine, buildWorkflowApprovalGate } from '../../lib/workflow-engine'
 import type { StepResult } from '../../types/agent-workflows'
 import { DELEGATE_TASK_TOOL_DEF, buildDelegateExecutor } from '../agents/sub-agent'
 import {
@@ -465,12 +465,12 @@ const BUILTIN_TOOLS: MCPToolDefinition[] = [
       'Execute a saved agent workflow by name. Runs a nested ReAct with a pre-built step chain. '
       + 'USE for repeatable multi-step tasks: "Research Topic", "Summarize URL", "Code Review", plus any user-created workflows. '
       + 'DO NOT call from inside another workflow tool — depth capped at 5 to prevent recursion fork-bombs. '
-      + 'Pass optional input as the starting variable. If the name is unknown, the error lists available names.',
+      + 'input answers the first user_input step or fails fast; else seeds user_input/last_output.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Name of the workflow (case-insensitive match)' },
-        input: { type: 'string', description: 'Initial input passed as user_input / last_output' },
+        input: { type: 'string', description: 'Answers first user_input step; else seeds user_input/last_output.' },
       },
       required: ['name'],
     },
@@ -1572,14 +1572,44 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
     return `Error: Workflow "${workflowName}" not found. Available: ${available}`
   }
 
+  // R2, bau/review-wfgate.md klein 2: a workflow with a user_input step
+  // cannot be answered mid-run (neither this executor nor the chat trigger
+  // wires anything to provideUserInput), so without `input` the FIRST such
+  // step would wait forever, all three built-in workflows included. Fail
+  // immediately with a message the model can act on instead of hanging and
+  // holding the lane on a question nobody will ever answer.
+  const firstAsk = workflow.steps.find(s => s.type === 'user_input')
+  if (firstAsk && !args.input) {
+    return `Error: Workflow "${workflow.name}" starts by asking "${firstAsk.userInputPrompt || 'for input'}", and nothing can answer that while it runs. Call run_workflow again with an "input" argument that answers it.`
+  }
+
   const results: StepResult[] = []
   let finalOutput = ''
+  // Auflage 4, bau/review-wfgate.md: a no-op `onStepError` (the old body)
+  // left `finalOutput` empty on a rejected approval, so `run_workflow`
+  // returned '' to the model, no sign the user said no, and it just tried
+  // again. `runSteps` (workflow-engine.ts) calls `onStepError` and BREAKS
+  // the step loop on a failure, but still calls `onComplete` afterward (it
+  // is not the same as `onError`, which fires only on a thrown exception),
+  // and that handler's own fallback ("Workflow completed with no output.")
+  // would otherwise silently overwrite the error message set here, since a
+  // failed step's own `output` is '' and gets filtered out by
+  // `results.filter(r => r.output)`. `hadStepError` keeps `onComplete` from
+  // clobbering it.
+  let hadStepError = false
   const callbacks = {
     onStepStart: () => {},
     onStepComplete: (_idx: number, result: StepResult) => { results.push(result) },
-    onStepError: () => {},
+    onStepError: (_idx: number, error: string) => {
+      hadStepError = true
+      // The step's own `error` is already the gate's English message
+      // ("Tool call rejected: ... was not approved.", `gatedApproval` in
+      // workflow-engine.ts).
+      finalOutput = `Workflow error: ${error}`
+    },
     onWaitingForInput: () => {},
     onComplete: () => {
+      if (hadStepError) return
       const lastOutput = results.filter(r => r.output).pop()
       finalOutput = lastOutput?.output || 'Workflow completed with no output.'
     },
@@ -1608,7 +1638,27 @@ async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext): Promis
     // it against the actual holder at run time before skipping its own
     // booking, so a stale or absent proof falls back to booking normally
     // instead of silently trusting the marker.
-    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth, run?.heldLocalLane ?? null)
+    //
+    // The gate (Nebenbefund, bau/review-wfplay.md Teil B): one approval for
+    // `run_workflow` itself already fell before this executor ran, but that
+    // approval was for "run this workflow", not for whatever it does inside.
+    // Passing `APPROVE_ALL` here, the reviewer's own first suggestion, would
+    // turn that single approval into a blank check for every tool the
+    // workflow's steps (or a model inside a prompt step) go on to call,
+    // including a `shell_execute` the user never saw. `buildWorkflowApprovalGate`
+    // resolves the REAL gate from `run`'s own conversation and read-only flag,
+    // same decision table `delegate_task` already goes through, so a
+    // `confirm` tool inside the workflow still asks, on the same queue the
+    // rest of Agent mode uses.
+    const approve = buildWorkflowApprovalGate(run)
+    // `run` itself is also passed as `invokingRun` (Auflage 2,
+    // bau/review-wfgate.md): 'tool-execution' above is only a lane-booking
+    // placeholder, not a real conversation, so IF this workflow's own step
+    // calls `run_workflow` again, the nested engine needs the REAL outer
+    // `run` (its conversation, `abortSignal`, `mode`) to build that
+    // third-level call's context from, not this placeholder. See
+    // `effectiveOuterRun`/`effectiveConversationId` in workflow-engine.ts.
+    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, approve, initialVars, _workflowDepth, run?.heldLocalLane ?? null, run)
     await engine.run()
   } finally {
     _workflowDepth--

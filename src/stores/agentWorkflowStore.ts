@@ -2,20 +2,23 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { safeJSONStorage } from '../lib/storage-quota'
 import { v4 as uuid } from 'uuid'
-import type { AgentWorkflow, WorkflowExecution, StepResult } from '../types/agent-workflows'
+import type { AgentWorkflow } from '../types/agent-workflows'
 import { BUILT_IN_WORKFLOWS } from '../lib/built-in-workflows'
 import { isRecord, prop, asString } from '../types/json-guards'
 
-// ── Max execution history ─────────────────────────────────────
-
-const MAX_EXECUTION_HISTORY = 50
-
 // ── Store Interface ───────────────────────────────────────────
 
+// Auflage 7, bau/review-wfgate.md: this store used to also carry an
+// execution-history slice (`executions`, `activeExecutionId`,
+// `startExecution`, `updateExecution`, `addStepResult`, `cancelExecution`,
+// `clearExecutionHistory`, `MAX_EXECUTION_HISTORY`) written and read only by
+// the now-deleted `useWorkflow.ts` hook and `WorkflowRunner.tsx` panel
+// (removed in commit 8ca0df85, the dead Settings Play button). Harte Regel
+// "alten Code sofort loeschen": a repo-wide grep for every one of those
+// names outside this store and its own tests found nothing (WorkflowEngine
+// tracks its own run state independently and never touches this slice).
 interface AgentWorkflowState {
   workflows: AgentWorkflow[]
-  executions: WorkflowExecution[]
-  activeExecutionId: string | null
 
   // Workflow CRUD
   addWorkflow: (workflow: Omit<AgentWorkflow, 'id' | 'createdAt' | 'updatedAt'>) => string
@@ -23,13 +26,6 @@ interface AgentWorkflowState {
   removeWorkflow: (id: string) => void
   duplicateWorkflow: (id: string) => string | null
   getWorkflow: (id: string) => AgentWorkflow | undefined
-
-  // Execution management
-  startExecution: (workflowId: string, conversationId?: string) => string | null
-  updateExecution: (id: string, updates: Partial<WorkflowExecution>) => void
-  addStepResult: (executionId: string, result: StepResult) => void
-  cancelExecution: (id: string) => void
-  clearExecutionHistory: () => void
 }
 
 // ── Store ─────────────────────────────────────────────────────
@@ -38,8 +34,6 @@ export const useAgentWorkflowStore = create<AgentWorkflowState>()(
   persist(
     (set, get) => ({
       workflows: [...BUILT_IN_WORKFLOWS],
-      executions: [],
-      activeExecutionId: null,
 
       // ── Workflow CRUD ─────────────────────────────────────
 
@@ -87,61 +81,6 @@ export const useAgentWorkflowStore = create<AgentWorkflowState>()(
       },
 
       getWorkflow: (id) => get().workflows.find(w => w.id === id),
-
-      // ── Execution ─────────────────────────────────────────
-
-      startExecution: (workflowId, conversationId) => {
-        const workflow = get().workflows.find(w => w.id === workflowId)
-        if (!workflow) return null
-
-        const id = uuid()
-        const execution: WorkflowExecution = {
-          id,
-          workflowId,
-          workflowName: workflow.name,
-          status: 'running',
-          currentStepIndex: 0,
-          stepResults: [],
-          variables: { ...workflow.variables },
-          conversationId,
-          startedAt: Date.now(),
-        }
-
-        set((state) => {
-          // Trim history if needed
-          const executions = [execution, ...state.executions].slice(0, MAX_EXECUTION_HISTORY)
-          return { executions, activeExecutionId: id }
-        })
-
-        return id
-      },
-
-      updateExecution: (id, updates) =>
-        set((state) => ({
-          executions: state.executions.map((e) =>
-            e.id === id ? { ...e, ...updates } : e
-          ),
-        })),
-
-      addStepResult: (executionId, result) =>
-        set((state) => ({
-          executions: state.executions.map((e) =>
-            e.id === executionId
-              ? { ...e, stepResults: [...e.stepResults, result], currentStepIndex: e.currentStepIndex + 1 }
-              : e
-          ),
-        })),
-
-      cancelExecution: (id) =>
-        set((state) => ({
-          executions: state.executions.map((e) =>
-            e.id === id ? { ...e, status: 'cancelled', completedAt: Date.now() } : e
-          ),
-          activeExecutionId: state.activeExecutionId === id ? null : state.activeExecutionId,
-        })),
-
-      clearExecutionHistory: () =>
-        set({ executions: [], activeExecutionId: null }),
     }),
     {
       name: 'locally-uncensored-agent-workflows',
@@ -159,9 +98,14 @@ export const useAgentWorkflowStore = create<AgentWorkflowState>()(
         // Ensure built-ins are present (may have been added in updates)
         const existingIds = new Set(workflows.map((w) => asString(prop(w, 'id'))))
         const missingBuiltIns = BUILT_IN_WORKFLOWS.filter(w => !existingIds.has(w.id))
+        // A persisted blob from before Auflage 7 (bau/review-wfgate.md) may
+        // still carry the now-removed `executions`/`activeExecutionId` keys;
+        // dropping `state`'s own copy and building the result from named
+        // fields only, instead of spreading `state`, keeps them out of the
+        // store going forward without a separate migration step.
         const next = version < 1 || workflows.length === 0
-          ? { ...state, workflows: BUILT_IN_WORKFLOWS, executions: [], activeExecutionId: null }
-          : { ...state, workflows: [...missingBuiltIns, ...workflows] }
+          ? { workflows: BUILT_IN_WORKFLOWS }
+          : { workflows: [...missingBuiltIns, ...workflows] }
         // zustand types migrate as returning the FULL store, but a blob only
         // ever carries the partialized slice and `merge` puts the actions
         // back. The cast claims exactly what went in, nothing about actions.
@@ -169,8 +113,6 @@ export const useAgentWorkflowStore = create<AgentWorkflowState>()(
       },
       partialize: (state) => ({
         workflows: state.workflows,
-        executions: state.executions.slice(0, MAX_EXECUTION_HISTORY),
-        // Don't persist activeExecutionId
       }),
     }
   )

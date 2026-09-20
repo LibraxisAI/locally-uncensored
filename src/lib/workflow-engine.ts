@@ -24,7 +24,6 @@ import { buildSamplingRequest } from './sampling'
 // Beides sind generische Module ohne Rückkante. Der Shim bleibt für seine
 // verbliebenen Aufrufer bestehen.
 import { toolRegistry } from '../api/mcp/tool-registry'
-import { DEFAULT_PERMISSIONS } from '../api/mcp/types'
 import type { ToolArgs } from '../api/mcp/types'
 import { streamProviderTurn } from './provider-stream'
 import { runInLane, type HeldLocalLane } from './run-slot'
@@ -35,6 +34,99 @@ import { buildHermesToolPrompt, parseHermesToolCalls, stripToolCallTags, hasTool
 import { resolveToolCallingStrategy } from './agent-strategy'
 import type { AgentWorkflow, WorkflowStep, StepResult, WorkflowEngineCallbacks } from '../types/agent-workflows'
 import type { ChatMessage, ToolDefinition } from '../api/providers/types'
+import { usePermissionStore } from '../stores/permissionStore'
+// Nebenbefund, bau/review-wfplay.md Teil B: die Engine fuehrte Werkzeuge
+// bisher direkt ueber `toolRegistry.execute` aus, ohne jede Freigabe, und bot
+// Prompt-Schritten `DEFAULT_PERMISSIONS` an statt des echten Stores. Derselbe
+// Fehler wie AGT-1 (sub-agent.ts), derselbe Fix: ein Pflicht-Gate im
+// Konstruktor. Die ENTSCHEIDUNG selbst kommt aus derselben, bereits
+// gehaerteten Tabelle wie beim Agenten-Chat und beim Sub-Agenten
+// (`resolveApprovalLevel`, agent-approval-policy.ts), nur das VERDRAHTEN auf
+// die Warteschlange baut `buildWorkflowApprovalGate` unten selbst, statt
+// `sub-agent.ts`s `buildSubAgentGates` zu importieren: deren zwei
+// `await import(...)` (Permission-Store, Warteschlange) haengen einen echten
+// Tick ein, den `run_workflow`s bestehende Lane-Zeitmess-Tests (u.a.
+// `heldLocalLane-wird-immer-weitergereicht.test.ts`) nicht vorhalten, vorher
+// gruen, mit `buildSubAgentGates` dort zwei rot (Zahlen im Baubericht). Die
+// Politik-TABELLE bleibt eine einzige Stelle, nur die Verdrahtung ist doppelt.
+import { resolveApprovalLevel } from './agent-approval-policy'
+import { enqueueApproval, removeApproval, type ApprovalEntry } from './approval-queue'
+import type { AgentToolCall } from '../types/agent-mode'
+import type { ApprovalGate, ExecutionRequest, ExecutorToolDef } from '../api/agents/tool-executor'
+
+/**
+ * Build a real `ApprovalGate` for a `run_workflow` tool call's nested engine
+ * (builtin-tools.ts's `executeRunWorkflow`), synchronously wired (no
+ * top-level dynamic `import()`) so it never adds a tick the lane-timing
+ * tests do not expect. Same decision table as `buildSubAgentGates`
+ * (sub-agent.ts): a `blocked` category refuses outright, `auto` runs
+ * unattended, `confirm` asks on the surface that actually started this run
+ * (`sub-agent.ts:380-393`, same reasoning): the Code tab's own
+ * `codexConfirmStore` when `run.mode` is set (`run_workflow` sits in category
+ * 'workflow', reachable there via `CODEX_CATEGORIES`, and a sub-agent
+ * inherits its parent's `mode`, bau/review-wfgate.md Auflage 1), otherwise
+ * the SAME conversation-keyed chat queue the rest of Agent mode reads
+ * (`approval-queue.ts`). The dynamic imports for `codexConfirmStore` and
+ * `codexShellGate` only happen inside that rare `confirm`+`mode` branch, not
+ * at construction time, so the lane-timing tests this function was written
+ * to protect (see the header comment above) stay unaffected. Fail closed: no
+ * conversation to ask in, and no Code-tab surface either, refuses a
+ * `confirm` tool rather than running it or hanging on a question nobody can
+ * see.
+ */
+export function buildWorkflowApprovalGate(run: AgentRunContext | undefined): ApprovalGate {
+  const convId = run?.conversationId ?? null
+  const abortSignal = run?.abortSignal
+  return async (req) => {
+    if (abortSignal?.aborted) return false
+    const perm = usePermissionStore.getState()
+    const categoryLevel = toolRegistry.getPermissionLevelWithOverrides(
+      req.toolName,
+      perm.getEffectivePermissions(convId ?? undefined),
+      {},
+    )
+    const level = resolveApprovalLevel(req.toolName, {
+      categoryLevel,
+      override: perm.perToolOverrides[req.toolName],
+      codexMode: run?.mode ?? null,
+      execConfirm: run?.execApproval?.confirmExec === true,
+      readOnlyRun: run?.readOnlyShellTurn === true,
+    })
+    if (level === 'blocked') return false
+    if (level === 'auto') return true
+    // Stufe 'confirm': ask on the surface that started this run. The Code
+    // tab's own dialog, not the chat queue, once `run.mode` is set, or the
+    // question ends up somewhere nobody is looking at it
+    // (bau/review-wfgate.md Auflage 1).
+    if (run?.mode) {
+      const { useCodexConfirmStore } = await import('../stores/codexConfirmStore')
+      const { renderApprovalPreview } = await import('../hooks/codexShellGate')
+      return useCodexConfirmStore.getState().ask({
+        toolName: req.toolName,
+        command: renderApprovalPreview(req.toolName, req.args),
+        args: req.args,
+        cloudReason: run.execApproval?.cloudReason === true,
+      }, abortSignal)
+    }
+    if (!convId) return false
+    return new Promise<boolean>((resolve) => {
+      const toolCall: AgentToolCall = {
+        id: req.id,
+        toolName: req.toolName,
+        args: req.args,
+        status: 'pending_approval',
+        timestamp: Date.now(),
+      }
+      const entry: ApprovalEntry = { toolCall, resolve }
+      enqueueApproval(convId, entry)
+      abortSignal?.addEventListener(
+        'abort',
+        () => { if (removeApproval(convId, entry)) resolve(false) },
+        { once: true },
+      )
+    })
+  }
+}
 
 // ── Safety Limits ─────────────────────────────────────────────
 
@@ -88,6 +180,16 @@ export class WorkflowEngine {
   private depth: number
   private runsInHeldLane: HeldLocalLane | null
   /**
+   * The gate every tool call this engine executes has to pass, whether from
+   * a `tool` step or requested by the model inside a `prompt` step. Required,
+   * with no default: a caller that forgets to wire one gets a compile error
+   * instead of a silent, ungated `shell_execute` (same lesson as AGT-1's
+   * `awaitApproval` on `ExecutorRuntime`, tool-executor.ts). A caller that
+   * genuinely wants no gating passes `APPROVE_ALL` and thereby says so in
+   * writing.
+   */
+  private approve: ApprovalGate
+  /**
    * The proof this run itself hands to ITS OWN nested `run_workflow` or
    * (foreground) `delegate_task` tool step (second-degree nesting), set from
    * `runInLane`'s `held` callback argument once this run's own lane
@@ -96,11 +198,43 @@ export class WorkflowEngine {
    * header, "DIE WEITERGABE DES ELTERNLAUF-TOKENS".
    */
   private heldLocalLane: HeldLocalLane | null = null
+  /**
+   * The REAL run this engine was started from, when one exists: the
+   * `run_workflow` tool's own `AgentRunContext` (builtin-tools.ts), carrying
+   * the actual conversation, `abortSignal`, `mode` and `readOnlyShellTurn` of
+   * whoever called `run_workflow`. `undefined` for a top-level workflow
+   * started from the "run workflow <name>" chat trigger, which already IS
+   * the real conversation (`this.conversationId` itself is real there).
+   * Without this, a nested `run_workflow` step used `this.conversationId`
+   * (the fabricated lane-booking string `'tool-execution'`, see the `run()`
+   * docstring below) as if it were a real conversation when building ITS OWN
+   * child run context, so a further-nested `run_workflow` or `delegate_task`
+   * step asked a question under a conversation id no window reads and lost
+   * the parent's `abortSignal` entirely, a queued approval nobody could ever
+   * answer or clean up (bau/review-wfgate.md Auflage 2). `effectiveOuterRun`
+   * and `effectiveConversationId` below read this field instead of
+   * hardcoding `this.conversationId` for that purpose.
+   */
+  private invokingRun?: AgentRunContext
+  /**
+   * A value for the FIRST `user_input` step to consume instead of waiting,
+   * taken from `initialVariables.user_input` (see the constructor). Set once
+   * at construction, consumed at most once, then cleared: only the first
+   * `user_input` step in a run is meant to read the caller's own argument, a
+   * second one still genuinely waits (bau/review-wfgate.md Auflage 6 /
+   * ZUSATZFRAGE, `executeUserInputStep` below).
+   */
+  private prefilledUserInput?: string
 
   constructor(
     workflow: AgentWorkflow,
     conversationId: string,
     callbacks: WorkflowEngineCallbacks,
+    /**
+     * REQUIRED, see the field doc above. Pass tool-executor's `APPROVE_ALL`
+     * to opt out explicitly; there is no implicit opt-out.
+     */
+    approve: ApprovalGate,
     initialVariables?: Record<string, string>,
     depth: number = 0,
     /**
@@ -113,19 +247,118 @@ export class WorkflowEngine {
      * Runde 4, bau/review-w2lane.md, a boolean here used to be blind trust).
      * If the check fails, this run books its own place instead of hanging
      * behind a stale or fake proof. A top-level workflow (started from the
-     * workflow panel, or from the "run workflow <name>" chat trigger) is
-     * never nested, so it leaves this at the default `null` and books its
-     * own slot from scratch.
+     * "run workflow <name>" chat trigger, the only surviving trigger since
+     * the dead Settings play button was removed) is never nested, so it
+     * leaves this at the default `null` and books its own slot from scratch.
      */
-    runsInHeldLane: HeldLocalLane | null = null
+    runsInHeldLane: HeldLocalLane | null = null,
+    /**
+     * See the `invokingRun` field doc above. Only a `run_workflow` tool step
+     * passes this (its own `AgentRunContext`, builtin-tools.ts); every other
+     * caller leaves it `undefined` and this run's own `conversationId` is
+     * already the real one.
+     */
+    invokingRun?: AgentRunContext,
   ) {
+    if (!approve) {
+      // Defense in depth behind the TS type: a caller reached from plain JS,
+      // or one that spreads old positional args after a signature change,
+      // gets a thrown error instead of `undefined` quietly skipping every
+      // gate check below.
+      throw new Error('WorkflowEngine requires an approve gate (ApprovalGate). Pass APPROVE_ALL from tool-executor.ts to opt out explicitly.')
+    }
     this.workflow = workflow
     this.conversationId = conversationId
     this.callbacks = callbacks
+    this.approve = approve
     this.variables = { ...workflow.variables, ...(initialVariables || {}) }
     this.abortController = new AbortController()
     this.depth = depth
     this.runsInHeldLane = runsInHeldLane
+    this.invokingRun = invokingRun
+    this.prefilledUserInput = initialVariables?.user_input
+  }
+
+  /**
+   * The `AgentRunContext` to hand to a NESTED `run_workflow`/`delegate_task`
+   * tool step (second-degree recursion). Built from `invokingRun` when this
+   * engine itself was started from a real outer run, so the real
+   * conversation, `mode`, `readOnlyShellTurn` and `abortSignal` reach a
+   * further-nested call instead of this run's own lane-booking
+   * `conversationId` (`'tool-execution'` on the `run_workflow` path, see the
+   * `run()` docstring) standing in for a conversation no window reads
+   * (bau/review-wfgate.md Auflage 2). Falls back to the pre-existing
+   * `this.conversationId`-based shape for a top-level engine (the chat
+   * trigger), where `this.conversationId` already IS the real conversation.
+   */
+  private effectiveOuterRun(): AgentRunContext {
+    const base = this.invokingRun
+    return {
+      token: base?.token ?? `workflow-${this.conversationId}`,
+      chatId: base?.chatId ?? null,
+      conversationId: base?.conversationId ?? this.conversationId,
+      workspace: base?.workspace ?? null,
+      artifactMode: base?.artifactMode ?? false,
+      readOnlyShellTurn: base?.readOnlyShellTurn ?? false,
+      mode: base?.mode ?? null,
+      execApproval: base?.execApproval,
+      artifacts: base?.artifacts ?? [],
+      // The real outer abortSignal when there is one, so Stop on the ORIGINAL
+      // run reaches a call two levels deep too; this run's own controller
+      // otherwise, so at least Stop on THIS run still reaches the child.
+      abortSignal: base?.abortSignal ?? this.abortController.signal,
+      heldLocalLane: this.heldLocalLane,
+    }
+  }
+
+  /**
+   * The conversation id to use for anything that should agree with the gate
+   * (`buildWorkflowApprovalGate`, constructed from the same `invokingRun` by
+   * `executeRunWorkflow`): the real outer conversation when this engine was
+   * started from one, this run's own id otherwise. Fixes the split Auflage 5
+   * describes: the prompt-step tool catalog used to read `this.conversationId`
+   * ('tool-execution' on the `run_workflow` path) while the gate itself
+   * already decided against the real conversation, so a per-conversation
+   * override applied to one and not the other.
+   */
+  private effectiveConversationId(): string {
+    return this.invokingRun?.conversationId ?? this.conversationId
+  }
+
+  /**
+   * Gate one tool call through the same policy an agent-chat turn or a
+   * delegated sub-agent already goes through (Nebenbefund,
+   * bau/review-wfplay.md Teil B). Raced against this run's own abort signal
+   * so Stop resolves a still-pending approval with `false` even if the
+   * underlying gate's own promise (a real queued approval, say) never
+   * settles on its own: the run must not hang on a click that is never
+   * coming once Stop was pressed.
+   */
+  private async gatedApproval(
+    toolName: string,
+    args: ToolArgs,
+    run: AgentRunContext | undefined,
+  ): Promise<{ approved: true } | { approved: false; message: string }> {
+    if (this.abortController.signal.aborted) {
+      return { approved: false, message: `Cancelled: the run was stopped before ${toolName} could run.` }
+    }
+    const tool: ExecutorToolDef = toolRegistry.resolveExecutable(toolName) ?? { name: toolName }
+    const req: ExecutionRequest = {
+      id: `${this.conversationId}-${toolName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      toolName,
+      args,
+      run,
+    }
+    const approved = await Promise.race([
+      this.approve(req, tool),
+      new Promise<boolean>((resolve) => {
+        this.abortController.signal.addEventListener('abort', () => resolve(false), { once: true })
+      }),
+    ])
+    if (!approved) {
+      return { approved: false, message: `Tool call rejected: ${toolName} was not approved.` }
+    }
+    return { approved: true }
   }
 
   /**
@@ -144,9 +377,9 @@ export class WorkflowEngine {
    *
    * `conversationId: this.conversationId` DELIBERATELY, not a private
    * per-run identity (BLOCKER 3, Nachpruefung 2 von review-w2lane.md): a
-   * workflow started from the Workflow panel shares its visible
-   * conversation on purpose, it writes its step messages into that same
-   * chat, so a queued workflow SHOULD show up there ("waiting for the local
+   * workflow started from the "run workflow <name>" chat trigger shares its
+   * visible conversation on purpose, it writes its step messages into that
+   * same chat, so a queued workflow SHOULD show up there ("waiting for the local
    * lane") via `isRunQueued`/`runQueuePosition`. A private identity like the
    * sub-agent's would have fixed the abort-handle bug just as well but at
    * the cost of that legitimate wait-row attribution, per the review's own
@@ -259,6 +492,26 @@ export class WorkflowEngine {
 
   /**
    * Provide user input for a waiting user_input step.
+   *
+   * bau/review-wfgate.md Runde 2, klein 3: neither surviving caller
+   * (`run_workflow`'s `executeRunWorkflow`, the "run workflow <name>" chat
+   * trigger) ever calls this, and both now refuse UP FRONT
+   * (`executeUserInputStep` below, and the callers' own pre-checks) when a
+   * workflow's FIRST `user_input` step has no prefilled answer, closing the
+   * hang the review measured for all three built-in workflows. Kept rather
+   * than deleted: a workflow with a SECOND `user_input` step still reaches
+   * this exact wait after its first step consumes the one prefilled value
+   * (see `workflow-user-input-vorbefuellt.test.ts`'s third case), a real,
+   * if narrow, gap neither caller's up-front check catches, since it only
+   * looks at whether the workflow has a question at all, not how many.
+   * This method is the only way anything could ever answer that second
+   * question; deleting it would turn a stoppable wait into a permanently
+   * unanswerable one instead of closing it. It also still backs the lane
+   * tests that use a `user_input` step purely as a controllable pause point
+   * (`workflow-engine-lane.test.ts`, `background-shutdown-lanes.test.ts`),
+   * unrelated to `user_input`'s own semantics: rebuilding those around a
+   * different pausable step type instead is a fair follow-up, not done
+   * here.
    */
   provideUserInput(input: string) {
     if (this.inputResolver) {
@@ -346,8 +599,18 @@ export class WorkflowEngine {
         if (chunk.done) break
       }
     } else {
-      // With tools
-      const tools: ToolDefinition[] = toolRegistry.toOllamaTools(DEFAULT_PERMISSIONS)
+      // With tools. The catalog offered to the model is the user's OWN
+      // permission store, not a fixed default (Nebenbefund, bau/review-
+      // wfplay.md Teil B): `DEFAULT_PERMISSIONS` used to sit here, so a
+      // category the user set to 'blocked' was invisible everywhere else in
+      // the app yet still handed to the model in a workflow prompt step.
+      // `effectiveConversationId()`, not `this.conversationId` (Auflage 5,
+      // bau/review-wfgate.md): on the `run_workflow` path this run's own id
+      // is the fabricated lane-booking string, so a per-conversation
+      // override the user set on the REAL chat used to reach the gate's
+      // decision but not this catalog, or the reverse.
+      const permissions = usePermissionStore.getState().getEffectivePermissions(this.effectiveConversationId())
+      const tools: ToolDefinition[] = toolRegistry.toOllamaTools(permissions)
       const allowedTools = step.allowedTools
         ? tools.filter(t => step.allowedTools!.includes(t.function.name))
         : tools
@@ -361,8 +624,13 @@ export class WorkflowEngine {
         })
         output = turn.content || ''
 
-        // Execute any tool calls
+        // Execute any tool calls, gated the same as a tool step (see
+        // executeToolStep below): the catalog above already hides a blocked
+        // category from the model, but a model can still hallucinate a name
+        // or ask for a 'confirm' tool the user has not approved yet.
         for (const tc of turn.toolCalls) {
+          const gate = await this.gatedApproval(tc.function.name, tc.function.arguments, undefined)
+          if (!gate.approved) throw new Error(gate.message)
           const result = await toolRegistry.execute(tc.function.name, tc.function.arguments)
           output += `\n[Tool: ${tc.function.name}] ${result}`
         }
@@ -397,6 +665,8 @@ export class WorkflowEngine {
           const toolCalls = parseHermesToolCalls(rawContent)
           output = stripToolCallTags(rawContent)
           for (const tc of toolCalls) {
+            const gate = await this.gatedApproval(tc.name, tc.arguments, undefined)
+            if (!gate.approved) throw new Error(gate.message)
             const result = await toolRegistry.execute(tc.name, tc.arguments)
             output += `\n[Tool: ${tc.name}] ${result}`
           }
@@ -437,32 +707,38 @@ export class WorkflowEngine {
     }
 
     // A tool step calling run_workflow OR delegate_task is second-degree
-    // nesting: hand it THIS run's own held-lane proof (null on a cloud lane,
-    // or before this run's own admission resolved), so a FOREGROUND nested
-    // run rides along instead of booking its own place behind this one and
-    // hanging (Nachpruefung, bau/review-w2lane.md, "Sub-Agent im Workflow":
-    // a workflow tool step calling a foreground `delegate_task` with its own
-    // local `model` got `run: undefined` here, so it always booked normally
-    // under a fresh identity while this engine's own step awaited it,
-    // deadlocking whenever this engine already held the one local slot).
+    // nesting: hand it the REAL outer run context (`effectiveOuterRun`, see
+    // its doc above), not a context built from this run's own
+    // `conversationId`, which is the fabricated lane-booking string
+    // `'tool-execution'` on the `run_workflow` path (bau/review-wfgate.md
+    // Auflage 2: a further-nested call used to ask under that fake id,
+    // unreachable by any window and never cleaned up on Stop, since it also
+    // carried no `abortSignal`). `effectiveOuterRun` still carries THIS run's
+    // own `heldLocalLane` proof (null on a cloud lane, or before this run's
+    // own admission resolved), so a FOREGROUND nested run rides along
+    // instead of booking its own place behind this one and hanging
+    // (Nachpruefung, bau/review-w2lane.md, "Sub-Agent im Workflow").
     // `delegate_task`'s BACKGROUND branch is `void`-fired and never awaited
-    // by this step, so it cannot deadlock this loop either way; giving it
-    // `this.conversationId` as well is a minor, harmless side effect, not a
-    // second bug. Every other tool keeps its long-standing `run: undefined`
-    // (unchanged scope: only these two recursive tools read `heldLocalLane`).
+    // by this step, so it cannot deadlock this loop either way. Every other
+    // tool keeps its long-standing `run: undefined` (unchanged scope: only
+    // these two recursive tools read `heldLocalLane`).
     const runForTool: AgentRunContext | undefined = step.toolName === 'run_workflow' || step.toolName === 'delegate_task'
-      ? {
-          token: `workflow-${this.conversationId}`,
-          chatId: null,
-          conversationId: this.conversationId,
-          workspace: null,
-          artifactMode: false,
-          readOnlyShellTurn: false,
-          mode: null,
-          artifacts: [],
-          heldLocalLane: this.heldLocalLane,
-        }
+      ? this.effectiveOuterRun()
       : undefined
+
+    const gate = await this.gatedApproval(step.toolName, args, runForTool)
+    if (!gate.approved) {
+      return {
+        stepId: step.id,
+        status: 'failed',
+        output: '',
+        startedAt,
+        completedAt: Date.now(),
+        error: gate.message,
+        toolCalls: [{ name: step.toolName, args, result: gate.message }],
+      }
+    }
+
     const result = await toolRegistry.execute(step.toolName, args, 1, runForTool)
     const isError = result.startsWith('Error:')
 
@@ -548,6 +824,38 @@ export class WorkflowEngine {
   // ── User Input Step ───────────────────────────────────────
 
   private async executeUserInputStep(step: WorkflowStep, stepIndex: number, startedAt: number): Promise<StepResult> {
+    // ZUSATZFRAGE / Auflage 6, bau/review-wfgate.md: all three built-in
+    // workflows (Research Topic, Summarize URL, Code Review) begin with a
+    // `user_input` step, and neither surviving caller ever calls
+    // `provideUserInput` below (`onWaitingForInput: () => {}` in both
+    // builtin-tools.ts's `executeRunWorkflow` and useAgentChat.ts's chat
+    // trigger), so every one of them used to hang here forever, waiting on a
+    // resolver nothing can reach except Stop. `run_workflow` already turns
+    // its own `input` argument into the `user_input` variable
+    // (builtin-tools.ts's `initialVars`), so the FIRST `user_input` step can
+    // read it directly instead of waiting. Consumed at most once: a second
+    // `user_input` step in a custom workflow still genuinely waits, since
+    // only one caller-supplied value exists. Runde 2 fix (klein 1/2,
+    // bau/review-wfgate.md): both callers now refuse UP FRONT, before this
+    // engine even starts, when a workflow has a `user_input` step and no
+    // answer was given at all, so THIS wait branch is unreachable through
+    // either surviving caller for that case; only a workflow with a SECOND
+    // `user_input` step (after the first already consumed the one supplied
+    // value) still reaches it, see `provideUserInput`'s own doc comment.
+    if (this.prefilledUserInput !== undefined) {
+      const input = this.prefilledUserInput
+      this.prefilledUserInput = undefined
+      this.variables['user_input'] = input
+      this.variables['last_output'] = input
+      return {
+        stepId: step.id,
+        status: 'completed',
+        output: input,
+        startedAt,
+        completedAt: Date.now(),
+      }
+    }
+
     const prompt = interpolate(step.userInputPrompt || 'Enter input:', this.variables)
     this.callbacks.onWaitingForInput(stepIndex, prompt)
 

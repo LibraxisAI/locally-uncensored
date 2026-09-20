@@ -4,8 +4,14 @@
  *
  * Gemessen: eine fremde Unterhaltung haelt die lokale Spur, in Unterhaltung
  * `a` laeuft ein Chat und hat seinen Abbruchgriff registriert, dann startet
- * aus dem Ablauf-Fenster ein Arbeitsablauf, der `activeConversationId` als
- * Buchungskennung nimmt (`useWorkflow.ts:30`) und sich anstellt.
+ * ein Arbeitsablauf, der dieselbe Unterhaltung als Buchungskennung nimmt
+ * (`this.conversationId`, siehe der Kommentar in `workflow-engine.ts`s
+ * `run()`) und sich anstellt. Der urspruengliche Messfall kam ueber den
+ * inzwischen entfernten Settings-Play-Knopf und `useWorkflow.ts`
+ * (`activeConversationId`, seit review-wfplay.md geloescht); der Fix in
+ * `run-slot.ts` selbst ist an der Buchungskennung verankert und gilt daher
+ * unveraendert fuer den heutigen einzigen Startweg, den `run_workflow`-
+ * Werkzeugaufruf.
  * `run-slot.ts` registrierte beim Anstellen seinen eigenen Griff unter
  * DERSELBEN Kennung und ueberschrieb damit den des laufenden Chats; am Ende
  * loeschte `aufraeumen` ihn ersatzlos. Solange der Ablauf wartete, rief
@@ -45,6 +51,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { WorkflowEngine } from '../workflow-engine'
+import { APPROVE_ALL } from '../../api/agents/tool-executor'
 import { runInLane } from '../run-slot'
 import { localLaneHolder, queuedRunIds, __resetRunLanesForTests } from '../run-lanes'
 import { useGenerationStore } from '../../stores/generationStore'
@@ -133,7 +140,7 @@ describe("Opus' Messfall: ein Chat laeuft in 'a', ein Arbeitsablauf stellt sich 
     expect(localLaneHolder()).toBe('a')
 
     const errors: string[] = []
-    const engine = new WorkflowEngine(workflowOf([noteStep('x')]), 'a', callbacks((e) => errors.push(e)))
+    const engine = new WorkflowEngine(workflowOf([noteStep('x')]), 'a', callbacks((e) => errors.push(e)), APPROVE_ALL)
     const ablaufLauf = engine.run()
     await takte(3)
 
@@ -166,7 +173,7 @@ describe("Opus' Messfall: ein Chat laeuft in 'a', ein Arbeitsablauf stellt sich 
     await takte(3)
 
     const errors: string[] = []
-    const engine = new WorkflowEngine(workflowOf([noteStep('x')]), 'a', callbacks((e) => errors.push(e)))
+    const engine = new WorkflowEngine(workflowOf([noteStep('x')]), 'a', callbacks((e) => errors.push(e)), APPROVE_ALL)
     const ablaufLauf = engine.run()
     await takte(3)
     expect(queuedRunIds()).toEqual(['a'])
@@ -190,7 +197,7 @@ describe('NEGATIVKONTROLLE: ohne einen zweiten, sich die Kennung teilenden Lauf 
     // ueberhaupt geprueft werden kann, dass er noch laeuft.
     const step: WorkflowStep = { id: 'warte', type: 'user_input', label: 'warte', userInputPrompt: 'weiter?' }
     const errors: string[] = []
-    const engine = new WorkflowEngine(workflowOf([step]), 'allein', callbacks((e) => errors.push(e)))
+    const engine = new WorkflowEngine(workflowOf([step]), 'allein', callbacks((e) => errors.push(e)), APPROVE_ALL)
     const ablaufLauf = engine.run()
     await takte(2)
     expect(localLaneHolder()).toBe('allein')
