@@ -22,15 +22,28 @@
 // "Altbestand"; erst die lebende Katalogantwort liefert ihn). Ein Test, der
 // hier "hat immer einen Preis" verlangt, wuerde eine Vollstaendigkeit
 // behaupten, die die Testumgebung ohne Netz gar nicht hat.
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import {
   ALL_ROLES, classicCredits, presetModels, requiredRoleInputs, roleForModel,
   roleHasChoice, roleInputs,
 } from '../preset-models'
 import { CREATE_PRESETS } from '../create-presets'
 import { STUDIO_MODELS } from '../studio-contract'
+import { CLOUD_MODEL_SEED } from '../cloud-models'
 import { cloudModelById, cloudModelSupportsOp, useCloudCatalogStore } from '../../../stores/cloudCatalogStore'
 import { videoDurations } from '../video-duration'
+
+// Review B1 (Runde 2): `presetModels()` is what the Preset Workshop (P6)
+// calls directly, and the workshop is only ever reachable when the live
+// catalog already announces Studio (`quote_required`, PresetShelf.tsx hides
+// itself otherwise). This whole file tests that reachable state, so it
+// seeds one, the same way create-studio.test.ts does for the Composer's
+// OWN gate. Without this, `allPresetModels()`'s "a classic id yields to its
+// live studio twin" skip (preset-models.ts) turns off by default and every
+// twin pair here would double up.
+beforeEach(() => {
+  useCloudCatalogStore.setState({ models: [...CLOUD_MODEL_SEED, { id: 'test-studio-marker', label: 'x', kind: 'image', quote_required: true }] })
+})
 
 // Die Ops, die die Submit-Route pro Art annimmt. Spiegel von SUPPORTED_OPS in
 // app/api/jobs/route.ts (Server): was dort fehlt, wird vor dem Abbuchen

@@ -17,6 +17,22 @@
 // Effekt unten kehrt in dem Fall sofort um, ohne `studioQuote()` zu rufen.
 // Siehe useCloudCreate-studio.test.ts, Fall "no network call on the local
 // lane".
+//
+// Review A1/B3 (Runde 2, 20.09.2026): `price.mode` 'input'/'both' Modelle
+// (pricesByInput()) bleiben hier weiterhin bei der Formel-Vorschau, OHNE
+// `studioQuote()`, das ist bewusst, nicht die Luecke, die B3 fand. Diese
+// Modelle rechnen serverseitig aus der GEMESSENEN Laenge der hochgeladenen
+// Datei; eine echte Server-Quote vor dem Klick wuerde die Datei hochladen,
+// bevor die Kundschaft ueberhaupt "Create" gedrueckt hat, fuer eine Zahl, die
+// sie vielleicht nie sieht. Die Geldwahrheit liegt fuer diese 17 Modelle
+// stattdessen in `useCloudCreate.ts`: `generate()` ruft `studioQuote()` MIT
+// den bereits fuer den Lauf hochgeladenen Pfaden, unmittelbar vor der
+// Buchung, und setzt genau diese Zahl als `max_credits`, kein Upload extra,
+// kein Kredit ohne bestaetigte Zahl. Der Startknopf bleibt fuer diese 17
+// deshalb nicht wegen eines fehlenden Preises gesperrt (er war es nie fuer
+// price.mode 'output'/'characters' Modelle vor dem ersten Tastendruck
+// entweder), sondern die Buchung selbst kann nie mehr Kredite abrechnen, als
+// die Quote unmittelbar davor bestaetigt.
 
 import { useEffect, useRef, useState } from 'react'
 import { createStudioCost, pricesByInput } from '../../../lib/render/create-studio'

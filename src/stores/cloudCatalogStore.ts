@@ -64,6 +64,23 @@ export function cloudModelsFor(kind: RenderKind): CloudModel[] {
   return useCloudCatalogStore.getState().models.filter((m) => m.kind === kind && !m.ops)
 }
 
+/** Review B1 (Runde 2, 20.09.2026): the ONLY signal that the connected
+ *  server knows the Studio endpoints at all (Portplan Abschnitt 4, "nie
+ *  eine Serverversion fest verdrahten"): absence, not a version number, is
+ *  what an older catalog payload looks like. The default seed
+ *  (CLOUD_MODEL_SEED) carries `quote_required` on no entry, so a fresh
+ *  install reads false here until the first successful catalog fetch, same
+ *  as an old server that never gained Studio. Every caller that would
+ *  otherwise pick a Studio model as a role intent's DEFAULT (create-
+ *  studio.ts's `intentPickerModels`, which `resolveIntentPick` and five
+ *  downstream components all read) must gate on this, or a Create-tab run
+ *  on an old server picks an endpoint that server has never heard of
+ *  (review-studio-B.md B1: Extend/Motion broke on today's server). Already
+ *  used the same way by PresetShelf.tsx to hide the shelf entirely. */
+export function catalogHasStudio(): boolean {
+  return useCloudCatalogStore.getState().models.some((m) => m.quote_required === true)
+}
+
 // Does this catalog entry serve this op? Classic models (no `ops`) keep their
 // flag contract: generate always, edit per flag, animate = video i2v.
 export function cloudModelSupportsOp(m: CloudModel, op: RenderOp): boolean {
@@ -210,14 +227,14 @@ export function runCredits(
   // Computing this generic base/long/by_duration figure for a Studio
   // generation would drift from the provider's real price the moment it
   // changes there, and a run must never book a different number than what
-  // got shown (Portplan Abschnitt 7, Risiko 1) — no UI path does this today
+  // got shown (Portplan Abschnitt 7, Risiko 1); no UI path does this today
   // (Composer/CreditsMeter route a Studio pick around runCredits entirely,
   // preset-models.ts/create-presets.ts only call runCredits for non-studio
   // steps), this guard is the safety net for the day one of them slips.
   //
   // The guard sits HERE, not before the op branches above, on purpose: a
   // Studio-originated video can still reach the generic video-upscale
-  // 'enhance' action from the gallery Lightbox — a wholly separate WaveSpeed
+  // 'enhance' action from the gallery Lightbox, a wholly separate WaveSpeed
   // utility endpoint, priced from the flat per-second `ops` rate table, not
   // from this model's own Studio price. Blocking that call too (the
   // original, wider guard did) forced the enhance-credits gate onto the
@@ -255,8 +272,17 @@ export function shortCount(n: number): string {
  *  hint said 1,800 cr while a 3:10 run really billed 5,700, which read as a
  *  hidden price hike (sockenmonster, bug-reports 2026-08-08). Video quotes the
  *  short clip; the meter refines it to the exact run. Undefined when the entry
- *  carries no price (seed/offline). */
+ *  carries no price (seed/offline).
+ *
+ *  Review B7 (Runde 2): the same `quote_required` guard `runCredits()` has
+ *  twenty lines up: a Studio entry must never print a self-computed hint,
+ *  its real price lives in `studio-contract.ts`/`studioQuote()`, not in this
+ *  model's `credits` field. Harmless today (a Studio entry carries `pricing`,
+ *  not `credits`, so `c` is already undefined below), but a future catalog
+ *  payload that sends both must not silently start printing a wrong number
+ *  here just because the other guard was three lines away. */
 export function modelCostHint(m: CloudModel, op: RenderOp, seconds?: number): string | undefined {
+  if (m.quote_required) return undefined
   const c = m.credits
   if (!c) return undefined
   const cr =

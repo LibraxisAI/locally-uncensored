@@ -87,6 +87,8 @@ const INITIAL_STATE = {
   batchSize: 1,
   frames: 24,
   fps: 8,
+  cloudFrames: 24,
+  cloudFps: 8,
   denoise: 0.7,
   i2iImage: null,
   i2vImage: null,
@@ -419,6 +421,53 @@ describe('createStore', () => {
     it('floors fractional values', () => {
       useCreateStore.getState().setFps(24.5)
       expect(useCreateStore.getState().fps).toBe(24)
+    })
+  })
+
+  // ── cloudFrames/cloudFps: own fields, no leak either way ────
+  //
+  // Review A kleiner Punkt 1 (studio-r2, 20.09.2026): the cloud Length
+  // control (Composer.tsx's LaneControls) used to read/write the SAME
+  // frames/fps the local video lane's Frames slider owns, so a cloud clip
+  // length pick silently rewrote what the local track remembered. Own
+  // fields now; this proves the independence the store itself must hold,
+  // the e2e test in create-studio.spec.ts proves it from the UI.
+  describe('cloudFrames/cloudFps stay independent of frames/fps', () => {
+    it('has its own defaults, same as frames/fps', () => {
+      const state = useCreateStore.getState()
+      expect(state.cloudFrames).toBe(24)
+      expect(state.cloudFps).toBe(8)
+    })
+
+    it('setCloudFrames never touches frames', () => {
+      useCreateStore.getState().setCloudFrames(96)
+      expect(useCreateStore.getState().cloudFrames).toBe(96)
+      expect(useCreateStore.getState().frames).toBe(24)
+    })
+
+    it('setCloudFps never touches fps', () => {
+      useCreateStore.getState().setCloudFps(16)
+      expect(useCreateStore.getState().cloudFps).toBe(16)
+      expect(useCreateStore.getState().fps).toBe(8)
+    })
+
+    it('setFrames (the local slider) never touches cloudFrames', () => {
+      useCreateStore.getState().setFrames(49)
+      expect(useCreateStore.getState().frames).toBe(49)
+      expect(useCreateStore.getState().cloudFrames).toBe(24)
+    })
+
+    it('setFps (the local slider) never touches cloudFps', () => {
+      useCreateStore.getState().setFps(30)
+      expect(useCreateStore.getState().fps).toBe(30)
+      expect(useCreateStore.getState().cloudFps).toBe(8)
+    })
+
+    it('clamps to its own, higher ceiling (cloud has no 120-frame hardware limit, see setCloudFrames)', () => {
+      useCreateStore.getState().setCloudFrames(9999)
+      useCreateStore.getState().setCloudFps(0)
+      expect(useCreateStore.getState().cloudFrames).toBe(3600)
+      expect(useCreateStore.getState().cloudFps).toBe(1)
     })
   })
 

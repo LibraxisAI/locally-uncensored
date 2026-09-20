@@ -10,13 +10,13 @@ import { useCloudCatalogStore } from '../../../stores/cloudCatalogStore'
  *
  *  Eine Schiene am rechten Rand, die von 52 auf 260 Pixel aufgeht. Desktop-
  *  Port (P6): der Web-Quelle Handy-Zweig (`useIsMobile`, das Blatt ueber dem
- *  Inhalt) entfaellt ersatzlos — der Desktop kennt kein Handy-Layout.
+ *  Inhalt) entfaellt ersatzlos, der Desktop kennt kein Handy-Layout.
  *
  *  Die Schiene erscheint NUR auf der Wolken-Spur (Portplan Abschnitt 1
  *  Punkt 10, Abschnitt 3), UND nur, wenn der lebende Katalog Studio-Modelle
  *  fuehrt: ein aelterer Server, der `quote_required` bei keinem Eintrag
  *  mitschickt, sagt damit selbst, dass er das Studio nicht kennt (Portplan
- *  Abschnitt 4, "nie eine Serverversion fest verdrahten" — die Erkennung
+ *  Abschnitt 4, "nie eine Serverversion fest verdrahten": die Erkennung
  *  laeuft ausschliesslich ueber das Vorhandensein des Feldes). Ohne diese
  *  zweite Bedingung wuerde die Schiene bei so einem Server leer klicken:
  *  jedes Preset stuende da, aber `studioQuote()` liefe sofort in

@@ -4,7 +4,7 @@
 // intentToJob's parameter, kept as a LOCAL literal union rather than an
 // `import type { CreateIntent } from '../../stores/createStore'`. createStore
 // now imports the cloud catalog (cloudCatalogStore, itself typed against
-// RenderKind/RenderOp from this file) for addToGallery's backend gate — a
+// RenderKind/RenderOp from this file) for addToGallery's backend gate, and a
 // type-only import back to createStore here would close that into a module
 // cycle (`npm run cycles`, madge, counts type-only edges too). The two sets
 // must be kept in sync by hand; CreateIntent in stores/createStore.ts is the
@@ -19,7 +19,7 @@ export type RenderKind = 'image' | 'video' | 'audio'
 // 2.5.8 adds the specialized ops behind the new Create categories: 'lipsync'
 // (talking character), 'extend' (continue a clip), 'motion' (motion transfer,
 // NOT face-swap — banned), 'music', 'tts' and 'lora-train' (Character-Studio).
-// 'studio' (2026-09): the guided Create-Studio path — a schema-driven
+// 'studio' (2026-09): the guided Create-Studio path, a schema-driven
 // endpoint booked with `studio_options` and a server-confirmed quote, rather
 // than one of the fixed param shapes above.
 export type RenderOp =
@@ -84,8 +84,8 @@ export function intentToJob(intent: CreateIntentLike): { kind: RenderKind; op: R
 }
 
 /** The neutral gallery-entry shape a finished cloud job produces before the
- *  caller layers its own fields on top (prompt, label, and — for the
- *  Composer's classic path — the actual local render params: sampler, steps,
+ *  caller layers its own fields on top (prompt, label, and, for the
+ *  Composer's classic path, the actual local render params: sampler, steps,
  *  seed, cfgScale, width, height, intent).
  *
  *  Web equivalent: lib/render/cloud-jobs.ts's `galleryItemFromJob`, which P5

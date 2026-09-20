@@ -29,8 +29,12 @@ export function CreditsMeter() {
   const cloudOpModel = useCreateStore((s) => s.cloudOpModel)
   const characterTab = useCreateStore((s) => s.characterTab)
   const selectedCharacter = useCreateStore((s) => s.selectedCharacter)
-  const frames = useCreateStore((s) => s.frames)
-  const fps = useCreateStore((s) => s.fps)
+  // Review A kleiner Punkt 1: this meter is cloud-only (Composer renders it
+  // only for backend 'cloud'), so it must price the SAME length the cloud
+  // Length control shows and useCloudCreate books, cloudFrames/cloudFps, not
+  // the local track's frames/fps.
+  const frames = useCreateStore((s) => s.cloudFrames)
+  const fps = useCreateStore((s) => s.cloudFps)
   const musicDuration = useCreateStore((s) => s.musicDuration)
   const targetResolution = useCreateStore((s) => s.targetResolution)
   const cloudStudioOptions = useCreateStore((s) => s.cloudStudioOptions)

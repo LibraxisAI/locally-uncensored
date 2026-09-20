@@ -162,7 +162,7 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
       }catch(e){
         if(controller.signal.aborted)return
         // 409 quote_changed: den neuen, vom Anbieter bestaetigten Preis
-        // zeigen und als bestaetigt uebernehmen — NICHT still weiterbuchen.
+        // zeigen und als bestaetigt uebernehmen, NICHT still weiterbuchen.
         // Der Kunde sieht die neue Zahl und muss noch einmal auf Start
         // druecken (Portplan Abschnitt 4/7, Risiko 1).
         if(e instanceof StudioQuoteChangedError){

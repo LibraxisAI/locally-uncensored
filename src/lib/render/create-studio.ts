@@ -12,8 +12,8 @@
 
 import type { CreateIntent } from '../../stores/createStore'
 import { STUDIO_MODELS, studioBaseCredits, studioPreviewCredits } from './studio-contract'
-import { presetModels, requiredRoleInputs, roleInputs, type PresetModel, type StepRole } from './preset-models'
-import { opPickerModels } from '../../stores/cloudCatalogStore'
+import { presetModels, requiredRoleInputs, type PresetModel, type StepRole } from './preset-models'
+import { catalogHasStudio, opPickerModels } from '../../stores/cloudCatalogStore'
 
 // Desktop port (P2, checked again in P9): the web's CreateIntent already
 // carries 'video_upscale' as a distinct intent from the plain 'upscale'
@@ -22,7 +22,7 @@ import { opPickerModels } from '../../stores/cloudCatalogStore'
 // video upscale via the older utility-op path. This is not a leftover type
 // gap: components/create/experimental/intents.ts documents (comment at the
 // 'upscale' intent, predates the Studio port) that a separate video-upscale
-// intent is "a feature decision for David ... out of scope here" — it needs
+// intent is "a feature decision for David ... out of scope here": it needs
 // a new IntentBar tile and Composer wiring, a UI feature addition, not an
 // integration fold. StudioIntent stays as the local shim until that decision
 // is made; the video_upscale role list below (STUDIO_MODELS entries
@@ -59,7 +59,20 @@ export function intentRoleFor(intent: StudioIntent, model: string): StepRole | u
  *  kennt, und ein Wechsel der Liste darf seine bisherige Wahl nicht verschieben.
  *  `lipsync` fuehrt zusaetzlich die beiden Nachvertonungsmodelle, die einen
  *  fertigen Clip statt eines Fotos lesen. Die sind kein Rollenmitglied, gehoeren
- *  in der Oberflaeche aber seit jeher hierher. */
+ *  in der Oberflaeche aber seit jeher hierher.
+ *
+ *  Review B1 (Runde 2, 20.09.2026): ein Studio-Mitglied (`m.op === 'studio'`)
+ *  erscheint NUR, wenn der lebende Katalog `quote_required` fuehrt
+ *  (catalogHasStudio(), cloudCatalogStore.ts). Ein aelterer Server (oder ein
+ *  frischer Zustand vor der ersten Katalogabfrage) sagt damit selbst, dass er
+ *  die Studio-Endpunkte nicht kennt, und diese EINE Stelle traegt die Regel
+ *  fuer alle fuenf Aufrufer (Composer, CreditsMeter, CreateExperimental,
+ *  ModelChip direkt, useCloudCreate ueber resolveIntentPick). Vorher wich
+ *  jede Rolle auf ihr erstes STUDIO_MODELS-Mitglied aus, sobald der
+ *  gespeicherte cloudOpModel nicht (mehr) in der Liste stand, und Extend/
+ *  Motion liefen damit auf einem Server ohne Studio ins Leere
+ *  (review-studio-B.md B1). Jede klassische Absicht (lipsync/music) faellt
+ *  auf ihre klassischen Mitglieder zurueck, genau wie vor dem Port. */
 export function intentPickerModels(intent: StudioIntent): PresetModel[] {
   const roles = intentRoles(intent)
   if (!roles.length) return []
@@ -69,7 +82,11 @@ export function intentPickerModels(intent: StudioIntent): PresetModel[] {
   if (intent === 'lipsync') for (const m of opPickerModels('lipsync')) {
     add({ id: m.id, label: m.label, kind: m.kind, op: 'lipsync', adult: m.adult === true })
   }
-  for (const role of roles) for (const m of presetModels(role)) add(m)
+  const studioLive = catalogHasStudio()
+  for (const role of roles) for (const m of presetModels(role)) {
+    if (m.op === 'studio' && !studioLive) continue
+    add(m)
+  }
   return out
 }
 
@@ -88,22 +105,12 @@ export function isStudioModel(id: string): boolean {
   return !!STUDIO_MODELS[id]
 }
 
-/** Was dieses Modell in dieser Absicht an Eingaben liest, als Anbieterfeld ->
- *  Job-Parameter. */
-export function intentInputs(intent: StudioIntent, model: string): Record<string, string> {
-  const role = intentRoleFor(intent, model)
-  return role ? roleInputs(role, model) : {}
-}
-
 /** Die Eingaben, ohne die dieses Modell nicht starten kann. */
 export function intentRequiredInputs(intent: StudioIntent, model: string): string[] {
   const role = intentRoleFor(intent, model)
   return role ? requiredRoleInputs(role, model) : []
 }
 
-/** Der Preis eines Studio-Laufs fuer die Anzeige. `null`, wenn die Optionen
- *  noch nicht vollstaendig sind: dann steht im Zaehler nichts statt einer
- *  erfundenen Zahl. */
 /** Der Preis eines Studio-Laufs fuer Zaehler und Startknopf im Create-Tab.
  *
  *  Endpunkte, die nach der gewuenschten Laenge abrechnen, stehen hier genau.
@@ -126,14 +133,4 @@ export function createStudioCost(
 export function pricesByInput(model: string): boolean {
   const mode = STUDIO_MODELS[model]?.price.mode
   return mode === 'input' || mode === 'both'
-}
-
-export function studioDisplayCredits(
-  model: string,
-  options: Record<string, unknown>,
-  seconds?: number,
-  imageCount = 1,
-  promptLength = 100,
-): number | null {
-  return studioPreviewCredits(model, options, seconds, imageCount, promptLength)
 }

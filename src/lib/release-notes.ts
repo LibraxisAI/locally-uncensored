@@ -328,7 +328,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           // Katalog).
           {
             title: 'Create-Studio: a new guided path on the cloud track.',
-            detail: 'A preset shelf next to the usual Create tab walks a render from image to motion to sound, in steps, each backed by any model that can do that step\'s job. Each step\'s controls come straight from the picked model\'s own provider schema, and the price shown is the one the provider actually confirms before Start, never a formula guessed on this side. This needs a server change that has not shipped on lu-labs.ai yet; until it does, Create shows "This feature needs a newer LU Cloud server. Try again later." instead of guessing a price or booking one.',
+            detail: 'A preset shelf next to the usual Create tab walks a render from image to motion to sound, in steps, each backed by any model that can do that step\'s job. Each step\'s controls come straight from the picked model\'s own provider schema, and the price shown is the one the provider actually confirms before Start, never a formula guessed on this side. This needs a server change that has not shipped on lu-labs.ai yet; until it does, the shelf stays hidden and every Create tab behaves exactly as before. If a future server ever advertises Studio without also fixing the two price-check routes, Create shows "This feature needs a newer LU Cloud server. Try again later." instead of guessing a price or booking one.',
           },
           {
             title: 'Cloud video renders now offer exactly the lengths a model actually supports.',

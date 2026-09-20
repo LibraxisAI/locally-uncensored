@@ -15,9 +15,11 @@ installs stop losing environment variables to it.
   controls come straight from the picked model's own provider schema, and the
   price shown is the one the provider actually confirms before Start, never a
   formula guessed on this side. This needs a server change that has not
-  shipped on lu-labs.ai yet; until it does, Create shows "This feature needs a
-  newer LU Cloud server. Try again later." instead of guessing a price or
-  booking one.
+  shipped on lu-labs.ai yet; until it does, the shelf stays hidden and every
+  Create tab behaves exactly as before. If a future server ever advertises
+  Studio without also fixing the two price-check routes, Create shows "This
+  feature needs a newer LU Cloud server. Try again later." instead of
+  guessing a price or booking one.
 - **Cloud video renders now offer exactly the clip lengths the picked model
   actually supports**, read from the live catalog, instead of a fixed 5s/8s
   pair for every model.

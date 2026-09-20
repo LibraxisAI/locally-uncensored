@@ -22,7 +22,7 @@ import { cn } from '../ui/cn'
 // 19.09.2026, Entscheid von David: das Warten traegt dasselbe Lila wie der
 // Rest der App, damit sichtbar ist, dass da etwas passiert. Sky fuer Laden,
 // Gruen fuer Sampling waren Schmuck fuer eine Phase, keine Warnung, und genau
-// solche Stellen haben Farbe in der App bedeutungslos gemacht — die Phase sagt
+// solche Stellen haben Farbe in der App bedeutungslos gemacht. Die Phase sagt
 // jetzt allein das Symbol, nicht mehr die Farbe.
 function phaseIcon(phase: ProgressPhase) {
   if (phase === 'loading-model' || phase === 'loading-clip' || phase === 'loading-vae') return <Cpu size={20} className="text-lu-accent" />

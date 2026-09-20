@@ -16,8 +16,9 @@ import {
 } from '../../../stores/cloudCatalogStore'
 import { intentRequiredInputs, intentRoles, isStudioModel, resolveIntentPick } from '../../../lib/render/create-studio'
 import { STUDIO_MODELS } from '../../../lib/render/studio-contract'
-import { videoDurations } from '../../../lib/render/video-duration'
+import { effectiveVideoDurations, snapToVideoDuration } from '../../../lib/render/video-duration'
 import { mediaSeconds, useStudioPrice } from './useStudioPrice'
+import { getJob } from '../../../api/cloud/jobs'
 import { resolveCharacterModel } from '../../../hooks/useCloudCreate'
 import { INTENT_MAP } from './intents'
 import { subscribeInstallRuns, getInstallRun } from '../../../lib/model-install-runs'
@@ -151,11 +152,38 @@ export function Composer({ onOpenAdvanced, onOpenWorkflows }: Props) {
   const [measured, setMeasured] = useState<{ url: string; seconds: number | undefined } | null>(null)
   useEffect(() => {
     let alive = true
-    if (!mediaUrl) return
+    // Review A kleiner Punkt 2: this number only feeds useStudioPrice, which
+    // itself already no-ops off the cloud track (`studioPick` is undefined
+    // there). Gating here too means a local lipsync/motion/extend attach
+    // never spins up an <audio>/<video> element and an 8s measuring timer
+    // for a number nobody reads.
+    if (backend !== 'cloud' || !mediaUrl) return
     void mediaSeconds(mediaUrl, mediaKind).then((v) => { if (alive) setMeasured({ url: mediaUrl, seconds: v }) })
     return () => { alive = false }
-  }, [mediaUrl, mediaKind])
-  const inputSeconds = measured && measured.url === mediaUrl ? measured.seconds : undefined
+  }, [backend, mediaUrl, mediaKind])
+  // Review B3: a generated voice (voiceFromJob, e.g. a qwen3-tts run picked
+  // as the lipsync track) has no local blob URL, it is a prior job id, not
+  // an upload. Skipping it left `seconds` undefined for exactly the run
+  // useCloudCreate re-uploads at submit time (voiceFromJob && studioModel),
+  // so the meter showed a 5-second price for a 60-second voice and booked
+  // twelve times that (heygen-twin: shown 15,000, booked 180,000 at 60s,
+  // measured in review-studio-B.md B3). Same async-only write rule as
+  // `measured` above; the job fetch and the duration probe both go through
+  // the callback, never the render body.
+  const voiceJobId = backend === 'cloud' && intent === 'lipsync' && !audioInput ? voiceFromJob?.jobId : undefined
+  const [measuredVoice, setMeasuredVoice] = useState<{ jobId: string; seconds: number | undefined } | null>(null)
+  useEffect(() => {
+    let alive = true
+    if (!voiceJobId) return
+    void getJob(voiceJobId)
+      .then((job) => (job.result_url ? mediaSeconds(job.result_url, 'audio') : undefined))
+      .then((v) => { if (alive) setMeasuredVoice({ jobId: voiceJobId, seconds: v }) })
+      .catch(() => { if (alive) setMeasuredVoice({ jobId: voiceJobId, seconds: undefined }) })
+    return () => { alive = false }
+  }, [voiceJobId])
+  const inputSeconds =
+    (measured && measured.url === mediaUrl ? measured.seconds : undefined) ??
+    (measuredVoice && measuredVoice.jobId === voiceJobId ? measuredVoice.seconds : undefined)
   const studioPrice = useStudioPrice(studioPick, cloudStudioOptions, prompt, runSeconds ?? inputSeconds)
   const setCloudStudioCredits = useCreateStore((s) => s.setCloudStudioCredits)
   useEffect(() => {
@@ -463,7 +491,17 @@ function LaneControls() {
   const frames = useCreateStore((s) => s.frames)
   const setFrames = useCreateStore((s) => s.setFrames)
   const fps = useCreateStore((s) => s.fps)
-  const setFps = useCreateStore((s) => s.setFps)
+  // The local Frames slider only ever reads fps (for the "Nf · Xs" caption);
+  // it is set from the video model's own defaults (setVideoModel), never by
+  // hand here, so there is no local setFps caller any more now that the
+  // cloud Length control owns its own field (Review A kleiner Punkt 1).
+  // Review A kleiner Punkt 1: the cloud Length control below reads and
+  // writes ITS OWN frames/fps, not the local track's. See the field's doc
+  // comment in createStore.ts.
+  const cloudFrames = useCreateStore((s) => s.cloudFrames)
+  const setCloudFrames = useCreateStore((s) => s.setCloudFrames)
+  const cloudFps = useCreateStore((s) => s.cloudFps)
+  const setCloudFps = useCreateStore((s) => s.setCloudFps)
   const videoModel = useCreateStore((s) => s.videoModel)
   const cloudVideoModel = useCreateStore((s) => s.cloudVideoModel)
 
@@ -496,16 +534,23 @@ function LaneControls() {
   const cloudVideoOp = intentToJob(intent).op
   const cloudVideoLaneModel = modelForOp('video', cloudVideoOp, cloudVideoModel || defaultCloudModel('video')?.id || '')
   const cloudVideoDurations = effectiveVideoDurations(cloudVideoLaneModel)
-  const cloudVideoSeconds = cloudVideoDurations.length ? snapToVideoDuration(cloudVideoDurations, frames, fps) : undefined
+  // Review A kleiner Punkt 1 (studio-r2, 20.09.2026): this used to snap the
+  // SHARED frames/fps and write back into them on every cloud model switch,
+  // which silently rewrote the local Frames slider's remembered value too
+  // (frames/fps back local video generation as well). Reading/writing
+  // cloudFrames/cloudFps instead means a cloud length pick, or the snap this
+  // effect performs when a model switch makes the current pick invalid,
+  // never touches the local track's own frames/fps.
+  const cloudVideoSeconds = cloudVideoDurations.length ? snapToVideoDuration(cloudVideoDurations, cloudFrames, cloudFps) : undefined
   useEffect(() => {
     if (
       backend === 'cloud' && kind === 'video' && !specialOp &&
-      cloudVideoSeconds !== undefined && frames / fps !== cloudVideoSeconds
+      cloudVideoSeconds !== undefined && cloudFrames / cloudFps !== cloudVideoSeconds
     ) {
-      setFrames(cloudVideoSeconds * 16)
-      setFps(16)
+      setCloudFrames(cloudVideoSeconds * 16)
+      setCloudFps(16)
     }
-  }, [backend, kind, specialOp, cloudVideoSeconds, frames, fps, setFrames, setFps])
+  }, [backend, kind, specialOp, cloudVideoSeconds, cloudFrames, cloudFps, setCloudFrames, setCloudFps])
 
   if (characterTrain) return null
 
@@ -623,7 +668,7 @@ function LaneControls() {
             size="sm"
             layoutId="clip-length"
             value={String(cloudVideoSeconds ?? cloudVideoDurations[0])}
-            onChange={(k) => { setFrames(Number(k) * 16); setFps(16) }}
+            onChange={(k) => { setCloudFrames(Number(k) * 16); setCloudFps(16) }}
             options={cloudVideoDurations.map((secs) => ({ value: String(secs), label: `${secs}s` }))}
           />
         </LabeledControl>
@@ -686,24 +731,9 @@ function nearestKey(map: Record<string, number>, val: number): string {
 }
 
 // ── cloud video length (dd29f359, Portplan Abschnitt 6) ──
-// The catalog is the runtime truth (a live model can add/retire lengths any
-// day); video-durations.json is the offline notvorrat only. Neither one
-// alone: an entry that has NOT yet re-fetched the live catalog still needs a
-// length list, and a length the catalog names that the static file has not
-// caught up with yet must still show.
-export function effectiveVideoDurations(model: string): number[] {
-  const cat = cloudModelById(model)
-  if (cat?.clip?.durations?.length) return cat.clip.durations
-  const json = videoDurations(model)
-  if (json.length > 0) return [...json]
-  if (cat?.clip) return cat.clip.long !== undefined ? [cat.clip.short, cat.clip.long] : [cat.clip.short]
-  return []
-}
-
-// An invalid-become choice (model switch, or a persisted value from a model
-// that no longer offers it) resets to the SHORTEST valid length, never to
-// the nearest one, which could silently jump the price up.
-export function snapToVideoDuration(allowed: number[], frames: number, fps: number): number {
-  const raw = fps > 0 ? frames / fps : allowed[0]
-  return allowed.includes(raw) ? raw : allowed[0]
-}
+// Review A2 (Runde 2): moved into video-duration.ts, the one file the
+// booking path (useCloudCreate, PresetWorkshop) now reads too, so the
+// picker and the booking can never name two different lists again. Kept
+// re-exported here so composer-video-duration.test.ts's import path (and
+// any other caller of this module) still resolves.
+export { effectiveVideoDurations, snapToVideoDuration }
