@@ -544,7 +544,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-medium text-[0.7rem]">{model.label}</span>
                     {model.name === recommendedModelName && showRecommendedBadge && (
                       <span className={`text-[0.5rem] px-1 py-0.5 rounded ${isDark ? 'bg-white/10 text-gray-300' : 'bg-gray-200 text-gray-600'}`}>

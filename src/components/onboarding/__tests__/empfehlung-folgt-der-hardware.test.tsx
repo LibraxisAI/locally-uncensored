@@ -8,7 +8,7 @@
  * auf die alte Form `{model.recommended && showRecommendedBadge && (` zurueck
  * und liess damit 16 von 16 Testdateien unveraendert gruen. Dieser Test
  * rendert den Schritt wirklich und liest, an welcher Kachel "Recommended"
- * steht — die alte Form wuerde ihn bei 12 GB VRAM falsch am 7B-Starter
+ * steht. Die alte Form wuerde ihn bei 12 GB VRAM falsch am 7B-Starter
  * bestehen lassen statt am 9B-Modell.
  *
  * Lauf: npx vitest run src/components/onboarding/__tests__/empfehlung-folgt-der-hardware.test.tsx
