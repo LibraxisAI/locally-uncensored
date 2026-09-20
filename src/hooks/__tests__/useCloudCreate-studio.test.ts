@@ -314,6 +314,37 @@ describe('Studio-Modelle in den Create-Unterkategorien', () => {
       expect(useCreateStore.getState().error).toContain('9,000')
     })
 
+    // Review B6 (Runde 4, 20.09.2026): the previous test used
+    // `mockResolvedValueOnce`, so a SECOND call to studioQuote would have
+    // hit the default `{ credits: 42 }` mock from beforeEach, hiding a bug
+    // where the rejection never re-primes cloudStudioCredits. A DETERMINISTIC
+    // mock (mockResolvedValue, the real provider returns the same number for
+    // the same inputs) proves the second click actually books: a fix that
+    // never updates cloudStudioCredits in the rejection branch would show
+    // the exact same rejected error on click two, zero bookings, three
+    // quote calls for three clicks, which is exactly what Opus B measured
+    // against the un-fixed code.
+    it('ein zweiter Klick nach der Ablehnung bucht mit der neuen Zahl (Review B6, deterministische Quote)', async () => {
+      hoisted.studioQuote.mockResolvedValue({ credits: 9000 })
+      const s = useCreateStore.getState()
+      s.setIntent('lipsync')
+      s.setCloudOpModel('heygen-twin')
+      s.setCloudStudioCredits(5000)
+      useCreateStore.setState({ source: null, audioInput: TON })
+
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(0)
+      expect(useCreateStore.getState().error).toContain('9,000')
+      // The rejection must have re-primed the comparison value, or the
+      // second click fails exactly the same way.
+      expect(useCreateStore.getState().cloudStudioCredits).toBe(9000)
+
+      await useCloudCreate().generate()
+      expect(submitted).toHaveLength(1)
+      expect(submitted[0].params.max_credits).toBe(9000)
+      expect(hoisted.studioQuote).toHaveBeenCalledTimes(2)
+    })
+
     it('bucht direkt, wenn die Quote GLEICH dem gezeigten Preis ist', async () => {
       hoisted.studioQuote.mockResolvedValueOnce({ credits: 5000 })
       const s = useCreateStore.getState()

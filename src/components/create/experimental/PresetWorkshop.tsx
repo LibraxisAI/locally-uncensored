@@ -15,24 +15,11 @@ import { SchemaControl, baseFieldClass as fieldClass } from './SchemaControl'
 import { Select } from '../ui/Select'
 import { galleryLabelShort } from '../../../lib/render/gallery-label'
 import { errorText } from '../../../types/json-guards'
+import { CloudJobError } from '../../../api/cloud/client'
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
+import { PROMPT_DEBOUNCE_MS } from './useStudioPrice'
 
 const label = (s: string) => s.replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase())
-
-// Review B4 (Runde 3, 20.09.2026): considered giving `priceKey` the same
-// longer prompt-debounce as useStudioPrice.ts's fix (same shape: the LIVE
-// prompt text in the key, a keystroke restarts the 650ms debounce). Left
-// AS-IS here on purpose: B4's concrete measurement (48 studioQuote calls for
-// a 48-char prompt at 600ms/char) was run against useStudioPrice.ts, the
-// Composer's live meter, which is on-screen for every studio pick the whole
-// time a customer is on the cloud Create tab; the Workshop's price effect
-// only runs while its own dialog is open, on one step's prompt field at a
-// time, a narrower window. More importantly the Workshop already carries no
-// money risk either way: quote===null blocks Generate (see B3), so a 429
-// here costs the customer a wait, never a booking. A prompt-debounce here
-// would need reworking every real-timer waitFor() in this file's test
-// coverage (~20 call sites, all under the current 650ms budget); if this
-// ever gets measured hitting the same rate limit in practice, it is the
-// same one-constant fix as useStudioPrice.ts's PROMPT_DEBOUNCE_MS.
 
 export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;onClose:()=>void;onGenerate:()=>void}) {
   const [index,setIndex]=useState(0),[prompt,setPrompt]=useState(''),[options,setOptions]=useState<Record<string,unknown>>({})
@@ -40,6 +27,15 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
   const [measurement,setMeasurement]=useState<{key:string;seconds:number}|null>(null)
   const [advanced,setAdvanced]=useState(false),[quoting,setQuoting]=useState(false),[quotedKey,setQuotedKey]=useState('')
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[quote,setQuote]=useState<number|null>(null),[active,setActive]=useState<string|null>(null)
+  // Review B5 (Runde 4, 20.09.2026): true exactly while the MOST RECENT
+  // quote attempt for the current priceKey came back 429 (rate limited, not
+  // a version gap). While true, the last CONFIRMED quote/quotedKey (from
+  // before the rate limit hit) stays usable for Generate even though it no
+  // longer matches `priceKey` exactly, see the disabled-condition comments
+  // below. Reset to false by any attempt that resolves with a real answer
+  // (success, 409, or a genuine error) and by every place that already
+  // clears `quote` for an unrelated reason (model switch, step change).
+  const [rateLimited,setRateLimited]=useState(false)
   const lock=useRef(false),requestId=useRef<string|null>(null)
   const previewsRef=useRef<Record<string,{url:string;type:'image'|'video'}>>({})
   const carried=useRef<number|null>(null)
@@ -101,7 +97,7 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
   const required=requiredRoleInputs(raw.role,step.model)
   function choose(id:string) {
     if(id===step.model)return
-    setPicked(p=>({...p,[index]:id}));setOptions({});setQuote(null);setQuotedKey('');setError('')
+    setPicked(p=>({...p,[index]:id}));setOptions({});setQuote(null);setQuotedKey('');setError('');setRateLimited(false)
     // An upload the next model does not read would still price and submit as a
     // stray param. Only what it consumes survives the switch.
     const keep=new Set([...Object.values(roleInputs(raw.role,id)),'source_url'])
@@ -155,21 +151,43 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
   const classicCost=(p:CloudJobParams)=>classicCredits(step.kind,step.model,step.op,p)
   const measurementKey=JSON.stringify([paths,options.order??'meanwhile'])
   const estimate=model?studioPreviewCredits(step.model,options,measurement?.key===measurementKey?measurement.seconds:undefined,Array.isArray(paths.image_paths)?paths.image_paths.length:1,Array.from(prompt).length):classicCost(params())
-  const priceKey=JSON.stringify([step.model,prompt,options,paths,index])
+  // Review B5 (Runde 4, 20.09.2026): only the PROMPT gets the longer
+  // debounce, same as useStudioPrice.ts's fix (model/options/paths/index
+  // change rarely, a real edit, not per keystroke). While the customer is
+  // still typing, `debouncedPrompt` (and therefore `priceKey`) does not
+  // move at all, so the effect below never re-runs mid-sentence and the
+  // last confirmed `quote` simply stays where it is, usable, the whole
+  // time (Opus B: "den alten bestaetigten Preis stehen lassen, solange nur
+  // der Prompt weitergewachsen ist"). Measured before this fix: 48
+  // studioQuote calls for a 48-char prompt at an ordinary 600ms/char typing
+  // rhythm, the same disease review-studio-B.md's B4 found in the Composer.
+  const debouncedPrompt=useDebouncedValue(prompt,PROMPT_DEBOUNCE_MS)
+  const priceKey=JSON.stringify([step.model,debouncedPrompt,options,paths,index])
+  const schemaRequired=model?studioSchema(step.model).required??[]:[]
+  const promptRequired=model?schemaRequired.includes(model.promptField??'prompt'):rolePrompts(raw.role)
+  // Review B5 (Runde 4, 20.09.2026): checked against the LIVE prompt, not
+  // `debouncedPrompt`. Clearing a required prompt makes the last confirmed
+  // quote wrong for what would actually be submitted, and that is a
+  // correctness gap, not the keystroke-chatter the debounce above exists to
+  // fix, so it must not wait 1800ms to take effect (preset-workshop.test.tsx,
+  // "invalidates the prior quote when the prompt is cleared").
+  const nothingToPrice=required.some(key=>!paths[key])||(!model&&raw.role==='extend'&&!paths.source_url)||(promptRequired&&!prompt.trim())
   useEffect(()=>{
-    setQuote(null);setQuotedKey('');setQuoting(false)
     const controller=new AbortController()
-    const schemaRequired=model?studioSchema(step.model).required??[]:[]
-    if(required.some(key=>!paths[key]))return
-    if(!model&&raw.role==='extend'&&!paths.source_url)return
-    if((model?schemaRequired.includes(model.promptField??'prompt'):rolePrompts(raw.role))&&!prompt.trim())return
+    // Genuinely nothing to price yet (no upload, no required prompt): the
+    // ONLY case that still clears the last quote outright, there is no
+    // number to fall back to either.
+    if(required.some(key=>!paths[key])||(!model&&raw.role==='extend'&&!paths.source_url)||(promptRequired&&!debouncedPrompt.trim())){
+      setQuote(null);setQuotedKey('');setQuoting(false);setRateLimited(false)
+      return
+    }
     setQuoting(true)
     const timer=setTimeout(async()=>{
       try {
         let cost:number
         if(model){
-          studioOptions(step.model,prompt,options)
-          const data=await studioQuote(step.model,prompt,{op:'studio',studio_options:options,...paths})
+          studioOptions(step.model,debouncedPrompt,options)
+          const data=await studioQuote(step.model,debouncedPrompt,{op:'studio',studio_options:options,...paths})
           if(!Number.isSafeInteger(data.credits)||data.credits<1)throw new Error('Invalid price response')
           cost=data.credits
           if(!controller.signal.aborted&&Number.isFinite(data.seconds))setMeasurement({key:measurementKey,seconds:data.seconds as number})
@@ -181,7 +199,7 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
           if(classic===null)throw new Error('No price is available for this model yet.')
           cost=classic
         }
-        if(!controller.signal.aborted){setQuote(cost);setQuotedKey(priceKey);requestId.current=crypto.randomUUID();setError('')}
+        if(!controller.signal.aborted){setQuote(cost);setQuotedKey(priceKey);requestId.current=crypto.randomUUID();setError('');setRateLimited(false)}
       }catch(e){
         if(controller.signal.aborted)return
         // 409 quote_changed: den neuen, vom Anbieter bestaetigten Preis
@@ -191,8 +209,20 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
         if(e instanceof StudioQuoteChangedError){
           setQuote(e.credits);setQuotedKey(priceKey);requestId.current=crypto.randomUUID()
           if(Number.isFinite(e.seconds))setMeasurement({key:measurementKey,seconds:e.seconds as number})
-          setError('The price changed. Review the new price before starting.')
-        } else setError(errorText(e))
+          setError('The price changed. Review the new price before starting.');setRateLimited(false)
+        } else if(e instanceof CloudJobError&&e.status===429){
+          // Review B5: a 429 here is the rate limit, not a version gap and
+          // not a sign the last confirmed price is wrong. Leave `quote`/
+          // `quotedKey` exactly as they were (the last good number, if any)
+          // and mark `rateLimited` so Generate still accepts them even
+          // though `quotedKey` no longer matches this newer `priceKey`; no
+          // blocking alert, same silent-fallback shape as useStudioPrice.ts.
+          setRateLimited(true);setError('')
+        } else {
+          // A real error (invalid options, no catalog price, ...): the
+          // shown number, if any, is genuinely no longer trustworthy.
+          setQuote(null);setQuotedKey('');setRateLimited(false);setError(errorText(e))
+        }
       }
       finally{if(!controller.signal.aborted)setQuoting(false)}
     },650)
@@ -200,8 +230,13 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
     // The key contains every input affecting the quote.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[priceKey])
+  // Review B5: usable when there is genuinely something to price, and it is
+  // fresh for the CURRENT key, or the only thing between here and a fresh
+  // confirmation is a rate limit (the last confirmed number stands in, see
+  // the effect's 429 branch above).
+  const priceUsable=!nothingToPrice&&quote!==null&&(quotedKey===priceKey||rateLimited)
   async function generate() {
-    if(lock.current||quote===null||quotedKey!==priceKey||useCreateStore.getState().isGenerating)return
+    if(lock.current||!priceUsable||useCreateStore.getState().isGenerating)return
     lock.current=true;setBusy(true);setError('')
     const store=useCreateStore.getState()
     store.setIntent(raw.role==='extend'?'extend':raw.role==='animate'?'animate':raw.role==='motion'?'motion':raw.role==='talking'||raw.role==='duo'?'lipsync':raw.role==='edit'?'edit':step.kind==='audio'?'music':step.kind==='video'?'video':'image')
@@ -217,28 +252,28 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
       if(job.status!=='succeeded')throw new Error(job.error??`Generation ${job.status}. Completed earlier steps remain in your gallery.`)
       // Prompt und Titel stehen hier im Browser; der Auftrag vom Server
       // bringt sie erst beim naechsten Laden mit.
-      store.addToGallery({...galleryItemFromJob(job),prompt,label:runLabel});setCompleted(c=>({...c,[index]:job}));setQuote(null)
+      store.addToGallery({...galleryItemFromJob(job),prompt,label:runLabel});setCompleted(c=>({...c,[index]:job}));setQuote(null);setRateLimited(false)
     }catch(e){
       if(e instanceof QuoteChangedError){
         // Der Server hat beim Buchen neu gerechnet und eine hoehere Zahl
         // gefunden als die bestaetigte. Zeigen statt buchen: derselbe
         // Grundsatz wie beim 409 der Preisabfrage oben, nur an der anderen
         // Stelle des Ablaufs (Portplan Abschnitt 4 Punkt 3).
-        setQuote(e.credits);setQuotedKey(priceKey);requestId.current=crypto.randomUUID()
+        setQuote(e.credits);setQuotedKey(priceKey);requestId.current=crypto.randomUUID();setRateLimited(false)
         setError(`The price changed to ${e.credits.toLocaleString('en-US')} credits. Review it and start again.`)
       } else {
         setError(errorText(e));store.setError(errorText(e))
       }
     }finally{setActive(null);store.setIsGenerating(false);setBusy(false);lock.current=false;void refreshQuota()}
   }
-  function next(){setIndex(index+1);setPrompt('');setOptions({});setPaths({});dropPreviews();setError('');setQuote(null);setQuotedKey('')}
+  function next(){setIndex(index+1);setPrompt('');setOptions({});setPaths({});dropPreviews();setError('');setQuote(null);setQuotedKey('');setRateLimited(false)}
   /** Drop this step's result and stand where it was made, prompt and uploads
    *  still there. A second run of the same step is one word away, not a
    *  reopened preset that silently resumes on a finished picture. */
-  function redo(){setCompleted(c=>{const n={...c};delete n[index];return n});setError('');setQuote(null);setQuotedKey('')}
+  function redo(){setCompleted(c=>{const n={...c};delete n[index];return n});setError('');setQuote(null);setQuotedKey('');setRateLimited(false)}
   /** Back to an empty first step. Nothing carried over, model choice included.
    *  Everything already generated stays in the gallery. */
-  function startOver(){carried.current=null;setIndex(0);setPrompt('');setOptions({});setPaths({});dropPreviews();setCompleted({});setPicked({});setMeasurement(null);setError('');setQuote(null);setQuotedKey('');setAdvanced(false)}
+  function startOver(){carried.current=null;setIndex(0);setPrompt('');setOptions({});setPaths({});dropPreviews();setCompleted({});setPicked({});setMeasurement(null);setError('');setQuote(null);setQuotedKey('');setAdvanced(false);setRateLimited(false)}
   const touched=index>0||Object.keys(completed).length>0||!!prompt||Object.keys(paths).length>0
   const ideas=promptIdeas(raw.role,preset.category)
   const runtime=runtimes[step.model]
@@ -305,7 +340,7 @@ export function PresetWorkshop({preset,onClose,onGenerate}:{preset:CreatePreset;
             :<span className="truncate rounded-md border border-white/5 px-2 py-1 t-micro text-gray-500">{choice.label} <span className="ml-2 text-gray-700">Cloud</span></span>}
           {ideas.length>0&&!result&&<Select size="sm" ariaLabel="Prompt ideas" className="max-w-[160px]" placeholder="+ Prompt idea" value="" onChange={v=>{const idea=ideas.find(i=>i.label===v);if(idea)setPrompt(t=>t.trim()?`${t.trim()}, ${idea.text}`:idea.text)}} options={ideas.map(i=>({value:i.label,label:i.label}))}/>}
           </div>
-          <div className="flex items-center gap-3">{active&&<button onClick={()=>void cancelJob(active).catch(e=>setError(e.message))} className="t-micro text-gray-500">Cancel</button>}{busy&&<Loader2 size={12} className="animate-spin text-gray-500"/>}{result ? <><button onClick={redo} disabled={busy} className="flex h-8 items-center gap-1.5 rounded-lg border border-white/10 px-3 t-control text-gray-300 hover:bg-white/5 disabled:opacity-40"><RotateCcw size={11}/>Try again</button>{index<preset.steps.length-1?<button onClick={next} className="flex h-8 items-center gap-2 rounded-lg bg-white/90 px-3 t-control font-medium text-black">Next step<ChevronRight size={12}/></button>:<button onClick={onClose} className="h-8 rounded-lg bg-white/90 px-3 t-control font-medium text-black">Done</button>}</>:<><span aria-live="polite" className="t-control text-gray-400">{quote!==null&&quotedKey===priceKey?`${quote.toLocaleString('en-US')} credits`:estimate!==null?`≈ ${estimate.toLocaleString('en-US')} credits`:'Upload media to calculate price'}{quoting&&<span className="ml-2 text-gray-500">Checking…</span>}{runtime&&!active&&<span className="ml-2 text-gray-500">· {humanRuntime(runtime.seconds)}</span>}</span><button disabled={busy||quoting||quote===null||quotedKey!==priceKey} onClick={()=>void generate()} className="flex h-8 items-center gap-2 rounded-lg bg-lu-accent px-4 t-control font-medium text-gray-950 hover:bg-lu-accent-hover disabled:opacity-40">Generate<ArrowUp size={12}/></button></>}</div>
+          <div className="flex items-center gap-3">{active&&<button onClick={()=>void cancelJob(active).catch(e=>setError(e.message))} className="t-micro text-gray-500">Cancel</button>}{busy&&<Loader2 size={12} className="animate-spin text-gray-500"/>}{result ? <><button onClick={redo} disabled={busy} className="flex h-8 items-center gap-1.5 rounded-lg border border-white/10 px-3 t-control text-gray-300 hover:bg-white/5 disabled:opacity-40"><RotateCcw size={11}/>Try again</button>{index<preset.steps.length-1?<button onClick={next} className="flex h-8 items-center gap-2 rounded-lg bg-white/90 px-3 t-control font-medium text-black">Next step<ChevronRight size={12}/></button>:<button onClick={onClose} className="h-8 rounded-lg bg-white/90 px-3 t-control font-medium text-black">Done</button>}</>:<><span aria-live="polite" className="t-control text-gray-400">{priceUsable&&quote!==null?`${quote.toLocaleString('en-US')} credits`:estimate!==null?`≈ ${estimate.toLocaleString('en-US')} credits`:'Upload media to calculate price'}{quoting&&<span className="ml-2 text-gray-500">Checking…</span>}{runtime&&!active&&<span className="ml-2 text-gray-500">· {humanRuntime(runtime.seconds)}</span>}</span><button disabled={busy||quoting||!priceUsable} onClick={()=>void generate()} className="flex h-8 items-center gap-2 rounded-lg bg-lu-accent px-4 t-control font-medium text-gray-950 hover:bg-lu-accent-hover disabled:opacity-40">Generate<ArrowUp size={12}/></button></>}</div>
         </div>
       </div>
       {modelHint(step.model)&&!result&&<p className="mt-1.5 text-center t-micro leading-4 text-gray-500">{modelHint(step.model)}</p>}

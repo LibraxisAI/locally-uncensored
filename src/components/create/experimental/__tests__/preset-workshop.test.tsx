@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { useState } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { PresetWorkshop } from '../PresetWorkshop'
 import { PresetShelf } from '../PresetShelf'
 import { Modal } from '../../../ui/Modal'
@@ -109,14 +109,68 @@ beforeEach(() => {
     credits: studioPreviewCredits(model, params.studio_options ?? {}, undefined, 1, prompt.length),
   }))
 })
-afterEach(() => { cleanup(); useCloudCatalogStore.setState({ models: CLOUD_MODEL_SEED }) })
+afterEach(() => { cleanup(); vi.useRealTimers(); useCloudCatalogStore.setState({ models: CLOUD_MODEL_SEED }) })
+
+// Review B5 (Runde 4, 20.09.2026): PresetWorkshop fired one studioQuote()
+// call per keystroke (48 of 48 for a 48-character prompt), the same disease
+// B4 (Runde 3) found and fixed in the Composer's useStudioPrice.ts, reusing
+// its debounce helper (useDebouncedValue.ts). Mirrors
+// use-studio-price-rate-limit.test.ts's shape, on the actual component
+// instead of the hook.
+it('48 keystrokes at a 600 ms pace debounce down to at most TWO quote calls (Review B5)', async () => {
+  vi.useFakeTimers()
+  render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
+  const field = screen.getByLabelText('Preset prompt')
+  const text = 'a slow typist writes one letter at a time, thinking'.slice(0, 48)
+  expect(text).toHaveLength(48)
+  let typed = ''
+  for (const ch of text) {
+    typed += ch
+    fireEvent.change(field, { target: { value: typed } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+  }
+  // The customer stops: 1800ms settles the prompt debounce, then the
+  // effect's own 650ms network debounce fires the (at most) second call.
+  await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(650) })
+  expect(mocks.quote.mock.calls.length).toBeLessThanOrEqual(2)
+})
+
+// Review B5: a 429 on the LIVE quote (rate limit, not a version gap) must
+// not lock Generate. The last CONFIRMED price stays usable and bookable
+// while the rate limit stands; a 404/CORS version gap still blocks, that
+// case is covered separately above ("Start bleibt gesperrt...").
+it('a 429 on the live quote leaves Generate usable with the last confirmed price (Review B5)', async () => {
+  vi.useFakeTimers()
+  mocks.quote.mockResolvedValueOnce({ credits: 1500 })
+  render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
+  fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
+  await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(650) })
+  expect(screen.getAllByText(/1,500 credits/).length).toBeGreaterThan(0)
+  expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false)
+
+  mocks.quote.mockRejectedValueOnce(new CloudJobError('Please wait before requesting another quote', 429))
+  fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature, closer up' } })
+  await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(650) })
+  // Still the old, confirmed number, still bookable: no alert, no lock.
+  expect(screen.getAllByText(/1,500 credits/).length).toBeGreaterThan(0)
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+  await act(async () => { await Promise.resolve() })
+  expect(mocks.submit).toHaveBeenCalledTimes(1)
+  expect(mocks.submit.mock.calls[0][0]).toMatchObject({ params: { max_credits: 1500 } })
+})
 
 it('prices automatically and starts the category with one Generate click', async () => {
   const onGenerate = vi.fn()
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={onGenerate} />)
   expect(screen.queryByText('Review price')).toBeNull()
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'A misty forest creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   expect(screen.getAllByText(/1,500 credits/).length).toBeGreaterThan(0)
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1))
@@ -128,7 +182,7 @@ it('prices automatically and starts the category with one Generate click', async
 it('invalidates the prior quote when the prompt is cleared', async () => {
   render(<PresetWorkshop preset={CREATE_PRESETS[0]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'A character portrait' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: '' } })
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(true)
 })
@@ -196,7 +250,7 @@ it('re-quotes the server price when the duration changes, and books the new one'
   render(<PresetWorkshop preset={{ id: 'wan-3.0', title: m.label, summary: '', category: 'Video', adult: false, accent: '', steps: [{ model: 'wan-3.0', kind: 'video', op: 'studio', title: m.label, role: 'animate' }] }} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'A slow pan across the valley' } })
   fireEvent.change(screen.getByLabelText('Add image'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } })
-  await waitFor(() => expect(screen.getByText('25,000 credits')).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByText('25,000 credits')).toBeTruthy(), { timeout: 3000 })
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false)
 
   fireEvent.change(screen.getByLabelText('Duration'), { target: { value: '10' } })
@@ -205,7 +259,7 @@ it('re-quotes the server price when the duration changes, and books the new one'
   expect(screen.queryByText('25,000 credits')).toBeNull()
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(true)
 
-  await waitFor(() => expect(screen.getByText('50,000 credits')).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByText('50,000 credits')).toBeTruthy(), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1))
   expect(mocks.submit.mock.calls[0][0]).toMatchObject({ model: 'wan-3.0', params: { max_credits: 50000, studio_options: { duration: 10 } } })
@@ -243,12 +297,12 @@ it('laesst den Kunden das Modell des Schrittes wechseln und bucht das gewechselt
   expect(namen.filter((n) => n === 'Chroma Spicy')).toHaveLength(1)
 
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a portrait in warm light' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   const anbieterfragenVorher = mocks.quote.mock.calls.length
   waehlen('Model', 'Flux Schnell (fast)')
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(true)
 
-  await waitFor(() => expect(screen.getByText('300 credits')).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByText('300 credits')).toBeTruthy(), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1))
   expect(mocks.submit.mock.calls[0][0]).toMatchObject({ model: 'flux-schnell', kind: 'image', params: { op: 'generate', max_credits: 300, width: 1024, height: 1024 } })
@@ -262,9 +316,9 @@ it('schickt beim klassischen Clip Frames und Fps und nicht duration', async () =
   waehlen('Model', 'Wan 2.2 720p')
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a slow pan across the valley' } })
   fireEvent.change(screen.getByLabelText('Add image'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.change(screen.getByLabelText('Duration'), { target: { value: '8' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1))
   const sent = mocks.submit.mock.calls[0][0]
@@ -279,9 +333,9 @@ it('wirft das Ergebnis eines Schrittes auf Wunsch weg und faengt ganz von vorn a
   mocks.poll.mockResolvedValue({ id: 'test-job', status: 'succeeded', kind: 'image', result_url: 'https://example.test/a.png', model: 'preset-chroma', prompt: 'a' })
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  await waitFor(() => expect(screen.getByAltText('Generated result')).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByAltText('Generated result')).toBeTruthy(), { timeout: 3000 })
 
   // Nochmal: dasselbe Ergebnis weg, Prompt und Eingaben bleiben stehen.
   fireEvent.click(screen.getByRole('button', { name: /Try again/ }))
@@ -311,9 +365,9 @@ it('bleibt waehrend der Generation offen und meldet den Start nur', async () => 
   mocks.poll.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 80)); return { id: 'test-job', status: 'succeeded', kind: 'image', result_url: 'https://example.test/a.png', model: 'preset-chroma', prompt: 'a' } })
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => { offen = false }} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  await waitFor(() => expect(screen.getByAltText('Generated result')).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByAltText('Generated result')).toBeTruthy(), { timeout: 3000 })
   expect(offen).toBe(true)
 })
 
@@ -341,7 +395,7 @@ it('zeigt das hochgeladene Bild im Viewer statt der Preset-Illustration', async 
   render(<PresetWorkshop preset={CREATE_PRESETS[4]} onClose={() => {}} onGenerate={() => {}} />)
   expect(screen.getByAltText('Preset inspiration')).toBeTruthy()
   fireEvent.change(screen.getByLabelText('Add image'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } })
-  await waitFor(() => expect(screen.getByAltText('Your input')).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByAltText('Your input')).toBeTruthy(), { timeout: 3000 })
   expect(screen.queryByAltText('Preset inspiration')).toBeNull()
   expect((screen.getByAltText('Your input') as HTMLImageElement).src).toBe('blob:test-0')
 
@@ -365,12 +419,12 @@ it('traegt das Ergebnis eines Schrittes von selbst in die Eingabe des naechsten'
   }))
   render(<PresetWorkshop preset={CREATE_PRESETS[6]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'hello there' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  await waitFor(() => expect(screen.getByRole('button', { name: /Next step/ })).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByRole('button', { name: /Next step/ })).toBeTruthy(), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: /Next step/ }))
   // Schritt 2 laedt die Stimme selbst hoch und meldet die Eingabe als gesetzt.
-  await waitFor(() => expect(screen.getByText(/Replace audio/)).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByText(/Replace audio/)).toBeTruthy(), { timeout: 3000 })
   expect(mocks.upload).toHaveBeenCalledTimes(1)
   expect(mocks.upload.mock.calls[0][1]).toBe('audio')
 })
@@ -387,11 +441,11 @@ it('traegt auch ein Bild von selbst in den naechsten Schritt', async () => {
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   expect(CREATE_PRESETS[1].steps[1].model).toBe('open-video')
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a tall pale creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  await waitFor(() => expect(screen.getByRole('button', { name: /Next step/ })).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByRole('button', { name: /Next step/ })).toBeTruthy(), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: /Next step/ }))
-  await waitFor(() => expect(screen.getByText(/Replace image/)).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByText(/Replace image/)).toBeTruthy(), { timeout: 3000 })
   expect(mocks.upload).toHaveBeenCalledTimes(1)
   expect(mocks.upload.mock.calls[0][1]).toBe('source')
   await waitFor(() => expect(screen.getByAltText('Your input')).toBeTruthy())
@@ -406,11 +460,11 @@ it('zeigt keinen Knopf fuer das vorige Ergebnis und haelt Optionales aus dem Weg
   }))
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a tall pale creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  await waitFor(() => expect(screen.getByRole('button', { name: /Next step/ })).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByRole('button', { name: /Next step/ })).toBeTruthy(), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: /Next step/ }))
-  await waitFor(() => expect(screen.getByText(/Replace image/)).toBeTruthy(), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByText(/Replace image/)).toBeTruthy(), { timeout: 3000 })
   expect(screen.queryByRole('button', { name: 'Use previous result' })).toBeNull()
   expect(screen.getByText(/Replace image/)).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Remove input' })).toBeTruthy()
@@ -434,7 +488,7 @@ it('Start bleibt gesperrt und zeigt den festen Text, wenn der Server das Studio 
   mocks.quote.mockRejectedValue(new CloudJobError('This feature needs a newer LU Cloud server. Try again later.', 404))
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This feature needs a newer LU Cloud server. Try again later.'), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This feature needs a newer LU Cloud server. Try again later.'), { timeout: 3000 })
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(true)
   expect(mocks.submit).not.toHaveBeenCalled()
 })
@@ -448,9 +502,9 @@ it('zeigt bei 409 quote_changed den neuen Preis, statt still neu zu buchen', asy
   mocks.submit.mockRejectedValueOnce(new QuoteChangedError('The price has changed.', 4200))
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('4,200 credits'), { timeout: 2000 })
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('4,200 credits'), { timeout: 3000 })
   expect(screen.getAllByText(/4,200 credits/).length).toBeGreaterThan(0)
   expect(mocks.submit).toHaveBeenCalledTimes(1)
   // Der Knopf ist wieder bedienbar, gegen den NEUEN Preis: ein zweiter,
@@ -476,7 +530,7 @@ it('schickt bei einem Wiederholungsversuch ohne neue Quote denselben client_requ
   mocks.submit.mockRejectedValueOnce(new Error('network blip'))
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1))
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
@@ -495,7 +549,7 @@ it('zeigt bei 409 quote_changed auf die Preisabfrage selbst ebenfalls den neuen 
   mocks.quote.mockRejectedValueOnce(new StudioQuoteChangedError('The price has changed.', 900))
   render(<PresetWorkshop preset={CREATE_PRESETS[1]} onClose={() => {}} onGenerate={() => {}} />)
   fireEvent.change(screen.getByLabelText('Preset prompt'), { target: { value: 'a misty forest creature' } })
-  await waitFor(() => expect(screen.getAllByText(/900 credits/).length).toBeGreaterThan(0), { timeout: 2000 })
+  await waitFor(() => expect(screen.getAllByText(/900 credits/).length).toBeGreaterThan(0), { timeout: 3000 })
   expect(screen.getByRole('alert').textContent).toBe('The price changed. Review the new price before starting.')
   expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(false)
   expect(mocks.submit).not.toHaveBeenCalled()

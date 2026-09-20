@@ -39,6 +39,7 @@ import { createStudioCost, pricesByInput } from '../../../lib/render/create-stud
 import { studioQuote } from '../../../api/cloud/studio'
 import { StudioQuoteChangedError } from '../../../api/cloud/studio'
 import { CloudJobError } from '../../../api/cloud/client'
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
 
 /** Laenge einer Ton- oder Bildspur, im Browser gemessen. */
 export function mediaSeconds(url: string, kind: 'audio' | 'video'): Promise<number | undefined> {
@@ -81,7 +82,13 @@ export interface StudioPrice {
 // only updates 1800ms after the prompt stops changing, so continuous typing
 // (even a slow, sustained 600ms/char rhythm with no individual gap that
 // long) never touches `key` until the customer actually stops.
-const PROMPT_DEBOUNCE_MS = 1800
+//
+// Review B5 (Runde 4, 20.09.2026): the debounce itself lives in
+// useDebouncedValue.ts now, shared with PresetWorkshop.tsx's `priceKey`
+// (the same disease, measured there too, see that file), one function
+// instead of two copies that could drift apart. Exported so the Workshop
+// uses the SAME constant, not a second guess at the right number.
+export const PROMPT_DEBOUNCE_MS = 1800
 
 export function useStudioPrice(
   model: string | undefined,
@@ -92,11 +99,7 @@ export function useStudioPrice(
   const [live, setLive] = useState<{ key: string; credits: number } | null>(null)
   const [error, setError] = useState<{ key: string; message: string } | null>(null)
   const abort = useRef<AbortController | null>(null)
-  const [debouncedPromptLen, setDebouncedPromptLen] = useState(prompt.length)
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedPromptLen(prompt.length), PROMPT_DEBOUNCE_MS)
-    return () => clearTimeout(t)
-  }, [prompt.length])
+  const debouncedPromptLen = useDebouncedValue(prompt.length, PROMPT_DEBOUNCE_MS)
   const key = model ? JSON.stringify([model, options, debouncedPromptLen, seconds]) : ''
 
   useEffect(() => {
