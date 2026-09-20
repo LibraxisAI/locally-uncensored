@@ -642,10 +642,92 @@ pub fn repair_comfyui_env(state: State<'_, AppState>) -> Result<serde_json::Valu
     Ok(serde_json::json!({"status": "installing"}))
 }
 
+/// What the customer is told when Update finds a ComfyUI on the configured
+/// port that this app never started: not the tracked child from this run,
+/// and not an earlier one it can still identify as its own (T-68's
+/// `find_orphaned_comfyui`). Pulled out so the wording used to refuse the
+/// update and the wording a test checks for cannot drift apart.
+fn foreign_comfyui_blocks_update(port: u16) -> String {
+    format!(
+        "ComfyUI is running on port {port}, but this app did not start it. Close that ComfyUI \
+         first, then run Update ComfyUI again. Nothing was changed."
+    )
+}
+
+/// Stop whatever ComfyUI this app itself is responsible for before Update
+/// touches the checkout, and refuse outright if the port is held by anything
+/// else.
+///
+/// Three shapes, the same ones Stop (`stop_comfyui_blocking`) already tells
+/// apart:
+/// * a live tracked child from this run, killed and reaped, same as Stop;
+/// * an orphan on the configured port this app started in an earlier run and
+///   lost the handle to (`find_orphaned_comfyui`), adopted and killed, same
+///   as Stop;
+/// * anything else answering on the port, left running, with the update
+///   refused instead.
+///
+/// Remote hosts are not this function's concern: `comfyui_status` never
+/// offers the Update button once `isLocal` is false, and this app manages no
+/// process there either way.
+fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), String> {
+    let host = state.comfy_host.lock().unwrap().clone();
+    if !crate::commands::process::is_local_host(&host) {
+        return Ok(());
+    }
+    let port = *state.comfy_port.lock().unwrap();
+
+    // Our own tracked child, if this run's Start ever produced one and it is
+    // still alive. `try_wait` also reaps a child that already exited on its
+    // own, so this never lingers on a stale handle.
+    let own_child_alive = {
+        let mut proc = state.comfy_process.lock().unwrap();
+        match proc.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(None) => true,
+                Ok(Some(_)) => {
+                    *proc = None;
+                    false
+                }
+                Err(_) => true,
+            },
+            None => false,
+        }
+    };
+    if own_child_alive {
+        let mut proc = state.comfy_process.lock().unwrap();
+        if let Some(mut child) = proc.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        drop(proc);
+        *state.comfy_start_at.lock().unwrap() = None;
+        info!(port = port, "update_comfyui stopped its own tracked ComfyUI before updating");
+        return Ok(());
+    }
+
+    if !crate::commands::process::is_comfyui_running_on_port(port) {
+        return Ok(());
+    }
+    match crate::commands::process::find_orphaned_comfyui(port) {
+        Some(pid) => {
+            println!("[Update] Adopting orphan pid {pid} on port {port} and stopping it before updating");
+            info!(pid = pid, port = port, "update_comfyui adopted and stopped an orphaned ComfyUI");
+            crate::process_util::kill_pid_tree(pid);
+            *state.comfy_start_at.lock().unwrap() = None;
+            Ok(())
+        }
+        None => {
+            println!("[Update] Refusing: port {port} is served by a ComfyUI this app did not start");
+            Err(foreign_comfyui_blocks_update(port))
+        }
+    }
+}
+
 /// Update an existing ComfyUI install in place: `git pull --ff-only` plus a
 /// venv-aware `pip install -r requirements.txt`. The 2.5.8 local Create lanes
 /// (music / talking character / extend / motion) need node classes that ship
-/// with current ComfyUI cores, and the UI gates on node PRESENCE — when the
+/// with current ComfyUI cores, and the UI gates on node PRESENCE, so when the
 /// nodes are missing this command is the one-click "Update ComfyUI" path.
 /// Progress streams through the same `install_status` channel the installer
 /// uses, so the existing `install_comfyui_status` polling UI works unchanged.
@@ -660,6 +742,21 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         Err(ComfyJob::Update) => return Ok(serde_json::json!({"status": "already_installing"})),
         Err(running) => return Err(comfy_job_busy_message(ComfyJob::Update, running)),
     };
+
+    // box-gruen/n9 Punkt 87 (ENG-18): the button used to start "Installing
+    // ComfyUI…" with no lock at all, even with a ComfyUI already serving the
+    // configured port, be that the app's own or a copy started outside LU.
+    // A Cancel taken 1-2 seconds later left a real Windows box with a pulled
+    // core and a venv that never finished, `ModuleNotFoundError: No module
+    // named 'comfy_aimdo.storage'` on the next start.
+    //
+    // Same split Stop already draws (`find_orphaned_comfyui`, T-68): a
+    // process LU itself started, whether the tracked child from this run or
+    // one it started in an earlier run and lost the handle to, is stopped
+    // cleanly here before anything touches the checkout. A process this app
+    // never launched is left alone; the update is refused instead.
+    ensure_comfyui_stopped_for_update(&state)?;
+
     {
         let mut install = state.install_status.lock().unwrap();
         install.status = "installing".to_string();
@@ -782,6 +879,52 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
             }
         }
 
+        // box-gruen/n9 Punkt 87 (ENG-18 Nebenfund): the real damage on the
+        // Windows box was not the missing lock above, it was what a Cancel
+        // taken 1-2 seconds after the click left behind. `git pull` had
+        // already moved HEAD to a newer ComfyUI, and the pip step that new
+        // core needs never got to run, so the next start died on an import
+        // the old venv had no reason to carry. `old_commit` is where a
+        // cancel or a hard failure below rolls the checkout back to, so a
+        // half-finished update never outlives the run that started it.
+        //
+        // Recorded only when the tree is clean: `git reset --hard` on a
+        // dirty checkout would erase whatever the customer changed by hand,
+        // and that is worse than refusing the update outright and saying
+        // why, so a dirty tree never gets this far.
+        let old_commit = match git_working_tree_clean(&comfy_dir) {
+            Ok(true) => match git_current_commit(&comfy_dir) {
+                Ok(commit) => commit,
+                Err(e) => {
+                    update(
+                        "error",
+                        &format!(
+                            "Could not read the current ComfyUI version, so a failed or cancelled \
+                             update could not be rolled back safely. Nothing was changed.\n\n{}",
+                            e
+                        ),
+                    );
+                    return;
+                }
+            },
+            Ok(false) => {
+                update(
+                    "error",
+                    "The ComfyUI folder has local changes, so a failed or cancelled update could \
+                     not be rolled back safely without erasing them. Commit or discard those \
+                     changes, then retry. Nothing was changed.",
+                );
+                return;
+            }
+            Err(e) => {
+                update(
+                    "error",
+                    &format!("Could not check the ComfyUI folder for local changes. Nothing was changed.\n\n{}", e),
+                );
+                return;
+            }
+        };
+
         update("installing", "Step 1/3: Pulling the latest ComfyUI...");
         let mut pull = crate::process_util::foreign_system_command("git");
         // --ff-only: a user-modified checkout must not silently merge; surface
@@ -853,7 +996,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
             ) {
                 Ok(()) => update("installing", "Dependencies updated."),
                 Err(f) if f.diagnosis == "cancelled" => {
-                    update("cancelled", "Update cancelled during the requirements install.");
+                    update("cancelled", &rollback_after_cancelled_update(&comfy_dir, &old_commit, "the requirements install"));
                     return;
                 }
                 Err(f) => {
@@ -879,7 +1022,7 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         update("installing", "Step 3/3: Checking that the environment really starts...");
         if let Err(e) = verify_and_heal_environment(&python_bin, &comfy_dir, &reqs, &install_status, Some(&cancel_flag)) {
             if e == "cancelled" {
-                update("cancelled", "Update cancelled during the environment check.");
+                update("cancelled", &rollback_after_cancelled_update(&comfy_dir, &old_commit, "the environment check"));
                 return;
             }
             error!("comfyui update left an environment that does not import");
@@ -905,6 +1048,105 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
     Ok(serde_json::json!({"status": "installing"}))
 }
 
+/// Whether `dir`'s working tree has nothing to lose: no staged or unstaged
+/// changes and no untracked files, i.e. `git status --porcelain` prints
+/// nothing. `update_comfyui` records a rollback point (`git_current_commit`)
+/// and pulls only when this is true: a `git reset --hard` after a cancelled
+/// or failed dependency install would otherwise erase whatever the customer
+/// changed by hand inside the checkout, which is worse than refusing the
+/// update outright.
+fn git_working_tree_clean(dir: &Path) -> Result<bool, String> {
+    let mut cmd = crate::process_util::foreign_system_command("git");
+    cmd.args(["status", "--porcelain"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| os_error::english(&e))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(out.stdout.iter().all(u8::is_ascii_whitespace))
+}
+
+/// The commit `dir` is on right now, as `git rev-parse HEAD` reports it.
+fn git_current_commit(dir: &Path) -> Result<String, String> {
+    let mut cmd = crate::process_util::foreign_system_command("git");
+    cmd.args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| os_error::english(&e))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if commit.is_empty() {
+        return Err("git rev-parse HEAD printed nothing".to_string());
+    }
+    Ok(commit)
+}
+
+/// Move `dir` back to `commit` with `git reset --hard`.
+///
+/// Only ever called from `update_comfyui`, and only on a checkout
+/// `git_working_tree_clean` found clean right before the pull that moved it
+/// away from `commit`: a hard reset otherwise destroys uncommitted work,
+/// which is exactly what recording the commit only on a clean tree exists to
+/// prevent.
+fn git_reset_hard(dir: &Path, commit: &str) -> Result<(), String> {
+    let mut cmd = crate::process_util::foreign_system_command("git");
+    cmd.args(["reset", "--hard", commit])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| os_error::english(&e))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// The first 8 characters of a commit hash, for a message a customer might
+/// actually read. Falls back to the whole string if it is somehow shorter.
+fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(8)]
+}
+
+/// What Update tells the customer once a cancel has landed at `stage`,
+/// AFTER `git pull` already moved the checkout past `old_commit`.
+///
+/// Rolls the checkout back so a cancelled update never leaves a newer
+/// ComfyUI core wired to an older or half-installed venv, the exact shape
+/// of the real damage box-gruen/n9 punkt 87 found on a Windows box
+/// (`ModuleNotFoundError: No module named 'comfy_aimdo.storage'` after a
+/// Cancel taken 1-2 seconds into the run). Packages pip already installed or
+/// upgraded before the cancel took effect cannot be un-installed by moving
+/// the code back, so the message says that honestly instead of promising a
+/// clean rollback.
+fn rollback_after_cancelled_update(comfy_dir: &Path, old_commit: &str, stage: &str) -> String {
+    match git_reset_hard(comfy_dir, old_commit) {
+        Ok(()) => format!(
+            "Update cancelled during {stage}. The ComfyUI code was rolled back to the version \
+             from before the update ({short}). Some packages may already have been installed or \
+             upgraded before the cancel took effect, so they could be slightly ahead of that \
+             code; if ComfyUI does not start, run Update ComfyUI again to finish it, or Repair \
+             environment to rebuild the packages from scratch.",
+            short = short_commit(old_commit),
+        ),
+        Err(e) => format!(
+            "Update cancelled during {stage}, and the code could not be rolled back automatically \
+             ({e}). ComfyUI's code and its installed packages may now be out of step; run Update \
+             ComfyUI again to finish it, or Repair environment to rebuild the packages from \
+             scratch.",
+        ),
+    }
+}
 
 /// What Repair says about a folder with no requirements.txt.
 ///
@@ -1189,5 +1431,159 @@ mod tests {
         let at_pull = src[update_fn_start..].find(&pull_start).map(|i| i + update_fn_start).expect("the git pull step marker is gone");
 
         assert!(at_preflight < at_pull, "the interpreter preflight must run before git pull touches the checkout");
+    }
+
+    // ── box-gruen/n9 Punkt 87 (ENG-18): the running-instance lock, and the
+    //    "no half state" rollback for a cancel between pull and pip ─────────
+
+    /// Builds a throwaway git repo with one commit, `HEAD~1`'s file content
+    /// `"a"` and `HEAD`'s `"b"`, and returns `(tempdir, dir, commit_a,
+    /// commit_b)`. Real `git`, no mocking: the rollback this guards
+    /// (`git reset --hard` after a cancelled update) is exactly the kind of
+    /// thing a source-only needle test cannot prove.
+    fn two_commit_repo() -> (tempfile::TempDir, PathBuf, String, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ComfyUI");
+        std::fs::create_dir(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("requirements.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "a"]);
+        let commit_a = git_current_commit(&dir).unwrap();
+        std::fs::write(dir.join("requirements.txt"), "b\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "b"]);
+        let commit_b = git_current_commit(&dir).unwrap();
+        (tmp, dir, commit_a, commit_b)
+    }
+
+    #[test]
+    fn git_working_tree_clean_tells_a_clean_checkout_from_a_dirty_one() {
+        let (_tmp, dir, _a, _b) = two_commit_repo();
+        assert!(git_working_tree_clean(&dir).expect("status failed"), "a freshly committed checkout is not clean");
+
+        // An untracked file counts as dirty: it is exactly what a hard reset
+        // would erase.
+        std::fs::write(dir.join("a_new_file.txt"), "custom node config").unwrap();
+        assert!(!git_working_tree_clean(&dir).expect("status failed"), "an untracked file was not seen as a local change");
+
+        // Negative control the other way: removing it restores clean.
+        std::fs::remove_file(dir.join("a_new_file.txt")).unwrap();
+        assert!(git_working_tree_clean(&dir).expect("status failed"), "clean again after the untracked file is gone");
+    }
+
+    #[test]
+    fn git_current_commit_and_reset_hard_round_trip_on_a_real_repo() {
+        let (_tmp, dir, commit_a, commit_b) = two_commit_repo();
+        assert_ne!(commit_a, commit_b);
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_b, "HEAD should be the newer commit before any reset");
+
+        git_reset_hard(&dir, &commit_a).expect("reset failed");
+
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_a, "reset did not move HEAD back");
+        let contents = std::fs::read_to_string(dir.join("requirements.txt")).unwrap();
+        assert_eq!(contents, "a\n", "the working tree still shows the newer commit's content after reset");
+        assert!(git_working_tree_clean(&dir).unwrap(), "a hard reset should leave a clean tree");
+    }
+
+    #[test]
+    fn rollback_after_cancelled_update_moves_head_back_and_says_packages_may_be_ahead() {
+        // This is the exact shape of the box-gruen/n9 punkt 87 damage: `git
+        // pull` (here, a plain commit) moved the checkout to commit_b, then a
+        // cancel landed mid-pip. `old_commit` is commit_a, recorded before
+        // the pull. The message must be honest that packages are not
+        // provably rolled back with it.
+        let (_tmp, dir, commit_a, commit_b) = two_commit_repo();
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_b);
+
+        let msg = rollback_after_cancelled_update(&dir, &commit_a, "the requirements install");
+
+        assert_eq!(git_current_commit(&dir).unwrap(), commit_a, "the checkout was not rolled back");
+        assert!(msg.contains("the requirements install"), "the stage is not named: {msg}");
+        assert!(msg.contains(short_commit(&commit_a)), "the commit the code fell back to is not named: {msg}");
+        assert!(msg.contains("may already have been installed"), "no honest caveat about packages: {msg}");
+    }
+
+    #[test]
+    fn rollback_after_cancelled_update_says_so_honestly_when_the_reset_itself_fails() {
+        // Negative control: point it at a directory that is not a git repo
+        // at all, so `git reset --hard` fails. The customer must not be told
+        // a rollback happened when it did not.
+        let tmp = tempfile::tempdir().unwrap();
+        let msg = rollback_after_cancelled_update(tmp.path(), "deadbeef", "the environment check");
+        assert!(msg.contains("could not be rolled back automatically"), "a failed reset must say so: {msg}");
+        assert!(!msg.contains("was rolled back to the version"), "a failed reset must not claim success: {msg}");
+    }
+
+    #[test]
+    fn update_records_the_rollback_commit_only_on_a_clean_tree_and_only_before_the_pull() {
+        // Same reasoning as the precheck-ordering tests above: the update
+        // body is a thread inside a Tauri command, so the ORDER is read out
+        // of the source. `old_commit` has to exist before `git pull` runs,
+        // or a cancel during pip has nothing safe to fall back to.
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let clean_check = needle("match git_working_tree_cl", "ean(&comfy_dir) {");
+        let pull_start = needle("Pulling the latest Comfy", "UI...");
+        let cancelled_pip = needle("rollback_after_cancelled_update(&comfy_d", "ir, &old_commit, \"the requirements install\")");
+        let cancelled_verify = needle("rollback_after_cancelled_update(&comfy_d", "ir, &old_commit, \"the environment check\")");
+
+        let at_clean_check = src[update_fn_start..].find(&clean_check).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer checks the working tree before pulling");
+        let at_pull = src[update_fn_start..].find(&pull_start).map(|i| i + update_fn_start)
+            .expect("the git pull step marker is gone");
+        let at_cancelled_pip = src[update_fn_start..].find(&cancelled_pip).map(|i| i + update_fn_start)
+            .expect("a cancel during the requirements install no longer rolls the checkout back");
+        let at_cancelled_verify = src[update_fn_start..].find(&cancelled_verify).map(|i| i + update_fn_start)
+            .expect("a cancel during the environment check no longer rolls the checkout back");
+
+        assert!(at_clean_check < at_pull, "the working tree must be checked, and old_commit recorded, before the pull");
+        assert!(at_pull < at_cancelled_pip, "the rollback call must be after the pull it is rolling back");
+        assert!(at_pull < at_cancelled_verify, "the rollback call must be after the pull it is rolling back");
+    }
+
+    #[test]
+    fn update_stops_its_own_or_orphaned_comfyui_before_acquiring_the_status_slot() {
+        // Same shape once more: prove from the source that the running-
+        // instance guard runs before `update_comfyui` starts writing to
+        // `install_status`, i.e. before it commits to the run at all. A
+        // guard placed after that point could refuse having already told
+        // the panel an update was starting.
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let guard_call = needle("ensure_comfyui_stopped_for_upd", "ate(&state)?;");
+        let installing_status = needle("install.status = \"instal", "ling\".to_string();");
+
+        let at_guard = src[update_fn_start..].find(&guard_call).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer guards against a running ComfyUI");
+        let at_installing = src[update_fn_start..].find(&installing_status).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer marks the status slot as installing");
+
+        assert!(at_guard < at_installing, "the running-instance guard must run before the status slot is claimed");
+    }
+
+    #[test]
+    fn foreign_comfyui_message_names_the_port_and_refuses_without_a_close_command() {
+        let msg = foreign_comfyui_blocks_update(8188);
+        assert!(msg.contains("8188"), "the port is not named: {msg}");
+        assert!(msg.contains("did not start it"), "does not say the app never started it: {msg}");
+        assert!(msg.contains("Close that ComfyUI first"), "does not tell the customer what to do: {msg}");
+        assert!(msg.contains("Nothing was changed"), "does not say nothing was touched: {msg}");
     }
 }

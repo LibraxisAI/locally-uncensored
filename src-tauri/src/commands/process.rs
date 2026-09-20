@@ -1203,7 +1203,7 @@ fn walk_for_comfyui<F: FnMut(PathBuf)>(dir: &Path, depth: i32, cb: &mut F) {
     }
 }
 
-fn is_comfyui_running_on_port(port: u16) -> bool {
+pub(crate) fn is_comfyui_running_on_port(port: u16) -> bool {
     reqwest::blocking::get(format!("http://localhost:{}/system_stats", port))
         .map(|r| r.status().is_success())
         .unwrap_or(false)

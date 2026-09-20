@@ -24,6 +24,7 @@ import { downloadSuffix } from '../../lib/formatters'
 // Augenblick braucht, in dem ein Start gescheitert ist: eine Meldung darf
 // nicht erst darauf warten, dass ein Stueck Programm nachgeladen wird.
 import { comfyStartupError, comfyCrashAdvice, comfyStartThrowText, COMFY_START_FAILED } from '../create/experimental/comfyError'
+import { Modal } from '../ui/Modal'
 
 // AS-09: PIPER_VOICES und CLOUD_TTS_VOICES sind mit dem Abschnitt, der sie
 // benutzt, nach ./SpeechSettings.tsx gezogen.
@@ -716,6 +717,12 @@ interface ComfyStatusResponse {
   port?: number
   host?: string
   isLocal?: boolean
+  /** T-68/ENG-18: true only while THIS app holds a live child process handle
+   *  for ComfyUI. `running` alone cannot tell an instance LU started from
+   *  one merely answering on the configured port, and box-gruen/n9 punkt 87
+   *  found real damage in that gap: a foreign ComfyUI read as plain
+   *  "Running", and "Update ComfyUI" started on it with no warning. */
+  processAlive?: boolean
 }
 
 /** Antwort von `comfyui_last_output` (`process.rs`). Alle vier Schluessel
@@ -729,6 +736,52 @@ interface ComfyLastOutput {
    *  hat (Ticket 007). Er sticht den allgemeinen Reparatursatz, siehe
    *  `comfyCrashAdvice`. */
   hint: string
+}
+
+/** box-gruen/n9 Punkt 87 (ENG-18): "Update ComfyUI" used to start
+ *  "Installing ComfyUI…" the moment it was clicked, no question asked, even
+ *  with a live ComfyUI on the port -- the same shape as the Trainer's
+ *  reinstall dialog (`SpecialIntentControls.tsx`'s `TrainerReinstallModal`)
+ *  fixes for that button: a real Modal (X and Escape both close it, per the
+ *  house rule), plain English about what happens and what does not, the
+ *  folder named as read-only text, and the backend command is only ever
+ *  called from `onConfirm`. */
+function ComfyUpdateConfirmModal({
+  open,
+  onClose,
+  path,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  path: string
+  onConfirm: () => void
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title="Update ComfyUI?">
+      <div className="space-y-4 text-sm text-gray-200">
+        <p className="t-body leading-relaxed text-gray-300">
+          This pulls the latest ComfyUI and reinstalls its Python packages. It can take a few minutes, and ComfyUI must not be running while it happens.
+        </p>
+        {path && <p className="t-label text-gray-500 text-center">ComfyUI folder: {path}</p>}
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            onClick={onConfirm}
+            className="w-full px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-200 text-sm font-medium transition-colors"
+          >
+            Update
+          </button>
+          <button
+            onClick={onClose}
+            data-autofocus
+            className="w-full px-4 py-1.5 rounded-lg hover:bg-white/5 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 export function ComfyUISettings() {
@@ -749,6 +802,10 @@ export function ComfyUISettings() {
   const [customHost, setCustomHost] = useState('')
   const [hostError, setHostError] = useState('')
   const [hostSuccess, setHostSuccess] = useState(false)
+  // box-gruen/n9 Punkt 87 (ENG-18): the confirmation dialog for "Update
+  // ComfyUI". Closed by default; opened only by the button below, and the
+  // backend call itself only ever runs from the dialog's own Update button.
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false)
   // A13 (Windows counter-check 2026-09-02): install, update and repair used to
   // keep their phase, their log lines and their byte counters in this
   // component. Switching to another settings section threw all of it away
@@ -920,6 +977,27 @@ export function ComfyUISettings() {
     void useComfyInstallStore.getState().cancel()
   }
 
+  // box-gruen/n9 Punkt 87 (ENG-18): the button used to call runUpdate()
+  // directly and unconditionally. A ComfyUI this app never started answering
+  // on the port is caught here, before the dialog even opens, so the click
+  // reads as a plain message instead of a start-then-cancel round trip; the
+  // backend (`update_comfyui`) checks the same thing again and is the real
+  // gate (defense in depth), since the status here is only ever a mirror of
+  // the last 5 s poll.
+  const handleUpdateClick = () => {
+    if (status?.running && status?.processAlive === false) {
+      setStartError('A ComfyUI this app did not start is using this folder. Close that ComfyUI first, then try Update ComfyUI again.')
+      return
+    }
+    setUpdateConfirmOpen(true)
+  }
+
+  const handleConfirmUpdate = () => {
+    setUpdateConfirmOpen(false)
+    setStartError('')
+    void useComfyInstallStore.getState().runUpdate()
+  }
+
   const handleStop = async () => {
     setStartError('')
     // Ohne diese Zeile erfindet der Restart-Knopf einen Absturz: nach einem
@@ -975,7 +1053,15 @@ export function ComfyUISettings() {
               Zwischenfall aussehen lassen. */}
           <div className={`w-1.5 h-1.5 rounded-full ${status?.running ? PUNKT_FARBE.an : status?.stalled ? PUNKT_FARBE.kaputt : PUNKT_FARBE.aus}`} />
           <span className="text-[0.65rem] text-gray-500">
-            {status?.running ? 'Running'
+            {/* box-gruen/n9 Punkt 87 (ENG-18): "Running" alone does not say
+                WHOSE ComfyUI is on the port. `processAlive === false` while
+                `running` is true means the port answers but this app holds
+                no child handle for it -- a copy started outside LU, exactly
+                the shape a foreign "Update ComfyUI" click damaged for real
+                on a Windows box. Kept to the strict `=== false` check so a
+                path that simply never sends the field (undefined) still
+                reads as plain "Running", not a false alarm. */}
+            {status?.running ? (status?.processAlive === false ? 'Running (started outside LU)' : 'Running')
               : status?.stalled ? 'Not responding'
               : status?.starting ? 'Starting'
               : status?.found ? 'Stopped' : 'Not Installed'}
@@ -1163,7 +1249,7 @@ export function ComfyUISettings() {
           // the one-click git pull + dependency refresh the lane errors point
           // to. Reuses the installer's status channel and log panel.
           <button
-            onClick={() => { void useComfyInstallStore.getState().runUpdate() }}
+            onClick={handleUpdateClick}
             className="px-2 py-1 rounded text-[0.6rem] bg-white/5 text-gray-400 hover:text-gray-200 hover:bg-white/10 transition-colors"
           >
             Update ComfyUI
@@ -1257,6 +1343,12 @@ export function ComfyUISettings() {
         )}
       </div>
       )}
+      <ComfyUpdateConfirmModal
+        open={updateConfirmOpen}
+        onClose={() => setUpdateConfirmOpen(false)}
+        path={status?.path || ''}
+        onConfirm={handleConfirmUpdate}
+      />
     </div>
   )
 }
