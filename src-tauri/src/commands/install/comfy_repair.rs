@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use tauri::State;
+use tauri::{Manager, State};
 use tracing::{error, info};
 
 use crate::state::AppState;
@@ -867,8 +867,20 @@ fn ensure_comfyui_stopped_for_update(state: &State<'_, AppState>) -> Result<(), 
 /// nodes are missing this command is the one-click "Update ComfyUI" path.
 /// Progress streams through the same `install_status` channel the installer
 /// uses, so the existing `install_comfyui_status` polling UI works unchanged.
+// final review Runde 3, R3-1: this stays a plain, synchronous
+// `#[tauri::command]`, NOT `#[tauri::command(async)]`. The running-instance
+// guard below (`ensure_comfyui_stopped_for_update`) and the git/pip work
+// after it are all `reqwest::blocking`/`std::process::Command`, and running
+// those on a Tokio async worker panics (`lmstudio.rs:320`'s note on the same
+// trap); this repo has no `#[tauri::command(async)]` that calls
+// `reqwest::blocking`, and this function does not become the first. `app` is
+// only here so the worker thread below can re-resolve `AppState` for itself,
+// the same pattern `fix_comfyui_cors`/`cancel_character_training` use to
+// cross into `spawn_blocking`. See `ensure_comfyui_stopped_for_update_runs_
+// inside_the_worker_thread_not_on_the_main_thread` for the guard that pins
+// this.
 #[tauri::command]
-pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+pub fn update_comfyui(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     // OI-5: same lock as install and repair. This command's old guard was the
     // strictest of the three ("installing" OR "downloading"), which is exactly
     // why the inconsistency was invisible from here — it was the other two
@@ -879,101 +891,125 @@ pub fn update_comfyui(state: State<'_, AppState>) -> Result<serde_json::Value, S
         Err(running) => return Err(comfy_job_busy_message(ComfyJob::Update, running)),
     };
 
-    // box-gruen/n9 Punkt 87 (ENG-18): the button used to start "Installing
-    // ComfyUI…" with no lock at all, even with a ComfyUI already serving the
-    // configured port, be that the app's own or a copy started outside LU.
-    // A Cancel taken 1-2 seconds later left a real Windows box with a pulled
-    // core and a venv that never finished, `ModuleNotFoundError: No module
-    // named 'comfy_aimdo.storage'` on the next start.
-    //
-    // Same split Stop already draws (`find_orphaned_comfyui`, T-68): a
-    // process LU itself started, whether the tracked child from this run or
-    // one it started in an earlier run and lost the handle to, is stopped
-    // cleanly here before anything touches the checkout. A process this app
-    // never launched is left alone; the update is refused instead.
-    ensure_comfyui_stopped_for_update(&state)?;
-
-    {
-        let mut install = state.install_status.lock().unwrap();
-        install.status = "installing".to_string();
-        install.logs.clear();
-        install.notice.clear();
-        install.notice_kind.clear();
-        install.logs.push("Updating ComfyUI...".to_string());
-    }
-
-    info!("comfyui update start");
-
-    let comfy_dir = {
-        let p = state.comfy_path.lock().unwrap().clone();
-        p.or_else(crate::commands::process::find_comfyui_path)
-            .map(PathBuf::from)
-    };
-    let fail = |state: &State<'_, AppState>, msg: &str| -> Result<serde_json::Value, String> {
-        let mut install = state.install_status.lock().unwrap();
-        install.status = "error".to_string();
-        install.logs.push(msg.to_string());
-        error!("comfyui update aborted: {}", msg);
-        Err(msg.to_string())
-    };
-    let Some(comfy_dir) = comfy_dir else {
-        return fail(&state, "ComfyUI not found. Install ComfyUI first.");
-    };
-    if !comfy_dir.join(".git").exists() {
-        // Portable / zip installs carry no git metadata — nothing to pull.
-        return fail(
-            &state,
-            "This ComfyUI was not installed from git, so it can't be updated in place. \
-             Update it with its own updater, or reinstall from Settings.",
-        );
-    }
-
-    // Runde 6, F12: same reasoning as install_comfyui's call. Without this,
-    // an Update pressed after a Repair that crashed mid rebuild reads
-    // `comfy_venv_state` below as `Absent` (the retired `venv.lu-old-*`
-    // sibling is not named `venv`), falls back to the system Python, and
-    // never notices the several-gigabyte orphan sitting right next to it.
-    // A no-op once a usable `venv` already exists.
-    restore_orphaned_venv_if_needed(&comfy_dir);
-
-    // Prefer the install's venv Python (same preference the launcher uses);
-    // refuse without a usable interpreter — a pulled core with stale
-    // requirements is worse than no update (frontend package pins move often).
-    // P3: the same third answer the launcher has. Updating into the system
-    // Python while ComfyUI can only ever start out of this venv leaves the
-    // hole exactly where it was, one git pull further along.
-    let python_bin = match crate::python::comfy_venv_state(&comfy_dir) {
-        crate::python::ComfyVenv::Usable(p) => p,
-        crate::python::ComfyVenv::Broken { venv_dir, interpreter } => {
-            return fail(
-                &state,
-                &crate::commands::process::comfy_broken_venv_message(&venv_dir, &interpreter),
-            );
-        }
-        crate::python::ComfyVenv::Absent => state.python_bin.lock().unwrap().clone(),
-    };
-    if python_bin.is_empty() || !crate::python::is_real_python(&python_bin) {
-        return fail(
-            &state,
-            "No usable Python found for this ComfyUI. Install Python first, then retry the update.",
-        );
-    }
-
-    let install_status = state.install_status.clone();
     // The update runs through the same status slot, the same panel and the
     // same Cancel button as the install, so it gets the same flag. Reset
     // first, for the reason install_comfyui resets it (Bug #1): a previously
-    // cancelled run would otherwise abort this one on the first poll.
+    // cancelled run would otherwise abort this one on the first poll. Cheap
+    // (an atomic store plus an Arc clone), so it stays here on the caller's
+    // thread rather than moving into the worker below.
     state.comfyui_install_cancel.store(false, Ordering::SeqCst);
     let cancel_flag = state.comfyui_install_cancel.clone();
+
     std::thread::spawn(move || {
         let _job_guard = job_guard;
+        // Re-resolved from the AppHandle, not the `state` argument above: a
+        // `State<'_, AppState>` borrow cannot cross into a spawned thread.
+        // Same instance either way, Tauri hands out one shared AppState.
+        let state = app.state::<AppState>();
+        let install_status = state.install_status.clone();
         let update = |status: &str, msg: &str| {
             if let Ok(mut s) = install_status.lock() {
                 s.status = status.to_string();
                 s.logs.push(msg.to_string());
             }
         };
+
+        // box-gruen/n9 Punkt 87 (ENG-18): the button used to start "Installing
+        // ComfyUI…" with no lock at all, even with a ComfyUI already serving
+        // the configured port, be that the app's own or a copy started
+        // outside LU. A Cancel taken 1-2 seconds later left a real Windows
+        // box with a pulled core and a venv that never finished,
+        // `ModuleNotFoundError: No module named 'comfy_aimdo.storage'` on the
+        // next start.
+        //
+        // Same split Stop already draws (`find_orphaned_comfyui`, T-68): a
+        // process LU itself started, whether the tracked child from this run
+        // or one it started in an earlier run and lost the handle to, is
+        // stopped cleanly here before anything touches the checkout. A
+        // process this app never launched is left alone; the update is
+        // refused instead.
+        //
+        // final review Runde 3, R3-1: this guard used to run right here but
+        // on the CALLER's thread, before this worker thread even existed,
+        // i.e. on the Tauri main thread, freezing the window for as long as
+        // the guard's own waits took (up to 3 s for the queue check plus up
+        // to 10 s for the port-free poll, R2-1/R2-2, worst case over 13 s
+        // with "Not responding" over the window the whole time). Moved into
+        // the worker thread this function already spawns for the rest of the
+        // update, so it now costs the same time without ever blocking the
+        // window; its refusal is reported through the same `install_status`
+        // slot every other guard below already uses, so the panel shows the
+        // identical English wording either way, just from `install_status`
+        // instead of a thrown error. The "nothing was changed" property is
+        // unaffected: this still runs before anything below touches the
+        // checkout.
+        if let Err(msg) = ensure_comfyui_stopped_for_update(&state) {
+            error!("comfyui update aborted: {}", msg);
+            update("error", &msg);
+            return;
+        }
+
+        {
+            let mut install = state.install_status.lock().unwrap();
+            install.status = "installing".to_string();
+            install.logs.clear();
+            install.notice.clear();
+            install.notice_kind.clear();
+            install.logs.push("Updating ComfyUI...".to_string());
+        }
+
+        info!("comfyui update start");
+
+        let comfy_dir = {
+            let p = state.comfy_path.lock().unwrap().clone();
+            p.or_else(crate::commands::process::find_comfyui_path)
+                .map(PathBuf::from)
+        };
+        let Some(comfy_dir) = comfy_dir else {
+            let msg = "ComfyUI not found. Install ComfyUI first.";
+            error!("comfyui update aborted: {}", msg);
+            update("error", msg);
+            return;
+        };
+        if !comfy_dir.join(".git").exists() {
+            // Portable / zip installs carry no git metadata, nothing to pull.
+            let msg = "This ComfyUI was not installed from git, so it can't be updated in place. \
+                        Update it with its own updater, or reinstall from Settings.";
+            error!("comfyui update aborted: {}", msg);
+            update("error", msg);
+            return;
+        }
+
+        // Runde 6, F12: same reasoning as install_comfyui's call. Without this,
+        // an Update pressed after a Repair that crashed mid rebuild reads
+        // `comfy_venv_state` below as `Absent` (the retired `venv.lu-old-*`
+        // sibling is not named `venv`), falls back to the system Python, and
+        // never notices the several-gigabyte orphan sitting right next to it.
+        // A no-op once a usable `venv` already exists.
+        restore_orphaned_venv_if_needed(&comfy_dir);
+
+        // Prefer the install's venv Python (same preference the launcher uses);
+        // refuse without a usable interpreter, since a pulled core with stale
+        // requirements is worse than no update (frontend package pins move often).
+        // P3: the same third answer the launcher has. Updating into the system
+        // Python while ComfyUI can only ever start out of this venv leaves the
+        // hole exactly where it was, one git pull further along.
+        let python_bin = match crate::python::comfy_venv_state(&comfy_dir) {
+            crate::python::ComfyVenv::Usable(p) => p,
+            crate::python::ComfyVenv::Broken { venv_dir, interpreter } => {
+                let msg = crate::commands::process::comfy_broken_venv_message(&venv_dir, &interpreter);
+                error!("comfyui update aborted: {}", msg);
+                update("error", &msg);
+                return;
+            }
+            crate::python::ComfyVenv::Absent => state.python_bin.lock().unwrap().clone(),
+        };
+        if python_bin.is_empty() || !crate::python::is_real_python(&python_bin) {
+            let msg = "No usable Python found for this ComfyUI. Install Python first, then retry the update.";
+            error!("comfyui update aborted: {}", msg);
+            update("error", msg);
+            return;
+        }
 
         // Set when `pip install -r requirements.txt` failed and the run carried
         // on with the packages LU knows about. Folder plus reason, so the live
@@ -1764,11 +1800,17 @@ mod tests {
         // `install_status`, i.e. before it commits to the run at all. A
         // guard placed after that point could refuse having already told
         // the panel an update was starting.
+        //
+        // final review Runde 3, R3-1: the call itself moved from a `?`
+        // early-return on the caller's thread into an `if let Err(...)` on
+        // the worker thread, so the needle follows it there; the ordering
+        // this test actually cares about (guard before the status slot is
+        // touched) is unchanged.
         let src = include_str!("comfy_repair.rs");
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
         let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
-        let guard_call = needle("ensure_comfyui_stopped_for_upd", "ate(&state)?;");
+        let guard_call = needle("if let Err(msg) = ensure_comfyui_stopped_for_upd", "ate(&state) {");
         let installing_status = needle("install.status = \"instal", "ling\".to_string();");
 
         let at_guard = src[update_fn_start..].find(&guard_call).map(|i| i + update_fn_start)
@@ -1777,6 +1819,52 @@ mod tests {
             .expect("update_comfyui no longer marks the status slot as installing");
 
         assert!(at_guard < at_installing, "the running-instance guard must run before the status slot is claimed");
+    }
+
+    /// final review Runde 3, R3-1: `ensure_comfyui_stopped_for_update` can
+    /// sleep for up to 10 s (R2-1's `wait_for_port_free`) on top of up to 3 s
+    /// for the queue check (R2-2), and it used to run on the CALLER's thread
+    /// -- the Tauri main thread for a plain `#[tauri::command] pub fn` --
+    /// before `update_comfyui`'s own worker thread even existed, freezing
+    /// the window for as long as 13 s with "Not responding" over it the
+    /// whole time. The fix is not observable by calling the guard directly
+    /// (it behaves identically either way); only WHERE it is called from
+    /// changed, so this is a source guard, the same shape as the ordering
+    /// tests above and `filesystem.rs`'s `fs_search_is_dispatched_off_the_
+    /// main_thread`. Pinned here instead of only in a bug report about a
+    /// frozen window: the call must sit textually AFTER `std::thread::spawn`
+    /// opens, i.e. inside the closure, not before it.
+    #[test]
+    fn ensure_comfyui_stopped_for_update_runs_inside_the_worker_thread_not_on_the_main_thread() {
+        let src = include_str!("comfy_repair.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let update_fn_start = src.find("pub fn update_comfyui(").expect("update_comfyui is gone");
+        let thread_spawn = "std::thread::spawn(move || {";
+        let guard_call = needle("if let Err(msg) = ensure_comfyui_stopped_for_upd", "ate(&state) {");
+
+        let at_spawn = src[update_fn_start..].find(thread_spawn).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer spawns its worker thread");
+        let at_guard = src[update_fn_start..].find(&guard_call).map(|i| i + update_fn_start)
+            .expect("update_comfyui no longer guards against a running ComfyUI");
+
+        assert!(
+            at_spawn < at_guard,
+            "the running-instance guard must run inside the worker thread, not on the caller's \
+             thread before it -- its own waits (up to 10 s for the port-free poll, up to 3 s for \
+             the queue check) would otherwise freeze the window",
+        );
+
+        // The old shape must not come back either: a bare `?` early-return
+        // needs a `Result`-returning scope, which only exists on the
+        // caller's thread, so its presence anywhere in this function is
+        // itself proof the call moved back out of the worker thread. Split
+        // in half so this line does not match itself.
+        let old_shape = needle("ensure_comfyui_stopped_for_upd", "ate(&state)?;");
+        assert!(
+            !src[update_fn_start..].contains(&old_shape),
+            "the guard is back to a `?`-early-return, which only compiles on the caller's thread",
+        );
     }
 
     #[test]

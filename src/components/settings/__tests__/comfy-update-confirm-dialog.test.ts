@@ -145,6 +145,78 @@ describe('the Update ComfyUI confirmation dialog', () => {
   })
 })
 
+describe('R3-1 (final review Runde 3): the running-instance guard refuses through install_status, not a thrown error', () => {
+  // The guard (`ensure_comfyui_stopped_for_update`) moved off the Rust
+  // command's own synchronous return and into the worker thread it already
+  // spawns, so `update_comfyui` now resolves normally even when the guard
+  // is about to refuse -- the refusal only shows up on the next
+  // `install_comfyui_status` poll (comfyInstallStore's `POLL_MS`, 2000ms).
+  // This proves the panel still shows the exact same English wording
+  // through that channel, and does not depend on a synchronous throw
+  // anywhere in this test.
+  afterEach(() => { vi.useRealTimers() })
+
+  it('shows the guard\'s exact wording once the next poll reports it, though update_comfyui itself resolved', async () => {
+    const guardMessage =
+      'ComfyUI is generating something right now. Wait for it to finish, or stop the render ' +
+      'yourself, then run Update ComfyUI again. Nothing was changed.'
+    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: true }
+    let pollCount = 0
+    backendCall.mockImplementation(async (cmd: string) => {
+      if (cmd === 'comfyui_status') return comfyStatus
+      // The Rust side no longer throws for this refusal -- it now reports
+      // through install_status from inside the worker thread instead.
+      if (cmd === 'update_comfyui') return { status: 'installing' }
+      if (cmd === 'install_comfyui_status') {
+        pollCount += 1
+        if (pollCount === 1) return { status: 'installing', logs: ['Updating ComfyUI...'] }
+        return { status: 'error', logs: ['Updating ComfyUI...', guardMessage] }
+      }
+      return {}
+    })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    await mountPanel()
+    await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update' })) })
+
+    // update_comfyui resolved without throwing, and the poll's first tick
+    // still reads "installing": nothing has failed yet.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(pollCount).toBe(1)
+    expect(useComfyInstallStore.getState().phase).not.toBe('error')
+
+    // The second tick is the one that lands the guard's refusal.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+
+    expect(useComfyInstallStore.getState().phase).toBe('error')
+    expect(useComfyInstallStore.getState().error).toContain(guardMessage)
+    // Shows up twice on screen (the raw log line and the framed error
+    // paragraph both carry it) -- either is proof the panel, not just the
+    // store, renders the guard's exact wording.
+    expect(screen.getAllByText(/ComfyUI is generating something right now/).length).toBeGreaterThan(0)
+  })
+
+  it('GEGENPROBE: without a later error poll, the same run just completes, proving the test above actually exercises the error tick', async () => {
+    comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: true }
+    backendCall.mockImplementation(async (cmd: string) => {
+      if (cmd === 'comfyui_status') return comfyStatus
+      if (cmd === 'update_comfyui') return { status: 'installing' }
+      if (cmd === 'install_comfyui_status') return { status: 'complete', logs: ['Updating ComfyUI...'] }
+      return {}
+    })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    await mountPanel()
+    await act(async () => { fireEvent.click(screen.getByText('Update ComfyUI')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update' })) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+
+    expect(useComfyInstallStore.getState().phase).toBe('idle')
+    expect(useComfyInstallStore.getState().error).toBe('')
+  })
+})
+
 describe('a ComfyUI this app did not start blocks the click, negative control included', () => {
   it('a foreign, running ComfyUI shows a message instead of opening the dialog', async () => {
     comfyStatus = { running: true, found: true, complete: true, path: 'C:\\ComfyUI', isLocal: true, ownedByApp: false }
