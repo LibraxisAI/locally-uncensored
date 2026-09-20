@@ -996,13 +996,43 @@ fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
 // is kept free of any real Windows API call so it can be unit tested on
 // every host OS; only `windows_current_dir_for_backend` (cfg(windows)) wires
 // it up to the real `GetShortPathNameW` call and real UTF-16 lengths.
+//
+// review-longpath.md Runde 1, Auflage 5: `Command::current_dir` does NOT
+// call `SetCurrentDirectoryW` in this (the parent) process. Rust hands the
+// path straight through as `CreateProcessW`'s `lpCurrentDirectory` argument
+// (`library/std/src/sys/process/windows.rs`, `make_dirp`/the `si.lpCurrentDirectory`
+// wiring); no `SetCurrentDirectoryW` call happens here at all. The classic
+// length ceiling still applies to `lpCurrentDirectory` regardless: Microsoft's
+// own `SetCurrentDirectory` reference page states it as a general rule about
+// process creation, not about that one function's own parameter: "Important:
+// Setting a current directory longer than MAX_PATH causes CreateProcessW to
+// fail." Unlike `GetShortPathNameW`'s `lpszLongPath` (Auflage 1 below) or the
+// handful of directory functions Microsoft explicitly re-lists under
+// "Functions without MAX_PATH restrictions" (`SetCurrentDirectoryW` among
+// them, opt-in via a `longPathAware` manifest plus the `LongPathsEnabled`
+// registry value), Microsoft documents no `\\?\` or opt-in escape for
+// `lpCurrentDirectory` itself. There is nothing to opt into here: the
+// short-name fallback below is the only lever this code has.
 
-/// Classic Win32 `MAX_PATH` is 260 wide chars including the terminating NUL,
-/// so 259 real characters is the most a path can hold and still be handed to
-/// `SetCurrentDirectoryW` (what `Command::current_dir` calls on Windows)
-/// without the app opting in to long paths via a `longPathAware` manifest
-/// entry (Microsoft, "Maximum Path Length Limitation"). This app ships no
-/// such manifest.
+/// Classic Win32 `MAX_PATH` is 260 wide chars including the terminating NUL.
+/// review-longpath.md Runde 1, Auflage 2 (BLOCKER): `backend_dir` never ends
+/// in a trailing backslash (it comes from `resource_dir()`, a plain
+/// `PathBuf`), and Microsoft's own `SetCurrentDirectory` reference is
+/// explicit about what that costs: "the final character before the null
+/// character must be a backslash... specify >MAX_PATH-2 characters for the
+/// path unless you include the trailing backslash". Without one, the last
+/// SAFE length is therefore `MAX_PATH - 2` = 258, not 259: at 259, Windows'
+/// own appended backslash plus the terminator pushes the real total to
+/// exactly `MAX_PATH`, which the same page calls out by name ("Setting a
+/// current directory longer than MAX_PATH causes CreateProcessW to fail").
+/// 248 (`MAX_PATH - 12`) is a DIFFERENT limit, `CreateDirectory`'s own room
+/// for an 8.3 name, and does not apply here (confirmed against Rust's own
+/// `sys/path/windows.rs`, which only cites 248 for `CreateDirectory`).
+///
+/// This app ships no `longPathAware` manifest (checked: no `.manifest`, no
+/// `longPathAware` anywhere under `src-tauri/`), and in any case Microsoft
+/// documents no such opt-in for `lpCurrentDirectory` (see the module doc
+/// above), so 258 is the ceiling regardless of that manifest.
 ///
 /// This constant and the pure functions below it are real production code
 /// only on Windows, but are also compiled under `cfg(test)` on every host OS
@@ -1011,7 +1041,7 @@ fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
 /// platform-independent unit test, not only a Windows-only integration test
 /// that can only run on the box.
 #[cfg(any(windows, test))]
-const CLASSIC_MAX_PATH_CHARS: usize = 259;
+const CLASSIC_MAX_PATH_CHARS: usize = 258;
 
 /// Pure predicate: does this many UTF-16 code units exceed the classic
 /// Windows current-directory limit? Split out from the actual length
@@ -1069,6 +1099,94 @@ fn utf16_len(path: &Path) -> usize {
     path.as_os_str().encode_wide().count()
 }
 
+// review-longpath.md Runde 1, Auflage 1 (BLOCKER): `GetShortPathNameW`'s OWN
+// `lpszLongPath` input is capped at classic MAX_PATH unless it carries a
+// `\\?\` (or, for a UNC path, `\\?\UNC\`) prefix (Microsoft,
+// GetShortPathNameW docs, `lpszLongPath`: "By default, the name is limited
+// to MAX_PATH characters. To extend this limit to 32,767 wide characters,
+// prepend \\?\ to the path."). `backend_dir` is exactly the un-prefixed,
+// over-the-limit path this whole fallback exists for, so without adding the
+// prefix here, the call fails on the very input it was meant to rescue and
+// `decide_long_path_current_dir` can only ever reach `SkipCurrentDir`. The
+// two functions below add and remove that prefix; they work on raw UTF-16
+// code units (not `Path`) so they are plain, allocation-cheap, and directly
+// unit-testable on every host OS, same as the decision logic above.
+
+/// `\\?\` (backslash, backslash, question mark, backslash: FOUR characters),
+/// as UTF-16 code units (every character here is ASCII, so the `u16` and
+/// `u8` values are the same).
+#[cfg(any(windows, test))]
+const VERBATIM_PREFIX: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+
+/// `\\?\UNC\` (eight characters), the verbatim form Microsoft's own "Naming
+/// Files, Paths, and Namespaces" page documents for a UNC path
+/// (`\\server\share\...` becomes `\\?\UNC\server\share\...`, dropping the
+/// path's own leading `\\`).
+#[cfg(any(windows, test))]
+const VERBATIM_UNC_PREFIX: [u16; 8] = [
+    b'\\' as u16,
+    b'\\' as u16,
+    b'?' as u16,
+    b'\\' as u16,
+    b'U' as u16,
+    b'N' as u16,
+    b'C' as u16,
+    b'\\' as u16,
+];
+
+/// A plain backslash, as a UTF-16 code unit.
+#[cfg(any(windows, test))]
+const BACKSLASH: u16 = b'\\' as u16;
+
+/// Add the verbatim prefix `GetShortPathNameW` needs to accept an
+/// over-MAX_PATH input. A path that already carries `\\?\` is returned
+/// unchanged (never doubled); a UNC path (`\\server\share\...`) becomes
+/// `\\?\UNC\server\share\...`; anything else (a drive-letter path) is simply
+/// prefixed with `\\?\`.
+#[cfg(any(windows, test))]
+fn verbatim_prefixed(long_path: &[u16]) -> Vec<u16> {
+    if long_path.starts_with(&VERBATIM_PREFIX) {
+        return long_path.to_vec();
+    }
+    let is_unc = long_path.len() >= 2 && long_path[0] == BACKSLASH && long_path[1] == BACKSLASH;
+    let mut out = Vec::with_capacity(long_path.len() + VERBATIM_UNC_PREFIX.len());
+    if is_unc {
+        out.extend_from_slice(&VERBATIM_UNC_PREFIX);
+        out.extend_from_slice(&long_path[2..]); // drop the UNC path's own leading "\\"
+    } else {
+        out.extend_from_slice(&VERBATIM_PREFIX);
+        out.extend_from_slice(long_path);
+    }
+    out
+}
+
+/// Undo `verbatim_prefixed`. Needed for two reasons (review-longpath.md
+/// Auflage 1): `lpCurrentDirectory` does not accept a verbatim path at all
+/// (Rust's own std strips one right back off for this exact parameter,
+/// `library/std/src/sys/process/windows.rs`, comment there: "the current
+/// directory does not support verbatim paths"; this code must not rely on
+/// that silently, both because it should not assume undocumented std
+/// internals and because the LENGTH check below would still be wrong
+/// otherwise), and counting the `\\?\`/`\\?\UNC\` characters themselves would
+/// make `exceeds_classic_current_dir_limit` lie about how long the resolved
+/// short path "really" is once handed to `current_dir`. A value carrying
+/// neither prefix is returned unchanged.
+#[cfg(any(windows, test))]
+fn strip_verbatim_prefix(path: &[u16]) -> Vec<u16> {
+    if let Some(rest) = path.strip_prefix(VERBATIM_UNC_PREFIX.as_slice()) {
+        // "\\?\UNC\server\share" -> "\\server\share"
+        let mut out = Vec::with_capacity(rest.len() + 2);
+        out.push(BACKSLASH);
+        out.push(BACKSLASH);
+        out.extend_from_slice(rest);
+        return out;
+    }
+    if let Some(rest) = path.strip_prefix(VERBATIM_PREFIX.as_slice()) {
+        return rest.to_vec();
+    }
+    path.to_vec()
+}
+
 /// Windows-only: resolve `dir`'s 8.3 short name via `GetShortPathNameW`.
 /// `None` if the lookup fails outright (8dot3 name creation disabled on the
 /// volume, the path does not exist, or any other API failure): callers must
@@ -1077,9 +1195,11 @@ fn utf16_len(path: &Path) -> usize {
 fn get_short_path_name(dir: &Path) -> Option<PathBuf> {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
 
-    let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    let raw: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    let mut wide = verbatim_prefixed(&raw);
     wide.push(0); // GetShortPathNameW needs a NUL-terminated wide string.
 
     // SAFETY: passing a null output buffer with cchBuffer 0 is the documented
@@ -1089,6 +1209,16 @@ fn get_short_path_name(dir: &Path) -> Option<PathBuf> {
     // requirement for lpszLongPath.
     let needed = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
     if needed == 0 {
+        // review-longpath.md Auflage 6 (nit): name the real error instead of
+        // logging nothing. This is exactly the number that tells "8dot3 name
+        // creation disabled on this volume" (ERROR_PATH_NOT_FOUND or
+        // ERROR_FILENAME_EXCED_RANGE at an ENABLED volume would instead point
+        // back at a missing verbatim prefix, i.e. a regression of Auflage 1)
+        // apart from every other failure reason.
+        // SAFETY: GetLastError only reads thread-local state kernel32 itself
+        // set on the GetShortPathNameW call just above; no pointers involved.
+        let code = unsafe { GetLastError() };
+        tracing::warn!(target: "engine", dir = %dir.display(), error_code = code, "GetShortPathNameW could not size a short name for this directory");
         return None;
     }
 
@@ -1099,15 +1229,21 @@ fn get_short_path_name(dir: &Path) -> Option<PathBuf> {
     // null character"), and `buf.len()` is passed back as cchBuffer, so the
     // call can only ever write within `buf`.
     let written = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
-    // 0 is failure; a value >= buf.len() means the buffer was too small after
-    // all (docs: this happens when the path changes between the two calls).
-    // Either way, treat it as "no short name available" rather than trust a
-    // possibly-truncated buffer.
-    if written == 0 || written as usize >= buf.len() {
+    if written == 0 {
+        // SAFETY: see the identical call above.
+        let code = unsafe { GetLastError() };
+        tracing::warn!(target: "engine", dir = %dir.display(), error_code = code, "GetShortPathNameW could not resolve a short name for this directory");
+        return None;
+    }
+    // A value >= buf.len() means the buffer was too small after all (docs:
+    // this happens when the path changes between the two calls). Treat it
+    // like any other failure rather than trust a possibly-truncated buffer.
+    if written as usize >= buf.len() {
         return None;
     }
     buf.truncate(written as usize); // return value excludes the terminator
-    Some(PathBuf::from(OsString::from_wide(&buf)))
+    let unprefixed = strip_verbatim_prefix(&buf);
+    Some(PathBuf::from(OsString::from_wide(&unprefixed)))
 }
 
 /// Windows-only glue: measure `dir` for real and, if needed, resolve a real
@@ -1121,6 +1257,34 @@ fn windows_current_dir_for_backend(dir: &Path) -> LongPathDecision {
             (short, len)
         })
     })
+}
+
+/// Windows-only real check: is `dir` itself over the classic
+/// current-directory length limit? Split from `apply_engine_backend_dir`'s
+/// own decision so `start_failure_message` (compiled on every platform, see
+/// review-longpath.md Auflage 3) can ask the same question without needing
+/// `encode_wide()` itself (a Windows-only `OsStrExt` method). Always `false`
+/// off Windows: nothing there shares this ceiling.
+#[cfg(windows)]
+fn windows_backend_dir_too_long(dir: &Path) -> bool {
+    exceeds_classic_current_dir_limit(utf16_len(dir))
+}
+#[cfg(not(windows))]
+fn windows_backend_dir_too_long(_dir: &Path) -> bool {
+    false
+}
+
+/// The one sentence both failure paths (the immediate `cmd.spawn()` error and
+/// `start_failure_message`'s generic "the engine died" case) use once the
+/// backend dir itself is over Windows' classic current-directory length
+/// limit (review-longpath.md Runde 1, Auflage 3): names the real, fixable
+/// cause instead of a bare OS error number, and instead of the generic
+/// "Reinstall Locally Uncensored" sentence, which would send the user right
+/// back into the same too-long path.
+fn long_install_path_hint() -> &'static str {
+    "This installation's own folder path is longer than Windows allows for \
+     starting its bundled engine. Install Locally Uncensored to a shorter \
+     path (for example directly under C:\\) and try again."
 }
 
 /// K1 (3.0.1): point a bundled llama-server child at its companion
@@ -1173,29 +1337,35 @@ fn windows_current_dir_for_backend(dir: &Path) -> LongPathDecision {
 /// relative to the file that carries it, not to some shared root. `LD_LIBRARY_PATH`
 /// closes exactly that remaining gap, for the exe's own DT_NEEDED entries.
 ///
-/// K1-14 (3.0.1, klaerung-63.md): on Windows, `dir` can itself be too long for
-/// `Command::current_dir` to hand to `CreateProcessW`'s `lpCurrentDirectory`.
-/// `SetCurrentDirectoryW` (the API `current_dir` resolves to under the hood)
-/// is on Microsoft's own list of functions still capped at classic
-/// `MAX_PATH` unless the app opts in with a `longPathAware` manifest entry
-/// (Microsoft, "Maximum Path Length Limitation", "Functions without MAX_PATH
-/// restrictions"); this app ships no such manifest (checked: no `.manifest`,
-/// no `longPathAware` anywhere under `src-tauri/`), so the classic ~260
-/// character limit applies. Measured on the box (BERICHT.md #63): a 295
-/// character install path made `cmd.spawn()` itself fail with os error 267
-/// (`ERROR_DIRECTORY`) before the child process, and thus ggml's own
-/// fallback search, ever ran. The exe path and the model path argument were
-/// NOT affected by the same run (a `FileName`/argv problem surfaces as a
-/// different Windows error, not 267): Rust only calls the Windows
-/// current-directory API for `current_dir`, and never rewrites argv or the
-/// program path the same way, so only this one call needed a fallback.
+/// K1-14 (3.0.1, klaerung-63.md): on Windows, `dir` can itself be too long
+/// for `Command::current_dir` to hand to `CreateProcessW`'s
+/// `lpCurrentDirectory` parameter. No `SetCurrentDirectoryW` call happens
+/// here (review-longpath.md Runde 1, Auflage 5 corrected an earlier, wrong
+/// claim that it does); the classic ~258 character ceiling on
+/// `lpCurrentDirectory` is documented directly against `CreateProcessW`
+/// instead (see the `CLASSIC_MAX_PATH_CHARS` doc comment above for the exact
+/// citations and the 258-not-259-not-248 arithmetic). Measured on the box
+/// (BERICHT.md #63): a 295 character install path made `cmd.spawn()` itself
+/// fail with os error 267 (`ERROR_DIRECTORY`) before the child process, and
+/// thus ggml's own fallback search, ever ran. In that SAME measured run the
+/// exe path and the model path argument were not the cause (a
+/// `FileName`/argv problem surfaces as a different Windows error, not 267,
+/// and `CreateProcessW`'s own MAX_PATH note for `lpCommandLine` only applies
+/// when `lpApplicationName` is NULL, which Rust does not do): this is
+/// disproved for the measured case, not proven safe in general, and does not
+/// cover a model file the user themselves buried in an equally deep folder.
+///
 /// `windows_current_dir_for_backend` tries the 8.3 short name first
-/// (`GetShortPathNameW`); if that is unavailable (8dot3 name creation can be
-/// disabled per volume) or still too long, `current_dir` is left unset
-/// instead of letting the whole spawn fail: the app then starts and a real
-/// ggml-internal failure (missing backend) surfaces through the ordinary
-/// "Reinstall... or pick a different backend" path instead of an opaque OS
-/// spawn error.
+/// (`GetShortPathNameW`, through the verbatim-prefix dance
+/// `get_short_path_name` does internally: required, or the lookup fails on
+/// exactly the over-the-limit input this fallback exists for). If that is
+/// unavailable (8dot3 name creation can be disabled per volume) or still too
+/// long, `current_dir` is left unset instead of letting the whole spawn
+/// fail. The app then starts, but ggml then has NEITHER of its two search
+/// roots (its own truncated `GetModuleFileNameW` reading, or a usable
+/// current directory) and the sidecar will not find its backend either way;
+/// `start_failure_message` names the real cause for that case instead of the
+/// generic "Reinstall..." sentence (review-longpath.md Auflage 3).
 fn apply_engine_backend_dir(cmd: &mut Command, backend_dir: Option<&Path>) {
     let Some(dir) = backend_dir else { return };
     #[cfg(windows)]
@@ -2155,10 +2325,24 @@ pub(crate) fn start_failure_message(
             "The LU Engine could not open port {port}. Another program holds it, or the port sits in a range this system has reserved. The app already tried the next free ports and got the same answer. Close that program or reboot, then try again."
         )
     } else if failure.died {
+        // K1-14 (3.0.1, review-longpath.md Runde 1, Auflage 3): a backend dir
+        // over Windows' classic current-directory limit is checked BEFORE the
+        // generic "Reinstall..." catch-all and REPLACES it, not adds to it.
+        // apply_engine_backend_dir already leaves current_dir unset in
+        // exactly this case rather than fail the spawn outright (see its own
+        // doc comment), so the sidecar reaches this ordinary "died" path
+        // instead of the immediate spawn-error path; sending the user back to
+        // "Reinstall" here would point them right back into the same
+        // too-long path that caused this. A more specific, stderr-backed
+        // cause (a named missing library, a bad model file) still wins over
+        // this: those are read off what the child itself said, not inferred
+        // from a path length.
         let hint = if let Some(lib) = stderr_names_a_missing_system_library(&failure.stderr) {
             missing_library_hint(&lib, cfg!(target_os = "linux"))
         } else if stderr_blames_the_model(&failure.stderr) {
             " The engine could not read the model file. It may be damaged, cut short, or of a type this engine cannot run. Open Models, Get new and download it again, or pick another model.".to_string()
+        } else if backend_dir.is_some_and(windows_backend_dir_too_long) {
+            format!(" {}", long_install_path_hint())
         } else {
             " Reinstall Locally Uncensored if this keeps happening, or pick a different backend in Settings, AI Backends.".to_string()
         };
@@ -3048,21 +3232,22 @@ fn spawn_engine_attempt(
         Err(e) => {
             let why = os_error::english(&e);
             tracing::error!(target: "engine", port, reason = %why, "the LU Engine program could not be started at all");
-            // K1-14 (3.0.1): a spawn failure while the backend dir is over the
-            // classic Windows current-directory length limit is, on the
-            // evidence in BERICHT.md #63, almost always this same install-path
-            // problem wearing a generic OS error number (267/ERROR_DIRECTORY
-            // there). Name the likely cause in plain English instead of
-            // leaving the user with only the opaque OS wording; this is a
-            // best-effort hint, not a replacement for `why`, which still
-            // carries the actual code to search for.
-            #[cfg(windows)]
-            let long_path_hint = backend_dir
-                .filter(|dir| exceeds_classic_current_dir_limit(utf16_len(dir)))
-                .map(|_| " This install path is longer than Windows' classic 259 character limit, which can make bundled engine files impossible to start; try installing to a shorter path.")
-                .unwrap_or("");
-            #[cfg(not(windows))]
-            let long_path_hint = "";
+            // K1-14 (3.0.1, review-longpath.md Auflage 3): a spawn failure
+            // while the backend dir is STILL over the classic Windows
+            // current-directory length limit despite apply_engine_backend_dir
+            // having already tried the short-name fallback is, on the
+            // evidence in BERICHT.md #63, almost always this same
+            // install-path problem wearing a generic OS error number
+            // (267/ERROR_DIRECTORY there). Name the likely cause in plain
+            // English alongside the opaque OS wording rather than replacing
+            // it; `why` still carries the actual code to search for. This
+            // branch should rarely fire for THIS reason any more now that
+            // apply_engine_backend_dir itself avoids handing a too-long path
+            // to current_dir, but it costs nothing to keep as a second line
+            // of defense (e.g. `UseAsIs` failing for an unrelated reason
+            // while the dir happens to be long).
+            let long_path_hint =
+                if backend_dir.is_some_and(windows_backend_dir_too_long) { format!(" {}", long_install_path_hint()) } else { String::new() };
             return Err(StartFailure {
                 died: true,
                 port_taken: false,
@@ -5149,18 +5334,82 @@ mod tests {
     // this Mac included, not only on the Windows box.
 
     #[test]
-    fn exceeds_classic_current_dir_limit_is_false_at_and_below_259() {
-        // Negative control: 259 itself, and anything under it, must NOT be
-        // flagged as too long. Windows' own MAX_PATH is 260 wide chars
-        // INCLUDING the terminating NUL, so 259 real characters still fits.
+    fn exceeds_classic_current_dir_limit_is_false_at_and_below_258() {
+        // Negative control: 258 itself, and anything under it, must NOT be
+        // flagged as too long. review-longpath.md Runde 1, Auflage 2:
+        // `backend_dir` never carries a trailing backslash, and without one
+        // MAX_PATH-2 = 258 is the last length Windows appends its own
+        // backslash to without crossing MAX_PATH (260, including the NUL).
         assert!(!exceeds_classic_current_dir_limit(0));
-        assert!(!exceeds_classic_current_dir_limit(259));
+        assert!(!exceeds_classic_current_dir_limit(258));
     }
 
     #[test]
-    fn exceeds_classic_current_dir_limit_is_true_above_259() {
-        assert!(exceeds_classic_current_dir_limit(260));
+    fn exceeds_classic_current_dir_limit_is_true_above_258() {
+        // 259 is the exact off-by-one Auflage 2 corrected: it looks like it
+        // should fit under MAX_PATH (260), but Windows' own appended
+        // backslash plus the terminator pushes it to exactly MAX_PATH, which
+        // Microsoft's own SetCurrentDirectory page says makes CreateProcessW
+        // fail. This is the one assertion that would have caught Runde 1's
+        // bug had it existed then.
+        assert!(exceeds_classic_current_dir_limit(259));
         assert!(exceeds_classic_current_dir_limit(295)); // BERICHT.md #63's own measured length
+    }
+
+    // ── verbatim_prefixed / strip_verbatim_prefix (Auflage 1) ────────────────
+    //
+    // Pure UTF-16-code-unit logic, no Windows API involved: testable, and
+    // tested, on every host OS.
+
+    fn utf16(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn verbatim_prefixed_adds_the_prefix_to_a_drive_path() {
+        assert_eq!(verbatim_prefixed(&utf16(r"C:\LU\long\path")), utf16(r"\\?\C:\LU\long\path"));
+    }
+
+    #[test]
+    fn verbatim_prefixed_does_not_double_an_existing_prefix() {
+        let already = utf16(r"\\?\C:\LU\long\path");
+        assert_eq!(verbatim_prefixed(&already), already);
+    }
+
+    #[test]
+    fn verbatim_prefixed_turns_a_unc_path_into_the_unc_verbatim_form() {
+        // "\\server\share\x" -> "\\?\UNC\server\share\x", per Microsoft's own
+        // "Naming Files, Paths, and Namespaces" (the leading "\\" is dropped,
+        // not kept alongside "UNC\").
+        assert_eq!(verbatim_prefixed(&utf16(r"\\server\share\x")), utf16(r"\\?\UNC\server\share\x"));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_undoes_a_plain_verbatim_prefix() {
+        assert_eq!(strip_verbatim_prefix(&utf16(r"\\?\C:\LU~1")), utf16(r"C:\LU~1"));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_undoes_the_unc_verbatim_form() {
+        assert_eq!(strip_verbatim_prefix(&utf16(r"\\?\UNC\server\share\x")), utf16(r"\\server\share\x"));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_leaves_an_unprefixed_path_alone() {
+        // Negative control: nothing to strip must not eat real characters.
+        assert_eq!(strip_verbatim_prefix(&utf16(r"C:\LU~1")), utf16(r"C:\LU~1"));
+    }
+
+    #[test]
+    fn verbatim_prefix_and_strip_round_trip_a_drive_path() {
+        let original = utf16(r"C:\Program Files\Locally Uncensored\resources\llama\x86_64-pc-windows-msvc");
+        assert_eq!(strip_verbatim_prefix(&verbatim_prefixed(&original)), original);
+    }
+
+    #[test]
+    fn verbatim_prefix_and_strip_round_trip_a_unc_path() {
+        let original = utf16(r"\\fileserver\share\LU\resources\llama\x86_64-pc-windows-msvc");
+        assert_eq!(strip_verbatim_prefix(&verbatim_prefixed(&original)), original);
     }
 
     #[test]
@@ -5289,50 +5538,121 @@ mod tests {
     // its own platform-independent tests; this section proves that the real
     // wiring (utf16_len, GetShortPathNameW, current_dir) actually lets a
     // child process start, which the plain decision tests cannot show.
+    //
+    // review-longpath.md Runde 1, Auflage 4 (BLOCKER) shaped this section:
+    // the PRODUCTION input to `windows_current_dir_for_backend` never carries
+    // a `\\?\` prefix (that only exists inside `get_short_path_name`'s own
+    // call to `GetShortPathNameW`), so the fixture below builds the long
+    // directory in BOTH forms: a verbatim path used only for the filesystem
+    // operations that need to survive being over MAX_PATH without
+    // LongPathsEnabled (`create_dir_all`, `remove_dir_all`), and a plain,
+    // unprefixed path, otherwise identical, that is what actually gets
+    // passed to the function under test, matching what `resource_dir()`
+    // would hand `apply_engine_backend_dir` for real.
+
+    #[cfg(windows)]
+    struct LongDirFixture {
+        /// The `\\?\`-prefixed form: for filesystem operations only.
+        verbatim: PathBuf,
+        /// The plain, unprefixed form: what the code under test actually
+        /// sees, same as it would from `resource_dir()`.
+        plain: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl LongDirFixture {
+        /// Builds and creates a directory over the classic 258 character
+        /// ceiling, and returns both spellings of its path. Creation happens
+        /// here (not lazily) so a guard can start cleaning up from the very
+        /// next line, before any assertion in the caller can panic and skip
+        /// it (Auflage 4, "kleiner" nit: cleanup used to run only after the
+        /// assertions).
+        fn create() -> Self {
+            use std::os::windows::ffi::OsStrExt;
+            let base = std::env::temp_dir();
+            let mut plain = base.clone();
+            // One 50-character component per iteration, comfortably past 260
+            // total once joined with the temp dir and a few levels.
+            let component = "a".repeat(50);
+            while plain.as_os_str().encode_wide().count() < 280 {
+                plain.push(&component);
+            }
+            let verbatim = PathBuf::from(format!(r"\\?\{}", plain.display()));
+            std::fs::create_dir_all(&verbatim).expect("create a long verbatim test directory");
+            // Sanity check on the fixture itself: this must actually be over
+            // the limit, or the test below would pass for the wrong reason.
+            assert!(exceeds_classic_current_dir_limit(utf16_len(&plain)));
+            LongDirFixture { verbatim, plain }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for LongDirFixture {
+        fn drop(&mut self) {
+            // Best effort: a failed cleanup must not mask a real test
+            // failure (and Drop cannot propagate one anyway). Uses the
+            // VERBATIM path, same reasoning as creation: ordinary
+            // (non-verbatim) removal is itself subject to the classic length
+            // limit without LongPathsEnabled.
+            let _ = std::fs::remove_dir_all(&self.verbatim);
+        }
+    }
 
     #[test]
     #[cfg(windows)]
-    fn windows_current_dir_for_backend_lets_a_child_spawn_from_a_long_dir() {
-        use std::os::windows::ffi::OsStrExt;
+    fn windows_current_dir_for_backend_uses_the_short_name_and_lets_a_child_spawn() {
+        // Expects an 8dot3-enabled volume, the ordinary case and the one
+        // BERICHT.md #63 measured on the box (Auflage 4: a test must say
+        // which branch it expects, not accept either silently). The
+        // dedicated, #[ignore]d test below covers the disabled-volume branch.
+        let fixture = LongDirFixture::create();
 
-        // A path over 260 characters (BERICHT.md #63 measured os error 267 at
-        // 295). Built under a verbatim (`\\?\`) prefix so std::fs itself can
-        // create it despite the same classic length limit applying to
-        // ordinary (non-verbatim) directory creation.
-        let base = std::env::temp_dir();
-        let mut long_dir = std::path::PathBuf::from(format!(r"\\?\{}", base.display()));
-        // One 50-character component per iteration, comfortably past 260
-        // total once joined with the temp dir and a few levels.
-        let component = "a".repeat(50);
-        while long_dir.as_os_str().encode_wide().count() < 280 {
-            long_dir.push(&component);
-        }
-        std::fs::create_dir_all(&long_dir).expect("create a long verbatim test directory");
-
-        // Sanity check on the fixture itself: this must actually be over the
-        // limit, or the test would pass for the wrong reason.
-        assert!(exceeds_classic_current_dir_limit(utf16_len(&long_dir)));
-
-        let decision = windows_current_dir_for_backend(&long_dir);
-        let chosen_dir = match &decision {
-            LongPathDecision::UseAsIs => unreachable!("fixture is deliberately over the limit"),
-            LongPathDecision::UseShortName(short) => short.clone(),
-            // A volume with 8dot3 name creation disabled is a real, if less
-            // common, case (klaerung-63.md); SkipCurrentDir is the correct
-            // decision there, and a child with NO current_dir set must still
-            // spawn (it inherits this test process's own current directory).
-            LongPathDecision::SkipCurrentDir => std::env::current_dir().unwrap(),
+        let decision = windows_current_dir_for_backend(&fixture.plain);
+        let LongPathDecision::UseShortName(short) = decision else {
+            panic!(
+                "expected UseShortName on an 8dot3-enabled volume, got {decision:?}; if 8dot3 name \
+                 creation is disabled on this test volume, run the ignored \
+                 windows_current_dir_for_backend_skips_current_dir_when_short_names_are_unavailable test instead"
+            );
         };
+        // The short name itself must actually be short, or this proves
+        // nothing: a no-op GetShortPathNameW that just echoes the long name
+        // back (Microsoft's own documented "no short name on-disk" case)
+        // would otherwise slip through as a false UseShortName.
+        assert!(!exceeds_classic_current_dir_limit(utf16_len(&short)));
 
         let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "exit", "0"]);
-        if !matches!(decision, LongPathDecision::SkipCurrentDir) {
-            cmd.current_dir(&chosen_dir);
-        }
-        let status = cmd.status().expect("cmd.exe must spawn with the chosen current_dir");
+        cmd.args(["/c", "exit", "0"]).current_dir(&short);
+        let status = cmd.status().expect("cmd.exe must spawn with the resolved short name as current_dir");
         assert!(status.success());
+    }
 
-        let _ = std::fs::remove_dir_all(&long_dir);
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "needs 8dot3 name creation disabled on the test volume \
+                (admin PowerShell: fsutil 8dot3name set 1 <drive>, then create a NEW long \
+                directory - fsutil 8dot3name query <drive> confirms the setting first). \
+                Not safe to toggle from an automated run, so this stays manual/box-only \
+                (review-longpath.md Runde 1, Auflage 4)."]
+    fn windows_current_dir_for_backend_skips_current_dir_when_short_names_are_unavailable() {
+        let fixture = LongDirFixture::create();
+
+        let decision = windows_current_dir_for_backend(&fixture.plain);
+        assert_eq!(
+            decision,
+            LongPathDecision::SkipCurrentDir,
+            "expected SkipCurrentDir with 8dot3 name creation disabled, got {decision:?}"
+        );
+
+        // The documented fallback itself must still work: a child with NO
+        // current_dir set inherits this test process's own working
+        // directory and must spawn without error (it does NOT prove ggml
+        // would find its backend from there; review-longpath.md Auflage 3
+        // covers the honest user-facing message for that separately).
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "exit", "0"]);
+        let status = cmd.status().expect("cmd.exe must spawn even with current_dir left unset");
+        assert!(status.success());
     }
 
     #[test]
