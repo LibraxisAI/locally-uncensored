@@ -13,6 +13,7 @@ import { RAGPanel } from './RAGPanel'
 import { DocsButton } from './DocsButton'
 import { RetrievalErrorBar } from './RetrievalErrorBar'
 import { LuEngineSwitchBar } from './LuEngineSwitchBar'
+import { EngineMissingBar } from './EngineMissingBar'
 import { useDocsAvailability } from '../../hooks/useDocsAvailability'
 import { AgentModeToggle } from './AgentModeToggle'
 import { FlashChatNotice } from './FlashChatNotice'
@@ -773,7 +774,7 @@ export function ChatView() {
               // No plan lives here. The prompt window is the prompt window
               // (David, 2026-08-22): the plan band sits in the session strip
               // above, next to the other standing status controls.
-              composerAbove={<><LuEngineSwitchBar /><RetrievalErrorBar /><LoopBar onStop={stopGeneration} /><GoalBar /><GroupCostHint /></>}
+              composerAbove={<><LuEngineSwitchBar /><EngineMissingBar /><RetrievalErrorBar /><LoopBar onStop={stopGeneration} /><GoalBar /><GroupCostHint /></>}
               composerActions={
                 <>
                   {/* Documents (RAG), shown in both modes since A9. In

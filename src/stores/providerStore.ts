@@ -165,6 +165,22 @@ interface ProviderState {
    * AppShell never re-shows the modal on startup even if multiple backends are
    * running. User can still add / remove providers via Settings → Providers. */
   hideBackendSelector: boolean
+  /**
+   * Persisted: the customer picked a different local backend for the `openai`
+   * slot ON PURPOSE, through one of the dedicated pick UIs (onboarding's
+   * backend step, the startup backend selector, "Start LM Studio Server" in
+   * the model picker), not through Add Provider taking the slot from LU
+   * Engine. Opus review, R13D Nebenfund 1 follow-up (2026-09-21): the missing
+   *-engine notice (lib/builtin-engine-presence.ts) must not fire for a
+   * customer who never had, or never wanted, LU Engine in the first place.
+   * Those pick UIs write `managed: false` with no `displaced` record, the
+   * exact same shape the silent-eviction bug leaves behind, so the provider
+   * config alone cannot tell the two apart; this flag is the difference.
+   * Reset to false automatically the moment `managed: true` is written back
+   * onto the `openai` slot (Built-in chosen again, Restore, or a full Reset),
+   * so a LATER real eviction is still caught.
+   */
+  engineOptedOut: boolean
 
   setProviderConfig: (id: ProviderId, updates: Partial<ProviderConfig>) => void
   setProviderApiKey: (id: ProviderId, key: string) => void
@@ -178,6 +194,10 @@ interface ProviderState {
    * cloud-enabled is account state owned by useCloudAuth, not backend config. */
   resetProvidersToDefaults: () => void
   setHideBackendSelector: (hide: boolean) => void
+  /** Marks (or clears) the deliberate opt-out above. The five pick UIs call
+   *  this with `true`; nothing else needs to call it with `false`, since
+   *  `setProviderConfig` clears it on its own the moment LU Engine is back. */
+  setEngineOptedOut: (optedOut: boolean) => void
   /** H5: load provider keys from the OS keychain (Win/macOS), migrating any
    * existing localStorage key into the vault. No-op / fallback elsewhere.
    * Call once at app startup, before the first provider client is built. */
@@ -191,8 +211,10 @@ export const useProviderStore = create<ProviderState>()(
     (set, get) => ({
       providers: DEFAULT_PROVIDERS,
       hideBackendSelector: false,
+      engineOptedOut: false,
 
       setHideBackendSelector: (hide) => set({ hideBackendSelector: hide }),
+      setEngineOptedOut: (optedOut) => set({ engineOptedOut: optedOut }),
 
       setProviderConfig: (id, updates) => {
         const before = get().providers[id]
@@ -210,6 +232,13 @@ export const useProviderStore = create<ProviderState>()(
         // it used to get: Jan takes the slot, lu-llama-server keeps PID and
         // model in RAM until the app is restarted. See lib/builtin-slot-eviction.
         if (id === 'openai') onLocalSlotChanged(before, get().providers.openai)
+        // LU Engine is back on the slot on purpose (Built-in chosen again,
+        // Restore, a full Reset): whatever opt-out was recorded no longer
+        // describes the customer's current choice, so a LATER real eviction
+        // is not silently swallowed by a stale flag.
+        if (id === 'openai' && updates.managed === true && get().engineOptedOut) {
+          set({ engineOptedOut: false })
+        }
       },
 
       setProviderApiKey: (id, key) => {
@@ -417,6 +446,7 @@ export const useProviderStore = create<ProviderState>()(
           })
         ) as Record<ProviderId, ProviderConfig>,
         hideBackendSelector: state.hideBackendSelector,
+        engineOptedOut: state.engineOptedOut,
       }),
     }
   )

@@ -90,7 +90,7 @@ export function Onboarding() {
   // heruntergeladen wurde. Deshalb steht die Liste hier und nicht dort.
   const [pulledModels, setPulledModels] = useState<string[]>([])
   const { settings, updateSettings } = useSettingsStore()
-  const { setProviderConfig } = useProviderStore()
+  const { setProviderConfig, setEngineOptedOut } = useProviderStore()
 
   const isDark = settings.theme === 'dark'
   const skin = onboardingSkin(isDark)
@@ -177,6 +177,11 @@ export function Onboarding() {
       // `lib/onboarding-provider-gate.ts` dem Assistenten stellt.
       setProviderConfig('ollama', { enabled: true, disabledByUser: false })
       setProviderConfig('openai', { enabled: false, managed: false })
+      // Opus review, R13D follow-up: a deliberate pick here, not an eviction
+      // bug, so the missing-engine notice must not read this as LU Engine
+      // having fallen out from under the customer. See
+      // lib/builtin-engine-presence.ts.
+      setEngineOptedOut(true)
     } else {
       const backend = detectedBackends.find(b => b.id === selectedBackend)
       const preset = backend && PROVIDER_PRESETS.find(p => p.id === backend.id)
@@ -185,6 +190,8 @@ export function Onboarding() {
           enabled: true, name: backend.name, baseUrl: backend.baseUrl,
           isLocal: true, managed: false,
         })
+        // Same reasoning as the Ollama branch above: a deliberate pick.
+        setEngineOptedOut(true)
       }
     }
     setStep(nextStepAfterBackends())
