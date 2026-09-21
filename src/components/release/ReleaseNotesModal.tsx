@@ -215,8 +215,21 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
                     das ist 3,37:1 auf #202020 (bg-lu-base) und faellt unter
                     4,5:1. text-gray-300 auf derselben Flaeche misst 11,05:1,
                     die Groesse ist jetzt die vom Eigner verlangte Untergrenze
-                    von 0.75rem. */}
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-300">
+                    von 0.75rem.
+                    Auflage 3 (Bauer, 21.09.2026): die Rubrik-Ueberschrift
+                    hervorgehoben, David wollte sie in Lila sehen. Derselbe
+                    Hausakzent wie die Cloud-Pille und der primaere
+                    Create-Knopf (`text-lu-accent`, schon zwei Zeilen weiter
+                    oben in diesem Blatt am "Expand all"-Knopf im Einsatz),
+                    kein neuer Farbwert. Diese Flaeche traegt bewusst kein
+                    `.light`-Gegenstueck (siehe index.css, "Diese Leiter ist
+                    DUNKEL"): `bg-lu-base` bleibt #202020 in beiden
+                    App-Themes, also bleibt auch der Kontrast gleich, 6,27:1
+                    gegen #a094f8, ueber der AA-Schwelle von 4,5:1 fuer
+                    Fliesstext. Die Punkt-Titel darunter (ReleaseNoteRow)
+                    bleiben unveraendert grau, nur die Rubrik selbst faerbt
+                    um. */}
+                <p className="text-xs font-semibold uppercase tracking-wide text-lu-accent">
                   {section.title}
                 </p>
                 <ul className="space-y-1.5">

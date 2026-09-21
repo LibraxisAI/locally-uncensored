@@ -164,6 +164,23 @@ describe('grouped changes', () => {
     expect(screen.queryByText('Engine item one, the long version nobody skims.')).toBeNull()
   })
 
+  it('the section title carries the house purple accent, and an item title does not (Auflage 3, 21.09.2026)', () => {
+    // Opus review, Blocker 4: `getByText('Engine title one.')` returns the
+    // innermost element carrying that text, the bare <span> in
+    // ReleaseNoteRow, which has no className at all, so asserting against
+    // IT can never go red no matter what colour the row actually paints.
+    // The row's own colour lives on the button that wraps the span
+    // (ReleaseNotesModal.tsx's ReleaseNoteRow), so the check has to run
+    // against `closest('button')`, the element whose class list is real.
+    // Proven by mutation: setting the button's className to text-lu-accent
+    // made this assertion fail before this fix; it now catches that.
+    render(<ReleaseNoteBody note={withGroups} onClose={() => {}} />)
+    const sectionHeading = screen.getByText('Engine and hardware')
+    expect(sectionHeading.className).toContain('text-lu-accent')
+    const itemTitleButton = screen.getByText('Engine title one.').closest('button')!
+    expect(itemTitleButton.className).not.toContain('text-lu-accent')
+  })
+
   it('an item with no title (plain string) renders its own text directly, with nothing to click', () => {
     const flatItem: ReleaseNote = {
       version: '9.9.8',
