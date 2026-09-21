@@ -223,9 +223,23 @@ jobs:
       # They are unit tests over pure logic and short-lived child processes —
       # the whole suite runs in seconds once the crate is built, so there is no
       # cost argument for leaving them out.
+      #
+      # mlx_snapshot.rs's seven set_len tests allocate real bytes on NTFS
+      # (9.18 GB per test), unlike on the other platforms where a sparse file
+      # costs nothing. cargo test's default runner is one thread per core;
+      # windows-latest has 4 vCPUs, so the parallel default would peak around
+      # 35 GB (four tests at 9.18 GB) against the 15 to 30 GB a windows-latest
+      # runner has free. Linux keeps the parallel default; only the Windows
+      # lane is forced single-threaded, which caps the same tests at 9.18 GB.
       - name: Cargo test
         working-directory: src-tauri
-        run: cargo test
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            cargo test -- --test-threads=1
+          else
+            cargo test
+          fi
 
       # Runde 3, Nachbesserung 7: the self-heal tests in install/pip.rs
       # (a_ssl_collision_is_retried_once_..., a_genuine_ssl_gap_is_not_
