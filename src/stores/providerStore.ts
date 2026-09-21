@@ -165,6 +165,22 @@ interface ProviderState {
    * AppShell never re-shows the modal on startup even if multiple backends are
    * running. User can still add / remove providers via Settings → Providers. */
   hideBackendSelector: boolean
+  /**
+   * Persisted: the customer picked a different local backend for the `openai`
+   * slot ON PURPOSE, through one of the dedicated pick UIs (onboarding's
+   * backend step, the startup backend selector, "Start LM Studio Server" in
+   * the model picker), not through Add Provider taking the slot from LU
+   * Engine. Opus review, R13D Nebenfund 1 follow-up (2026-09-21): the missing
+   *-engine notice (lib/builtin-engine-presence.ts) must not fire for a
+   * customer who never had, or never wanted, LU Engine in the first place.
+   * Those pick UIs write `managed: false` with no `displaced` record, the
+   * exact same shape the silent-eviction bug leaves behind, so the provider
+   * config alone cannot tell the two apart; this flag is the difference.
+   * Reset to false automatically the moment `managed: true` is written back
+   * onto the `openai` slot (Built-in chosen again, Restore, or a full Reset),
+   * so a LATER real eviction is still caught.
+   */
+  engineOptedOut: boolean
 
   setProviderConfig: (id: ProviderId, updates: Partial<ProviderConfig>) => void
   setProviderApiKey: (id: ProviderId, key: string) => void
@@ -178,6 +194,10 @@ interface ProviderState {
    * cloud-enabled is account state owned by useCloudAuth, not backend config. */
   resetProvidersToDefaults: () => void
   setHideBackendSelector: (hide: boolean) => void
+  /** Marks (or clears) the deliberate opt-out above. The five pick UIs call
+   *  this with `true`; nothing else needs to call it with `false`, since
+   *  `setProviderConfig` clears it on its own the moment LU Engine is back. */
+  setEngineOptedOut: (optedOut: boolean) => void
   /** H5: load provider keys from the OS keychain (Win/macOS), migrating any
    * existing localStorage key into the vault. No-op / fallback elsewhere.
    * Call once at app startup, before the first provider client is built. */
@@ -191,8 +211,10 @@ export const useProviderStore = create<ProviderState>()(
     (set, get) => ({
       providers: DEFAULT_PROVIDERS,
       hideBackendSelector: false,
+      engineOptedOut: false,
 
       setHideBackendSelector: (hide) => set({ hideBackendSelector: hide }),
+      setEngineOptedOut: (optedOut) => set({ engineOptedOut: optedOut }),
 
       setProviderConfig: (id, updates) => {
         const before = get().providers[id]
@@ -210,6 +232,13 @@ export const useProviderStore = create<ProviderState>()(
         // it used to get: Jan takes the slot, lu-llama-server keeps PID and
         // model in RAM until the app is restarted. See lib/builtin-slot-eviction.
         if (id === 'openai') onLocalSlotChanged(before, get().providers.openai)
+        // LU Engine is back on the slot on purpose (Built-in chosen again,
+        // Restore, a full Reset): whatever opt-out was recorded no longer
+        // describes the customer's current choice, so a LATER real eviction
+        // is not silently swallowed by a stale flag.
+        if (id === 'openai' && updates.managed === true && get().engineOptedOut) {
+          set({ engineOptedOut: false })
+        }
       },
 
       setProviderApiKey: (id, key) => {
@@ -256,6 +285,14 @@ export const useProviderStore = create<ProviderState>()(
             [id]: DEFAULT_PROVIDERS[id],
           },
         }))
+        // Opus review, round 2, Blocker 7: DEFAULT_PROVIDERS.openai carries
+        // managed: true, so a reset of THIS slot really is "LU Engine chosen
+        // again" in every sense but the literal one setProviderConfig checks
+        // for (it writes `providers` directly, not through setProviderConfig,
+        // so that auto-clear never runs). Without this the field's own
+        // comment ("Built-in chosen again, Restore, or a full Reset") would
+        // be a claim the code does not keep.
+        if (id === 'openai') set({ engineOptedOut: false })
         if (id === 'openai') onLocalSlotChanged(before, get().providers.openai)
         if (keychainReady) {
           void secretDelete(id).catch(() => { /* vault delete best-effort */ })
@@ -279,6 +316,11 @@ export const useProviderStore = create<ProviderState>()(
           }
           return { providers: next }
         })
+        // Opus review, round 2, Blocker 7: same reasoning as resetProvider
+        // above, DEFAULT_PROVIDERS.openai is managed: true, so this hands the
+        // slot back to LU Engine too, and the field's own comment promises
+        // the mark clears on "a full Reset".
+        set({ engineOptedOut: false })
         clearProviderCache()
         // Reset hands the slot back to the app's own engine, which voids a
         // pending unload rather than causing one.
@@ -388,10 +430,25 @@ export const useProviderStore = create<ProviderState>()(
             merged[id] = displaced ? { ...cfg, displaced } : cfg
           }
         }
+        // Opus review, round 2, Blocker 6: `engineOptedOut` is new in 3.0.1.
+        // A blob written before it exists has no such key at all, so `...p`
+        // below leaves the fresh-install default `false` standing, and that
+        // reads as "LU Engine was evicted" for EVERY pre-3.0.1 customer whose
+        // `openai` slot already carried `managed: false` from one of the five
+        // deliberate pick UIs, the false positive Blocker 1 was fixed against,
+        // now moved from the new customer to the existing one who actually
+        // gets the update. Backfill: an old blob with no `openai.managed` and
+        // no `displaced.managed` reads as "this installation opted out before
+        // the flag existed", same one-sentence rule the rest of this file
+        // uses, better a missed notice on old data than a false one.
+        const openaiSlot = merged.openai
+        const backfillOptedOut = !!openaiSlot && !openaiSlot.managed && !openaiSlot.displaced?.managed
+        const engineOptedOut = p.engineOptedOut === undefined ? backfillOptedOut : p.engineOptedOut
         return {
           ...current,
           ...p,
           providers: merged,
+          engineOptedOut,
         }
       },
       // Don't persist transient state, only configs + user's "don't show again" preference.
@@ -417,6 +474,7 @@ export const useProviderStore = create<ProviderState>()(
           })
         ) as Record<ProviderId, ProviderConfig>,
         hideBackendSelector: state.hideBackendSelector,
+        engineOptedOut: state.engineOptedOut,
       }),
     }
   )

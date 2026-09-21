@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Wifi, WifiOff, Loader2, Eye, EyeOff, ChevronDown, Plus, Power, Play, Trash2 } from 'lucide-react'
+import { Wifi, WifiOff, Loader2, Eye, EyeOff, ChevronDown, Plus, Power, Play, Trash2, X, AlertTriangle } from 'lucide-react'
 import { useProviderStore, deobfuscate } from '../../stores/providerStore'
 import { providerRowIds, isReturnableRow } from '../../lib/provider-visibility'
 import {
@@ -22,8 +22,9 @@ import { useBuiltinEngineStatus } from '../../hooks/useBuiltinEngineStatus'
 import { reachVerdict, liveSlotStatus, type SlotStatus } from '../../lib/builtin-slot-status'
 import type { ProviderId, ProviderConfig } from '../../api/providers/types'
 import { disabledSlotNote } from '../../lib/disabled-slot-note'
-import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
+import { HINWEIS_TEXT, HINWEIS_ZEILE, PUNKT_FARBE } from '../../lib/hinweis'
 import { parkApiKeyForBackend, restoreParkedApiKeyForBackend } from '../../lib/parked-key'
+import { isBuiltinEngineMissing } from '../../lib/builtin-engine-presence'
 
 const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
 
@@ -107,7 +108,7 @@ export function providerSlotView(id: ProviderId, config: ProviderConfig): SlotVi
 type LmStudioServerInfo = { lms_present: boolean; running: boolean }
 
 export function ProviderSettings() {
-  const { providers, setProviderConfig, setProviderApiKey, getProviderApiKey } = useProviderStore()
+  const { providers, setProviderConfig, setProviderApiKey, getProviderApiKey, engineOptedOut } = useProviderStore()
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [testing, setTesting] = useState<ProviderId | null>(null)
   const [statuses, setStatuses] = useState<Record<string, SlotStatus>>({})
@@ -125,6 +126,30 @@ export function ProviderSettings() {
   // See wouldLoseApiKeyOnRestart below for why this exists.
   const [showKeyLossWarning, setShowKeyLossWarning] = useState(false)
   const [expandedProvider, setExpandedProvider] = useState<ProviderId | null>(null)
+  // R13D Nebenfund 1: LU Engine can fall out of the `openai` slot entirely
+  // (see lib/builtin-engine-presence.ts for the read and the root cause).
+  // Dismissal is session-only, not persisted: a restart re-checks the slot
+  // and shows the notice again while the engine is still missing, so a
+  // dismissed notice never hides a standing problem across restarts. It also
+  // resets the moment the engine is back, so dismissing today's notice does
+  // not silently swallow tomorrow's.
+  const [engineNoticeDismissed, setEngineNoticeDismissed] = useState(false)
+  // Opus review: `managed: false` with no `displaced` record is also the
+  // shape a customer who picked Ollama or LM Studio on purpose leaves
+  // behind (onboarding, the startup backend selector, Start LM Studio
+  // Server). `engineOptedOut` is how those are told apart from the R13D
+  // eviction bug; see lib/builtin-engine-presence.ts.
+  const engineMissing = isBuiltinEngineMissing(providers.openai, engineOptedOut)
+  // Reset the dismissal the moment the condition itself changes, adjusted
+  // during render rather than in an effect (react-hooks/set-state-in-effect):
+  // this is the "state that resets when a prop changes" case the React docs
+  // call out, not a cascading-render trap. It keeps a dismissed notice from
+  // hiding a DIFFERENT missing-engine episode than the one the user dismissed.
+  const [engineWasMissing, setEngineWasMissing] = useState(engineMissing)
+  if (engineMissing !== engineWasMissing) {
+    setEngineWasMissing(engineMissing)
+    if (!engineMissing) setEngineNoticeDismissed(false)
+  }
 
 
   // Bug (g) state, LM-Studio-on-disk-but-server-off detection.
@@ -482,6 +507,32 @@ export function ProviderSettings() {
 
   return (
     <div className="space-y-2">
+      {engineMissing && !engineNoticeDismissed && (
+        <div
+          role="alert"
+          data-testid="engine-missing-notice"
+          className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.fehler} px-1`}
+        >
+          <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+          <span className="flex-1 min-w-0">
+            LU Engine is missing from your providers. Restore it below to use the app's own built-in engine again. We are fixing the cause in the next update.
+          </span>
+          <button
+            onClick={() => selectPreset(PROVIDER_PRESETS.find(p => p.id === 'builtin')!)}
+            className="lu-control self-center shrink-0"
+          >
+            Restore LU Engine
+          </button>
+          <button
+            onClick={() => setEngineNoticeDismissed(true)}
+            className="self-center shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 transition-opacity"
+            aria-label="Dismiss"
+            title="Dismiss"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
       {/* Providers List: enabled rows, plus the ones the user switched off */}
       {rowIds.map(id => {
         const config = providers[id]

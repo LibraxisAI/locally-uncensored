@@ -224,7 +224,14 @@ function LmStudioServerHint({ onStarted }: { onStarted: () => void }) {
             // end (Nebenbefund 4, R8 re-measure). Same call the
             // BackendSelector makes, no LM-Studio-only path.
             const update = lmStudioSlotUpdate(useProviderStore.getState().providers.openai)
-            if (update) useProviderStore.getState().setProviderConfig('openai', update)
+            if (update) {
+              useProviderStore.getState().setProviderConfig('openai', update)
+              // Opus review, R13D follow-up: this click is the deliberate
+              // pick `adoptionReplacesBuiltinEngine` already warns about
+              // above, not an eviction bug, so the missing-engine notice
+              // must not fire because of it. See lib/builtin-engine-presence.ts.
+              if (update.managed === false) useProviderStore.getState().setEngineOptedOut(true)
+            }
             onStarted()
             break
           }
