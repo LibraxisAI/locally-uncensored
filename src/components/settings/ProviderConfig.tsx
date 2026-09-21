@@ -513,11 +513,22 @@ export function ProviderSettings() {
 
   return (
     <div className="space-y-2">
+      {/* Windows-Bau t14, Bild 38-lmstudio-added.png: diese Zeile war knallrot,
+          Dreieck rot, X rot, und der Restore-Knopf ein eigenes Kaestchen. Der
+          Eigner will "unauffaellig, aber so, dass man es sieht", also derselbe
+          ruhige Ton wie die Zeile oben im Modellmenue: Text in gedecktem Grau,
+          Akzent nur fuer den Textknopf, eine Zeile, kein Kasten. Verhalten,
+          Texte und selectPreset unveraendert, `role="alert"` bleibt, die Farbe
+          war nie das, was die Zeile ankuendigt.
+          Das Warnsymbol bleibt im selben Grau statt in Amber: Gelb und Amber
+          sind in dieser Oberflaeche verboten (lib/hinweis.ts, Waechter
+          lib/__tests__/kein-gelb-in-der-oberflaeche.test.ts), und es gibt
+          keinen dritten Ton. */}
       {engineMissing && !engineNoticeDismissed && (
         <div
           role="alert"
           data-testid="engine-missing-notice"
-          className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.fehler} px-1`}
+          className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} px-1`}
         >
           <AlertTriangle size={11} className="shrink-0 mt-0.5" />
           <span className="flex-1 min-w-0">
@@ -525,13 +536,13 @@ export function ProviderSettings() {
           </span>
           <button
             onClick={() => selectPreset(PROVIDER_PRESETS.find(p => p.id === 'builtin')!)}
-            className="lu-control self-center shrink-0"
+            className="self-center shrink-0 text-lu-accent underline underline-offset-2"
           >
             Restore LU Engine
           </button>
           <button
             onClick={() => { dismissEngineNoticeForSession(); setEngineNoticeDismissed(true) }}
-            className="self-center shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 transition-opacity"
+            className="self-center shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
             aria-label="Dismiss"
             title="Dismiss"
           >

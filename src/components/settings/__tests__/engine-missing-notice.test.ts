@@ -161,6 +161,49 @@ describe('the LU Engine missing notice in Settings, AI Backends, Providers', () 
     expect(banner).not.toContain('applyPreset(')
   })
 
+  /**
+   * Windows-Bau t14, Bild 38-lmstudio-added.png: die Zeile war knallrot, mit
+   * rotem Dreieck, rotem X und einem eigenen Kaestchen um "Restore LU Engine".
+   * Der Eigner will "unauffaellig, aber so, dass man es sieht", also derselbe
+   * ruhige Ton wie die Zeile oben im Modellmenue des Chats.
+   */
+  it('traegt den ruhigen Ton, nicht Rot, und den Akzent nur am Textknopf', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const pane = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../ProviderConfig.tsx'), 'utf8')
+    const banner = pane.slice(
+      pane.indexOf('data-testid="engine-missing-notice"'),
+      pane.indexOf('{/* Providers List'),
+    )
+    expect(banner).toContain('HINWEIS_TEXT.ruhig')
+    expect(banner).not.toContain('HINWEIS_TEXT.fehler')
+    expect(banner).not.toContain('text-red-')
+    // Kein Kasten mehr um den Restore-Knopf, er ist ein Textknopf im Akzent.
+    expect(banner).toContain('text-lu-accent')
+    expect(banner).not.toContain('lu-control')
+    // NEGATIVKONTROLLE mit Zahl: der Ausschnitt ist wirklich die Zeile und
+    // nicht ein leerer String, sonst waere jede Aussage oben wertlos.
+    expect(banner.length).toBeGreaterThan(200)
+    expect((banner.match(/Restore LU Engine/g) ?? []).length).toBe(1)
+  })
+
+  it('und die Zeile im Modellmenue sieht genauso aus: gleicher Ton, gleicher Akzent', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const picker = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../models/ModelSelector.tsx'), 'utf8')
+    const zeile = picker.slice(
+      picker.indexOf('data-testid="picker-engine-missing"'),
+      picker.indexOf('Bug Q v2.4.7'),
+    )
+    expect(zeile).toContain('HINWEIS_TEXT.ruhig')
+    expect(zeile).toContain('text-lu-accent')
+    expect(zeile).not.toContain('text-red-')
+    expect(zeile.length).toBeGreaterThan(200)
+  })
+
   // NEGATIVE CONTROL: two providers on the screen, one occupant and one
   // standby card, and neither one is LU Engine, is the one state where the
   // notice really is owed.

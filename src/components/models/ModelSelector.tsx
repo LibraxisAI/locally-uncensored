@@ -1357,7 +1357,7 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
                   onClick={() => { dismissEngineNoticeForSession(); setEngineNoticeHidden(true) }}
                   aria-label="Dismiss"
                   title="Dismiss"
-                  className="shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 transition-opacity"
+                  className="shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
                 >
                   <X size={10} />
                 </button>
