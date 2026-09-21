@@ -232,14 +232,23 @@ describe('the bar is wired into every surface that can trigger it', () => {
     return readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), p), 'utf8')
   }
 
-  it('sits above the chat composer', async () => {
-    const src = await read('../ChatView.tsx')
-    expect(src).toMatch(/composerAbove=\{<><LuEngineSwitchBar \/>/)
+  // 21.09.2026: die Zeile ist aus beiden Composern ausgezogen. David, am
+  // echten Windows-Bau und mehrfach: „NICHTS im prompt fenster!" Der Satz
+  // handelt vom Modell und steht jetzt dort, wo man das Modell waehlt, ganz
+  // oben im Aufklapper des Waehlers, der in genau diesen beiden Composern
+  // sitzt. Erreichbar bleibt er, wenn das Menue zufaellt, ueber den Punkt am
+  // Waehlerknopf: der Punkt ist erlaubt, Text nicht.
+  it('sits at the top of the model picker, which both composers carry', async () => {
+    const src = await read('../../models/ModelSelector.tsx')
+    expect(src).toContain('data-testid="picker-engine-note"')
+    expect(src).toContain('data-testid="picker-engine-note-dot"')
   })
 
-  it('sits above the code composer, which has the same picker', async () => {
-    const src = await read('../CodexView.tsx')
-    expect(src).toMatch(/composerAbove=\{<><LuEngineSwitchBar \/>/)
+  it('NEGATIVE CONTROL: and no longer above either composer', async () => {
+    for (const p of ['../ChatView.tsx', '../CodexView.tsx']) {
+      const src = await read(p)
+      expect(src, `${p} still draws the bar`).not.toContain('<LuEngineSwitchBar />')
+    }
   })
 
   it('and on the Models page, where Use can trigger it too', async () => {

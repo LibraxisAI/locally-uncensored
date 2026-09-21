@@ -22,7 +22,8 @@ import { ModelSelector } from '../models/ModelSelector'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
 import { AVATAR_SLOT } from './avatar-slot'
 import { GoalBar } from './GoalBar'
-import { LuEngineSwitchBar } from './LuEngineSwitchBar'
+import { ChatNotices } from './ChatNotices'
+import { LocalLaneWaitLine } from './LocalLaneWaitLine'
 import { LoopBar } from './LoopBar'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useModelStore } from '../../stores/modelStore'
@@ -673,7 +674,16 @@ export function CodexView() {
           )}
         </div>
 
-        {/* One-time "/" hint, directly above the prompt (Code view only). */}
+        {/* Die stehenden Sitzungsbaender und die Zeilen, die frueher IM
+            Composer standen (David, 21.09.2026: „NICHTS im prompt fenster!").
+            LoopBar und GoalBar sind Bedienelemente und bleiben sichtbar, nur
+            als Geschwister UEBER dem Kasten statt darin; die Wartezeile und
+            die Composer-Hinweise sind Hinweise und stehen jetzt hier. Die
+            Zeile ueber das MODELL ist in den Modellwaehler gezogen. */}
+        <ChatNotices />
+        <LoopBar onStop={stopCodex} />
+        <GoalBar />
+        <LocalLaneWaitLine waiting={!!queuedForLocalLane} queuePosition={localLaneQueuePosition} />
 
         {/* Input */}
         <ChatInput
@@ -686,13 +696,8 @@ export function CodexView() {
           // conversation, not the hook instance.
           isGenerating={isRunning || codexGenerating || queuedForLocalLane}
           waitingForLocalLane={queuedForLocalLane}
-          localLaneQueuePosition={localLaneQueuePosition}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}
-          // No plan lives here. The prompt window is the prompt window
-          // (David, 2026-08-22): the plan and its Approve-and-run card sit
-          // at the bottom of the Explorer column on the right.
-          composerAbove={<><LuEngineSwitchBar /><LoopBar onStop={stopCodex} /><GoalBar /></>}
           // Ask / Bypass / Plan sits here, in the CODE composer only (plan
           // C1). ChatInput stays surface-neutral, so the Chat tab inherits
           // nothing from it. Plugins used to ride along here and now lives in

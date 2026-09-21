@@ -436,7 +436,6 @@ function MessageBubbleImpl({ message, onRegenerate, onEdit, pendingApprovalId, o
           {isEditing ? (
             <div className="space-y-1">
               <textarea
-                data-lu-quiet-focus
                 ref={editRef}
                 value={editContent}
                 onChange={(e) => {

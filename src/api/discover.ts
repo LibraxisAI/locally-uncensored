@@ -1742,6 +1742,34 @@ export function civitaiHostSwap(url: string | undefined, host: string): string |
   return url.replace(/^(https?:\/\/)civitai\.com/i, `$1${host}`)
 }
 
+/**
+ * Eine CivitAI-Beschreibung als Text, nicht als Markup.
+ *
+ * Befund am echten Windows-Bau (21.09.2026, C4-search-pixel-results.png): in
+ * der Trefferliste stand woertlich „High quality in promt &amp; negative low
+ * quality". Das Feld ist HTML, und abgeschnitten wurden bisher nur die Tags;
+ * die Entitaeten blieben stehen und wurden als Zeichen gezeigt.
+ *
+ * Gerendert wird das Ergebnis als gewoehnlicher React-Textknoten
+ * (CivitaiSearchPanel.tsx), also NICHT ueber `dangerouslySetInnerHTML`. Genau
+ * deshalb darf hier dekodiert werden: ein `<script>` aus einer fremden
+ * Beschreibung ist nach dem Tag-Schnitt kein Tag mehr, und was React
+ * ausgibt, ist in jedem Fall Text. `&amp;` kommt ZULETZT dran, sonst wuerde
+ * aus dem doppelt kodierten `&amp;lt;` am Ende ein `<`.
+ */
+export function civitaiDescriptionToText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .trim()
+}
+
 export async function searchCivitaiModels(
   query: string,
   type: 'Checkpoint' | 'LORA' | 'VAE' | 'TextualInversion' = 'Checkpoint',
@@ -1806,7 +1834,7 @@ export async function searchCivitaiModels(
         || `${(itemName ?? '').replace(/[^a-zA-Z0-9._-]/g, '_')}.safetensors`
 
       const descParts: string[] = []
-      const rawDesc = (asString(prop(item, 'description')) ?? '').replace(/<[^>]*>/g, '').trim()
+      const rawDesc = civitaiDescriptionToText(asString(prop(item, 'description')) ?? '')
       if (rawDesc) descParts.push(rawDesc.slice(0, 120))
       if (downloadCount) descParts.push(`${formatCount(downloadCount)} downloads`)
       if (creator) descParts.push(`by ${creator}`)
