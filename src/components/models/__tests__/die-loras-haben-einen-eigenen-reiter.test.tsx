@@ -25,23 +25,29 @@ import type { AIModel } from '../../../types/models'
 
 // ── Der Unterbau, den die Seite anfasst ────────────────────────────────
 
-const backendCall = vi.fn(async () => ({ status: 'deleted' }))
-const searchCivitaiModels = vi.fn(async () => [] as unknown[])
-const startModelDownload = vi.fn(async () => ({ status: 'ok', id: '1' }))
+const backendCall = vi.fn(async (_cmd: string, _args?: unknown) => ({ status: 'deleted' }))
+const searchCivitaiModels = vi.fn(
+  async (_query: string, _type: string, _key?: string, _host?: string) => [] as unknown[],
+)
+const startModelDownload = vi.fn(
+  async (_url: string, _subfolder: string, _filename: string) => ({ status: 'ok', id: '1' }),
+)
 const setActiveModel = vi.fn(async () => {})
 const fetchModels = vi.fn(async () => {})
 let macHost = false
 let comfyLaeuft = true
 
 vi.mock('../../../api/backend', () => ({
-  backendCall: (...a: unknown[]) => backendCall(...(a as [])),
+  backendCall: (cmd: string, args?: unknown) => backendCall(cmd, args),
   openExternal: vi.fn(),
   isTauri: () => false,
   isMacOS: () => false,
 }))
 vi.mock('../../../api/discover', () => ({
-  searchCivitaiModels: (...a: unknown[]) => searchCivitaiModels(...(a as [])),
-  startModelDownload: (...a: unknown[]) => startModelDownload(...(a as [])),
+  searchCivitaiModels: (query: string, type: string, key?: string, host?: string) =>
+    searchCivitaiModels(query, type, key, host),
+  startModelDownload: (url: string, subfolder: string, filename: string) =>
+    startModelDownload(url, subfolder, filename),
 }))
 vi.mock('../../../api/comfyui', () => ({
   checkComfyConnection: vi.fn(async () => comfyLaeuft),
@@ -228,7 +234,7 @@ describe('Loeschen aus dem LoRA-Reiter', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Delete$/ }))
     await waitFor(() => expect(backendCall).toHaveBeenCalledTimes(1))
     expect(backendCall.mock.calls[0][0]).toBe('delete_comfy_model')
-    expect((backendCall.mock.calls[0][1] as { filename: string }).filename)
+    expect((backendCall.mock.calls[0][1] as { filename: string } | undefined)?.filename)
       .toBe('pixel_art_xl.safetensors')
     // Der Bestand ist die eine Quelle der Liste: faellt die Datei dort weg,
     // faellt die Zeile weg.
