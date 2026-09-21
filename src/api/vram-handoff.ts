@@ -253,6 +253,10 @@ const MODEL_FOOTPRINT_GB: Record<string, number> = {
   flux2: 22,
   zimage: 12,
   ernie_image: 18,
+  // Qwen-Image 2.1, int8_convrot pipeline: about 16 GiB with the DiT, the
+  // Qwen3-VL 8B encoder and the VAE all resident. Rounded up, like the rest
+  // of this table, so 'auto' errs toward freeing memory.
+  qwenimage: 18,
   // Video (heavier — UNet + VAE + big text encoder all resident)
   wan: 18,
   hunyuan: 20,
