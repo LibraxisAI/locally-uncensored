@@ -29,8 +29,8 @@
  *
  * Run: npx vitest run src/api/__tests__/get-target-is-a-folder-we-read.test.ts
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, readdirSync, statSync, openSync, ftruncateSync, closeSync } from 'node:fs'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, readdirSync, statSync, openSync, closeSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 
@@ -85,6 +85,21 @@ const listFor = (root: string, key: string, gguf: boolean) =>
   (SCANS[key] ?? []).flatMap((d) => filesIn(root, d))
     .filter((f) => (gguf ? extOf(f) === '.gguf' : PT.has(extOf(f))))
 
+/**
+ * The tree used to be built with ftruncateSync to the real catalog size, up
+ * to 27 GB per bundle, on the theory that a sparse file costs no bytes. That
+ * is only true on APFS and ext4. On NTFS ftruncate allocates for real, and a
+ * single run on the Windows test box wrote 100.8 GB and filled the disk.
+ *
+ * Every file the Get button "writes" here is now a handful of real bytes,
+ * on every filesystem. The completeness math in `serve()` below still sees
+ * the real catalog size, but reads it from `declaredBytes` instead of from
+ * statSync, so the proof that a 27 GB bundle reads back as complete survives
+ * without ever asking the disk for 27 GB.
+ */
+const declaredBytes = new Map<string, number>()
+const createdRoots = new Set<string>()
+
 const okJson = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
 const notFound = { ok: false, status: 404, json: async () => ({}) }
 const combo = (node: string, field: string, list: string[]) =>
@@ -117,7 +132,8 @@ function serve(root: string) {
   ) => (args?.files ?? []).map((f) => {
     const p = join(root, f.subfolder.startsWith('custom_nodes') ? '' : 'models', f.subfolder, f.filename)
     try {
-      const bytes = statSync(p).size
+      statSync(p) // throws if the file was never planted
+      const bytes = declaredBytes.get(p) ?? 0
       return { filename: f.filename, exists: true, actualBytes: bytes, complete: bytes >= f.expectedBytes * 0.5 }
     } catch {
       return { filename: f.filename, exists: false, actualBytes: 0, complete: false }
@@ -125,20 +141,34 @@ function serve(root: string) {
   }))
 }
 
-/** Exactly what the Get button writes: same folder, same name, full size. */
+/**
+ * Exactly what the Get button writes: same folder, same name. The size is
+ * real for the completeness math (see `declaredBytes` above) but the file on
+ * disk stays empty, so the tree costs no real bytes on any filesystem.
+ */
 function runTheGet(files: DiscoverModel[]): string {
   const root = mkdtempSync(join(tmpdir(), 'lu-comfy-tree-'))
+  createdRoots.add(root)
   for (const f of files) {
     if (!f.filename || !f.subfolder) continue
     const rel = f.subfolder.startsWith('custom_nodes') ? f.subfolder : join('models', f.subfolder)
     const p = join(root, rel, f.filename)
     mkdirSync(dirname(p), { recursive: true })
-    // Sparse, so a 27 GB bundle costs no bytes and no time.
-    const fd = openSync(p, 'w')
-    ftruncateSync(fd, Math.round((f.sizeGB ?? 0.001) * 1_073_741_824))
-    closeSync(fd)
+    closeSync(openSync(p, 'w'))
+    declaredBytes.set(p, Math.round((f.sizeGB ?? 0.001) * 1_073_741_824))
   }
   return root
+}
+
+/** Real bytes on disk under `root`, the number the guard test below checks. */
+function realBytesUnder(root: string): number {
+  let total = 0
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const p = join(root, entry.name)
+    if (entry.isDirectory()) total += realBytesUnder(p)
+    else if (entry.isFile()) total += statSync(p).size
+  }
+  return total
 }
 
 /** The file that makes a bundle what it is: the one that generates. */
@@ -156,6 +186,15 @@ const LANES: Array<{ lane: string; bundles: () => ModelBundle[]; picker: () => P
 const allBundles = () => LANES.flatMap((l) => l.bundles())
 
 beforeEach(() => { localFetch.mockReset(); backendCall.mockReset() })
+
+// Every mkdtempSync above used to live forever: nothing in this file removed
+// its own tree, which is how 4864 of them piled up in one TMPDIR. Runs even
+// when a test goes red, so a failure never leaves a bigger mess than a pass.
+afterEach(() => {
+  for (const root of createdRoots) rmSync(root, { recursive: true, force: true })
+  createdRoots.clear()
+  declaredBytes.clear()
+})
 
 describe('every folder the Get button writes into is one the app reads back', () => {
   it('THE FIX: no bundle in the catalog writes into a folder no reader knows', () => {
@@ -225,5 +264,15 @@ describe('what the Get wrote, the picker offers', () => {
       const wanted = b.files.filter((f) => f.filename && f.subfolder).map((f) => f.filename!)
       expect(await modelsNotVisibleInComfy(wanted), b.name).toEqual([])
     }
+  }, 30_000)
+})
+
+// Guard against the disk-filling bug coming back. The whole catalog,
+// including the 27 GB bundle, must still land under a few real MB.
+describe('the tree this file builds never gets large for real', () => {
+  it('runTheGet across the whole catalog stays far under 5 MB on disk', () => {
+    let total = 0
+    for (const b of allBundles()) total += realBytesUnder(runTheGet(b.files))
+    expect(total).toBeLessThan(5_000_000)
   }, 30_000)
 })
