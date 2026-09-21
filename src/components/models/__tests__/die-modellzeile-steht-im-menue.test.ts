@@ -94,9 +94,9 @@ beforeEach(() => {
   // Die LU Engine haelt den Steckplatz: dann steht der ANDERE Hinweis nicht
   // im Weg und dieser Test misst wirklich seine eigene Zeile.
   setSlot(slot({ managed: true, name: 'LU Engine' }))
-  useLuEngineSwitchStore.setState({ note: null, tone: 'info' })
+  useLuEngineSwitchStore.setState({ note: null, tone: 'info', gesehen: false })
 })
-afterEach(() => { cleanup(); useLuEngineSwitchStore.setState({ note: null, tone: 'info' }) })
+afterEach(() => { cleanup(); useLuEngineSwitchStore.setState({ note: null, tone: 'info', gesehen: false }) })
 
 describe('der Satz aus Bild B3 steht jetzt im Modellmenue', () => {
   it('ganz oben im Menue, woertlich, mit x', () => {
@@ -137,6 +137,30 @@ describe('der Satz aus Bild B3 steht jetzt im Modellmenue', () => {
     openPicker()
     expect(screen.getByTestId('picker-engine-note').getAttribute('data-tone')).toBe('error')
     expect(screen.getByTestId('picker-engine-note-dot').className).toContain('bg-red-500')
+  })
+})
+
+describe('die Lesezeit beginnt erst beim Aufklappen', () => {
+  it('ein zugeklapptes Menue meldet nichts: der Punkt ist kein Leser', () => {
+    useLuEngineSwitchStore.getState().announce(SATZ)
+    render(createElement(ModelSelector))
+    expect(screen.queryAllByTestId('model-picker-menu').length).toBe(0)
+    expect(useLuEngineSwitchStore.getState().gesehen,
+      'der blosse Punkt zaehlt als gelesen').toBe(false)
+  })
+
+  it('der aufgeklappte Waehler meldet die Zeile als gesehen', () => {
+    // Die Verdrahtung, an der die neue Lesezeit haengt. Ohne sie stuende eine
+    // Info bis zur Obergrenze, mit ihr laufen ab hier zwoelf Sekunden.
+    useLuEngineSwitchStore.getState().announce(SATZ)
+    openPicker()
+    expect(screen.getByTestId('picker-engine-note')).toBeTruthy()
+    expect(useLuEngineSwitchStore.getState().gesehen).toBe(true)
+  })
+
+  it('GEGENPROBE: ohne Zeile meldet auch ein offenes Menue nichts', () => {
+    openPicker()
+    expect(useLuEngineSwitchStore.getState().gesehen).toBe(false)
   })
 })
 

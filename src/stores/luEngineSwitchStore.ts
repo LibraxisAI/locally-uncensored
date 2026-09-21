@@ -39,7 +39,28 @@ interface LuEngineSwitchState {
   /** Bumped on every announcement, so a timer belonging to an older one cannot
    *  clear a newer line. Same reason the slot-eviction timer keeps one. */
   generation: number
+  /**
+   * Der Satz war wirklich auf dem Schirm, als Satz und nicht als Punkt.
+   *
+   * Seit dem 21.09.2026 haengt die Zeile im Chat nicht mehr ueber dem
+   * Eingabefeld, sondern im Modellmenue, und sichtbar ist dort ohne Klick nur
+   * der Punkt am Waehlerknopf. Damit stimmte die alte Annahme nicht mehr, die
+   * Ansicht `chat` sei schon ein Leser: eine Info-Zeile lief ihre zwoelf
+   * Sekunden ab, waehrend vom Text kein Wort zu sehen war, und der Punkt ging
+   * mit ihr. Eigner: Hinweise sollen „unauffaellig, aber so, dass man sie
+   * sieht" sein; das war unauffaellig und unsichtbar.
+   *
+   * Die Uhr laeuft deshalb erst, wenn dieses Feld wahr ist. Wahr wird es auf
+   * zwei Wegen: der Modellwaehler klappt mit dieser Zeile auf, oder die
+   * Models-Seite zeichnet die volle Leiste ohnehin (siehe
+   * `dieZeileIstZuSehen` in lib/engine-offload.ts). Jede neue Ansage setzt es
+   * zurueck, denn ein neuer Satz ist ungelesen.
+   */
+  gesehen: boolean
   announce: (note: string, tone?: LuEngineNoteTone, holdWhile?: () => boolean) => void
+  /** Der Satz ist gerade als Satz zu sehen. Idempotent, darf aus einem Effekt
+   *  kommen, der bei jedem Aufklappen erneut laeuft. */
+  alsGesehenMarkieren: () => void
   dismiss: () => void
 }
 
@@ -61,10 +82,15 @@ export const useLuEngineSwitchStore = create<LuEngineSwitchState>((set, get) => 
   note: null,
   tone: 'info',
   generation: 0,
+  gesehen: false,
+  alsGesehenMarkieren: () => {
+    if (get().gesehen) return
+    set({ gesehen: true })
+  },
   announce: (note, tone = 'info', holdWhile) => {
     cancelPending()
     const generation = get().generation + 1
-    set({ note, tone, generation })
+    set({ note, tone, generation, gesehen: false })
     // A14 fourth review: the self-clear was armed for both tones, so a failed
     // engine start faded out after twelve seconds exactly like the harmless
     // switch line. The two are not the same kind of sentence. The switch line
@@ -106,7 +132,7 @@ export const useLuEngineSwitchStore = create<LuEngineSwitchState>((set, get) => 
       pending = setTimeout(() => {
         pending = null
         if (get().generation !== generation) return
-        set({ note: null, tone: 'info' })
+        set({ note: null, tone: 'info', gesehen: false })
       }, LU_ENGINE_SWITCH_NOTE_MS)
     }
     if (holdWhile?.()) wartenAufWahrheit()
@@ -114,6 +140,6 @@ export const useLuEngineSwitchStore = create<LuEngineSwitchState>((set, get) => 
   },
   dismiss: () => {
     cancelPending()
-    set({ note: null, tone: 'info', generation: get().generation + 1 })
+    set({ note: null, tone: 'info', generation: get().generation + 1, gesehen: false })
   },
 }))
