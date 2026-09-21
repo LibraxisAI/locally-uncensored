@@ -384,6 +384,55 @@ function isCompareMnemonic(mnemonic) {
   return mnemonic === 'cmp' || mnemonic === 'test';
 }
 
+// Known false-red form A (see checkDominance's comment and
+// lu-301/bau/isa-review-1451.md): the MSVC scheduler is free to put
+// instructions between the guarding cmp/test and the conditional jump that
+// consumes its result, because those instructions do not touch EFLAGS. The
+// original "the jump must be the very next line" rule cannot tell that apart
+// from "an unrelated jump", so it called correctly guarded code UNPROTECTED.
+//
+// The property that actually matters is not adjacency, it is that the
+// conditional jump still evaluates THIS cmp/test: nothing between them may
+// write EFLAGS. So this is an ALLOWLIST of mnemonics that provably leave
+// every flag alone, and anything not on it (any arithmetic or logical
+// operation, any shift, any second cmp/test, any setcc/cmovcc that would at
+// least read the flags, any call, any ret, any jump) ends the scan and the
+// candidate read is rejected, exactly as before. That keeps N1's hole shut:
+// the fake-green shape A fixture (fake-unrelated-jump-own-code) puts a
+// flag-WRITING "test rax,rax" between the isa read and the jump, so it is
+// still not reachable through this list and still comes out UNPROTECTED.
+//
+// Only data movement is listed, nothing clever: the legacy and VEX register
+// and memory moves, lea, the stack pair, and the padding nop MSVC emits.
+const FLAG_PRESERVING_MNEMONICS = new Set([
+  'mov', 'movzx', 'movsx', 'movsxd', 'movabs', 'lea', 'nop', 'push', 'pop',
+  'movdqa', 'movdqu', 'movaps', 'movups', 'movq', 'movd', 'movss', 'movsd',
+  'vmovdqa', 'vmovdqu', 'vmovaps', 'vmovups', 'vmovq', 'vmovd',
+]);
+
+// How far past the compare the scan may run before giving up. The two real
+// shapes this exists for are short: one intervening mov in the llama.dll
+// llama-kv-cache.obj lambda (lu-301/bau/isa-review-1451.md section 2) and
+// three in wmemcmp (ggml.dll, form A as first written down). The cap is not
+// what makes this safe, the EFLAGS allowlist above is; it only keeps the
+// scan from wandering across half a function.
+const MAX_SCHEDULED_INSTRUCTIONS_BEFORE_JUMP = 8;
+
+// Starting right after `compareIdx`, find the conditional jump that consumes
+// that compare's flags: skip over instructions that cannot have changed them,
+// stop at anything else. Returns the jump line, or null.
+function findBoundConditionalJump(linesSortedByAddr, compareIdx, hitAddr) {
+  for (let k = 1; k <= MAX_SCHEDULED_INSTRUCTIONS_BEFORE_JUMP + 1; k += 1) {
+    const cand = linesSortedByAddr[compareIdx + k];
+    if (!cand || cand.addr >= hitAddr) return null;
+    if (/^j/.test(cand.mnemonic)) {
+      return cand.mnemonic === 'jmp' ? null : cand;
+    }
+    if (!FLAG_PRESERVING_MNEMONICS.has(cand.mnemonic)) return null;
+  }
+  return null;
+}
+
 // True when `text`'s FIRST operand is exactly `reg` (word-bounded, so "cl"
 // does not accidentally match inside "rcl" and "eax" does not match "reax").
 function firstOperandIsRegister(text, reg) {
@@ -401,12 +450,15 @@ function firstOperandIsRegister(text, reg) {
 //      land past the hit, followed by an unconditional AVX block;
 //   F) the isa flag's ADDRESS used only as a bare immediate constant (never
 //      dereferenced), with an unrelated jump and then the hit.
-// Closed by requiring the conditional jump to sit IMMEDIATELY after a
-// cmp/test instruction (no other instruction between them) that is itself
-// bound to the isa-flag read: either the read line directly compares the
-// flag's memory location (no intermediate register), or the read loads the
-// flag into a register and that SAME register is the compare's first
-// operand. Verified against the real Fundstelle 2a shape (mov ecx,dword ptr
+// Closed by requiring the conditional jump to be the one that consumes a
+// cmp/test instruction that is itself bound to the isa-flag read: either the
+// read line directly compares the flag's memory location (no intermediate
+// register), or the read loads the flag into a register and that SAME
+// register is the compare's first operand. Between that compare and the jump
+// only instructions that cannot have written EFLAGS may stand
+// (FLAG_PRESERVING_MNEMONICS / findBoundConditionalJump above; this used to
+// be a strict "the very next line" rule, which is where false-red form A
+// below came from). Verified against the real Fundstelle 2a shape (mov ecx,dword ptr
 // [isa] / cmp ecx,5 / jl) in the fixtures and the unit tests below; the two
 // fake-green shapes are checked-in fixtures that must come out UNPROTECTED
 // (scripts/__fixtures__/win-isa/fake-*-own-code.*).
@@ -415,14 +467,21 @@ function firstOperandIsRegister(text, reg) {
 // this closes real holes, but it is stricter than some genuinely protected
 // MSVC code, and rot is the direction that costs a human an hour, not the
 // direction that costs a customer a crash, so that trade was made
-// deliberately. Four forms are KNOWN to come out UNPROTECTED (false red)
+// deliberately. Four forms were KNOWN to come out UNPROTECTED (false red)
 // even though they are correctly guarded; if the address flagged UNPROTECTED
 // matches one of these when disassembled by hand, it is a known codegen
 // pattern, not a K1 regression:
-//   (i)   the exact real shape shipped in wmemcmp (ggml.dll): "cmp [isa],eax
-//         / mov rbx,rcx / mov r9,rcx / mov r10,rdx / je <past-the-hit>" -
-//         the MSVC scheduler put three unrelated movs between the cmp and
-//         the jump instead of emitting them back to back;
+//   (i)   FIXED, no longer false red, see FLAG_PRESERVING_MNEMONICS and
+//         findBoundConditionalJump above and the fixture
+//         scheduled-jump-own-code.*: the shape shipped in wmemcmp (ggml.dll),
+//         "cmp [isa],eax / mov rbx,rcx / mov r9,rcx / mov r10,rdx /
+//         je <past-the-hit>", and the same shape with one intervening mov
+//         found in llama.dll on MSVC 14.51 (llama-kv-cache.obj, the two
+//         vpmullq at 18007AA0D/18007AA28, lu-301/bau/isa-review-1451.md
+//         section 2). The MSVC scheduler put unrelated movs between the cmp
+//         and the jump instead of emitting them back to back. Those movs
+//         cannot write EFLAGS, so the jump still evaluates that same cmp and
+//         the guard now follows it across them;
 //   (ii)  a cached comparison register: "mov eax,[isa] / mov ecx,eax /
 //         cmp ecx,6 / jl <past-the-hit>" - the load and the compare use
 //         different registers, linked through a copy checkDominance does
@@ -484,9 +543,8 @@ export function checkDominance(linesSortedByAddr, isaVAs, functionStart, functio
     if (!compareLine) continue;
 
     const compareIdx = linesSortedByAddr.indexOf(compareLine);
-    const jumpLine = linesSortedByAddr[compareIdx + 1];
-    if (!jumpLine || jumpLine.addr >= hitAddr) continue;
-    if (!/^j/.test(jumpLine.mnemonic) || jumpLine.mnemonic === 'jmp') continue;
+    const jumpLine = findBoundConditionalJump(linesSortedByAddr, compareIdx, hitAddr);
+    if (!jumpLine) continue;
     const m = /([0-9A-Fa-f]{6,16})h?\s*$/.exec(jumpLine.text.trim());
     if (!m) continue;
     const target = parseInt(m[1], 16);
@@ -497,7 +555,7 @@ export function checkDominance(linesSortedByAddr, isaVAs, functionStart, functio
 
   return {
     protected: false,
-    reason: `an isa-flag read exists before the hit, but no conditional jump immediately following a cmp/test bound to that same read lands past the hit inside the function (review-waechter-windows.md N1). Disassemble this address by hand before treating it as a build regression: check whether an __isa_available/__isa_enabled/_Avx2WmemEnabled check with a jump over this instruction actually exists in the real disassembly. If it does and only misses this rule's shape (e.g. the scheduler put other instructions between the compare and the jump, the compare uses a cached or partial register, or the guard is a bt/jae bit test - see the four known false-red forms documented above checkDominance), that is a known codegen pattern, not a regression: add a fixture reproducing the exact shape and extend checkDominance with a justification tying it to that fixture, the same way the two fake-green shapes above are fixtured. If no such check exists at all, this is a genuine K1 AVX regression and must be treated as one, not allowlisted away.`,
+    reason: `an isa-flag read exists before the hit, but no conditional jump consuming a cmp/test bound to that same read lands past the hit inside the function (review-waechter-windows.md N1). Disassemble this address by hand before treating it as a build regression: check whether an __isa_available/__isa_enabled/_Avx2WmemEnabled check with a jump over this instruction actually exists in the real disassembly. If it does and only misses this rule's shape (e.g. the compare uses a cached or partial register, or the guard is a bt/jae bit test - see the known false-red forms (ii) to (iv) documented above checkDominance), that is a known codegen pattern, not a regression: add a fixture reproducing the exact shape and extend checkDominance with a justification tying it to that fixture, the same way form (i) and the two fake-green shapes above are fixtured. If no such check exists at all, this is a genuine K1 AVX regression and must be treated as one, not allowlisted away.`,
   };
 }
 
