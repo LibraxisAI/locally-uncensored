@@ -219,6 +219,10 @@ describe('buildDynamicWorkflow, Qwen-Image 2.1 generate (no reference image)', (
     // latents, and the node keeps its vision path instead.
     expect(enc.inputs.vae).toBeUndefined()
     expect(enc.inputs['images.image_1']).toBeUndefined()
+    // resolution is a REQUIRED widget of the node, so it has to be there even
+    // on the path that never reads it. Leaving it off gets the whole prompt
+    // rejected with "Required input is missing".
+    expect(enc.inputs.resolution).toBe(1024)
     expect(nodeOf(wf, 'CLIPTextEncode')).toBeUndefined()
     expect(nodeOf(wf, 'LoadImage')).toBeUndefined()
   })
@@ -242,6 +246,22 @@ describe('buildDynamicWorkflow, Qwen-Image 2.1 generate (no reference image)', (
     expect(latent.inputs.width).toBe(1536)
     expect(latent.inputs.height).toBe(864)
     expect(nodeOf(wf, 'KSampler')![1].inputs.latent_image).toEqual([latentId, 0])
+  })
+
+  // ComfyUI rejects a whole prompt when ANY required input of a node is
+  // absent ("Required input is missing", execution.py validate_inputs), and
+  // that happens before a single step is sampled. The node's required set is
+  // clip, prompt, negative_prompt and resolution, so the guard is asserted
+  // against the schema rather than against a list typed out by hand.
+  it('carries every input the node declares as required, on both paths', async () => {
+    const required = Object.keys(QWEN_NODES.TextEncodeQwenImage21.input.required)
+    for (const params of [baseParams, { ...baseParams, inputImage: 'lu_source.png', denoise: 0.7 }]) {
+      const wf = await buildDynamicWorkflow({ ...params } as never)
+      const enc = nodeOf(wf, 'TextEncodeQwenImage21')![1]
+      for (const key of required) {
+        expect(enc.inputs[key], `${key} missing`).toBeDefined()
+      }
+    }
   })
 
   it('decodes and saves like every other image lane', async () => {

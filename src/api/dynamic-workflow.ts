@@ -471,7 +471,8 @@ function resolveLoaderName(req: string, installed: string[]): string | null {
  * a zero that would silently switch the node back to original size.
  */
 function qwenEditResolution(width: number, height: number): number {
-  const side = Math.sqrt(Math.max(1, width) * Math.max(1, height))
+  const px = (v: number) => (Number.isFinite(v) && v > 0 ? v : 1024)
+  const side = Math.sqrt(px(width) * px(height))
   return Math.min(4096, Math.max(32, Math.round(side / 32) * 32))
 }
 
@@ -842,10 +843,16 @@ export async function buildDynamicWorkflow(
     // template does, and takes its latent from EmptyLatentImage below.
     // negId is allocated but unused on this path; the graph is keyed by id,
     // so a gap costs nothing (the I2I override below already leaves one).
+    // `resolution` is declared REQUIRED by the node (no optional flag on its
+    // Int input), so it goes on BOTH paths or ComfyUI answers "Required input
+    // is missing" before anything runs. It only does work when a reference
+    // image is attached; on the generate path it is inert, exactly as in the
+    // t2i template, which also carries the widget and never uses it.
     const qwenInputs: ComfyNodeInputs = {
       clip: [clipSourceId, clipOutputSlot],
       prompt: params.prompt,
       negative_prompt: params.negativePrompt || '',
+      resolution: qwenEditResolution(params.width, params.height),
     }
     if (isQwenEdit) {
       const qwenImageId = String(n++)
@@ -855,7 +862,6 @@ export async function buildDynamicWorkflow(
       }
       qwenInputs['images.image_1'] = [qwenImageId, 0]
       qwenInputs.vae = [vaeSourceId, vaeOutputSlot]
-      qwenInputs.resolution = qwenEditResolution(params.width, params.height)
     }
     workflow[posId] = { class_type: 'TextEncodeQwenImage21', inputs: qwenInputs }
   } else {

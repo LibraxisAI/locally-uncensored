@@ -343,7 +343,7 @@ export function getImageBundles(): ModelBundle[] {
     },
     {
       name: 'Qwen-Image 2.1 (Generate and Edit)',
-      description: 'One model for both: write a prompt to generate, or add a reference image plus a prompt to edit it, no mask needed. Qwen Research License, non-commercial use: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE',
+      description: 'Generates from a prompt and edits a reference image from a prompt, no mask needed. Qwen Research License, non-commercial use: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE',
       tags: ['Qwen Image 2.1', 'Image', 'Edit', '1024px'],
       uncensored: false,
       verified: true,
