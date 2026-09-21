@@ -16,6 +16,7 @@ import {
   isVexEvexHit,
   findOwner,
   isAllowlisted,
+  hasApxRegisterOperand,
   checkDominance,
   evaluateModule,
 } from './win-isa-guard.mjs';
@@ -184,6 +185,134 @@ test('fixture: fake-address-as-constant-own-code (Opus pattern F) MUST come out 
   assert.equal(result.hitCount, 1);
   assert.equal(result.unprotected.length, 1);
   assert.equal(result.verdicts[0].verdict, 'UNPROTECTED');
+});
+
+test('R7: hasApxRegisterOperand matches r16-r31 in any operand position and nothing else', () => {
+  const apx = parseDisasmLines([
+    '  0000000180097301: 62 51 04 CC 56 39  vorps       zmm25{k4}{z},zmm15,zmmword ptr [r25]',
+    '  00000001800DCADC: 62 02 05 00 00 08  vpshufb     xmm16,xmm30,xmmword ptr [r25]',
+    '  0000000180000010: 62 00 00 00 00 00  vmovups     ymm0,ymmword ptr [rax+r31*8]',
+    '  0000000180000020: 62 00 00 00 00 00  vmovd       xmm0,r16d',
+    '  0000000180000030: 62 00 00 00 00 00  vmovd       xmm0,r31b',
+  ].join('\n'));
+  assert.equal(apx.length, 5);
+  for (const line of apx) {
+    assert.equal(hasApxRegisterOperand(line), true, `expected an APX register in: ${line.text}`);
+  }
+
+  const notApx = parseDisasmLines([
+    // Every AVX-512 spelling on its own is NOT evidence of a misdecode:
+    // MSVC does emit zmm, k-masks and {z} under /arch:AVX512.
+    '  0000000180000040: 62 F1 6C C9 56 0C  vorps       zmm1{k1}{z},zmm2,zmmword ptr [rsp]',
+    '  0000000180000050: 62 02 05 00 00 08  vpshufb     xmm16,xmm30,xmmword ptr [rcx]',
+    // The legacy register file, including the r8-r15 names the regex must
+    // not over-reach into, and control/debug registers whose spelling ends
+    // in digits that would match without the leading word boundary.
+    '  0000000180000060: C5 F9 6E D8        vmovd       xmm3,eax',
+    '  0000000180000070: C4 C2 71 46 C2     vpsravd     xmm0,xmm1,xmm10',
+    '  0000000180000080: C5 FA 6F 04 CF     vmovdqu     xmm0,xmmword ptr [rdi+r9*8]',
+    '  0000000180000090: 0F 20 C1           mov         rcx,cr16',
+    '  00000001800000A0: 0F 21 C1           mov         rcx,dr16',
+  ].join('\n'));
+  assert.equal(notApx.length, 7);
+  for (const line of notApx) {
+    assert.equal(hasApxRegisterOperand(line), false, `did not expect an APX register in: ${line.text}`);
+  }
+});
+
+test('R7 fixture: the CI line from mtmd.dll is DECODE_ARTIFACT_APX, a real zmm hit without APX registers stays UNPROTECTED', () => {
+  // Positive and negative in one module, on purpose: the whole point of R7
+  // is that it excuses the APX misdecode and NOTHING else, so the fixture
+  // has to show a genuine, unguarded AVX-512 instruction in the same
+  // own-code object still going red, and the module still failing.
+  const { disasmText, mapText } = loadFixture('apx-decode-artifact');
+  const result = evaluateModule({ moduleName: 'apx-decode-artifact', disasmText, mapText });
+  assert.equal(result.hitCount, 2);
+  assert.equal(result.ownedHitCount, 2, 'the artifact is still resolved to an owner, so the R4 map control stays as strict as before');
+  assert.equal(result.decodeArtifactCount, 1);
+
+  const [artifact, real] = result.verdicts;
+  assert.equal(artifact.verdict, 'DECODE_ARTIFACT_APX');
+  assert.equal(artifact.hit.addr, 0x180097301);
+  assert.equal(artifact.owner.name, '$LN4275');
+  assert.equal(artifact.owner.obj, 'clip.obj');
+  assert.match(artifact.hit.text, /zmmword ptr \[r25\]/);
+
+  assert.equal(real.verdict, 'UNPROTECTED');
+  assert.equal(real.owner.name, 'clip_own_avx512_kernel');
+  assert.equal(result.unprotected.length, 1, 'only the real hit is unprotected; the artifact must not be counted');
+  assert.equal(result.unprotected[0], real);
+});
+
+test('R7: no allowlist by file name, the decision reads the operands only', () => {
+  // The same two clip.obj hits under a different module and object name
+  // must get exactly the same verdicts: nothing in R7 keys on clip.obj or
+  // mtmd.dll, which is what keeps this from being an allowlist in disguise.
+  const { disasmText } = loadFixture('apx-decode-artifact');
+  const mapText = [
+    ' Static symbols',
+    '',
+    ' 0001:00000000       some_other_label          0000000180097300 f   ggml-cpu.obj',
+    ' 0001:00000110       some_other_kernel         0000000180097410 f   ggml-cpu.obj',
+    ' 0001:00000210       some_other_kernel_end     0000000180097510 f   ggml-cpu.obj',
+    ' 0003:00000010       __isa_available           0000000180099898     MSVCRT:cpu_disp.obj',
+  ].join('\n');
+  const result = evaluateModule({ moduleName: 'renamed', disasmText, mapText });
+  assert.equal(result.verdicts[0].verdict, 'DECODE_ARTIFACT_APX');
+  assert.equal(result.verdicts[1].verdict, 'UNPROTECTED');
+});
+
+test('R7: the artifact is reported, not swallowed, and the CLI still exits 1 on the real hit next to it', () => {
+  const script = join(HERE, 'win-isa-guard.mjs');
+  const result = spawnSync(process.execPath, [
+    script, 'check', '--module', 'apx-decode-artifact', '--min-lines', '0',
+    '--disasm', join(FIXTURES, 'apx-decode-artifact.disasm.txt'),
+    '--map', join(FIXTURES, 'apx-decode-artifact.map.txt'),
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 1, `expected exit 1 (the second, real hit), got ${result.status}. stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.match(result.stdout, /\[DECODE_ARTIFACT_APX\]/, 'the artifact appears as its own verdict class in the per-hit report');
+  assert.match(result.stdout, /NOTE: apx-decode-artifact: 1 hit\(s\) classified DECODE_ARTIFACT_APX/, 'and again as a counted summary line');
+  assert.match(result.stderr, /has 1 unprotected VEX\/EVEX instruction\(s\)/);
+});
+
+test('R7: a module whose ONLY hit is the APX artifact comes out green, with the artifact still on the record', () => {
+  // This is the mtmd.dll case as it will look on the next CI run: the one
+  // hit that made the release red is the misdecode, so the module passes,
+  // but the line and the count stay in the log.
+  const script = join(HERE, 'win-isa-guard.mjs');
+  const disasmOnlyArtifact = join(FIXTURES, '.tmp-apx-only.disasm.txt');
+  const mapOnlyArtifact = join(FIXTURES, '.tmp-apx-only.map.txt');
+  writeFileSync(disasmOnlyArtifact, [
+    '  0000000180097301: 62 51 04 CC 56 39  vorps       zmm25{k4}{z},zmm15,zmmword ptr [r25]',
+    '  0000000180097307: C3                 ret',
+    '',
+  ].join('\n'));
+  writeFileSync(mapOnlyArtifact, readFileSync(join(FIXTURES, 'apx-decode-artifact.map.txt'), 'utf8'));
+  try {
+    const result = spawnSync(process.execPath, [
+      script, 'check', '--module', 'mtmd.dll', '--min-lines', '0',
+      '--disasm', disasmOnlyArtifact, '--map', mapOnlyArtifact,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    assert.match(result.stdout, /\[DECODE_ARTIFACT_APX\]/);
+    assert.match(result.stdout, /NOTE: mtmd\.dll: 1 hit\(s\) classified DECODE_ARTIFACT_APX/);
+    assert.match(result.stdout, /OK: mtmd\.dll, no unprotected VEX\/EVEX in own code/);
+  } finally {
+    rmSync(disasmOnlyArtifact, { force: true });
+    rmSync(mapOnlyArtifact, { force: true });
+  }
+});
+
+test('R7 does not loosen the other fixtures: the red probe and both fake-green shapes stay red', () => {
+  // A guard rule that excuses a class of hit is exactly the kind of change
+  // that can quietly take the existing probes with it, so they are asserted
+  // again from here rather than only in their own tests above.
+  for (const name of ['unprotected-own-code', 'fake-unrelated-jump-own-code', 'fake-address-as-constant-own-code']) {
+    const { disasmText, mapText } = loadFixture(name);
+    const result = evaluateModule({ moduleName: name, disasmText, mapText });
+    assert.equal(result.decodeArtifactCount, 0, `${name} must not be touched by R7`);
+    assert.equal(result.unprotected.length, 1, `${name} must still be RED`);
+  }
 });
 
 test('checkDominance: no isa symbol in the map at all is NOT protected', () => {
