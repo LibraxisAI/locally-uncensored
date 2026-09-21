@@ -725,8 +725,25 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
    */
   const engineSwitchNote = useLuEngineSwitchStore((s) => s.note)
   const engineSwitchTone = useLuEngineSwitchStore((s) => s.tone)
+
   const [open, setOpen] = useState(false)
   useDismissOnEscape(open, () => setOpen(false))
+
+  /**
+   * Die Lesezeit beginnt, wenn der Satz wirklich zu lesen ist.
+   *
+   * Eine Info-Zeile steht zwoelf Sekunden. Solange sie im Chat nur als Punkt
+   * am Knopf existiert, waeren das zwoelf Sekunden ohne ein einziges Wort auf
+   * dem Schirm, und danach waere auch der Punkt weg. Deshalb meldet der
+   * Waehler hier, dass die Zeile aufgeklappt DA ist; der Halt im Speicher
+   * laeuft daraufhin aus und die Uhr beginnt (luEngineSwitchStore, `gesehen`).
+   *
+   * Im Effekt, nicht im Renderkoerper: es ist ein Schreibzugriff auf einen
+   * fremden Speicher. Idempotent, also stoert ein zweites Aufklappen nicht.
+   */
+  useEffect(() => {
+    if (open && engineSwitchNote) useLuEngineSwitchStore.getState().alsGesehenMarkieren()
+  }, [open, engineSwitchNote])
   // Read by the empty-state probe below, which runs before the render that
   // computes textModels. A ref keeps it out of the effect's dependency list.
   const textModelsEmptyRef = useRef(true)
