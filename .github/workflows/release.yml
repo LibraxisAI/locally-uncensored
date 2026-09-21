@@ -374,7 +374,9 @@ jobs:
           fi
           echo "${STORIES260K_SHA256}  $model" | sha256sum -c - \
             || { echo "FAIL: stories260K.gguf did not match the pinned sha256" >&2; exit 1; }
-          ( cd "$moved/llama" && "$bin" --host 127.0.0.1 --port 8129 -m "$model" >/tmp/boot-smoke.log 2>&1 ) &
+          # exec, so $! is the server itself and not a wrapper subshell (the
+          # /proc/<pid>/maps read below must see the server's own mappings).
+          ( cd "$moved/llama" && exec "$bin" -lv 4 --host 127.0.0.1 --port 8129 -m "$model" >/tmp/boot-smoke.log 2>&1 ) &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           ok=""
@@ -396,8 +398,13 @@ jobs:
             exit 1
           fi
           if [ -z "$cpu_maps" ]; then
+            # Second witness, same fact: the server's own load_backend line
+            # names the module it loaded (printed on this lane at -lv 4).
+            cpu_maps="$(grep -o 'loaded CPU backend from [^ ]*libggml-cpu-[^ ]*\.so' /tmp/boot-smoke.log 2>/dev/null | sed 's/^loaded CPU backend from //' | sort -u || true)"
+          fi
+          if [ -z "$cpu_maps" ]; then
             cat /tmp/boot-smoke.log || true
-            echo "FAIL: the running llama-server had no libggml-cpu-*.so mapped; ggml_backend_load_all() found no CPU module in $moved/llama" >&2
+            echo "FAIL: the running llama-server had no libggml-cpu-*.so mapped and logged none; ggml_backend_load_all() found no CPU module in $moved/llama" >&2
             exit 1
           fi
           echo "$cpu_maps" | sed 's/^/loaded CPU module: /'
