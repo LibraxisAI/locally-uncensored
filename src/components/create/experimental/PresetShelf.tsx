@@ -23,13 +23,17 @@ import { useCloudCatalogStore } from '../../../stores/cloudCatalogStore'
  *  "This feature needs a newer LU Cloud server."`.
  *
  *  Optik (21.09.2026, Beanstandung des Eigners "komisches grau, komische
- *  edges"): die Schiene stand auf `bg-lu-accent-soft` mit
- *  `ring-lu-accent/20`, also auf einer violett getoenten Flaeche, die ueber
- *  der schwarzen Leinwand als mittleres Grau mit Farbstich las. Sie steht
- *  jetzt auf derselben schwarzen Modalflaeche wie das Was-ist-neu-Blatt
- *  (`bg-lu-base`, #202020) mit der Haarlinie des Hauses
- *  (`ring-white/[0.08]`). Violett ist nur noch Akzent: die Ueberschrift,
- *  der Continue-Knopf und der Umriss der Karte unter dem Zeiger. */
+ *  edges"): die Schiene stand auf der weichen Akzentflaeche mit einem
+ *  Akzentumriss bei 20 Prozent Deckung, also auf einer violett getoenten
+ *  Flaeche, die ueber der schwarzen Leinwand als mittleres Grau mit
+ *  Farbstich las. Sie steht jetzt auf derselben schwarzen Modalflaeche wie
+ *  das Was-ist-neu-Blatt (#202020) mit der Haarlinie des Hauses bei acht
+ *  Prozent Weiss. Violett ist nur noch Akzent: die Ueberschrift, der
+ *  Continue-Knopf und der Umriss der Karte unter dem Zeiger.
+ *
+ *  Klassennamen stehen hier bewusst als Prosa: Tailwind liest jede Datei
+ *  als Text, also wuerde ein Name im Kommentar eine Regel ins Bundle
+ *  schreiben, die niemand aufruft (keine-klasse-aus-prosa.test.ts). */
 export function PresetShelf({onSelect,resume,open,onOpenChange}:{onSelect:(p:CreatePreset)=>void;resume?:{title:string;onResume:()=>void}|null;open:boolean;onOpenChange:(o:boolean)=>void}) {
   const backend=useCreateStore(s=>s.backend),generating=useCreateStore(s=>s.isGenerating)
   const catalogHasStudio=useCloudCatalogStore(s=>s.models.some(m=>m.quote_required))

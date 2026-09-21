@@ -431,7 +431,7 @@ export function ModelManager() {
                   <div className="space-y-1">
                     {/* The LoRA lane hangs off the same engine, so it gets the
                         same state and the same sentence, with its own noun. */}
-                    <p className="text-[12px] font-medium text-gray-800 dark:text-gray-200">Start ComfyUI to see your {rail === 'lora' ? 'LoRA' : mode} models</p>
+                    <p className="t-control text-gray-800 dark:text-gray-200">Start ComfyUI to see your {rail === 'lora' ? 'LoRA' : mode} models</p>
                     <p className="t-micro text-gray-500 max-w-[300px] leading-relaxed">
                       {rail === 'lora' ? 'LoRA' : mode === 'image' ? 'Image' : 'Video'} models are served by ComfyUI, which isn't running right now, so the ones you've downloaded can't be listed yet. Open Settings, go to AI Backends, and press Start under ComfyUI (Image &amp; Video), then come back.
                     </p>
