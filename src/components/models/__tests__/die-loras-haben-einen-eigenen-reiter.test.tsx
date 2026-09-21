@@ -86,6 +86,23 @@ const CHARACTER_LORA: AIModel = {
   format: 'safetensors', architecture: 'zimage', type: 'image', providerName: 'ComfyUI',
   source: 'lora',
 }
+/** ComfyUI listet Dateien MIT ihrem Unterordner. Genau dieser Fall fehlte in
+ *  der ersten Fassung, und er ist der teuerste: der Loeschweg ist der eine
+ *  Weg im Stueck, der Dateien vom Datentraeger nimmt. Schneidet irgendwer den
+ *  Praefix ab, sucht Rust in `loras/` statt in `loras/styles/` und loescht
+ *  entweder nichts oder die falsche gleichnamige Datei. */
+const LORA_IM_UNTERORDNER: AIModel = {
+  name: 'styles/foo.safetensors', model: 'styles/foo.safetensors', size: 12_345_678,
+  format: 'safetensors', architecture: 'sdxl', type: 'image', providerName: 'ComfyUI',
+  source: 'lora',
+}
+/** Dieselbe Sache mit dem Trennzeichen, das Windows schreibt. */
+const CHAR_LORA_WINDOWS: AIModel = {
+  name: 'chars\\char_marla_zimage.safetensors', model: 'chars\\char_marla_zimage.safetensors',
+  size: 41_943_040, format: 'safetensors', architecture: 'zimage', type: 'image',
+  providerName: 'ComfyUI', source: 'lora',
+}
+
 const VAE: AIModel = {
   name: 'sdxl_vae.safetensors', model: 'sdxl_vae.safetensors', size: 334_000_000,
   format: 'safetensors', architecture: 'sdxl', type: 'image', providerName: 'ComfyUI',
@@ -331,5 +348,77 @@ describe('die Checkpoint-Suche fragt weiter nach Checkpoint', () => {
     const quelle = readFileSync(resolve(__dirname, '..', 'DiscoverModels.tsx'), 'utf8')
     expect(quelle).toMatch(/<CivitaiSearchPanel[\s\S]{0,120}modelType="Checkpoint"/)
     expect(quelle).not.toContain('modelType="LORA"')
+  })
+})
+
+
+describe('Unterordner: der Name geht wortgleich weiter', () => {
+  it('THE FIX: delete_comfy_model bekommt "styles/foo.safetensors", nicht "foo.safetensors"', async () => {
+    bestand = [CHECKPOINT, LORA_IM_UNTERORDNER]
+    openLoraInstalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete styles/foo.safetensors' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$/ }))
+    await waitFor(() => expect(backendCall).toHaveBeenCalledTimes(1))
+    const arg = backendCall.mock.calls[0][1] as { filename: string } | undefined
+    expect(arg?.filename).toBe('styles/foo.safetensors')
+    // NEGATIVKONTROLLE: der abgeschnittene Name waere ein anderer Ort.
+    expect(arg?.filename).not.toBe('foo.safetensors')
+  })
+
+  it('THE FIX: dasselbe mit Backslash, und der Charakter-Chip erkennt ihn trotzdem', async () => {
+    bestand = [CHECKPOINT, CHAR_LORA_WINDOWS]
+    openLoraInstalled()
+    const zeile = screen.getAllByTestId('lora-row')[0]
+    expect(within(zeile).getByText('Character')).toBeTruthy()
+    expect(zeile.textContent).toContain('Trigger word: marla')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chars\\char_marla_zimage.safetensors' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$/ }))
+    await waitFor(() => expect(backendCall).toHaveBeenCalledTimes(1))
+    const arg = backendCall.mock.calls[0][1] as { filename: string } | undefined
+    expect(arg?.filename).toBe('chars\\char_marla_zimage.safetensors')
+    expect(arg?.filename).not.toBe('char_marla_zimage.safetensors')
+  })
+})
+
+describe('die Kopfsuche auf der LoRA-Bahn', () => {
+  it('THE FIX: filtert die Liste, ohne den Bestand zu verleugnen', () => {
+    openLoraInstalled()
+    fireEvent.change(screen.getByPlaceholderText(/Search models/), { target: { value: 'zzz' } })
+    expect(screen.queryAllByTestId('lora-row')).toHaveLength(0)
+    expect(screen.getByText(/No installed LoRAs match "zzz"/)).toBeTruthy()
+    // NEGATIVKONTROLLE: der Leertext ueber den eigenen Bestand darf hier NICHT
+    // stehen, es sind zwei LoRAs installiert.
+    expect(screen.queryByText('No LoRAs installed yet')).toBeNull()
+    // Die Abschnittszeile bleibt stehen, wie auf den anderen Bahnen.
+    expect(screen.getByRole('heading', { name: 'LoRAs' })).toBeTruthy()
+  })
+
+  it('THE FIX: Enter nimmt den Suchtext nach Get new mit und sucht damit', async () => {
+    render(createElement(ModelManager))
+    fireEvent.click(screen.getByRole('button', { name: /^LoRAs/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Installed/ }))
+    const kopf = screen.getByPlaceholderText(/Search models/)
+    fireEvent.change(kopf, { target: { value: 'pixel art' } })
+    fireEvent.keyDown(kopf, { key: 'Enter' })
+    await waitFor(() => expect(searchCivitaiModels).toHaveBeenCalledTimes(1))
+    expect(searchCivitaiModels.mock.calls[0][0]).toBe('pixel art')
+    expect(searchCivitaiModels.mock.calls[0][1]).toBe('LORA')
+    // Und das Feld der Karte steht nicht leer da.
+    expect((screen.getByLabelText('Search CivitAI for LoRAs') as HTMLInputElement).value)
+      .toBe('pixel art')
+  })
+})
+
+describe('ein Loeschen, das fehlschlaegt, sagt es auf Englisch', () => {
+  it('THE FIX: die Meldung aus Rust steht im Fenster, der Knopf bleibt nicht stumm', async () => {
+    const meldung = 'pixel_art_xl.safetensors exists in more than one models folder'
+    backendCall.mockRejectedValueOnce(new Error(meldung))
+    openLoraInstalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete pixel_art_xl.safetensors' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$/ }))
+    expect(await screen.findByText(meldung)).toBeTruthy()
+    expect(screen.getByText('Delete failed')).toBeTruthy()
+    // NEGATIVKONTROLLE: die Zeile ist NICHT verschwunden, es wurde nichts geloescht.
+    expect(screen.getAllByTestId('lora-row')).toHaveLength(2)
   })
 })

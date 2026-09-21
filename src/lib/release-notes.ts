@@ -392,8 +392,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
             detail: 'At a narrow window width, picking a model, opening the sampling sliders or opening the plugins menu used to leave the whole chat shifted sideways afterward, because the shared chat area allowed the browser to scroll it into view when a clicked control sat partly off screen. That area no longer accepts a programmatic scroll, so it stays put.',
           },
           {
-            title: 'Models now has a LoRAs tab that searches and installs from CivitAI.',
-            detail: 'Models has a LoRAs entry of its own next to Chat, Image and Video. Get new searches CivitAI for LoRAs and downloads what you pick into ComfyUI\'s models/loras folder; Installed lists what is already there with its size, marks the characters you trained yourself with their trigger word, and deletes a file you no longer want. LoRAs no longer sit unnamed among the checkpoints in the Image tab, where one could be picked as if it were a main model.',
+            title: 'Models now has a LoRAs tab that searches and installs from CivitAI (Windows and Linux).',
+            detail: 'On Windows and Linux, Models has a LoRAs entry of its own next to Chat, Image and Video. Get new searches CivitAI for LoRAs and downloads what you pick into ComfyUI\'s models/loras folder; Installed lists what is already there with its size, marks the characters you trained yourself with their trigger word, and deletes a file you no longer want. LoRAs no longer sit unnamed among the checkpoints in the Image tab, where one could be picked as if it were a main model. The tab is not offered on a Mac, where local media runs on Apple MLX and there is no ComfyUI loras folder to list.',
           },
           {
             title: 'Update ComfyUI now asks first and refuses while ComfyUI is busy.',

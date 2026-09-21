@@ -21,7 +21,15 @@ export interface LoraRow {
 }
 
 interface Props {
+  /** The rows to draw, already narrowed by the header search. */
   rows: LoraRow[]
+  /** How many LoRAs are installed in total, search or no search. The empty
+   *  state is a claim about the DISK, so it hangs off this and never off the
+   *  filtered list: ten installed LoRAs and a query that matches none of them
+   *  used to read "No LoRAs installed yet". */
+  total: number
+  /** What the header search currently holds, for the no-match line. */
+  searchQuery: string
   /** Opens the shared delete confirmation of the Models view. */
   onDelete: (name: string) => void
   /** Sends the user to the Get new segment of this same rail. */
@@ -34,8 +42,8 @@ interface Props {
  *  the list "LoRA stack" (ParamGroups.tsx). */
 export const LORA_USE_HINT = 'Use them in Create, Advanced settings, Expert, LoRA stack.'
 
-export function LoraManager({ rows, onDelete, onGetNew }: Props) {
-  if (rows.length === 0) {
+export function LoraManager({ rows, total, searchQuery, onDelete, onGetNew }: Props) {
+  if (total === 0) {
     return (
       <div className="flex flex-col items-center justify-center text-center py-16 px-6 gap-3">
         <div className="w-14 h-14 rounded-full bg-gray-100 dark:bg-white/[0.04] border border-gray-200 dark:border-white/[0.06] flex items-center justify-center">
@@ -100,6 +108,12 @@ export function LoraManager({ rows, onDelete, onGetNew }: Props) {
             </div>
           )
         })}
+        {/* Same shape as the other rails: the section heading and its count
+            stay, and the filtered-away list says so instead of claiming
+            anything about what is installed. */}
+        {rows.length === 0 && (
+          <p className="text-center t-micro text-gray-500 py-6">No installed LoRAs match "{searchQuery}"</p>
+        )}
       </div>
     </section>
   )

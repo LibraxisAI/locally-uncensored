@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { safeJSONStorage } from '../lib/storage-quota'
 import { canAutoSelectChat } from '../lib/chat-model-minimum'
+import { isLoraRow } from '../lib/lora-rows'
 import type { AIModel, PullProgress, ModelCategory } from '../types/models'
 import { unloadModel } from '../api/ollama'
 import { unloadLmStudioModel } from '../api/lmstudio'
@@ -244,9 +245,18 @@ export const useModelStore = create<ModelState>()(
           // getauscht wurde. Gesagt wird es deshalb dort, wo beide Seiten
           // noch dastehen: bei dem, der die Liste hereingibt
           // (hooks/useModels, announceChatModelReplaced).
+          // Ein LoRA ist keine Wahl. Bis zum LoRA-Reiter standen die Dateien
+          // aus `loras` zwischen den Checkpoints im Bild-Reiter und waren
+          // anklickbar, und wer damals einmal geklickt hat, traegt den Namen
+          // bis heute hier. Die Zeile steht weiter in der vollen Inventur,
+          // also haette die Pruefung unten sie fuer gueltig gehalten, und
+          // abwaehlen laesst sie sich in Models nicht mehr. Die Wahl faellt
+          // deshalb beim naechsten Laden zurueck, denselben Weg wie ein Name,
+          // den es nicht mehr gibt.
+          const gewaehlteZeile = models.find((m) => m.name === state.activeModel)
           const stillValid =
             !!state.activeModel &&
-            (models.length === 0 || models.some((m) => m.name === state.activeModel))
+            (models.length === 0 || (!!gewaehlteZeile && !isLoraRow(gewaehlteZeile)))
           // Automatic choices need a known size of at least 7B. Image/video,
           // small models and opaque aliases require no implicit chat pick.
           // The valid persisted choice above remains the user's decision.

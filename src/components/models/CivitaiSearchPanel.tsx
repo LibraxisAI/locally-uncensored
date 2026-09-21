@@ -7,7 +7,7 @@
  * mirror toggle, one key hint, one download path, and the folder a hit lands in
  * is decided once, in `searchCivitaiModels`, from that same type.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Search, Loader2, ExternalLink, Download, CheckCircle } from 'lucide-react'
 import { searchCivitaiModels, startModelDownload, type CivitAIModelResult } from '../../api/discover'
 import { openExternal } from '../../api/backend'
@@ -26,12 +26,21 @@ interface Props {
   title: string
   /** Placeholder for the query field, so each lane can show its own examples. */
   placeholder: string
+  /** What the ModelManager header search holds. It is copied into this card's
+   *  own field, so a lane whose Get new IS this card does not drop the words
+   *  the user just typed up there. */
+  search?: string
+  /** Bumped by ModelManager on Enter in the header search. That keypress also
+   *  switches to Get new, and on this lane Get new is this card: without the
+   *  token the user landed on an empty field, no hits and no message, which is
+   *  exactly the silent gap the empty state below exists to close. */
+  searchSubmitToken?: number
 }
 
-export function CivitaiSearchPanel({ modelType, title, placeholder }: Props) {
+export function CivitaiSearchPanel({ modelType, title, placeholder, search = '', searchSubmitToken = 0 }: Props) {
   const [results, setResults] = useState<CivitAIModelResult[]>([])
   const [searching, setSearching] = useState(false)
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(search)
   // Track whether the *latest* CivitAI search has been issued at least once,
   // so an empty-state hint can render between "before-first-search" and
   // "search returned 0 hits". Without this we fall through to the silent gap
@@ -44,8 +53,8 @@ export function CivitaiSearchPanel({ modelType, title, placeholder }: Props) {
   const downloads = useDownloadStore((s) => s.downloads)
   const dlStore = useDownloadStore
 
-  const runSearch = async () => {
-    if (!query.trim()) return
+  const runSearch = async (text: string = query) => {
+    if (!text.trim()) return
     setSearching(true)
     setSearched(true)
     // The CivitAI API key the user configured in Settings, AI Backends,
@@ -53,10 +62,21 @@ export function CivitaiSearchPanel({ modelType, title, placeholder }: Props) {
     // credential, so there is no second input here.
     const apiKey = useWorkflowStore.getState().civitaiApiKey || undefined
     const host = useWorkflowStore.getState().civitaiHost
-    const hits = await searchCivitaiModels(query, modelType, apiKey, host)
+    const hits = await searchCivitaiModels(text, modelType, apiKey, host)
     setResults(hits)
     setSearching(false)
   }
+
+  // Enter in the header search. Same deal DiscoverModels has with its own
+  // catalog search: the live text is only a filter, the token is the submit.
+  // The typed text is taken over either way, so the field is never empty
+  // after a keypress that just switched the view to this card.
+  useEffect(() => {
+    if (searchSubmitToken <= 0 || !search.trim()) return
+    setQuery(search)
+    void runSearch(search)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchSubmitToken])
 
   const download = async (model: CivitAIModelResult) => {
     if (!model.downloadUrl || !model.filename || !model.subfolder) return
@@ -95,13 +115,13 @@ export function CivitaiSearchPanel({ modelType, title, placeholder }: Props) {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+          onKeyDown={(e) => { if (e.key === 'Enter') void runSearch() }}
           placeholder={placeholder}
           aria-label={title}
           className="flex-1 px-3 py-2 rounded-lg bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-sm text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"
         />
         <button
-          onClick={runSearch}
+          onClick={() => { void runSearch() }}
           disabled={searching || !query.trim()}
           aria-label="Search CivitAI"
           className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/15 disabled:opacity-50 text-gray-700 dark:text-white transition-colors"

@@ -26,6 +26,7 @@ import { counterView } from '../../lib/inventory-counter'
 import { groupInstalledByProvider, needsBackendSwitchHeading, foldedRowsSentence, LU_ENGINE_GROUP } from '../../lib/lu-engine-rows'
 import { isBuiltinEngineEntry } from '../../lib/lmstudio-match'
 import { installedRowMatchesSearch } from '../../lib/model-search'
+import { isLoraRow } from '../../lib/lora-rows'
 import { useBuiltinEngineStatus, engineIsIdle } from '../../hooks/useBuiltinEngineStatus'
 import { LuEngineSwitchBar } from '../chat/LuEngineSwitchBar'
 import type { InstalledModelLike } from '../../lib/lmstudio-match'
@@ -53,13 +54,6 @@ const RAIL_ITEMS: { key: Mode; label: string; icon: typeof MessagesSquare }[] = 
  *  attach to. Its own item rather than a member of RAIL_ITEMS above: that list
  *  is typed on the store's category and this one is not a category. */
 const LORA_RAIL = { key: 'lora' as const, label: 'LoRAs', icon: Layers }
-
-/** A row of the ComfyUI inventory that came out of the loras folder. The field
- *  is carried all the way from `api/comfyui`'s addon lanes (useModels keeps it
- *  now); without it a LoRA and a checkpoint are the same shape. */
-export function isLoraRow(m: AIModel): boolean {
-  return 'source' in m && m.source === 'lora'
-}
 
 /** The mark a counter wears while it has nothing counted to show. Not a 0:
  *  a 0 next to a card that reads Installed is a wrong answer, and this one
@@ -144,7 +138,9 @@ export function ModelManager() {
   const loraRailOffered = !macMlxMedia
   const [loraRail, setLoraRail] = useState(false)
   const rail: Rail = loraRail && loraRailOffered ? 'lora' : mode
-  const showMlxPanel = macMlxMedia && (mode === 'image' || mode === 'video') && rail !== 'lora'
+  // No `rail !== 'lora'` here: the LoRA rail is not offered while macMlxMedia
+  // holds, so the two can never be true together.
+  const showMlxPanel = macMlxMedia && (mode === 'image' || mode === 'video')
 
   useEffect(() => {
     fetchModels()
@@ -456,6 +452,8 @@ export function ModelManager() {
               ) : rail === 'lora' ? (
                 <LoraManager
                   rows={searchQuery ? loraRows.filter((r) => installedRowMatchesSearch(r.name, searchQuery)) : loraRows}
+                  total={loraRows.length}
+                  searchQuery={searchQuery}
                   onDelete={(name) => setConfirmDelete(name)}
                   onGetNew={() => setTab('discover')}
                 />
@@ -621,6 +619,8 @@ export function ModelManager() {
                   modelType="LORA"
                   title="Search CivitAI for LoRAs"
                   placeholder="e.g. detail enhancer, pixel art, film grain..."
+                  search={searchQuery}
+                  searchSubmitToken={searchSubmitToken}
                 />
               </div>
             ) : (
