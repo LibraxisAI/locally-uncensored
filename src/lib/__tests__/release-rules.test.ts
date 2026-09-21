@@ -215,6 +215,15 @@ describe('CI runs the Rust tests it has', () => {
     expect(ci).toContain('run: cargo test')
   })
 
+  // The Windows lane runs cargo test in a separate step (single-threaded,
+  // see the comment above that step in ci.yml), so the plain 'run: cargo
+  // test' check above only proves coverage on the other platform. This
+  // checks the Windows lane still has its own cargo test step.
+  it('and the Windows lane runs it too, just single-threaded', () => {
+    expect(ci).toContain("if: matrix.platform == 'windows-latest'")
+    expect(ci).toContain('run: cargo test -- --test-threads=1')
+  })
+
   it('and is callable as a gate', () => {
     expect(ci).toContain('workflow_call:')
   })
