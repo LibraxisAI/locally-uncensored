@@ -1458,6 +1458,35 @@ fn dir_size(dir: &Path) -> u64 {
         .sum()
 }
 
+/// Pure core of [`check_repair_disk_pressure`]: free bytes, the existing
+/// venv's measured size and the mount point label (for the message only)
+/// in, the refusal message (or `None` to proceed) out. Kept separate from
+/// the disk enumeration below so the threshold arithmetic and the wording
+/// are a plain unit test on every host, the same split
+/// `git_download_preflight_core` (git.rs) uses for the same reason: the OS
+/// read stays a thin, untested shell around a tested decision.
+///
+/// No behaviour change from before the split: same 5 GB constant, same
+/// `saturating_add`, same strict `<` comparison (free space exactly equal
+/// to the requirement is enough), same message text.
+fn check_repair_disk_pressure_core(free_bytes: u64, existing_bytes: u64, mount_point: &str) -> Option<String> {
+    let needed_for_new_build: u64 = 5 * 1024 * 1024 * 1024;
+    let required = needed_for_new_build.saturating_add(existing_bytes);
+    if free_bytes < required {
+        return Some(format!(
+            "Not enough free space to rebuild this environment. The existing environment is \
+             about {:.1} GB, and building a new one alongside it before the old one is removed \
+             needs about 5 GB more ({:.1} GB total); only {:.1} GB is free on {}. Free up space \
+             and try again; nothing was changed.",
+            existing_bytes as f64 / 1_073_741_824.0,
+            required as f64 / 1_073_741_824.0,
+            free_bytes as f64 / 1_073_741_824.0,
+            mount_point,
+        ));
+    }
+    None
+}
+
 /// Runde 6, B9: the old venv and the new one sit on the same drive at the
 /// same time now, from the moment the old one is retired until the new one
 /// passes verification. `check_install_disk_pressure`'s flat 5 GB estimate
@@ -1494,21 +1523,7 @@ fn check_repair_disk_pressure(comfy_dir: &Path, venv_dir: &Path) -> Option<Strin
     let disk = best?;
     let free_bytes = disk.available_space();
     let existing_bytes = dir_size(venv_dir);
-    let needed_for_new_build: u64 = 5 * 1024 * 1024 * 1024;
-    let required = needed_for_new_build.saturating_add(existing_bytes);
-    if free_bytes < required {
-        return Some(format!(
-            "Not enough free space to rebuild this environment. The existing environment is \
-             about {:.1} GB, and building a new one alongside it before the old one is removed \
-             needs about 5 GB more ({:.1} GB total); only {:.1} GB is free on {}. Free up space \
-             and try again; nothing was changed.",
-            existing_bytes as f64 / 1_073_741_824.0,
-            required as f64 / 1_073_741_824.0,
-            free_bytes as f64 / 1_073_741_824.0,
-            disk.mount_point().to_string_lossy(),
-        ));
-    }
-    None
+    check_repair_disk_pressure_core(free_bytes, existing_bytes, &disk.mount_point().to_string_lossy())
 }
 
 #[cfg(test)]
@@ -2103,6 +2118,227 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "the call did not honor its timeout, took {:?}",
             start.elapsed()
+        );
+    }
+
+    // ── check_repair_disk_pressure: the refusal has no test at all ────────
+
+    /// Not enough room: the refusal fires, names the numbers, and offers a
+    /// way out. The refusal is exercised through the pure core, not the
+    /// disk-reading wrapper, so it needs no real filesystem free-space
+    /// probe (see `check_repair_disk_pressure_core`'s doc comment for why
+    /// the split mirrors `git_download_preflight_core`).
+    /// The three numbers are deliberately three DIFFERENT rounded values
+    /// (2.0 / 7.0 / 6.5 GB) rather than reusing one value for two roles.
+    /// Review Runde 2 caught that the previous version put `free` one byte
+    /// below `required`, so both rounded to "7.0 GB" and a swapped
+    /// `existing`/`free` argument pair in the `format!` call would have
+    /// gone unnoticed. With three distinct values, each `.contains` can
+    /// only match the argument that actually produced it. The mount point
+    /// is asserted too, closing the same kind of gap for the fourth
+    /// argument.
+    #[test]
+    fn disk_pressure_core_refuses_when_free_space_is_below_required() {
+        let existing_bytes = 2 * 1024 * 1024 * 1024; // 2 GB existing venv
+        let required = 5 * 1024 * 1024 * 1024 + existing_bytes; // 7 GB
+        let free_bytes = 6 * 1024 * 1024 * 1024 + 512 * 1024 * 1024; // 6.5 GB, below required
+        assert!(free_bytes < required, "the test fixture itself must be below the threshold");
+        let refused = check_repair_disk_pressure_core(free_bytes, existing_bytes, "/mnt/test-disk")
+            .expect("free space below the requirement was accepted");
+        assert!(refused.contains("Not enough free space"), "wrong message: {refused}");
+        // Each number is asserted together with the words around it, not
+        // as a bare substring: three distinct values can still swap
+        // POSITIONS in the format! call (e.g. `existing` and `free`
+        // trading places) while every bare number still occurs somewhere
+        // in the message, letting the swap slip past. Binding each value
+        // to its sentence closes that gap.
+        assert!(refused.contains("is about 2.0 GB,"), "existing size not in its own sentence: {refused}");
+        assert!(refused.contains("(7.0 GB total)"), "required total not in its own place: {refused}");
+        assert!(
+            refused.contains("only 6.5 GB is free on /mnt/test-disk"),
+            "free space and mount point not named together: {refused}"
+        );
+        assert!(refused.contains("nothing was changed"), "no reassurance that nothing ran yet: {refused}");
+    }
+
+    /// Negative control for the test above: without it, a core that always
+    /// refuses would pass the assertion just as well.
+    #[test]
+    fn disk_pressure_core_lets_enough_space_through() {
+        let existing_bytes = 2 * 1024 * 1024 * 1024;
+        let required = 5 * 1024 * 1024 * 1024 + existing_bytes;
+        let free_bytes = required + 1024; // comfortably above
+        assert!(
+            check_repair_disk_pressure_core(free_bytes, existing_bytes, "/").is_none(),
+            "enough free space was refused anyway"
+        );
+    }
+
+    /// The boundary itself: free space exactly equal to the requirement
+    /// must pass, since the production comparison is a strict `<`. This is
+    /// the exact number a rounding change to `<=` would flip.
+    #[test]
+    fn disk_pressure_core_exactly_at_the_threshold_passes() {
+        let existing_bytes = 2 * 1024 * 1024 * 1024;
+        let required = 5 * 1024 * 1024 * 1024 + existing_bytes;
+        assert!(
+            check_repair_disk_pressure_core(required, existing_bytes, "/").is_none(),
+            "free space exactly equal to the requirement was refused"
+        );
+        assert!(
+            check_repair_disk_pressure_core(required - 1, existing_bytes, "/").is_some(),
+            "one byte below the requirement was let through"
+        );
+    }
+
+    /// Documents today's behaviour when the disk itself cannot be
+    /// identified (no mount point in `sysinfo::Disks` is a prefix of
+    /// `comfy_dir`, the same fallback the doc comment on
+    /// `check_repair_disk_pressure` already names): it returns `None` and
+    /// lets the repair proceed, exactly like "no existing venv yet". This
+    /// is a characterization test, not an endorsement; it exists so a
+    /// change to that fallback is a deliberate edit, not a silent drift.
+    #[test]
+    fn disk_pressure_lets_repair_proceed_when_the_disk_cannot_be_identified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let venv = tmp.path().join("venv");
+        std::fs::create_dir(&venv).unwrap();
+        // A relative path matches no mount point's prefix (every mount
+        // point sysinfo reports is absolute), so `best` stays `None`.
+        let unidentifiable_comfy_dir = Path::new("this-path-is-relative-on-purpose");
+        assert!(
+            check_repair_disk_pressure(unidentifiable_comfy_dir, &venv).is_none(),
+            "an unidentifiable disk was refused instead of let through"
+        );
+    }
+
+    /// Source guard, not a runtime test: on a normal development or CI
+    /// machine there is easily more than 5 GB free, so a runtime test that
+    /// deletes the early exit and calls `check_repair_disk_pressure` on a
+    /// missing venv would still return `None` and never go red, proving
+    /// nothing. The early exit for "no venv to measure yet" is instead
+    /// pinned by position: it must run before `sysinfo::Disks` is ever
+    /// touched, inside `check_repair_disk_pressure`'s own body (cut at the
+    /// following `#[cfg(test)]`, so nothing past the function can match).
+    #[test]
+    fn disk_pressure_wrapper_exits_before_a_missing_venv_ever_reaches_the_disk_probe() {
+        const SRC: &str = include_str!("comfy_repair.rs");
+        let fn_start = SRC
+            .find("fn check_repair_disk_pressure(comfy_dir: &Path, venv_dir: &Path) -> Option<String> {")
+            .expect("check_repair_disk_pressure is gone");
+        let body_end = SRC[fn_start..]
+            .find("\n#[cfg(test)]")
+            .expect("the test module marker after check_repair_disk_pressure is gone; widen this guard's cut");
+        let body = &SRC[fn_start..fn_start + body_end];
+
+        let at_guard = body
+            .find("if !venv_dir.exists() {")
+            .expect("the early return for a not-yet-built venv is gone from check_repair_disk_pressure");
+        let at_return = body[at_guard..]
+            .find("return None;")
+            .map(|i| i + at_guard)
+            .expect("the early return no longer says None");
+        let at_disks = body
+            .find("sysinfo::Disks")
+            .expect("the disk enumeration is gone from check_repair_disk_pressure");
+
+        assert!(
+            at_return < at_disks,
+            "the missing-venv guard (byte {at_return}) must run before sysinfo enumerates \
+             any disk (byte {at_disks}), not after"
+        );
+    }
+}
+
+/// Runde 6, B9 review: nothing may delete the repair disk-pressure refusal
+/// in `repair_comfyui_env` or move it behind the first destructive step
+/// (retiring the old venv) without a test going red. Same call-site-order
+/// technique as `git_preflight_call_site_guard` below, with two
+/// hardenings this guard specifically needs:
+///
+/// - the search is bounded to `repair_comfyui_env`'s OWN body, cut off at
+///   the next top-level function (`foreign_comfyui_blocks_update`), not to
+///   the end of the file, so a call added to some later, unrelated
+///   function could never satisfy it;
+/// - comment lines are stripped before searching, so a comment that
+///   merely MENTIONS either call in the right order cannot fool the
+///   position check (the technique `process_util.rs`'s
+///   `count_command_new`/`shipping_half` guard already uses).
+#[cfg(test)]
+mod disk_pressure_call_site_guard {
+    fn strip_comment_lines(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `repair_comfyui_env`'s own source, cut at the next top-level `fn`
+    /// so nothing past its real body can be matched, then stripped of
+    /// comment lines.
+    fn repair_comfyui_env_body() -> String {
+        const SRC: &str = include_str!("comfy_repair.rs");
+        let start = SRC
+            .find("pub fn repair_comfyui_env(")
+            .expect("repair_comfyui_env is gone from comfy_repair.rs");
+        let next_fn_offset = SRC[start..]
+            .find("\nfn foreign_comfyui_blocks_update(")
+            .expect(
+                "foreign_comfyui_blocks_update, the next function after \
+                 repair_comfyui_env, is gone; widen this guard's cut",
+            );
+        strip_comment_lines(&SRC[start..start + next_fn_offset])
+    }
+
+    #[test]
+    fn repair_checks_disk_pressure_before_retiring_the_old_venv() {
+        let body = repair_comfyui_env_body();
+        let at_check = body
+            .find("check_repair_disk_pressure(&comfy_dir, &venv_dir)")
+            .expect(
+                "repair_comfyui_env no longer calls check_repair_disk_pressure: a drive \
+                 that cannot hold both venvs would fail deep inside the rebuild again \
+                 instead of refusing up front",
+            );
+        let at_retire = body.find("retire_for_rebuild(&venv_dir)").expect(
+            "the retire-the-old-venv step is gone from repair_comfyui_env",
+        );
+        assert!(
+            at_check < at_retire,
+            "check_repair_disk_pressure (byte {at_check}) must run before \
+             retire_for_rebuild (byte {at_retire}), not after"
+        );
+
+        // Each needle exactly once inside this scoped, comment-stripped
+        // body: two occurrences would mean a stray copy (e.g. in a
+        // comment this strip missed) could make the `.expect`s above
+        // unreachable or the position check meaningless.
+        for (what, n) in [
+            ("the disk-pressure check", "check_repair_disk_pressure(&comfy_dir, &venv_dir)"),
+            ("the retire call", "retire_for_rebuild(&venv_dir)"),
+        ] {
+            assert_eq!(body.matches(n).count(), 1, "{what}: expected exactly one occurrence");
+        }
+    }
+
+    /// Negative control: the extraction-plus-filter has to be ABLE to see
+    /// a regression, not just agree with the real file by construction. A
+    /// synthetic body shaped like the real one, calls swapped, plus a
+    /// comment that LIES about the order to prove the comment strip
+    /// actually runs before the search.
+    #[test]
+    fn the_guard_would_catch_the_calls_swapped_even_past_a_lying_comment() {
+        let synthetic = "fn repair_comfyui_env() {\n\
+             // check_repair_disk_pressure(&comfy_dir, &venv_dir) runs first, trust me\n\
+             retire_for_rebuild(&venv_dir);\n\
+             check_repair_disk_pressure(&comfy_dir, &venv_dir);\n\
+             }\n";
+        let filtered = strip_comment_lines(synthetic);
+        let at_check = filtered.find("check_repair_disk_pressure(&comfy_dir, &venv_dir)").unwrap();
+        let at_retire = filtered.find("retire_for_rebuild(&venv_dir)").unwrap();
+        assert!(
+            at_retire < at_check,
+            "the synthetic body was supposed to have the calls swapped"
         );
     }
 }
