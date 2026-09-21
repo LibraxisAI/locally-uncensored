@@ -51,8 +51,11 @@
 # (msvcprt:vector_algorithms.obj and the wmemcmp/memcmp fast path, see
 # win-isa-guard.mjs isAllowlisted) rather than re-deriving it from source on
 # every run. That trust is pinned to a Major.Minor MSVC LINKER version
-# (WINDOWS_REVIEWED_LINKER_VERSIONS below, currently "14.44", i.e. MSVC
-# 19.44.35222.0 / VS 2022 17.14, lu-301/bau/review-k1-avx.md section 3) and
+# (WINDOWS_REVIEWED_LINKER_VERSIONS below, currently "14.44 14.51":
+# 14.44 is MSVC 19.44.35222.0 / VS 2022 17.14, lu-301/bau/review-k1-avx.md
+# section 3; 14.51 is MSVC 19.51.36256 / VS 2026, reviewed 21.09.2026 on the
+# GitHub-runner dumps in lu-301/bau/isa-review-14.51/, written up in
+# lu-301/bau/isa-review-1451.md) and
 # check_toolset_version turns the guard red the moment a build used a
 # different one, rather than silently keep trusting an allowlist nobody
 # re-checked. To clear a red toolset-pin failure: re-run the Opus-style
@@ -69,6 +72,21 @@
 # cost of trusting a hand-reviewed allowlist rather than a rare emergency,
 # and the sidecar build cache (keyed on hashFiles('scripts/build-llama.sh'))
 # only defers it, it does not remove it.
+#
+# DURCHSICHTSSTAND 14.51 (21.09.2026, lu-301/bau/isa-review-1451.md, dumps in
+# lu-301/bau/isa-review-14.51/): the CRT/STL allowlist holds on MSVC
+# 19.51.36256 / VS 2026. All 924 allowlisted VEX/EVEX hits across the nine
+# base modules sit in msvcprt:vector_algorithms.obj, in 18 functions, and
+# every one of them reaches its first AVX instruction only through a read of
+# __isa_enabled plus a conditional jump over the block, either in its own
+# body or, for the four helper families _Find_end_cmpeq, _Search_cmpeq,
+# _Impl_first_avx and _Impl_last_avx, in the dispatching caller. This
+# toolset produced no wmemcmp/memcmp hit at all, so the
+# WMEMCMP_MEMCMP_HOST_OBJECTS half of the allowlist was not exercised by
+# 14.51 and stays trusted on the 14.44 review alone. The one new finding,
+# two vpmullq in llama.dll's llama-kv-cache.obj, was a false red of known
+# form (i) and was closed in win-isa-guard.mjs's checkDominance, not
+# allowlisted away.
 #
 # Usage: scripts/verify-sidecar-isa.sh <triple>
 set -euo pipefail
@@ -353,7 +371,7 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
   # principle ship an unguarded fast path in the same object and this guard
   # would not notice, so pin the toolset that was actually reviewed and go
   # red, with a concrete next step, the moment the build uses a different one.
-  WINDOWS_REVIEWED_LINKER_VERSIONS="14.44"
+  WINDOWS_REVIEWED_LINKER_VERSIONS="14.44 14.51"
   check_toolset_version() {
     local file="$1" hdr ver
     hdr="$(dumpbin_run /nologo /headers "$file")" || vdie "dumpbin /headers failed on $file"
@@ -361,9 +379,9 @@ if [[ "$TRIPLE" == *-windows-* ]]; then
     [ -n "$ver" ] || vdie "could not read a linker version out of dumpbin /headers on $file"
     case " $WINDOWS_REVIEWED_LINKER_VERSIONS " in
       *" $ver "*)
-        vlog "$file: linker version $ver matches the reviewed MSVC toolset (19.44.35222.0, VS 2022 17.14, lu-301/bau/review-k1-avx.md)" ;;
+        vlog "$file: linker version $ver matches one of the reviewed MSVC toolsets (14.44 = 19.44.35222.0, VS 2022 17.14, lu-301/bau/review-k1-avx.md; 14.51 = 19.51.36256, VS 2026, lu-301/bau/isa-review-1451.md)" ;;
       *)
-        vdie "$file: linker version is $ver, not one of the reviewed toolsets ($WINDOWS_REVIEWED_LINKER_VERSIONS, MSVC 19.44.35222.0 / VS 2022 17.14, lu-301/bau/review-k1-avx.md section 3). A new toolset can change whether vector_algorithms.obj/wmemcmp still self-guard the way the CRT/STL allowlist assumes: re-run the Opus-style disassembly review against the new toolset before trusting it, then add its linker version to WINDOWS_REVIEWED_LINKER_VERSIONS here" ;;
+        vdie "$file: linker version is $ver, not one of the reviewed toolsets ($WINDOWS_REVIEWED_LINKER_VERSIONS; 14.44 = MSVC 19.44.35222.0 / VS 2022 17.14, lu-301/bau/review-k1-avx.md section 3, 14.51 = MSVC 19.51.36256 / VS 2026, lu-301/bau/isa-review-1451.md). A new toolset can change whether vector_algorithms.obj/wmemcmp still self-guard the way the CRT/STL allowlist assumes: re-run the Opus-style disassembly review against the new toolset before trusting it, then add its linker version to WINDOWS_REVIEWED_LINKER_VERSIONS here" ;;
     esac
   }
 

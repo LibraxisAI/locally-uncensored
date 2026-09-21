@@ -159,7 +159,7 @@ test('N1: the isa ADDRESS used only as a bare immediate (never dereferenced) doe
   assert.equal(dom.protected, false);
 });
 
-test('N1: the conditional jump must immediately follow the bound cmp/test, not merely appear somewhere after it', () => {
+test('N1: an instruction that WRITES EFLAGS between the bound cmp/test and the jump breaks the binding', () => {
   const lines = parseDisasmLines([
     '  0000000180027ED6: 8B 0D BC 19 07 00  mov         ecx,dword ptr [0000000180099898h]',
     '  0000000180027F7E: 83 F9 05           cmp         ecx,5',
@@ -168,7 +168,70 @@ test('N1: the conditional jump must immediately follow the bound cmp/test, not m
     '  0000000180027F83: C4 C2 71 46 C2     vpsravd     xmm0,xmm1,xmm10',
   ].join('\n'));
   const dom = checkDominance(lines, [0x180099898], 0x180027e10, 0x180028010, 0x180027f83);
-  assert.equal(dom.protected, false, 'an unrelated instruction between the cmp and the jump breaks the "immediately follows" requirement');
+  assert.equal(dom.protected, false, 'the test rax,rax overwrote the flags, so the jl no longer evaluates the isa compare');
+});
+
+// Form (i)/A, see FLAG_PRESERVING_MNEMONICS in win-isa-guard.mjs and the
+// fixture pair scheduled-jump-own-code.* / scheduled-jump-no-guard-own-code.*
+// this pair of tests mirrors in miniature.
+test('form (i): movs between the bound cmp/test and the jump are followed across, because they cannot write EFLAGS', () => {
+  const lines = parseDisasmLines([
+    '  000000018007A974: 83 3D 15 10 19 00  cmp         dword ptr [000000018020B990h],6',
+    '  000000018007A97B: 4C 8B 19           mov         r11,qword ptr [rcx]',
+    '  000000018007A97E: 0F 8C CA 00 00 00  jl          000000018007AA4E',
+    '  000000018007AA0D: 62 F2 FD 08 40 D5  vpmullq     xmm2,xmm0,xmm5',
+    '  000000018007AA4E: 48 89 5C 24 20     mov         qword ptr [rsp+20h],rbx',
+  ].join('\n'));
+  const dom = checkDominance(lines, [0x18020b990], 0x18007a970, 0x18007ab80, 0x18007aa0d);
+  assert.equal(dom.protected, true, 'the real MSVC 14.51 shape from llama.dll, lu-301/bau/isa-review-1451.md section 2');
+});
+
+test('form (i) is not a free pass: the same shape without the conditional jump stays unprotected', () => {
+  const lines = parseDisasmLines([
+    '  000000018007A974: 83 3D 15 10 19 00  cmp         dword ptr [000000018020B990h],6',
+    '  000000018007A97B: 4C 8B 19           mov         r11,qword ptr [rcx]',
+    '  000000018007AA0D: 62 F2 FD 08 40 D5  vpmullq     xmm2,xmm0,xmm5',
+  ].join('\n'));
+  const dom = checkDominance(lines, [0x18020b990], 0x18007a970, 0x18007ab80, 0x18007aa0d);
+  assert.equal(dom.protected, false);
+});
+
+test('form (i) stops at the cap: more scheduled movs than MAX_SCHEDULED_INSTRUCTIONS_BEFORE_JUMP is not followed', () => {
+  const movs = [];
+  for (let i = 0; i < 9; i += 1) {
+    const addr = (0x18007a980 + i * 3).toString(16).padStart(16, '0').toUpperCase();
+    movs.push(`  ${addr}: 4C 8B 19           mov         r11,qword ptr [rcx]`);
+  }
+  const lines = parseDisasmLines([
+    '  000000018007A974: 83 3D 15 10 19 00  cmp         dword ptr [000000018020B990h],6',
+    ...movs,
+    '  000000018007A9A0: 0F 8C CA 00 00 00  jl          000000018007AA4E',
+    '  000000018007AA0D: 62 F2 FD 08 40 D5  vpmullq     xmm2,xmm0,xmm5',
+    '  000000018007AA4E: 48 89 5C 24 20     mov         qword ptr [rsp+20h],rbx',
+  ].join('\n'));
+  const dom = checkDominance(lines, [0x18020b990], 0x18007a970, 0x18007ab80, 0x18007aa0d);
+  assert.equal(dom.protected, false);
+});
+
+test('fixture: scheduled-jump-own-code (real MSVC 14.51 llama.dll form (i)) -> ALLOWED_PROTECTED', () => {
+  const { disasmText, mapText } = loadFixture('scheduled-jump-own-code');
+  const result = evaluateModule({ moduleName: 'scheduled-jump-own-code', disasmText, mapText });
+  assert.equal(result.hitCount, 2, 'both vpmullq are VEX/EVEX hits');
+  assert.equal(result.ownedHitCount, 2);
+  assert.equal(result.decodeArtifactCount, 0, 'xmm0/xmm2/xmm5 are not APX registers');
+  assert.equal(result.unprotected.length, 0);
+  for (const v of result.verdicts) {
+    assert.equal(v.verdict, 'ALLOWED_PROTECTED');
+    assert.equal(v.owner.obj, 'llama-kv-cache.obj', 'own code, so the CRT allowlist must not be what saved it');
+  }
+});
+
+test('fixture: scheduled-jump-no-guard-own-code (the same form with the jump removed) MUST stay UNPROTECTED', () => {
+  const { disasmText, mapText } = loadFixture('scheduled-jump-no-guard-own-code');
+  const result = evaluateModule({ moduleName: 'scheduled-jump-no-guard-own-code', disasmText, mapText });
+  assert.equal(result.hitCount, 2);
+  assert.equal(result.unprotected.length, 2);
+  for (const v of result.verdicts) assert.equal(v.verdict, 'UNPROTECTED');
 });
 
 test('fixture: fake-unrelated-jump-own-code (Opus pattern A) MUST come out UNPROTECTED', () => {
@@ -307,11 +370,17 @@ test('R7 does not loosen the other fixtures: the red probe and both fake-green s
   // A guard rule that excuses a class of hit is exactly the kind of change
   // that can quietly take the existing probes with it, so they are asserted
   // again from here rather than only in their own tests above.
-  for (const name of ['unprotected-own-code', 'fake-unrelated-jump-own-code', 'fake-address-as-constant-own-code']) {
+  const stillRed = [
+    ['unprotected-own-code', 1],
+    ['fake-unrelated-jump-own-code', 1],
+    ['fake-address-as-constant-own-code', 1],
+    ['scheduled-jump-no-guard-own-code', 2],
+  ];
+  for (const [name, expected] of stillRed) {
     const { disasmText, mapText } = loadFixture(name);
     const result = evaluateModule({ moduleName: name, disasmText, mapText });
     assert.equal(result.decodeArtifactCount, 0, `${name} must not be touched by R7`);
-    assert.equal(result.unprotected.length, 1, `${name} must still be RED`);
+    assert.equal(result.unprotected.length, expected, `${name} must still be RED`);
   }
 });
 
