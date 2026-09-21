@@ -273,6 +273,13 @@ jobs:
       # a customer's older CPU would hit.
       - name: Verify sidecar ISA layout (K1)
         shell: bash
+        # Release night 3.0.1: the guard reads the linker .map files out of
+        # the sidecar build cache; on Windows that cache lives at D:/lb (see
+        # the build step), and without this env the guard looked under
+        # .llama-build, found no map, and died before a single module was
+        # checked. Same expression as the build step, keep the two in sync.
+        env:
+          LLAMA_BUILD_CACHE: ${{ matrix.platform == 'windows-latest' && 'D:/lb' || '' }}
         run: bash scripts/verify-sidecar-isa.sh ${{ matrix.sidecar_triple }}
 
       # BLOCKER B3 (review-sidecar.md, Beweisliste Punkt 3): a boot-smoke run
@@ -346,10 +353,15 @@ jobs:
             exit 1
           }
           cat /tmp/list-devices.log
-          grep -qi "loaded CPU backend from" /tmp/list-devices.log || {
-            echo "FAIL: ggml_backend_load_all() never logged a loaded CPU backend; no ggml-cpu-* module was found in $moved/llama" >&2
-            exit 1
-          }
+          # Release night 3.0.1: llama.cpp 049326a no longer prints the
+          # load_backend line even at -lv 4 (measured on the Windows lane of
+          # sidecar-windows.yml), so the grep is informational only. The proof
+          # that carries is the same one the Linux round r14 used: the LIVE
+          # server process must have a libggml-cpu-*.so from $moved/llama
+          # mapped (/proc/<pid>/maps), checked below before it is killed.
+          grep -qi "loaded CPU backend from" /tmp/list-devices.log \
+            && echo "log: load_backend line present" \
+            || echo "log: no load_backend line at -lv 4 (informational only)"
           # Tiny (~1.2 MB) public GGUF so /health proves a real model load
           # (and therefore a real CPU-backend load), not just the HTTP
           # layer or the exe's own DT_NEEDED resolution. Pinned, hashed and
@@ -370,6 +382,10 @@ jobs:
             if curl -fsS "http://127.0.0.1:8129/health" >/dev/null 2>&1; then ok=1; break; fi
             sleep 0.3
           done
+          cpu_maps=""
+          if [ -n "$ok" ]; then
+            cpu_maps="$(grep -o '[^ ]*libggml-cpu-[^ ]*\.so' "/proc/$pid/maps" 2>/dev/null | sort -u || true)"
+          fi
           kill "$pid" 2>/dev/null || true
           trap - EXIT
           if [ -z "$ok" ]; then
@@ -379,7 +395,17 @@ jobs:
             echo "FAIL: llama-server /health never came up from $moved (nowhere near the build directory it was compiled in)" >&2
             exit 1
           fi
-          echo "OK: sidecar boots from $moved, loads a real model, /health answers, nowhere near the build directory it was compiled in"
+          if [ -z "$cpu_maps" ]; then
+            cat /tmp/boot-smoke.log || true
+            echo "FAIL: the running llama-server had no libggml-cpu-*.so mapped; ggml_backend_load_all() found no CPU module in $moved/llama" >&2
+            exit 1
+          fi
+          echo "$cpu_maps" | sed 's/^/loaded CPU module: /'
+          case "$cpu_maps" in
+            *"$moved/llama"*) ;;
+            *) echo "FAIL: a libggml-cpu-*.so was loaded from outside $moved/llama: $cpu_maps" >&2; exit 1;;
+          esac
+          echo "OK: sidecar boots from $moved, loads a real model, /health answers, and has a libggml-cpu-*.so from $moved/llama mapped, nowhere near the build directory it was compiled in"
 
       # Nachbesserung N5 (review-sidecar.md, Runde 2): before this step,
       # release.yml had no real model-load proof for EITHER platform (the
@@ -417,9 +443,11 @@ jobs:
           # "loaded %s backend from %s" on every success unconditionally
           # (the `if (!silent)` guard only gates the failure/skip messages,
           # even in a release/NDEBUG build), so that line is the real proof.
-          if (-not (Select-String -Path $listLog -Pattern "loaded CPU backend from" -Quiet)) {
-            throw "ggml_backend_load_all() never logged a loaded CPU backend; no ggml-cpu-*.dll was found in $runDir"
-          }
+          # Release night 3.0.1: llama.cpp 049326a no longer prints that
+          # line even at -lv 4 (measured in sidecar-windows.yml), so it is
+          # informational here; the proof that carries is the module list of
+          # the LIVE server process below, read before it is stopped.
+          if (Select-String -Path $listLog -Pattern "loaded CPU backend from" -Quiet) { Write-Host "log: load_backend line present" } else { Write-Host "log: no load_backend line at -lv 4 (informational only)" }
           Pop-Location
           # Pinned, hashed and bounded: see BLOCKER A1 above the env: block
           # at the top of this file for the full sourcing and the license.
@@ -442,9 +470,22 @@ jobs:
               $ok = $true; break
             } catch { }
           }
+          $cpuModules = @()
+          if ($ok) {
+            try {
+              $cpuModules = @((Get-Process -Id $proc.Id -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -like 'ggml-cpu-*.dll' } | ForEach-Object { $_.FileName })
+            } catch { Write-Host "module list unavailable: $_" }
+          }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $ok) { throw "llama-server /health never came up" }
-          Write-Host "OK - sidecar boots from the resource layout, loads a model and answers /health"
+          if ($cpuModules.Count -eq 0) {
+            throw "the running llama-server had no ggml-cpu-*.dll mapped; ggml_backend_load_all() found no CPU module in $runDir"
+          }
+          $cpuModules | ForEach-Object { Write-Host "loaded CPU module: $_" }
+          if ($cpuModules -notmatch [regex]::Escape($runDir)) {
+            throw "a ggml-cpu-*.dll was loaded from outside the resource layout: $($cpuModules -join ', ')"
+          }
+          Write-Host "OK - sidecar boots from the resource layout, loads a model, answers /health, and has a ggml-cpu-*.dll from $runDir mapped"
 
       # ── App build ────────────────────────────────────────────────────────
       - name: Install npm dependencies
