@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { test, expect } from '@playwright/test'
 import { tauriMockInit, DEFAULT_ASSISTANT_REPLY, DEFAULT_MODEL_NAME } from './support/tauri-mock'
 import { routeCloud, seedOnboardingDone, cloudSwitch } from './support/cloud-mock'
@@ -26,7 +27,7 @@ import { routeCloud, seedOnboardingDone, cloudSwitch } from './support/cloud-moc
  * Run: npx playwright test e2e/trainer-reinstall-confirm.spec.ts
  */
 
-const SHOT_DIR = '/Users/purple/Desktop/LU/lu-301/bau/trainerconfirm-shots'
+const SHOT_DIR = process.env.LU_TRAINERCONFIRM_SHOTS ?? resolve(process.cwd(), 'test-results/trainerconfirm')
 
 function trainerStatusMock(overrides: Record<string, unknown> = {}) {
   return {

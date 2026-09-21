@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { tauriMockInit, DEFAULT_ASSISTANT_REPLY, DEFAULT_MODEL_NAME } from './support/tauri-mock'
 import { routeCloud, seedOnboardingDone, signInViaGate, cloudSwitch } from './support/cloud-mock'
 
@@ -23,7 +24,7 @@ import { routeCloud, seedOnboardingDone, signInViaGate, cloudSwitch } from './su
  * im gemessenen Fall (Provider herausgenommen, Modell weg). Alles andere sind
  * Fokusaufnahmen, eine je Feldsorte, plus die Gegenprobe am Knopf.
  *
- * Die Bilder landen in /Users/purple/Desktop/LU/lu-301/e2e/promptfrei/ als
+ * Die Bilder landen in test-results/promptfrei/ (oder LU_PROMPTFREI_SHOTS) als
  * `nachher-*.png`. Dieselbe Datei, gegen `integ/301` gefahren, liefert die
  * `vorher-*.png` (die Fokusaufnahmen laufen dort unveraendert; die beiden
  * Composer-Aufnahmen sind dort der Befund selbst).
@@ -31,7 +32,7 @@ import { routeCloud, seedOnboardingDone, signInViaGate, cloudSwitch } from './su
  * Run: npx playwright test e2e/promptfrei-beweis.spec.ts
  */
 
-const SHOTS = process.env.LU_PROMPTFREI_SHOTS ?? '/Users/purple/Desktop/LU/lu-301/e2e/promptfrei'
+const SHOTS = process.env.LU_PROMPTFREI_SHOTS ?? resolve(process.cwd(), 'test-results/promptfrei')
 const PRAEFIX = process.env.LU_PROMPTFREI_PREFIX ?? 'nachher'
 mkdirSync(SHOTS, { recursive: true })
 

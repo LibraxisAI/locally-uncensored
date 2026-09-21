@@ -22,7 +22,7 @@ import { routeCloud, signInViaGate, cloudSwitch, type CloudScenario } from './su
  */
 
 const PHASE = process.env.LU_PRESETLOOK_PHASE ?? 'nachher'
-const SHOTS = process.env.LU_PRESETLOOK_DIR ?? '/Users/purple/Desktop/LU/lu-301/e2e/presetlook'
+const SHOTS = process.env.LU_PRESETLOOK_DIR ?? resolve(process.cwd(), 'test-results/presetlook')
 
 function shotPath(name: string): string {
   mkdirSync(SHOTS, { recursive: true })
