@@ -23,7 +23,7 @@ function allNodes(): CategorizedNodes {
       'ImageOnlyCheckpointLoader', 'CLIPVisionLoader', 'LoadImage'],
     samplers: ['KSampler', 'KSamplerAdvanced'],
     latentInit: ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyFlux2LatentImage'],
-    textEncoders: ['CLIPTextEncode', 'ConditioningZeroOut'],
+    textEncoders: ['CLIPTextEncode', 'ConditioningZeroOut', 'TextEncodeQwenImage21'],
     decoders: ['VAEDecode'],
     savers: ['SaveImage'],
     videoSavers: [],

@@ -779,6 +779,20 @@ describe('createStore', () => {
       expect(state.steps).toBe(12)
       expect(state.cfgScale).toBe(3.5)
     })
+
+    // Qwen-Image 2.1: the numbers of the official Comfy-Org templates, and
+    // they have to match comfyui.ts MODEL_TYPE_DEFAULTS, which the workflow
+    // builder reads (the two tables are mirrored on purpose).
+    it('applies qwenimage defaults correctly', () => {
+      useCreateStore.getState().setImageModel('qwen_image_2.1_int8_convrot.safetensors', 'qwenimage')
+      const state = useCreateStore.getState()
+      expect(state.steps).toBe(25)
+      expect(state.cfgScale).toBe(1.0)
+      expect(state.sampler).toBe('euler')
+      expect(state.scheduler).toBe('simple')
+      expect(state.width).toBe(1024)
+      expect(state.height).toBe(1024)
+    })
   })
 
   // ── Simple setters ─────────────────────────────────────────

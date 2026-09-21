@@ -43,7 +43,13 @@ const CORE_NODES = new Set([
   'ImageOnlyCheckpointLoader', 'CLIPVisionLoader', 'LoadImage', 'LoadImageMask', 'LoadAudio',
   'LoadVideo', 'AudioEncoderLoader',
   // conditioning
-  'CLIPTextEncode', 'CLIPSetLastLayer', 'CLIPVisionEncode', 'ConditioningZeroOut',
+  // TextEncodeQwenImage21: core, registered by the QwenExtension in
+  // comfy_extras/nodes_qwen.py (read in comfyanonymous/ComfyUI master on
+  // 2026-09-21, node_id "TextEncodeQwenImage21"), and used by both official
+  // Comfy-Org templates for Qwen-Image 2.1. It arrived in 0.37.0, which is
+  // younger than most of this list, so determineStrategy gates the lane on
+  // its presence and says which version adds it.
+  'CLIPTextEncode', 'TextEncodeQwenImage21', 'CLIPSetLastLayer', 'CLIPVisionEncode', 'ConditioningZeroOut',
   'InpaintModelConditioning', 'AudioEncoderEncode', 'ModelSamplingSD3', 'ModelSamplingAuraFlow',
   'SVD_img2vid_Conditioning', 'VideoLinearCFGGuidance',
   // latents

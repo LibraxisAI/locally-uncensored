@@ -24,7 +24,7 @@ function makeFullNodes(extras: Partial<CategorizedNodes> = {}): CategorizedNodes
       'EmptyMochiLatentVideo', 'EmptyCosmosLatentVideo',
       'CogVideoXEmptyLatents',
     ],
-    textEncoders: ['CLIPTextEncode', 'CogVideoXTextEncode', 'PyramidFlowTextEncode', 'AllegroTextEncode'],
+    textEncoders: ['CLIPTextEncode', 'TextEncodeQwenImage21', 'CogVideoXTextEncode', 'PyramidFlowTextEncode', 'AllegroTextEncode'],
     decoders: ['VAEDecode', 'CogVideoXVAEDecode', 'PyramidFlowDecode', 'AllegroDecoder'],
     savers: ['SaveImage'],
     videoSavers: ['VHS_VideoCombine', 'SaveAnimatedWEBP'],
@@ -59,6 +59,7 @@ describe('determineStrategy — all 15 model types', () => {
     ['flux2', 'unet_flux2'],
     ['zimage', 'unet_zimage'],
     ['ernie_image', 'unet_ernie_image'],
+    ['qwenimage', 'unet_qwenimage'],
   ]
 
   for (const [modelType, expectedStrategy] of strategyMap) {

@@ -13,7 +13,7 @@ function makeNodes(overrides: Partial<CategorizedNodes> = {}): CategorizedNodes 
     loaders: ['CheckpointLoaderSimple', 'UNETLoader', 'VAELoader', 'CLIPLoader', 'ImageOnlyCheckpointLoader'],
     samplers: ['KSampler', 'KSamplerAdvanced', 'CogVideoXSampler', 'FramePackSampler', 'PyramidFlowSampler', 'AllegroSampler'],
     latentInit: ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyFlux2LatentImage', 'EmptyHunyuanLatentVideo'],
-    textEncoders: ['CLIPTextEncode'],
+    textEncoders: ['CLIPTextEncode', 'TextEncodeQwenImage21'],
     decoders: ['VAEDecode'],
     savers: ['SaveImage'],
     videoSavers: ['SaveAnimatedWEBP'],
@@ -238,7 +238,7 @@ describe('dynamic-workflow — determineStrategy', () => {
 
   describe('reason strings', () => {
     it('includes a reason string for every result', () => {
-      const types: ModelType[] = ['flux', 'flux2', 'zimage', 'sdxl', 'sd15', 'wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'svd', 'cogvideo', 'framepack', 'pyramidflow', 'allegro', 'unknown']
+      const types: ModelType[] = ['flux', 'flux2', 'zimage', 'qwenimage', 'sdxl', 'sd15', 'wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'svd', 'cogvideo', 'framepack', 'pyramidflow', 'allegro', 'unknown']
       for (const t of types) {
         const result = determineStrategy(t, false, makeNodes(), makeModels())
         expect(typeof result.reason).toBe('string')
