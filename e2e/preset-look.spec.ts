@@ -135,3 +135,142 @@ test('dieselben Flaechen schmal bei 900 Pixel', async ({ page }) => {
   await page.keyboard.press('Escape')
   await expect(song).toBeHidden()
 })
+
+/**
+ * Kein lila Balken um ein Promptfeld, nirgends (Eigner, 21.09.2026).
+ *
+ * Der Ring kam aus EINER globalen Regel in index.css
+ * (`:focus-visible:not([tabindex='-1']):not(.lu-primary):not([data-lu-quiet-focus])`,
+ * `outline: 2px solid var(--color-lu-accent)`), die ungeschichtet ist und
+ * damit jedes `focus:outline-none` an den Feldern selbst schlaegt. Die
+ * Ausfahrt dafuer gibt es im Haus schon; sie hing bis hierher an einem
+ * einzigen Feld. Dieser Fall misst das Ergebnis am laufenden Fenster.
+ *
+ * Negativkontrolle: derselbe Lauf liest den Ring eines KNOPFES aus, der ihn
+ * behalten soll. Faende die Messung dort auch nichts, waere die Regel
+ * insgesamt tot und der gruene Befund oben wertlos.
+ */
+/**
+ * Die Akzentfarbe so, wie der Browser sie ausrechnet (Tailwind v4 kann sie
+ * als `oklch(...)` ausgeben, das Token in index.css ist `#a094f8`). Ein
+ * fester Erwartungsstring waere hier eine zweite Wahrheit.
+ */
+async function akzentfarbe(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const probe = document.createElement('span')
+    probe.style.color = 'var(--color-lu-accent)'
+    document.body.appendChild(probe)
+    const c = getComputedStyle(probe).color
+    probe.remove()
+    return c
+  })
+}
+
+interface Ring { style: string; color: string; shadow: string }
+
+async function ringOf(locator: ReturnType<Page['locator']>): Promise<Ring> {
+  return locator.evaluate((el) => {
+    const s = getComputedStyle(el)
+    return { style: s.outlineStyle, color: s.outlineColor, shadow: s.boxShadow }
+  })
+}
+
+/** Derselbe Messpunkt am Element, das gerade wirklich den Tastaturfokus hat. */
+async function ringOfActive(page: Page): Promise<Ring & { tag: string; primary: boolean; quiet: boolean }> {
+  return page.evaluate(() => {
+    const el = document.activeElement as HTMLElement
+    const s = getComputedStyle(el)
+    return {
+      tag: el.tagName,
+      primary: el.classList.contains('lu-primary'),
+      quiet: el.hasAttribute('data-lu-quiet-focus'),
+      style: s.outlineStyle,
+      color: s.outlineColor,
+      shadow: s.boxShadow,
+    }
+  })
+}
+
+test('um kein Promptfeld liegt ein Akzentring, um einen Knopf schon', async ({ page }) => {
+  await bootIntoCloudCreate(page, false)
+  const akzent = await akzentfarbe(page)
+
+  // (1) Das Promptfeld des Create-Composers.
+  const createPrompt = page.locator('textarea[data-lu-quiet-focus]').first()
+  await createPrompt.click()
+  await createPrompt.fill('a lighthouse at dusk')
+  const createRing = await ringOf(createPrompt)
+  expect(createRing.style, `Create-Composer traegt einen Umriss: ${JSON.stringify(createRing)}`).toBe('none')
+  expect(createRing.shadow).toBe('none')
+  await page.screenshot({ path: shotPath('fokus-create') })
+
+  // (1b) Negativkontrolle im selben Lauf: der Hausring lebt. Taste statt
+  //      `.focus()`, denn ein programmatisch gesetzter Fokus ist kein
+  //      `:focus-visible`. Gesucht wird EIN Halt mit genau der
+  //      Akzentfarbe; faende sich keiner, waere die Regel insgesamt tot
+  //      und der gruene Befund darueber wertlos. Nicht jeder Halt taugt
+  //      dafuer: der Primaerknopf hat per Hausregel seinen eigenen hellen
+  //      Ring, und mehrere Knoepfe der Kopfzeile setzen ihre eigene
+  //      Ringfarbe.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const haelt: string[] = []
+  let akzentRingGesehen = false
+  for (let i = 0; i < 60; i++) {
+    await page.keyboard.press('Tab')
+    const r = await ringOfActive(page)
+    haelt.push(`${r.tag} ${r.style} ${r.color}`)
+    if (r.style !== 'none' && r.color === akzent) akzentRingGesehen = true
+    // Und kein Promptfeld faengt sich unterwegs doch einen.
+    if (r.quiet) expect(r.style, `ein Promptfeld traegt einen Umriss: ${JSON.stringify(r)}`).toBe('none')
+  }
+  expect(akzentRingGesehen, `der Hausring ist weg: ${haelt.join(' | ')}`).toBe(true)
+
+  // (2) Das Promptfeld der Preset-Werkstatt.
+  await page.getByRole('button', { name: 'Expand presets' }).click()
+  await page.getByRole('button', { name: /Song from Words/ }).click()
+  const dialog = page.getByRole('dialog', { name: 'Song from Words' })
+  await expect(dialog).toBeVisible({ timeout: 15_000 })
+  const workshopPrompt = page.getByLabel('Preset prompt')
+  await workshopPrompt.click()
+  await workshopPrompt.fill('a bright acoustic tune about a summer road trip')
+  const workshopRing = await ringOf(workshopPrompt)
+  expect(workshopRing.style, `Werkstatt traegt einen Umriss: ${JSON.stringify(workshopRing)}`).toBe('none')
+  expect(workshopRing.shadow).toBe('none')
+  await dialog.screenshot({ path: shotPath('fokus-werkstatt') })
+
+  // (3) Negativkontrolle im selben Lauf. Tab statt `.focus()`: ein
+  //     programmatisch gesetzter Fokus ist kein `:focus-visible`, die
+  //     Messung faende dann auch an einem Knopf nichts und der gruene
+  //     Befund oben waere wertlos.
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+})
+
+test('auch das Chat-Promptfeld traegt keinen Akzentring', async ({ page }) => {
+  await bootIntoCloudCreate(page, false)
+  await page.getByRole('button', { name: /^Chat$/ }).click()
+
+  const chatPrompt = page.locator('textarea[data-lu-quiet-focus]').first()
+  await chatPrompt.click()
+  await chatPrompt.fill('hello')
+  const ring = await ringOf(chatPrompt)
+  expect(ring.style, `Chat-Composer traegt einen Umriss: ${JSON.stringify(ring)}`).toBe('none')
+  expect(ring.shadow).toBe('none')
+  await page.screenshot({ path: shotPath('fokus-chat') })
+})
+
+test('das Was-ist-neu-Blatt geht ohne Fokusrechteck im Fliesstext auf', async ({ page }) => {
+  await page.addInitScript(tauriMockInit, WINDOWS_OPTS)
+  await seedWithReleaseNotes(page)
+  await routeCloud(page, STUDIO)
+  await page.goto('/')
+
+  const notes = page.getByRole('dialog', { name: /What's new/ })
+  await expect(notes).toBeVisible({ timeout: 20_000 })
+  // Der Anfangsfokus sitzt auf der Hauptaktion, nicht auf dem kleinen
+  // Textknopf mitten im Text.
+  await expect(notes.getByRole('button', { name: 'Got it' })).toBeFocused()
+  await notes.screenshot({ path: shotPath('whatsnew-fokus') })
+  await page.keyboard.press('Escape')
+  await expect(notes).toBeHidden()
+})

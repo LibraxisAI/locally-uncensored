@@ -25,6 +25,12 @@ export function PromptField({ value, onChange, placeholder, onSubmit, maxHeight 
 
   return (
     <textarea
+      // `data-lu-quiet-focus`: um ein Promptfeld liegt kein lila Rechteck
+      // (Eigner, 21.09.2026: "der lila balken um das prompt fenster geht
+      // garnicht", danach "nirgends"). Der Kasten um dieses Feld zeigt den
+      // Fokus selbst, mit `focus-within:border-*` (Composer.tsx, beide
+      // Einbindungen). Die Regel dazu steht in index.css.
+      data-lu-quiet-focus
       ref={ref}
       value={value}
       autoFocus={autoFocus}
