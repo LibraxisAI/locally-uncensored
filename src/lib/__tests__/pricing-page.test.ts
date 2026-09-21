@@ -24,16 +24,26 @@ const html = readFileSync('docs/pricing/index.html', 'utf8')
 const page = new DOMParser().parseFromString(html, 'text/html')
 const text = () => page.body.textContent ?? ''
 
+// Der Waechter haengt seit 14.09.2026 am Ziel des Links, nicht an seiner
+// Klasse: die neu veroeffentlichte Seite (97c2c730) nennt die Planknoepfe
+// .cta und verlinkt die Packkarten ganz ohne Klasse. Ein Waechter, der eine
+// Klasse verlangt, waere durch ein Umbenennen stillzulegen gewesen. Aus
+// demselben Grund steht statt "gar kein Skript" jetzt eine Erlaubnisliste:
+// das gemeinsame Seitenskript /assets/lu.js liegt auf jeder Seite von
+// docs/, und das Angebot als ld+json ist Auszeichnung, kein Bezahlcode.
 it('takes no money itself: every buy link goes to the checkout domain', () => {
-  const buys = [...page.querySelectorAll<HTMLAnchorElement>('a.cta-btn')]
+  const links = [...page.querySelectorAll<HTMLAnchorElement>('a[href]')]
+    .map((a) => new URL(a.getAttribute('href')!, 'https://locallyuncensored.com'))
+  const buys = links.filter((url) => url.hostname === 'lu-labs.ai')
   expect(buys.length).toBeGreaterThanOrEqual(2)
-  for (const a of buys) {
-    const url = new URL(a.getAttribute('href')!, 'https://locallyuncensored.com')
-    expect(url.hostname).toBe('lu-labs.ai')
-    expect(url.searchParams.get('src')).toBe('luc-pricing')
-  }
+  for (const url of buys) expect(url.searchParams.get('src')).toBe('luc-pricing')
+  for (const url of links) expect(url.hostname).not.toMatch(/stripe|paypal|checkout/i)
   expect(page.querySelectorAll('form')).toHaveLength(0)
-  expect(page.querySelectorAll('script')).toHaveLength(0)
+  for (const tag of page.querySelectorAll('script')) {
+    const src = tag.getAttribute('src')
+    if (src === null) expect(tag.getAttribute('type')).toBe('application/ld+json')
+    else expect(src).toBe('/assets/lu.js')
+  }
 })
 
 it('names the switch in the same breath as the capability behind it', () => {
@@ -99,36 +109,41 @@ const PLANS = [
   { id: 'hosted-max', monthlyEUR: 99, annualEUR: 990, credits: 5_000_000 },
 ] as const
 
+// Die Karte traegt beide Zahlen seit 14.09.2026 in zwei Elementen statt in
+// einem Satz. Gehalten wird, was der Kaeufer liest: beide Zahlen stehen
+// sichtbar auf derselben Karte. Die Reihenfolge ist Gestaltung.
 it('names the five credit packs the web repo actually sells', () => {
-  const spans = [...page.querySelectorAll<HTMLElement>('[data-pack-id]')]
-  expect(spans).toHaveLength(PACKS.length)
+  const cards = [...page.querySelectorAll<HTMLElement>('[data-pack-id]')]
+  expect(cards).toHaveLength(PACKS.length)
   for (const pack of PACKS) {
-    const span = spans.find((s) => s.dataset.packId === pack.id)
-    expect(span, `pack missing from the page: ${pack.id}`).toBeTruthy()
-    expect(Number(span!.dataset.eurCents)).toBe(pack.eurCents)
-    expect(Number(span!.dataset.credits)).toBe(pack.credits)
+    const card = cards.find((c) => c.dataset.packId === pack.id)
+    expect(card, `pack missing from the page: ${pack.id}`).toBeTruthy()
+    expect(Number(card!.dataset.eurCents)).toBe(pack.eurCents)
+    expect(Number(card!.dataset.credits)).toBe(pack.credits)
     // Der Kaeufer liest den Text, nicht das Attribut. Beide muessen stimmen.
-    expect(span!.textContent).toBe(
-      `EUR ${pack.eurCents / 100} for ${pack.credits.toLocaleString('en-US')} credits`,
-    )
+    const shown = card!.textContent ?? ''
+    expect(shown, pack.id).toContain(`${pack.credits.toLocaleString('en-US')} credits`)
+    expect(shown, pack.id).toContain(`\u20ac${pack.eurCents / 100}`)
   }
 })
 
+// Seit 14.09.2026 sitzen Monats-, Jahrespreis und Guthaben als Attribute an
+// EINER Plankarte statt in drei Zellen einer Tabellenzeile. Gehalten wird
+// dasselbe wie vorher: alle drei Zahlen stehen im Attribut und sichtbar im
+// Text derselben Karte.
 it('names the three monthly plans the web repo actually sells', () => {
-  const cells = [...page.querySelectorAll<HTMLElement>('[data-plan-id]')]
-  expect(cells).toHaveLength(PLANS.length)
+  const cards = [...page.querySelectorAll<HTMLElement>('[data-plan-id]')]
+  expect(cards).toHaveLength(PLANS.length)
   for (const plan of PLANS) {
-    const cell = cells.find((c) => c.dataset.planId === plan.id)
-    expect(cell, `plan missing from the page: ${plan.id}`).toBeTruthy()
-    expect(Number(cell!.dataset.monthlyEur)).toBe(plan.monthlyEUR)
-    expect(cell!.textContent).toBe(`EUR ${plan.monthlyEUR}`)
-    const row = cell!.closest('[data-plan-row]')!
-    const annual = row.querySelector<HTMLElement>('[data-annual-eur]')!
-    expect(Number(annual.dataset.annualEur)).toBe(plan.annualEUR)
-    expect(annual.textContent).toBe(`EUR ${plan.annualEUR}`)
-    const credits = row.querySelector<HTMLElement>('[data-plan-credits]')!
-    expect(Number(credits.dataset.planCredits)).toBe(plan.credits)
-    expect(credits.textContent).toBe(plan.credits.toLocaleString('en-US'))
+    const card = cards.find((c) => c.dataset.planId === plan.id)
+    expect(card, `plan missing from the page: ${plan.id}`).toBeTruthy()
+    expect(Number(card!.dataset.monthlyEur)).toBe(plan.monthlyEUR)
+    expect(Number(card!.dataset.annualEur)).toBe(plan.annualEUR)
+    expect(Number(card!.dataset.planCredits)).toBe(plan.credits)
+    const shown = card!.textContent ?? ''
+    expect(shown, plan.id).toContain(`\u20ac${plan.monthlyEUR}`)
+    expect(shown, plan.id).toContain(`\u20ac${plan.annualEUR}`)
+    expect(shown, plan.id).toContain(`${plan.credits.toLocaleString('en-US')} credits`)
   }
 })
 
