@@ -16,7 +16,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 
 ## Key Facts
 - Name: Locally Uncensored
-- Current Version: v3.0.0 (September 2026)
+- Current Version: v3.0.1 (September 2026)
 - Type: Desktop AI Application (local AI studio)
 - License: AGPL-3.0 (free and open source)
 - Platforms: Windows 10/11, Linux (deb, rpm, AppImage)
@@ -29,6 +29,8 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Author: PurpleDoubleD
 
 ## What Makes It Unique
+- Qwen-Image 2.1 runs locally on Windows and Linux and does both jobs: text to image, and editing a reference image from a prompt with no mask; about 16 GB of files, ComfyUI 0.37.0 or newer, research license without commercial use (v3.0.1)
+- Models has a dedicated LoRAs tab on Windows and Linux: CivitAI search and download into the ComfyUI loras folder, an installed list with sizes and trigger words, and deletion (v3.0.1)
 - Only local AI app combining chat + coding agent + image generation + video generation + mobile remote in one interface
 - Talking Character, Music, Extend Video and Motion Control run as full local ComfyUI lanes on your own GPU; only Upscale, Erase Object and Character Studio are cloud-only (v2.5.8, refined in v2.5.9)
 - Per-lane frame count, resolution and step controls on every Create lane, so low-VRAM runs are practical (v2.5.8)

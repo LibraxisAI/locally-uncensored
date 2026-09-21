@@ -35,13 +35,23 @@ Take the latest build from [Releases](https://github.com/PurpleDoubleD/locally-u
 
 | Platform | File | Status |
 |----------|------|--------|
-| Windows 10 and 11 | `.exe` (NSIS, recommended) or `.msi` | Tested every release, signed auto update channel |
-| Linux | `.deb`, `.rpm` or `.AppImage` | Built on every release |
-| macOS | none yet | Builds from source with `npm run tauri build` |
+| Windows 10 and 11 | [`Locally.Uncensored_3.0.1_x64-setup.exe`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_x64-setup.exe) (NSIS, recommended) or [`Locally.Uncensored_3.0.1_x64_en-US.msi`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_x64_en-US.msi) | Tested every release, signed auto update channel |
+| Linux | [`Locally.Uncensored_3.0.1_amd64.AppImage`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_amd64.AppImage), [`Locally.Uncensored_3.0.1_amd64.deb`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_amd64.deb) or [`Locally.Uncensored-3.0.1-1.x86_64.rpm`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored-3.0.1-1.x86_64.rpm) | Built on every release |
+| macOS | no desktop build | LU Cloud runs in the browser at [lu-labs.ai](https://lu-labs.ai) |
 
 Some antivirus engines flag unsigned NSIS installers that download other binaries, which is a false positive. The installer is built by GitHub Actions from the public source on `master`, and the update channel is signed against a public minisign key, so you can verify both: see [SECURITY.md](SECURITY.md#antivirus--browser-false-positives).
 
 Current release: **v3.0.1** (September 2026). Every change since 1.0.0 is in [CHANGELOG.md](CHANGELOG.md).
+
+### What is new in 3.0.1
+
+- **Qwen-Image 2.1 runs locally on Windows and Linux.** One model generates a picture from a prompt and edits one from a reference image, with no mask to paint. About 16 GB of files, ComfyUI 0.37.0 or newer, and a research license that does not allow commercial use.
+- **Models has a LoRAs tab of its own.** Search CivitAI, download into ComfyUI's `models/loras` folder, see what is installed with its size and trigger word, and delete what you no longer want.
+- **A GPU whose free memory could not be measured is planned more carefully**, and the log now says total capacity instead of calling it free.
+- **The Linux AppImage stops handing its own runtime to every program LU starts**, so a healthy system Python, pip, git or ffmpeg keeps working, and a distribution that blocks pip in the system Python keeps the isolated environment LU built.
+- **The local model runs one conversation at a time and says so**, with a line showing how many chats are ahead. Stop works while a chat is still waiting.
+- **Temperature, Top P and Max tokens belong to the conversation you moved them in**, instead of every open chat sharing one value.
+- **Cloud video renders offer the clip lengths the picked model really supports**, read from the live catalog.
 
 ## Three steps
 
@@ -171,11 +181,10 @@ For most chat, writing and coding, yes, with a good 8B to 14B local model, and i
 No. It is off until you turn it on, gated by a passcode, and it lists the devices that are connected. On your LAN nothing leaves the network; away from home an encrypted Cloudflare tunnel joins phone and PC. No third party AI server is involved.
 
 **What about macOS?**
-Windows and Linux today. The source builds on macOS with `npm run tauri build`, and a proper macOS release is on the roadmap.
+There is no macOS desktop build. Every release builds Windows and Linux only. On a Mac, use LU Cloud in the browser at [lu-labs.ai](https://lu-labs.ai), which runs chat, images and video on hosted GPUs.
 
 ## Roadmap
 
-- [ ] macOS build
 - [ ] Voice mode, a live spoken conversation rather than push to talk in and read aloud out
 - [ ] Face ID and PuLID in Create, so a character keeps one face across images
 - [ ] Upscale and Erase Object as local lanes; both run in the cloud today
