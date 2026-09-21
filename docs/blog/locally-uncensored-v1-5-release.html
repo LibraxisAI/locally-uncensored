@@ -7,7 +7,7 @@
 <meta name="description" content="v1.5.3 release notes: dynamic workflow builder, CivitAI model marketplace, privacy hardening, Tauri v2 desktop app, and local Whisper STT.">
 <meta name="keywords" content="locally uncensored v1.5 release, local AI app desktop, locally uncensored update, comfyui workflow builder, civitai model download, tauri desktop app, local whisper STT, privacy local AI">
 <meta property="og:title" content="Locally Uncensored v1.5 Release: Dynamic Workflows, CivitAI Marketplace & Desktop App">
-<meta property="og:description" content="The biggest update yet — dynamic workflow builder, CivitAI marketplace, Tauri v2 desktop app, privacy hardening, and 6 ready-to-go model bundles.">
+<meta property="og:description" content="The biggest update yet: dynamic workflow builder, CivitAI marketplace, Tauri v2 desktop app, privacy hardening, and 6 ready-to-go model bundles.">
 <meta property="og:image" content="https://raw.githubusercontent.com/PurpleDoubleD/locally-uncensored/master/docs/social-preview.png">
 <meta property="og:url" content="https://locallyuncensored.com/blog/locally-uncensored-v1-5-release.html">
 <meta property="og:type" content="article">
@@ -72,7 +72,7 @@
   <article>
     <h1>Locally Uncensored v1.5 Release: Dynamic Workflows, CivitAI Marketplace &amp; Standalone Desktop App</h1>
 
-    <p>Today we're shipping the biggest update in the history of <a href="https://locallyuncensored.com/">Locally Uncensored</a> &mdash; versions 1.5.0 through 1.5.3, collectively bringing seven major features that transform this from a capable <strong>local AI app</strong> into a complete creative workstation. If you've been following the project since the early days of chat + image + video in one UI, this is the update where everything clicks into place.</p>
+    <p>Today we're shipping the biggest update in the history of <a href="https://locallyuncensored.com/">Locally Uncensored</a>, versions 1.5.0 through 1.5.3, collectively bringing seven major features that transform this from a capable <strong>local AI app</strong> into a complete creative workstation. If you've been following the project since the early days of chat + image + video in one UI, this is the update where everything clicks into place.</p>
 
     <p>The <strong>Locally Uncensored v1.5 release</strong> introduces a dynamic workflow builder that queries 600+ ComfyUI nodes in real time, an integrated CivitAI model marketplace, a standalone Tauri v2 desktop <code>.exe</code> with its own CORS proxy and download manager, full privacy hardening with zero external dependencies, six ready-to-go model bundles, local Whisper speech-to-text, and a collection of UI polish improvements that make daily use smoother.</p>
 
@@ -82,20 +82,20 @@
 
     <p>This is the headline feature of v1.5.0 and the one that took the longest to build. The <strong>dynamic workflow builder</strong> fundamentally changes how Locally Uncensored talks to ComfyUI.</p>
 
-    <p>Previously, the app shipped with a set of hardcoded workflow templates &mdash; one for SDXL text-to-image, one for FLUX, one for Wan 2.1 video, and so on. If you wanted to use a different sampler, add ControlNet, or chain together multiple models, you were out of luck without opening ComfyUI's node editor directly.</p>
+    <p>Previously, the app shipped with a set of hardcoded workflow templates: one for SDXL text-to-image, one for FLUX, one for Wan 2.1 video, and so on. If you wanted to use a different sampler, add ControlNet, or chain together multiple models, you were out of luck without opening ComfyUI's node editor directly.</p>
 
     <p><strong>That's gone.</strong> The new workflow builder queries your running ComfyUI instance at startup, discovers all installed nodes (typically 600+ in a standard install with ComfyUI-Manager), and auto-constructs the correct pipeline based on what you're trying to do. Pick a checkpoint, pick a resolution, type a prompt, and the app figures out the right node graph automatically.</p>
 
     <h3>How It Works Under the Hood</h3>
 
-    <p>When ComfyUI boots, it exposes an <code>/object_info</code> endpoint that returns metadata for every registered node &mdash; inputs, outputs, types, defaults. The workflow builder parses this schema and builds a dependency graph. When you hit generate, it walks the graph from your selected output node backward, resolving each dependency and injecting your parameters (prompt, negative prompt, seed, steps, CFG, dimensions) into the appropriate node slots.</p>
+    <p>When ComfyUI boots, it exposes an <code>/object_info</code> endpoint that returns metadata for every registered node: inputs, outputs, types, defaults. The workflow builder parses this schema and builds a dependency graph. When you hit generate, it walks the graph from your selected output node backward, resolving each dependency and injecting your parameters (prompt, negative prompt, seed, steps, CFG, dimensions) into the appropriate node slots.</p>
 
     <p>This means the app automatically supports:</p>
     <ul>
-      <li><strong>Any checkpoint format</strong> &mdash; SD 1.5, SDXL, FLUX, Wan 2.1, future architectures</li>
-      <li><strong>Any custom node</strong> &mdash; ControlNet, IP-Adapter, upscalers, face restoration</li>
-      <li><strong>Any sampler or scheduler</strong> &mdash; pulled dynamically from ComfyUI's registry</li>
-      <li><strong>LoRA stacking</strong> &mdash; load multiple LoRAs with individual weight controls</li>
+      <li><strong>Any checkpoint format</strong>: SD 1.5, SDXL, FLUX, Wan 2.1, future architectures</li>
+      <li><strong>Any custom node</strong>: ControlNet, IP-Adapter, upscalers, face restoration</li>
+      <li><strong>Any sampler or scheduler</strong>: pulled dynamically from ComfyUI's registry</li>
+      <li><strong>LoRA stacking</strong>: load multiple LoRAs with individual weight controls</li>
     </ul>
 
     <p>No more workflow JSON files. No more "this model isn't supported yet" messages. If ComfyUI can run it, Locally Uncensored can drive it.</p>
@@ -104,11 +104,11 @@
 
     <p>Finding and downloading models has always been the most annoying part of local AI. You hunt through CivitAI's website, copy a download link, figure out which directory it goes in, rename it, restart ComfyUI. Version 1.5.1 eliminates all of that.</p>
 
-    <p>The new <strong>CivitAI model marketplace</strong> is built directly into the app. Open the Models tab, search for any checkpoint, LoRA, embedding, or VAE on CivitAI, preview the thumbnail (privacy-proxied &mdash; more on that below), and hit download. The model lands in the correct ComfyUI subdirectory automatically. No manual file management.</p>
+    <p>The new <strong>CivitAI model marketplace</strong> is built directly into the app. Open the Models tab, search for any checkpoint, LoRA, embedding, or VAE on CivitAI, preview the thumbnail (privacy-proxied, more on that below), and hit download. The model lands in the correct ComfyUI subdirectory automatically. No manual file management.</p>
 
     <h3>Privacy-First Thumbnails</h3>
 
-    <p>Here's where it gets interesting from a privacy standpoint. CivitAI serves model preview images from their CDN. Loading those images directly would leak your IP address and browsing patterns to CivitAI's servers. In the <strong>Locally Uncensored v1.5 release</strong>, all CivitAI thumbnails are proxied through the app's local backend. The user's browser never contacts CivitAI directly &mdash; the Tauri sidecar (or the dev server in browser mode) fetches the image and serves it from localhost. Your IP stays private.</p>
+    <p>Here's where it gets interesting from a privacy standpoint. CivitAI serves model preview images from their CDN. Loading those images directly would leak your IP address and browsing patterns to CivitAI's servers. In the <strong>Locally Uncensored v1.5 release</strong>, all CivitAI thumbnails are proxied through the app's local backend. The user's browser never contacts CivitAI directly: the Tauri sidecar (or the dev server in browser mode) fetches the image and serves it from localhost. Your IP stays private.</p>
 
     <p>This is a small detail that no other <strong>local AI app desktop</strong> client gets right. Most tools either skip CivitAI integration entirely or load external resources without a second thought.</p>
 
@@ -117,24 +117,24 @@
     <p>The CivitAI proxy is part of a broader privacy overhaul in v1.5.2. We went through every line of code and eliminated external dependencies:</p>
 
     <ul>
-      <li><strong>No CDN resources</strong> &mdash; every CSS, JS, and font file is bundled locally. No calls to cdnjs, unpkg, or any third-party CDN.</li>
-      <li><strong>No Google Fonts</strong> &mdash; the app uses system font stacks exclusively. No requests to fonts.googleapis.com or fonts.gstatic.com. Ever.</li>
-      <li><strong>Zero telemetry</strong> &mdash; no analytics, no crash reporting, no usage tracking. The app makes exactly zero network requests that aren't initiated by you (model downloads, ComfyUI communication, Ollama API calls).</li>
-      <li><strong>Proxied external images</strong> &mdash; CivitAI thumbnails, model previews, and any external image reference goes through the local proxy.</li>
-      <li><strong>CSP headers</strong> &mdash; Content Security Policy headers restrict all resource loading to localhost origins.</li>
+      <li><strong>No CDN resources</strong>: every CSS, JS, and font file is bundled locally. No calls to cdnjs, unpkg, or any third-party CDN.</li>
+      <li><strong>No Google Fonts</strong>: the app uses system font stacks exclusively. No requests to fonts.googleapis.com or fonts.gstatic.com. Ever.</li>
+      <li><strong>Zero telemetry</strong>: no analytics, no crash reporting, no usage tracking. The app makes exactly zero network requests that aren't initiated by you (model downloads, ComfyUI communication, Ollama API calls).</li>
+      <li><strong>Proxied external images</strong>: CivitAI thumbnails, model previews, and any external image reference goes through the local proxy.</li>
+      <li><strong>CSP headers</strong>: Content Security Policy headers restrict all resource loading to localhost origins.</li>
     </ul>
 
-    <p>This isn't theoretical privacy. Run Wireshark while using the app &mdash; you'll see connections to <code>127.0.0.1</code> and your Ollama/ComfyUI ports. Nothing else. If you've read our guide on <a href="run-uncensored-ai-locally.html">how to run uncensored AI locally</a>, you know privacy is foundational to the project. This release makes that guarantee airtight.</p>
+    <p>This isn't theoretical privacy. Run Wireshark while using the app: you'll see connections to <code>127.0.0.1</code> and your Ollama/ComfyUI ports. Nothing else. If you've read our guide on <a href="run-uncensored-ai-locally.html">how to run uncensored AI locally</a>, you know privacy is foundational to the project. This release makes that guarantee airtight.</p>
 
     <h2>Tauri v2 Standalone Desktop App</h2>
 
-    <p>Until now, Locally Uncensored ran as a Vite dev server that opened in your browser. That works &mdash; and it's still supported &mdash; but v1.5.0 adds a proper standalone <strong>local AI app desktop</strong> executable built with <strong>Tauri v2</strong>.</p>
+    <p>Until now, Locally Uncensored ran as a Vite dev server that opened in your browser. That works, and it's still supported, but v1.5.0 adds a proper standalone <strong>local AI app desktop</strong> executable built with <strong>Tauri v2</strong>.</p>
 
-    <p>The tech stack: <strong>React 19 + TypeScript + Tailwind CSS 4 + Vite 8</strong> for the frontend, <strong>Tauri 2 (Rust)</strong> for the native shell. The result is a single <code>.exe</code> on Windows (with macOS and Linux builds also available) that weighs under 15 MB installed. Compare that to Electron-based alternatives that start at 150+ MB.</p>
+    <p>The tech stack: <strong>React 19 + TypeScript + Tailwind CSS 4 + Vite 8</strong> for the frontend, <strong>Tauri 2 (Rust)</strong> for the native shell. The result is a single <code>.exe</code> on Windows (with a Linux build also available) that weighs under 15 MB installed. Compare that to Electron-based alternatives that start at 150+ MB.</p>
 
     <h3>Built-in CORS Proxy</h3>
 
-    <p>The Tauri backend includes a Rust-powered CORS proxy. This solves one of the most persistent headaches in local AI development: ComfyUI and Ollama don't set CORS headers by default, so browser-based frontends either need you to launch backends with special flags or use a separate proxy tool. The Tauri app handles this transparently &mdash; all API requests route through the Rust sidecar, which adds the correct headers.</p>
+    <p>The Tauri backend includes a Rust-powered CORS proxy. This solves one of the most persistent headaches in local AI development: ComfyUI and Ollama don't set CORS headers by default, so browser-based frontends either need you to launch backends with special flags or use a separate proxy tool. The Tauri app handles this transparently: all API requests route through the Rust sidecar, which adds the correct headers.</p>
 
     <h3>Download Manager with Pause/Resume</h3>
 
@@ -142,7 +142,7 @@
 
     <h2>6 Complete Model Bundles</h2>
 
-    <p>New users shouldn't have to research which models to download or worry about missing dependencies. Version 1.5.1 introduces six curated <strong>model bundles</strong> &mdash; three for image generation and three for video generation &mdash; each containing everything needed for a specific workflow.</p>
+    <p>New users shouldn't have to research which models to download or worry about missing dependencies. Version 1.5.1 introduces six curated <strong>model bundles</strong>, three for image generation and three for video generation, each containing everything needed for a specific workflow.</p>
 
     <h3>Image Bundles</h3>
     <table>
@@ -182,14 +182,14 @@
     <p>A new button in the generation panel lets you <strong>unload models from VRAM</strong> with one click. This is essential if you're switching between chat and image generation on a GPU with limited memory. Previously you'd need to restart ComfyUI or use the API directly. Now it's a button.</p>
 
     <h3>Execution Timer</h3>
-    <p>Every generation now shows an <strong>execution timer</strong> &mdash; both elapsed time during generation and total time on completion. Useful for benchmarking different models, samplers, and step counts. The timer persists in the generation history so you can compare runs later.</p>
+    <p>Every generation now shows an <strong>execution timer</strong>: both elapsed time during generation and total time on completion. Useful for benchmarking different models, samplers, and step counts. The timer persists in the generation history so you can compare runs later.</p>
 
     <h3>Additional Improvements</h3>
     <ul>
       <li>Redesigned model selector with search, filtering by type, and file size display</li>
       <li>Improved dark mode contrast ratios for better accessibility</li>
       <li>Keyboard shortcuts for common actions (Ctrl+Enter to send, Escape to cancel generation)</li>
-      <li>Generation queue &mdash; batch multiple prompts and let them run sequentially</li>
+      <li>Generation queue: batch multiple prompts and let them run sequentially</li>
       <li>Image gallery with fullscreen view, metadata overlay, and one-click copy of generation parameters</li>
     </ul>
 
@@ -217,7 +217,7 @@
       </tbody>
     </table>
 
-    <p>The pattern is clear. Other tools do one thing well &mdash; chat. Locally Uncensored is the only <strong>local AI app desktop</strong> that combines chat, image generation, video generation, and a model marketplace into a single interface, all while maintaining strict privacy guarantees. For a deeper dive into individual comparisons, check out our posts on <a href="locally-uncensored-vs-open-webui.html">Locally Uncensored vs Open WebUI</a>, <a href="locally-uncensored-vs-lm-studio.html">vs LM Studio</a>, <a href="locally-uncensored-vs-jan.html">vs Jan.ai</a>, and <a href="locally-uncensored-vs-gpt4all.html">vs GPT4All</a>.</p>
+    <p>The pattern is clear. Other tools do one thing well: chat. Locally Uncensored is the only <strong>local AI app desktop</strong> that combines chat, image generation, video generation, and a model marketplace into a single interface, all while maintaining strict privacy guarantees. For a deeper dive into individual comparisons, check out our posts on <a href="locally-uncensored-vs-open-webui.html">Locally Uncensored vs Open WebUI</a>, <a href="locally-uncensored-vs-lm-studio.html">vs LM Studio</a>, <a href="locally-uncensored-vs-jan.html">vs Jan.ai</a>, and <a href="locally-uncensored-vs-gpt4all.html">vs GPT4All</a>.</p>
 
     <h2>Upgrade Guide</h2>
 
@@ -228,7 +228,7 @@ git pull
 npm install
 npm run dev</code></pre>
 
-    <p>For the standalone desktop app, download the latest <code>.exe</code> (or <code>.dmg</code> / <code>.AppImage</code>) from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases">releases page</a>. Your existing models, chat history, and settings carry over automatically &mdash; they're stored in your OS's app data directory, not inside the app bundle.</p>
+    <p>For the standalone desktop app, download the latest <code>.exe</code> for Windows or <code>.AppImage</code> for Linux from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases">releases page</a>. There is no Mac build and there never was one; on a Mac the hosted studio runs in the browser at <a href="https://lu-labs.ai">lu-labs.ai</a>. Your existing models, chat history, and settings carry over automatically: they're stored in your OS's app data directory, not inside the app bundle.</p>
 
     <p>New users can follow the full setup guide in our <a href="run-uncensored-ai-locally.html">how to run uncensored AI locally</a> article, or just clone and run:</p>
 
@@ -241,10 +241,10 @@ cd locally-uncensored
     <p>The v1.5.x cycle focused on making the generation pipeline dynamic and the app self-contained. The next milestone targets:</p>
 
     <ul>
-      <li><strong>RAG (Retrieval-Augmented Generation)</strong> &mdash; chat with your local documents</li>
-      <li><strong>Image-to-image and inpainting</strong> &mdash; edit existing images with AI, driven by the dynamic workflow builder</li>
-      <li><strong>Multi-GPU support</strong> &mdash; split generation workloads across multiple GPUs</li>
-      <li><strong>Plugin system</strong> &mdash; extend the app with community-built modules</li>
+      <li><strong>RAG (Retrieval-Augmented Generation)</strong>: chat with your local documents</li>
+      <li><strong>Image-to-image and inpainting</strong>: edit existing images with AI, driven by the dynamic workflow builder</li>
+      <li><strong>Multi-GPU support</strong>: split generation workloads across multiple GPUs</li>
+      <li><strong>Plugin system</strong>: extend the app with community-built modules</li>
     </ul>
 
     <p>Follow the <a href="https://github.com/PurpleDoubleD/locally-uncensored">GitHub repo</a> for updates, or join the <a href="https://github.com/PurpleDoubleD/locally-uncensored/discussions">Discussions</a> to share feedback and feature requests.</p>
@@ -255,7 +255,7 @@ cd locally-uncensored
     <p>This post covers versions 1.5.0 through 1.5.3. The dynamic workflow builder and Tauri app landed in v1.5.0. CivitAI marketplace and model bundles came in v1.5.1. Privacy hardening and local Whisper STT arrived in v1.5.2. UI polish fixes and stability improvements rounded things out in v1.5.3.</p>
 
     <h3>Do I need to use the Tauri desktop app or can I still use the browser version?</h3>
-    <p>Both are fully supported. The browser version (<code>npm run dev</code>) works exactly as before. The Tauri app adds native features like the built-in CORS proxy and download manager with pause/resume, but all core functionality &mdash; chat, image gen, video gen, workflow builder &mdash; works in both modes.</p>
+    <p>Both are fully supported. The browser version (<code>npm run dev</code>) works exactly as before. The Tauri app adds native features like the built-in CORS proxy and download manager with pause/resume, but all core functionality (chat, image gen, video gen, workflow builder) works in both modes.</p>
 
     <h3>Does the dynamic workflow builder require any extra setup?</h3>
     <p>No. If ComfyUI is running and reachable, the builder queries it automatically on startup. It works with a stock ComfyUI install and gets even more powerful if you install additional nodes through ComfyUI-Manager. No configuration required.</p>
@@ -267,7 +267,7 @@ cd locally-uncensored
     <p>Yes. The bundle installer checks for existing files before downloading. If you already have the FLUX.1 Schnell checkpoint, for example, the FLUX bundle will skip that file and only download the missing components (encoder, VAE, etc.).</p>
 
     <h3>What Whisper model should I use for speech-to-text?</h3>
-    <p>The default <code>base.en</code> model is fine for English-only use &mdash; it's fast and accurate enough for dictating prompts. If you need multilingual transcription or higher accuracy for technical terms, switch to <code>medium</code> or <code>large-v3</code> in settings. The larger models need more VRAM and take longer to transcribe but produce noticeably better results.</p>
+    <p>The default <code>base.en</code> model is fine for English-only use: it's fast and accurate enough for dictating prompts. If you need multilingual transcription or higher accuracy for technical terms, switch to <code>medium</code> or <code>large-v3</code> in settings. The larger models need more VRAM and take longer to transcribe but produce noticeably better results.</p>
 
     <h3>How big is the Tauri desktop app?</h3>
     <p>Under 15 MB installed on Windows. That's the full application with the Rust backend, CORS proxy, and download manager included. Compare that to Electron-based alternatives like LM Studio (~200 MB) or Jan (~180 MB). Tauri compiles to native code and doesn't bundle a separate Chromium instance.</p>
