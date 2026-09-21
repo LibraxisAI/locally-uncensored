@@ -106,10 +106,10 @@ jobs:
           for f in src-tauri/resources/llama/x86_64-pc-windows-msvc/*.dll src-tauri/bin/lu-llama-server-x86_64-pc-windows-msvc.exe; do
             [ -f "$f" ] || continue
             b=$(basename "$f")
-            dumpbin /nologo /disasm "$f" > "$out/$b.disasm.txt" 2>"$out/$b.disasm.err" || true
-            dumpbin /nologo /headers "$f" > "$out/$b.headers.txt" 2>/dev/null || true
+            MSYS2_ARG_CONV_EXCL='/disasm;/nologo;/headers' dumpbin /nologo /disasm "$f" > "$out/$b.disasm.txt" 2>"$out/$b.disasm.err" || true
+            MSYS2_ARG_CONV_EXCL='/disasm;/nologo;/headers' dumpbin /nologo /headers "$f" > "$out/$b.headers.txt" 2>/dev/null || true
           done
-          find .llama-build -name '*.map' -exec cp {} "$out"/ \; 2>/dev/null || true
+          find "${LLAMA_BUILD_CACHE:-.llama-build}" -name '*.map' -exec cp {} "$out"/ \; 2>/dev/null || true
           ls -la "$out" | head -40
       - name: Upload ISA review input
         if: always()
