@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import {
   Download, ArrowLeft, RefreshCw, Search, MessagesSquare, Images, Clapperboard,
   X as XIcon, HardDrive, Sparkles, PackageOpen, Video as VideoIcon, Image as ImageIcon,
-  Settings as SettingsIcon,
+  Settings as SettingsIcon, Layers,
 } from 'lucide-react'
 import { useModels } from '../../hooks/useModels'
 import { useModelStore } from '../../stores/modelStore'
@@ -12,6 +12,8 @@ import { useProviderStore } from '../../stores/providerStore'
 import { ModelCard } from './ModelCard'
 import { PullModelDialog } from './PullModelDialog'
 import { DiscoverModels } from './DiscoverModels'
+import { CivitaiSearchPanel } from './CivitaiSearchPanel'
+import { LoraManager, LORA_USE_HINT, type LoraRow } from './LoraManager'
 import { Modal } from '../ui/Modal'
 import { GlowButton } from '../ui/GlowButton'
 import { showModel } from '../../api/ollama'
@@ -33,6 +35,12 @@ import type { ModelCategory, AIModel } from '../../types/models'
 // discoverMode/categoryFilter pair collapsed into the persisted store value.
 type Mode = Extract<ModelCategory, 'text' | 'image' | 'video'>
 
+/** The rail has one entry the store's `categoryFilter` cannot hold: LoRAs are
+ *  not a fourth model category, they are the add-on files that sit beside the
+ *  image models. So the rail selection is Mode PLUS that one lane, and only
+ *  the three real categories are written back into the store. */
+type Rail = Mode | 'lora'
+
 // Monochrome on purpose — the active state is carried by the pill background,
 // not by per-category accent colors (David 2026-07-17 design pass).
 const RAIL_ITEMS: { key: Mode; label: string; icon: typeof MessagesSquare }[] = [
@@ -40,6 +48,18 @@ const RAIL_ITEMS: { key: Mode; label: string; icon: typeof MessagesSquare }[] = 
   { key: 'image', label: 'Image', icon: Images },
   { key: 'video', label: 'Video', icon: Clapperboard },
 ]
+
+/** The fourth rail entry, under Image and Video because that is what its files
+ *  attach to. Its own item rather than a member of RAIL_ITEMS above: that list
+ *  is typed on the store's category and this one is not a category. */
+const LORA_RAIL = { key: 'lora' as const, label: 'LoRAs', icon: Layers }
+
+/** A row of the ComfyUI inventory that came out of the loras folder. The field
+ *  is carried all the way from `api/comfyui`'s addon lanes (useModels keeps it
+ *  now); without it a LoRA and a checkpoint are the same shape. */
+export function isLoraRow(m: AIModel): boolean {
+  return 'source' in m && m.source === 'lora'
+}
 
 /** The mark a counter wears while it has nothing counted to show. Not a 0:
  *  a 0 next to a card that reads Installed is a wrong answer, and this one
@@ -117,7 +137,14 @@ export function ModelManager() {
     (categoryFilter === 'text' || categoryFilter === 'image' || categoryFilter === 'video')
       ? categoryFilter
       : 'text'
-  const showMlxPanel = macMlxMedia && (mode === 'image' || mode === 'video')
+  // The LoRA lane is ComfyUI's loras folder and nothing else. On the Mac local
+  // media is MLX, which has no LoRA folder to list and no CivitAI target to
+  // download into, so the rail is not offered there at all rather than offered
+  // and dead. Windows and Linux both get it.
+  const loraRailOffered = !macMlxMedia
+  const [loraRail, setLoraRail] = useState(false)
+  const rail: Rail = loraRail && loraRailOffered ? 'lora' : mode
+  const showMlxPanel = macMlxMedia && (mode === 'image' || mode === 'video') && rail !== 'lora'
 
   useEffect(() => {
     fetchModels()
@@ -187,8 +214,18 @@ export function ModelManager() {
     }
   }
 
-  const filteredModels = models.filter((m: AIModel) => m.type === mode)
+  // LoRAs are ComfyUI files of type 'image' and used to sit in this list
+  // between the checkpoints, with no word saying what they were and a click
+  // that made one the ACTIVE image model. They have their own rail now, so
+  // they leave this one. Only the LoRA lane is taken out: the VAEs, text
+  // encoders and the rest of the addon folders stay exactly where they were,
+  // since nothing else has a place to go to.
+  const loraModels = models.filter((m: AIModel) => isLoraRow(m))
+  const loraRows: LoraRow[] = loraModels.map((m) => ({ name: m.name, size: m.size ?? 0 }))
+  const filteredModels = models.filter((m: AIModel) => m.type === mode && !isLoraRow(m))
   const modeMeta = RAIL_ITEMS.find(r => r.key === mode)!
+  /** What the Installed counter and the Installed view are about right now. */
+  const installedCount = rail === 'lora' ? loraRows.length : filteredModels.length
   // One rule for the rail badges and the Installed badge, so the two can
   // never again disagree about what an uncounted lane looks like.
   const inventoryState = { loaded: inventoryLoaded, refreshing: inventoryRefreshing }
@@ -203,8 +240,11 @@ export function ModelManager() {
   // so we can show the real reason instead of a misleading "no models installed".
   const [comfyReachable, setComfyReachable] = useState<boolean | null>(null)
   const imageOrVideo = mode === 'image' || mode === 'video'
+  // The LoRA lane is served by the same engine and empties for the same
+  // reason, so it asks the same question and shows the same answer.
+  const comfyBackedLane = rail === 'lora' || imageOrVideo
   useEffect(() => {
-    if (!(tab === 'installed' && imageOrVideo && filteredModels.length === 0)) return
+    if (!(tab === 'installed' && comfyBackedLane && installedCount === 0)) return
     let alive = true
     // Reset to "probing" on every (re)check — e.g. switching image<->video, or
     // re-entering an empty mode after ComfyUI went down. Without this the prior
@@ -215,7 +255,7 @@ export function ModelManager() {
       .then((ok) => { if (alive) setComfyReachable(ok) })
       .catch(() => { if (alive) setComfyReachable(false) })
     return () => { alive = false }
-  }, [tab, imageOrVideo, filteredModels.length])
+  }, [tab, comfyBackedLane, installedCount])
 
   // ── Render ──────────────────────────────────────────────────────
 
@@ -223,13 +263,22 @@ export function ModelManager() {
     <div className="h-full flex overflow-hidden">
       {/* Category rail — the big, labeled home of Chat / Image / Video */}
       <aside className="shrink-0 w-12 lg:w-36 border-r border-gray-200 dark:border-white/[0.06] bg-gray-50/60 dark:bg-white/[0.015] flex flex-col py-3 px-1.5 lg:px-2 gap-1">
-        {RAIL_ITEMS.map(({ key, label, icon: Icon }) => {
-          const active = mode === key
-          const badge = counterView(models.filter((m) => m.type === key).length, inventoryState)
+        {[...RAIL_ITEMS, ...(loraRailOffered ? [LORA_RAIL] : [])].map(({ key, label, icon: Icon }) => {
+          const active = rail === key
+          const badge = counterView(
+            key === 'lora'
+              ? loraRows.length
+              : models.filter((m) => m.type === key && !isLoraRow(m)).length,
+            inventoryState,
+          )
           return (
             <button
               key={key}
-              onClick={() => setCategoryFilter(key)}
+              onClick={() => {
+                if (key === 'lora') { setLoraRail(true); return }
+                setLoraRail(false)
+                setCategoryFilter(key)
+              }}
               title={label}
               aria-pressed={active}
               className={`flex items-center justify-center lg:justify-start gap-2 px-2 py-2 rounded-lg transition-colors ${
@@ -244,7 +293,7 @@ export function ModelManager() {
               </span>
               {badge.kind === 'loading' ? (
                 <span className="hidden lg:block ml-auto">
-                  <CountingDots label={`Counting installed ${label.toLowerCase()} models`} />
+                  <CountingDots label={key === 'lora' ? 'Counting installed LoRAs' : `Counting installed ${label.toLowerCase()} models`} />
                 </span>
               ) : badge.value > 0 ? (
                 <span className="hidden lg:block ml-auto text-[0.55rem] text-gray-400 dark:text-gray-500 tabular-nums">{badge.value}</span>
@@ -298,7 +347,7 @@ export function ModelManager() {
               >
                 <HardDrive size={11} /> Installed
                 {(() => {
-                  const badge = counterView(filteredModels.length, inventoryState)
+                  const badge = counterView(installedCount, inventoryState)
                   return badge.kind === 'loading' ? (
                     <CountingDots label="Counting installed models" />
                   ) : (
@@ -359,14 +408,14 @@ export function ModelManager() {
 
           {!showMlxPanel && tab === 'installed' && (
             <>
-              {counterView(filteredModels.length, inventoryState).kind === 'loading' ? (
+              {counterView(installedCount, inventoryState).kind === 'loading' ? (
                 // The empty state is the same claim the counter makes, in
                 // words: you own none of these. It waits for the count for
                 // the same reason (Befund 2, abnahme counter-check).
                 <div className="text-center py-16 px-6">
                   <p className="text-[0.7rem] text-gray-500">Reading your installed models…</p>
                 </div>
-              ) : imageOrVideo && filteredModels.length === 0 && comfyReachable !== true ? (
+              ) : comfyBackedLane && installedCount === 0 && comfyReachable !== true ? (
                 // comfyReachable: null = still probing, false = confirmed down.
                 // Never show the misleading "no models installed" here while the
                 // probe is pending — on desktop checkComfyConnection has to time
@@ -379,12 +428,16 @@ export function ModelManager() {
                 ) : (
                 <div className="flex flex-col items-center justify-center text-center py-16 px-6 gap-3">
                   <div className="w-14 h-14 rounded-full bg-gray-100 dark:bg-white/[0.04] border border-gray-200 dark:border-white/[0.06] flex items-center justify-center">
-                    {mode === 'video' ? <VideoIcon size={28} className="text-gray-400 dark:text-gray-500" /> : <ImageIcon size={28} className="text-gray-400 dark:text-gray-500" />}
+                    {rail === 'lora'
+                      ? <Layers size={28} className="text-gray-400 dark:text-gray-500" />
+                      : mode === 'video' ? <VideoIcon size={28} className="text-gray-400 dark:text-gray-500" /> : <ImageIcon size={28} className="text-gray-400 dark:text-gray-500" />}
                   </div>
                   <div className="space-y-1">
-                    <p className="text-[12px] font-medium text-gray-800 dark:text-gray-200">Start ComfyUI to see your {mode} models</p>
+                    {/* The LoRA lane hangs off the same engine, so it gets the
+                        same state and the same sentence, with its own noun. */}
+                    <p className="text-[12px] font-medium text-gray-800 dark:text-gray-200">Start ComfyUI to see your {rail === 'lora' ? 'LoRA' : mode} models</p>
                     <p className="t-micro text-gray-500 max-w-[300px] leading-relaxed">
-                      {mode === 'image' ? 'Image' : 'Video'} models are served by ComfyUI, which isn't running right now, so the ones you've downloaded can't be listed yet. Open Settings, go to AI Backends, and press Start under ComfyUI (Image &amp; Video), then come back.
+                      {rail === 'lora' ? 'LoRA' : mode === 'image' ? 'Image' : 'Video'} models are served by ComfyUI, which isn't running right now, so the ones you've downloaded can't be listed yet. Open Settings, go to AI Backends, and press Start under ComfyUI (Image &amp; Video), then come back.
                     </p>
                   </div>
                   {/* Nebenbefund 3, R8 re-measure: the sentence above names a
@@ -400,6 +453,12 @@ export function ModelManager() {
                   </button>
                 </div>
                 )
+              ) : rail === 'lora' ? (
+                <LoraManager
+                  rows={searchQuery ? loraRows.filter((r) => installedRowMatchesSearch(r.name, searchQuery)) : loraRows}
+                  onDelete={(name) => setConfirmDelete(name)}
+                  onGetNew={() => setTab('discover')}
+                />
               ) : models.length === 0 ? (
                 <div className="flex flex-col items-center justify-center text-center py-16 px-6 gap-3">
                   <div className="w-14 h-14 rounded-full bg-gray-100 dark:bg-white/[0.04] border border-gray-200 dark:border-white/[0.06] flex items-center justify-center">
@@ -549,11 +608,28 @@ export function ModelManager() {
           )}
 
           {!showMlxPanel && tab === 'discover' && (
-            <DiscoverModels
-              category={mode}
-              search={searchQuery}
-              searchSubmitToken={searchSubmitToken}
-            />
+            rail === 'lora' ? (
+              // Same panel as the checkpoint search one rail up, asked for a
+              // different type. The folder a hit lands in follows from that
+              // type inside searchCivitaiModels, so there is no second place
+              // that decides where a LoRA is written.
+              <div className="space-y-2">
+                <p className="px-1 t-micro text-gray-500 dark:text-gray-500">
+                  Downloads land in ComfyUI&apos;s models/loras folder. {LORA_USE_HINT}
+                </p>
+                <CivitaiSearchPanel
+                  modelType="LORA"
+                  title="Search CivitAI for LoRAs"
+                  placeholder="e.g. detail enhancer, pixel art, film grain..."
+                />
+              </div>
+            ) : (
+              <DiscoverModels
+                category={mode}
+                search={searchQuery}
+                searchSubmitToken={searchSubmitToken}
+              />
+            )
           )}
         </div>
       </div>

@@ -90,4 +90,24 @@ describe('a download failure points at a section the app really has', () => {
       agentMode: true, agentWorkflows: true, mediaTimeouts: true,
     } as SettingsSectionFlags)).toContain('CivitAI API key')
   })
+
+  /**
+   * Dieselbe Frage, eine Etage hoeher: nicht der abgelehnte Download, sondern
+   * die leere Trefferliste. Die sagte "add your CivitAI API key in the
+   * Workflow finder", und der Workflow-Finder ist nicht der Ort, an dem das
+   * Feld liegt. Das ist genau der Fehler, den der Rust-Text eine Runde
+   * frueher hatte, im zweiten Satz, den ein Nutzer an derselben Stelle liest.
+   */
+  it('und die leere CivitAI-Trefferliste nennt denselben echten Abschnitt', () => {
+    const panel = readFileSync(
+      resolve(here, '../../models/CivitaiSearchPanel.tsx'), 'utf8',
+    )
+    const leer = panel.slice(panel.indexOf('No matches for'))
+    for (const pfad of settingsPathsIn(leer.replace(/&gt;/g, '>'))) {
+      expect(everySectionTitle()).toContain(pfad.split('>').pop()!.trim())
+    }
+    expect(leer).toContain('CivitAI API key')
+    // NEGATIVKONTROLLE: der alte Wegweiser faellt durch.
+    expect(panel).not.toContain('in the Workflow finder')
+  })
 })

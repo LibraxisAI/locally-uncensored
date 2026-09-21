@@ -10,6 +10,7 @@ import { resolveRunSeed } from '../lib/run-seed'
 // comfyui-graph.ts, das nichts importiert.
 import { videoDecodeNode, promptFilenamePrefix } from './comfyui-graph'
 import type { ComfyApiGraph, ComfyApiNode, ComfyHistoryEntry } from '../types/comfy-graph'
+import type { ComfyModelSource } from '../types/models'
 import { isRecord, asString, asRecordArray } from '../types/json-guards'
 // Audit W-T2: der Katalog kam bis eben per `await import('./discover')` in
 // getKnownFileSizes() herein, „to break the cycle at runtime". Die
@@ -164,15 +165,19 @@ export interface ClassifiedModel {
    *  take up real disk, and used to appear in no list and no counter at all
    *  (counter-check 2026-08-29, and five more folders in the R5 re-measure
    *  the day after). */
-  source: 'checkpoint' | 'diffusion_model' | 'motion_module' | AddonSource
+  source: ComfyModelSource
 }
 
 /** The ComfyUI\models folders that hold files a user installs, none of which
  *  is a main model. One name per folder, and INSTALLED_ADDON_LANES below is
- *  the single place that says which loader enumerates it. */
+ *  the single place that says which loader enumerates it.
+ *
+ *  Carved out of `ComfyModelSource` (types/models.ts) rather than spelled out
+ *  a second time: the inventory rows carry that field into the views, and two
+ *  hand-written copies of one folder list is exactly the drift
+ *  COMFY_MODEL_FOLDERS below exists to stop. */
 export type AddonSource =
-  | 'lora' | 'vae' | 'text_encoder'
-  | 'clip_vision' | 'controlnet' | 'upscale_model' | 'embedding' | 'style_model'
+  Exclude<ComfyModelSource, 'checkpoint' | 'diffusion_model' | 'motion_module'>
 
 /** Where a listed file actually sits, by the enum that listed it. The disk
  *  probe needs the folder, and the delete command resolves the same set.

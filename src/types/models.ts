@@ -56,6 +56,25 @@ export interface CloudModel {
   path?: string
 }
 
+/**
+ * Which ComfyUI models folder a listed file was enumerated out of.
+ *
+ * THE definition of that set, and it lives here rather than in `api/comfyui`
+ * because the inventory rows carry it all the way into the views: a LoRA and a
+ * checkpoint are both files under `ComfyUI/models`, they are both `type:
+ * 'image'`, and only this field tells them apart. It used to be dropped the
+ * moment the inventory became `AIModel`, which is why LoRAs sat nameless
+ * between the checkpoints in the Image tab and could be clicked as if one of
+ * them were a main model.
+ *
+ * `api/comfyui` narrows this to its addon half (`AddonSource`) instead of
+ * spelling the names a second time.
+ */
+export type ComfyModelSource =
+  | 'checkpoint' | 'diffusion_model' | 'motion_module'
+  | 'lora' | 'vae' | 'text_encoder'
+  | 'clip_vision' | 'controlnet' | 'upscale_model' | 'embedding' | 'style_model'
+
 // Image model (e.g. Stable Diffusion, SDXL, Fooocus, ComfyUI)
 export interface ImageModel {
   name: string
@@ -71,6 +90,8 @@ export interface ImageModel {
   type: 'image'
   provider?: ProviderId
   providerName?: string
+  /** Set for rows the ComfyUI inventory produced, absent for everything else. */
+  source?: ComfyModelSource
 }
 
 // Video model (e.g. SVD, AnimateDiff, VideoCrafter, ComfyUI)
@@ -88,6 +109,8 @@ export interface VideoModel {
   type: 'video'
   provider?: ProviderId
   providerName?: string
+  /** Set for rows the ComfyUI inventory produced, absent for everything else. */
+  source?: ComfyModelSource
 }
 
 // Generic model type

@@ -25,6 +25,11 @@ installs stop losing environment variables to it.
   pair for every model.
 - **A cloud render without a prompt (a presenter reading a script, for
   example) still gets a real name in the gallery**, instead of an empty tile.
+- **Models now has a LoRAs tab of its own.** Get new searches CivitAI for
+  LoRAs and downloads what you pick into ComfyUI's `models/loras` folder;
+  Installed lists what is there with its size, marks a character you trained
+  yourself with its trigger word, and deletes a file you no longer want. LoRAs
+  no longer sit unnamed among the checkpoints in the Image tab.
 - **Character LoRAs in Create now only offer the models actually trained for
   that character's family**, so the picker cannot suggest a combination that
   would fail to generate.
