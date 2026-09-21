@@ -40,6 +40,13 @@
 //        object condition, let an unrelated own-code symbol that merely
 //        contains "memcmp" in a mangled name through as ALLOWED_CRT; fixed
 //        by requiring both conditions together.)
+//      - The decoded operands name an Intel APX extended general purpose
+//        register (r16-r31, as base, index or plain operand):
+//        DECODE_ARTIFACT_APX, i.e. these bytes are data the disassembler
+//        swept over as if they were code, not an instruction the compiler
+//        emitted (R7, see hasApxRegisterOperand below). Printed per hit and
+//        counted in its own summary line, never silently dropped, and it
+//        does NOT count as unprotected.
 //      - Anything else ("own code": ggml-*.obj, llama-*.obj, common.obj,
 //        server-*.obj, ggml-vulkan.obj) is ALLOWED only if, within the
 //        owning function's address range, there is a read of
@@ -159,6 +166,74 @@ export function isVexEvexHit(line) {
 
 export function findVexEvexHits(lines) {
   return lines.filter(isVexEvexHit);
+}
+
+// R7 (lu-301/bau/isa-guard-apx.md): an Intel APX register in the decoded
+// operands means the disassembler decoded DATA, not code.
+//
+// R1's opcode-byte rule is exact about what 0xC4/0xC5/0x62 mean IF the byte
+// really starts an instruction. dumpbin and objdump cannot know that: both
+// sweep .text linearly, so a jump table, a switch table or a constant pool
+// that MSVC placed in .text is decoded as if it were code, and any data byte
+// that happens to be 0x62 opens an EVEX decode which then eats whatever
+// follows it. That residual data-misdecode class is what the opcode-byte
+// rule shrank (verr/verw/vmread became structurally impossible) but could
+// not remove.
+//
+// The cheap, structural way to tell such a misdecode apart from real code
+// here is the register file. r16-r31 exist only with Intel APX. MSVC for x64
+// does not emit APX: no /arch switch selects it, and neither toolset this
+// guard has met does so (14.44 on the box, 14.51 on the CI runner). On top
+// of that, this project's own objects are compiled at the x64 baseline, with
+// the AVX kernels confined to the ggml-cpu-* tier DLLs, so an own-code
+// instruction addressing memory through r25 is not something the compiler
+// could have produced at all. It comes out of a disassembler walking bytes
+// that were never instructions.
+//
+// What triggered this rule (sidecar-windows.yml run 35640770023, job
+// 106469248703, release/3.0.1-prep, log excerpt in
+// lu-301/bau/isa-guard-ci-auszug.txt), two hits with the same signature:
+//
+//   0000000180097301: vorps   zmm25{k4}{z},zmm15,zmmword ptr [r25]
+//                     fn=$LN4275  obj=clip.obj                 (mtmd.dll)
+//   00000001800dcadc: vpshufb xmm16,xmm30,xmmword ptr [r25]
+//                     fn=$LN191   obj=server-context:server-tools.obj
+//                                                  (llama-server-impl.dll)
+//
+// Three signals converge on both: the owner is a $LN local label, which is
+// what MSVC attaches to jump tables and data blocks inside .text and never
+// to a function; the operands are AVX-512 (zmm, a k-mask, {z}) in modules
+// built without /arch:AVX512; and the base register is an APX EGPR. The same
+// two modules on the box, built with linker 14.44, showed 24 and 72 hits and
+// zero unprotected (review-k1-avx.md, "Zusatzbefund"). The runner's newer
+// toolset ships a dumpbin that knows APX and therefore spells those same
+// data bytes as an APX instruction where the older one did not.
+//
+// THE COST, NAMED, not hidden: if a future MSVC does start emitting APX code
+// for x64, a genuinely unguarded APX instruction would be classified as an
+// artifact here instead of going RED. That is bounded, not open ended: a new
+// linker Major.Minor already fails the build through the toolset pin in
+// verify-sidecar-isa.sh (WINDOWS_REVIEWED_LINKER_VERSIONS) until it has been
+// reviewed by hand, and this rule is one of the things such a review has to
+// re-check.
+//
+// The rule is kept as narrow as the evidence: ONLY the extended general
+// purpose registers count. zmm16-zmm31, the k-mask registers, the {z}
+// zeroing suffix and every other AVX-512 spelling are NOT evidence of a
+// misdecode, because MSVC does emit those under /arch:AVX512, so a real
+// unguarded AVX-512 instruction addressed through the ordinary rax-r15
+// registers still comes out UNPROTECTED (second hit in the fixture
+// scripts/__fixtures__/win-isa/apx-decode-artifact.*). There is deliberately
+// no allowlist by file name either: the decision reads the decoded operands
+// only, so clip.obj and mtmd.dll get no special treatment whatsoever.
+//
+// Word boundaries on both sides keep this off unrelated spellings: "cr16"
+// and "dr16" do not match (the boundary fails before the r), and the
+// optional d/w/b suffix covers r16d/r16w/r16b as well as AT&T's %r25.
+const APX_EGPR_OPERAND = /\br(?:1[6-9]|2[0-9]|3[01])[dwb]?\b/i;
+
+export function hasApxRegisterOperand(line) {
+  return APX_EGPR_OPERAND.test(line.text);
 }
 
 // .map row: "<seg:off>  <name>  <VA 16 hex>  [f] [i]  <Lib:Object>". The
@@ -444,6 +519,20 @@ export function evaluateModule({ moduleName, disasmText, mapText }) {
     }
     ownedHits += 1;
     const { owner, functionStart, functionEnd } = found;
+    // R7 sits AFTER ownership resolution and BEFORE the allowlist: after,
+    // so the map control (hits that resolve to no owner at all, R4) stays
+    // exactly as strict as it was and an artifact cannot be used to make an
+    // unusable map look fine; before, because "these bytes are not an
+    // instruction" comes logically ahead of "is this instruction guarded".
+    if (hasApxRegisterOperand(hit)) {
+      verdicts.push({
+        hit,
+        owner,
+        verdict: 'DECODE_ARTIFACT_APX',
+        reason: 'operands name an Intel APX register r16-r31, which MSVC does not emit for x64 (no /arch switch selects APX, and neither reviewed toolset emits it); these bytes are data the linear-sweep disassembler decoded as if they were code (a jump table, switch table or constant pool inside .text), not a compiled instruction. Not counted as unprotected. If a future MSVC toolset really starts emitting APX code, re-check this rule during the toolset review that WINDOWS_REVIEWED_LINKER_VERSIONS in verify-sidecar-isa.sh forces anyway',
+      });
+      continue;
+    }
     if (isAllowlisted(owner)) {
       verdicts.push({ hit, owner, verdict: 'ALLOWED_CRT' });
       continue;
@@ -463,6 +552,7 @@ export function evaluateModule({ moduleName, disasmText, mapText }) {
     symbolCount: symbols.length,
     hitCount: hits.length,
     ownedHitCount: ownedHits,
+    decodeArtifactCount: verdicts.filter((v) => v.verdict === 'DECODE_ARTIFACT_APX').length,
     verdicts,
     unprotected: verdicts.filter((v) => v.verdict === 'UNPROTECTED' || v.verdict === 'UNKNOWN_OWNER'),
   };
@@ -526,6 +616,14 @@ function main(argv) {
   process.stdout.write(`[win-isa-guard] ${result.moduleName}: ${result.lineCount} disasm line(s) parsed, ${result.symbolCount} map symbols, ${result.hitCount} VEX/EVEX hit(s), ${result.ownedHitCount} resolved to an owner\n`);
   for (const v of result.verdicts) {
     process.stdout.write(`[win-isa-guard]   ${formatVerdict(v)}\n`);
+  }
+  // R7: an artifact is a hit this guard decided NOT to judge, so it gets its
+  // own counted line rather than disappearing between the per-hit rows. A
+  // module that suddenly reports many of these is telling you the
+  // disassembler is sweeping over a lot of data, which is worth a look even
+  // though it is not a K1 regression.
+  if (result.decodeArtifactCount > 0) {
+    process.stdout.write(`[win-isa-guard] NOTE: ${result.moduleName}: ${result.decodeArtifactCount} hit(s) classified DECODE_ARTIFACT_APX (Intel APX register r16-r31 in the operands, i.e. data decoded as code) and therefore not judged as protected or unprotected; see hasApxRegisterOperand in win-isa-guard.mjs and lu-301/bau/isa-guard-apx.md\n`);
   }
 
   if (result.lineCount < minLines) {
