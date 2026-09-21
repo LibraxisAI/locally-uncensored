@@ -50,7 +50,7 @@ export function LoraManager({ rows, total, searchQuery, onDelete, onGetNew }: Pr
           <Layers size={28} className="text-gray-400 dark:text-gray-500" />
         </div>
         <div className="space-y-1">
-          <p className="text-[12px] font-medium text-gray-800 dark:text-gray-200">No LoRAs installed yet</p>
+          <p className="t-control text-gray-800 dark:text-gray-200">No LoRAs installed yet</p>
           <p className="t-micro text-gray-500 max-w-[300px] leading-relaxed">
             Get new searches CivitAI and puts what you pick into ComfyUI&apos;s models/loras folder. {LORA_USE_HINT}
           </p>
@@ -85,7 +85,7 @@ export function LoraManager({ rows, total, searchQuery, onDelete, onGetNew }: Pr
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-[0.72rem] text-gray-900 dark:text-gray-100">{row.name}</span>
+                  <span className="truncate t-control text-gray-900 dark:text-gray-100">{row.name}</span>
                   {character && (
                     <span className="shrink-0 px-1.5 py-0.5 rounded t-micro border border-lu-accent/30 bg-lu-accent-soft text-lu-accent-edge dark:text-lu-accent">
                       Character
