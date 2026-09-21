@@ -58,4 +58,34 @@ describe('providerStore.engineOptedOut', () => {
     useProviderStore.getState().setProviderConfig('ollama', { enabled: true })
     expect(useProviderStore.getState().engineOptedOut).toBe(true)
   })
+
+  // Opus review, round 2, Blocker 7: `resetProvider('openai')` and
+  // `resetProvidersToDefaults` write `providers` directly with `set(...)`,
+  // never through `setProviderConfig`, so the auto-clear above never ran for
+  // either reset path even though both hand the slot back to LU Engine
+  // (managed: true) and the field's own comment promises the mark clears on
+  // "a full Reset". Without this a customer who once opted out, then later
+  // pressed Reset AI Backends, would keep a stale true forever, silencing a
+  // REAL later eviction the notice exists to catch.
+  it('resetProvider("openai") clears a stale opt-out: it hands the slot back to LU Engine (managed: true)', () => {
+    useProviderStore.getState().setEngineOptedOut(true)
+    useProviderStore.getState().resetProvider('openai')
+    expect(useProviderStore.getState().providers.openai.managed).toBe(true)
+    expect(useProviderStore.getState().engineOptedOut).toBe(false)
+  })
+
+  // NEGATIVE CONTROL: resetting a DIFFERENT slot must not touch the flag,
+  // same reasoning as the setProviderConfig negative control above.
+  it('NEGATIVE CONTROL: resetProvider("ollama") leaves the openai opt-out alone', () => {
+    useProviderStore.getState().setEngineOptedOut(true)
+    useProviderStore.getState().resetProvider('ollama')
+    expect(useProviderStore.getState().engineOptedOut).toBe(true)
+  })
+
+  it('resetProvidersToDefaults clears a stale opt-out: it hands the openai slot back to LU Engine too', () => {
+    useProviderStore.getState().setEngineOptedOut(true)
+    useProviderStore.getState().resetProvidersToDefaults()
+    expect(useProviderStore.getState().providers.openai.managed).toBe(true)
+    expect(useProviderStore.getState().engineOptedOut).toBe(false)
+  })
 })

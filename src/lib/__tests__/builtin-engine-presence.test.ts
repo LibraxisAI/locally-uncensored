@@ -3,33 +3,33 @@ import { isBuiltinEngineMissing } from '../builtin-engine-presence'
 
 describe('isBuiltinEngineMissing', () => {
   it('is false when LU Engine occupies the slot', () => {
-    expect(isBuiltinEngineMissing({ managed: true })).toBe(false)
+    expect(isBuiltinEngineMissing({ managed: true }, false)).toBe(false)
   })
 
   it('is true when a custom provider occupies the slot and nothing is on standby', () => {
-    expect(isBuiltinEngineMissing({ managed: false })).toBe(true)
-    expect(isBuiltinEngineMissing({ managed: false, displaced: undefined })).toBe(true)
+    expect(isBuiltinEngineMissing({ managed: false }, false)).toBe(true)
+    expect(isBuiltinEngineMissing({ managed: false, displaced: undefined }, false)).toBe(true)
   })
 
   it('is false when LU Engine is only parked on standby', () => {
-    expect(isBuiltinEngineMissing({ managed: false, displaced: { managed: true } })).toBe(false)
+    expect(isBuiltinEngineMissing({ managed: false, displaced: { managed: true } }, false)).toBe(false)
   })
 
   it('is true when a different backend is parked on standby, not LU Engine', () => {
     // Two custom providers in a row: the second takeover overwrote the
     // standby memory that used to hold LU Engine (R13D Nebenfund 1), so the
     // slot now remembers only the first custom provider, e.g. Jan.
-    expect(isBuiltinEngineMissing({ managed: false, displaced: { managed: false } })).toBe(true)
-    expect(isBuiltinEngineMissing({ managed: false, displaced: {} })).toBe(true)
+    expect(isBuiltinEngineMissing({ managed: false, displaced: { managed: false } }, false)).toBe(true)
+    expect(isBuiltinEngineMissing({ managed: false, displaced: {} }, false)).toBe(true)
   })
 
   it('is true for a missing or empty slot, independent of any other provider being active', () => {
     // Cloud mode active (lu-cloud enabled) says nothing about the openai
     // slot itself: this check reads only the slot it is given, never a
     // global mode flag, so a caller gating on cloud mode does that itself.
-    expect(isBuiltinEngineMissing(undefined)).toBe(true)
-    expect(isBuiltinEngineMissing(null)).toBe(true)
-    expect(isBuiltinEngineMissing({})).toBe(true)
+    expect(isBuiltinEngineMissing(undefined, false)).toBe(true)
+    expect(isBuiltinEngineMissing(null, false)).toBe(true)
+    expect(isBuiltinEngineMissing({}, false)).toBe(true)
   })
 })
 
@@ -79,7 +79,17 @@ describe('isBuiltinEngineMissing, the optedOut parameter (Opus review, first rou
     expect(isBuiltinEngineMissing({ managed: true }, false)).toBe(false)
   })
 
-  it('optedOut defaults to false: the old, single-argument call sites keep meaning exactly what they meant before', () => {
-    expect(isBuiltinEngineMissing({ managed: false })).toBe(true)
+  // Opus review, round 2, kleinigkeit: `optedOut` used to default to
+  // `false`, the one value that SHOWS the notice, so a caller that forgot
+  // the argument got a false positive by default, not a missed notice. The
+  // argument is required now (see the TS signature): omitting it is a
+  // COMPILE error, so `npx tsc` catches a forgetful caller before it ever
+  // ships, instead of the runtime silently choosing the unsafe default. The
+  // line below documents that: without the required argument the call is a
+  // type error the build gate would refuse, `tsc -p tsconfig.app.json` is
+  // clean specifically because every real call site passes it.
+  it('optedOut has no default: TypeScript refuses a call that omits it', () => {
+    // @ts-expect-error the second argument is required, not optional
+    isBuiltinEngineMissing({ managed: false })
   })
 })

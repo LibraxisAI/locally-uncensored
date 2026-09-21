@@ -30,11 +30,15 @@
  * this stays exactly the check it was before that flag existed, so every
  * unit test written against a bare slot keeps meaning what it always meant.
  *
- * "im Zweifel enger feuern" (owner's instruction): `optedOut` defaults to
- * `false` only for backward compatibility with the slot-only signature. Both
- * call sites in the app (ProviderConfig.tsx, EngineMissingBar.tsx) pass the
- * real flag, so in the running app a missed notice is the only kind of
- * mistake this can make, never a false one.
+ * "im Zweifel enger feuern" (owner's instruction): a false positive is the
+ * one kind of mistake this function must never make, only a missed notice.
+ * Opus review, round 2 (2026-09-21): a DEFAULT value on `optedOut` worked
+ * against that promise, not for it, a caller that forgot the argument would
+ * silently get `false`, the answer that SHOWS the notice. The argument is
+ * required now, so a forgotten argument is a compile error instead of a
+ * silent false positive. Both real call sites (ProviderConfig.tsx,
+ * EngineMissingBar.tsx) already read `providerStore.engineOptedOut` and pass
+ * it through.
  */
 
 /** The parts of the `openai` slot this check reads. Matches the shape of
@@ -49,7 +53,7 @@ export interface EngineSlotView {
 
 export function isBuiltinEngineMissing(
   slot: EngineSlotView | undefined | null,
-  optedOut = false,
+  optedOut: boolean,
 ): boolean {
   if (!slot) return true
   if (slot.managed) return false

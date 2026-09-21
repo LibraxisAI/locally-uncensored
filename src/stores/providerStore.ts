@@ -285,6 +285,14 @@ export const useProviderStore = create<ProviderState>()(
             [id]: DEFAULT_PROVIDERS[id],
           },
         }))
+        // Opus review, round 2, Blocker 7: DEFAULT_PROVIDERS.openai carries
+        // managed: true, so a reset of THIS slot really is "LU Engine chosen
+        // again" in every sense but the literal one setProviderConfig checks
+        // for (it writes `providers` directly, not through setProviderConfig,
+        // so that auto-clear never runs). Without this the field's own
+        // comment ("Built-in chosen again, Restore, or a full Reset") would
+        // be a claim the code does not keep.
+        if (id === 'openai') set({ engineOptedOut: false })
         if (id === 'openai') onLocalSlotChanged(before, get().providers.openai)
         if (keychainReady) {
           void secretDelete(id).catch(() => { /* vault delete best-effort */ })
@@ -308,6 +316,11 @@ export const useProviderStore = create<ProviderState>()(
           }
           return { providers: next }
         })
+        // Opus review, round 2, Blocker 7: same reasoning as resetProvider
+        // above, DEFAULT_PROVIDERS.openai is managed: true, so this hands the
+        // slot back to LU Engine too, and the field's own comment promises
+        // the mark clears on "a full Reset".
+        set({ engineOptedOut: false })
         clearProviderCache()
         // Reset hands the slot back to the app's own engine, which voids a
         // pending unload rather than causing one.
@@ -417,10 +430,25 @@ export const useProviderStore = create<ProviderState>()(
             merged[id] = displaced ? { ...cfg, displaced } : cfg
           }
         }
+        // Opus review, round 2, Blocker 6: `engineOptedOut` is new in 3.0.1.
+        // A blob written before it exists has no such key at all, so `...p`
+        // below leaves the fresh-install default `false` standing, and that
+        // reads as "LU Engine was evicted" for EVERY pre-3.0.1 customer whose
+        // `openai` slot already carried `managed: false` from one of the five
+        // deliberate pick UIs, the false positive Blocker 1 was fixed against,
+        // now moved from the new customer to the existing one who actually
+        // gets the update. Backfill: an old blob with no `openai.managed` and
+        // no `displaced.managed` reads as "this installation opted out before
+        // the flag existed", same one-sentence rule the rest of this file
+        // uses, better a missed notice on old data than a false one.
+        const openaiSlot = merged.openai
+        const backfillOptedOut = !!openaiSlot && !openaiSlot.managed && !openaiSlot.displaced?.managed
+        const engineOptedOut = p.engineOptedOut === undefined ? backfillOptedOut : p.engineOptedOut
         return {
           ...current,
           ...p,
           providers: merged,
+          engineOptedOut,
         }
       },
       // Don't persist transient state, only configs + user's "don't show again" preference.
