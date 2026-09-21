@@ -64,7 +64,7 @@ export function EngineMissingBar() {
         icon={<AlertTriangle size={11} className="shrink-0 mt-0.5" />}
         onDismiss={() => setDismissed(true)}
       >
-        LU Engine is missing from your providers. Add Provider, then LU Engine, in Settings, AI Backends, to use the app's own built-in engine again. We are fixing the cause in the next update.
+        LU Engine is missing from your providers. Add Provider, then LU Engine, in Settings, AI Backends. We are fixing the cause in the next update.
       </Hinweis>
     </div>
   )

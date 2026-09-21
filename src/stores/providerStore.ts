@@ -226,19 +226,23 @@ export const useProviderStore = create<ProviderState>()(
         }))
         clearProviderCache() // invalidate cached clients
         dropPicksForDarkenedSlots({ [id]: before }, { [id]: get().providers[id] })
+        // LU Engine is back on the slot on purpose (Built-in chosen again,
+        // Restore, a full Reset): whatever opt-out was recorded no longer
+        // describes the customer's current choice, so a LATER real eviction
+        // is not silently swallowed by a stale flag. Ordered before the
+        // onLocalSlotChanged call below on purpose (the two do not depend on
+        // each other), so that call stays the LAST statement this function
+        // makes, the shape displaced-engine-frees-its-memory.test.ts pins for
+        // every write path that touches the shared slot.
+        if (id === 'openai' && updates.managed === true && get().engineOptedOut) {
+          set({ engineOptedOut: false })
+        }
         // Every route that moves the shared local slot comes through here (Add
         // Provider, Enable on the standby card, Remove, Disable, onboarding), so
         // the memory question is asked here, once. R12/R13 measured the answer
         // it used to get: Jan takes the slot, lu-llama-server keeps PID and
         // model in RAM until the app is restarted. See lib/builtin-slot-eviction.
         if (id === 'openai') onLocalSlotChanged(before, get().providers.openai)
-        // LU Engine is back on the slot on purpose (Built-in chosen again,
-        // Restore, a full Reset): whatever opt-out was recorded no longer
-        // describes the customer's current choice, so a LATER real eviction
-        // is not silently swallowed by a stale flag.
-        if (id === 'openai' && updates.managed === true && get().engineOptedOut) {
-          set({ engineOptedOut: false })
-        }
       },
 
       setProviderApiKey: (id, key) => {
