@@ -1,5 +1,5 @@
 /**
- * Qwen-Image 2.1 — one local model for generating AND editing.
+ * Qwen-Image 2.1: one local model for generating AND editing.
  *
  * The model is a single 7B DiT that writes a picture from a prompt and edits
  * one from a reference picture plus a prompt, through the node
@@ -32,7 +32,7 @@ vi.mock('../comfyui-nodes', async (importOriginal) => {
 })
 vi.mock('../backend', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../backend')>()
-  // comfyuiUrl reads `window` (isTauri) — stub it for the node test env.
+  // comfyuiUrl reads `window` (isTauri), so stub it for the node test env.
   return { ...actual, localFetch: vi.fn(), comfyuiUrl: (p: string) => `http://test${p}` }
 })
 
@@ -164,7 +164,7 @@ describe('Qwen-Image 2.1 COMPONENT_REGISTRY', () => {
 
 // ── Strategy gate ───────────────────────────────────────────────────────
 
-describe('determineStrategy — the Qwen-Image 2.1 gate', () => {
+describe('determineStrategy, the Qwen-Image 2.1 gate', () => {
   const full: CategorizedNodes = categorizeNodes(QWEN_NODES as never)
 
   it('routes to unet_qwenimage when the loaders and the encode node are there', () => {
@@ -192,7 +192,7 @@ describe('determineStrategy — the Qwen-Image 2.1 gate', () => {
 
 // ── The generate graph ──────────────────────────────────────────────────
 
-describe('buildDynamicWorkflow — Qwen-Image 2.1 generate (no reference image)', () => {
+describe('buildDynamicWorkflow, Qwen-Image 2.1 generate (no reference image)', () => {
   beforeEach(() => {
     vi.mocked(getAllNodeInfo).mockResolvedValue(QWEN_NODES as never)
     serveEnums()
@@ -254,7 +254,7 @@ describe('buildDynamicWorkflow — Qwen-Image 2.1 generate (no reference image)'
 
 // ── The edit graph ──────────────────────────────────────────────────────
 
-describe('buildDynamicWorkflow — Qwen-Image 2.1 edit (one reference image)', () => {
+describe('buildDynamicWorkflow, Qwen-Image 2.1 edit (one reference image)', () => {
   beforeEach(() => {
     vi.mocked(getAllNodeInfo).mockResolvedValue(QWEN_NODES as never)
     serveEnums()
