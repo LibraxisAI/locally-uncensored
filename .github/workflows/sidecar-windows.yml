@@ -92,6 +92,34 @@ jobs:
         shell: bash
         run: bash scripts/verify-sidecar-isa.sh x86_64-pc-windows-msvc
 
+      # Review input for a red guard: the toolset pin and the dominance rule
+      # can only be re-reviewed against the runner's own dumpbin output (the
+      # box has an older toolset that decodes differently), so keep the
+      # disassembly and the linker maps as an artifact whenever the guard
+      # ran, green or red.
+      - name: Keep dumpbin disassembly and maps for review
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          out=isa-review; mkdir -p "$out"
+          for f in src-tauri/resources/llama/x86_64-pc-windows-msvc/*.dll src-tauri/bin/lu-llama-server-x86_64-pc-windows-msvc.exe; do
+            [ -f "$f" ] || continue
+            b=$(basename "$f")
+            dumpbin /nologo /disasm "$f" > "$out/$b.disasm.txt" 2>"$out/$b.disasm.err" || true
+            dumpbin /nologo /headers "$f" > "$out/$b.headers.txt" 2>/dev/null || true
+          done
+          find .llama-build -name '*.map' -exec cp {} "$out"/ \; 2>/dev/null || true
+          ls -la "$out" | head -40
+      - name: Upload ISA review input
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: isa-review-x86_64-pc-windows-msvc
+          path: isa-review/
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Boot smoke — real model load + /health
         shell: pwsh
         # BLOCKER A1: bounds the whole step, including the download.
