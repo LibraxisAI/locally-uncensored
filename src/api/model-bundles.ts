@@ -342,6 +342,45 @@ export function getImageBundles(): ModelBundle[] {
       ],
     },
     {
+      name: 'Qwen-Image 2.1 (Generate and Edit)',
+      description: 'One model for both: write a prompt to generate, or add a reference image plus a prompt to edit it, no mask needed. Qwen Research License, non-commercial use: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE',
+      tags: ['Qwen Image 2.1', 'Image', 'Edit', '1024px'],
+      uncensored: false,
+      verified: true,
+      // 6.76 + 8.71 + 0.63. sizeGB counts in gibibytes here (the install check
+      // multiplies it by 1_073_741_824), so these are the HF byte counts read
+      // on 2026-09-21 converted to GiB, not the decimal figures on the file
+      // listing. Needs ComfyUI 0.37.0 or newer for the TextEncodeQwenImage21
+      // node; an older one is told so before anything is built.
+      totalSizeGB: 16.1,
+      vramRequired: '16-24 GB',
+      workflow: 'qwenimage',
+      url: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1',
+      files: [
+        {
+          name: 'Qwen-Image 2.1 (INT8)',
+          description: 'Diffusion model · generates and edits, native 2K, transparent backgrounds.',
+          pulls: '', tags: ['Diffusion Model', '7.26 GB'], updated: 'New',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+          filename: 'qwen_image_2.1_int8_convrot.safetensors', subfolder: 'diffusion_models', sizeGB: 6.76,
+        },
+        {
+          name: 'Qwen3-VL 8B Text Encoder (INT8)',
+          description: 'Required text encoder for Qwen-Image 2.1 prompt understanding.',
+          pulls: '', tags: ['Text Encoder', '9.35 GB'], updated: 'New',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+          filename: 'qwen3vl_8b_int8_convrot.safetensors', subfolder: 'text_encoders', sizeGB: 8.71,
+        },
+        {
+          name: 'Qwen-Image 2.1 VAE',
+          description: 'Required autoencoder for Qwen-Image 2.1.',
+          pulls: '', tags: ['VAE', '676 MB'], updated: '',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors',
+          filename: 'qwen_image_2.1_vae_bf16.safetensors', subfolder: 'vae', sizeGB: 0.63,
+        },
+      ],
+    },
+    {
       name: 'DreamShaper XL Turbo V2 (Anime/Stylized)',
       description: 'Fast anime and stylized art. Turbo mode for 4 step generation. Great for creative work.',
       tags: ['SDXL', 'Anime', 'Stylized', 'Turbo', '1024px'],
