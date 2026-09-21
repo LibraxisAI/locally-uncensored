@@ -182,17 +182,35 @@ jobs:
               $ok = $true; break
             } catch { }
           }
+          # Release night 3.0.1: llama.cpp 049326a answered /health without
+          # ever printing the load_backend() line, even at -lv 4, so the log
+          # grep alone would fail a healthy server. The proof that carries is
+          # the same one the Linux round r14 used through /proc/<pid>/maps:
+          # read the module list of the LIVE process and require a
+          # ggml-cpu-*.dll in it. Read it before the process is stopped.
+          $cpuModules = @()
+          if ($ok) {
+            try {
+              $cpuModules = @((Get-Process -Id $proc.Id -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -like 'ggml-cpu-*.dll' } | ForEach-Object { $_.FileName })
+            } catch { Write-Host "module list unavailable: $_" }
+          }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $ok) {
             Write-Host "---- llama-server output ----"
             Get-Content "$serverLog.out","$serverLog.err" -ErrorAction SilentlyContinue
             throw "llama-server /health never came up"
           }
-          if (-not (Select-String -Path "$serverLog.out","$serverLog.err" -Pattern "loaded CPU backend from" -Quiet -ErrorAction SilentlyContinue)) {
+          $loggedLine = Select-String -Path "$serverLog.out","$serverLog.err" -Pattern "loaded CPU backend from" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($loggedLine) { Write-Host "log: $($loggedLine.Line)" } else { Write-Host "log: no load_backend line at -lv 4 (informational only)" }
+          if ($cpuModules.Count -eq 0) {
             Get-Content "$serverLog.out","$serverLog.err" -ErrorAction SilentlyContinue
-            throw "ggml_backend_load_all() never logged a loaded CPU backend; no ggml-cpu-*.dll was found in $runDir"
+            throw "the running llama-server had no ggml-cpu-*.dll mapped; ggml_backend_load_all() found no CPU module in $runDir"
           }
-          Write-Host "OK - sidecar boots from the resource layout, loads a model, answers /health, and logged a loaded CPU backend"
+          $cpuModules | ForEach-Object { Write-Host "loaded CPU module: $_" }
+          if ($cpuModules -notmatch [regex]::Escape($runDir)) {
+            throw "a ggml-cpu-*.dll was loaded from outside the resource layout: $($cpuModules -join ', ')"
+          }
+          Write-Host "OK - sidecar boots from the resource layout, loads a model, answers /health, and has a ggml-cpu-*.dll from $runDir mapped"
 
       - name: Upload sidecar artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
