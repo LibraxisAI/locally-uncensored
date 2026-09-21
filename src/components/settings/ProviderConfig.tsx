@@ -515,7 +515,7 @@ export function ProviderSettings() {
         >
           <AlertTriangle size={11} className="shrink-0 mt-0.5" />
           <span className="flex-1 min-w-0">
-            LU Engine is missing from your providers. Restore it below to use the app's own built-in engine again. We are fixing the cause in the next update.
+            LU Engine is missing from your providers. Restore it below. We are fixing the cause in the next update.
           </span>
           <button
             onClick={() => selectPreset(PROVIDER_PRESETS.find(p => p.id === 'builtin')!)}
