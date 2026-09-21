@@ -1791,9 +1791,14 @@ export async function searchCivitaiModels(
       if (type === 'LORA') subfolder = 'loras'
       else if (type === 'VAE') subfolder = 'vae'
       else if (type === 'TextualInversion') subfolder = 'embeddings'
-      // Check if it's a diffusion model (FLUX, Wan, etc.)
+      // Check if it's a diffusion model (FLUX, Wan, etc.). Only for a
+      // checkpoint search: the name of a LORA, a VAE or an embedding says
+      // which base model it was trained against, not what kind of file it is,
+      // so "Flux Realism LoRA" used to be written into diffusion_models, where
+      // the LoRA loader does not look and the LoRA stack in Create could never
+      // offer it.
       const name = (itemName ?? '').toLowerCase()
-      if (name.includes('flux') || name.includes('wan') || name.includes('hunyuan')) {
+      if (type === 'Checkpoint' && (name.includes('flux') || name.includes('wan') || name.includes('hunyuan'))) {
         subfolder = 'diffusion_models'
       }
 

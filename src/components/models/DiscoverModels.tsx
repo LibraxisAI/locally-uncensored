@@ -2,27 +2,26 @@ import { useCallback, useState, useEffect, useRef } from 'react'
 import { chatRecommendationGroups, isBelowChatMinimum, SMALL_CHAT_MODEL_WARNING } from '../../lib/chat-model-minimum'
 import { bundleIsComplete, bundleIsDownloading, bundleHasErrors } from '../../lib/bundle-state'
 import { motion } from 'framer-motion'
-import { Search, XCircle, Loader2, Sparkles, Unlock, ShieldCheck, ExternalLink, Download, CheckCircle, Info } from 'lucide-react'
+import { Search, XCircle, Sparkles, Unlock, ShieldCheck, ExternalLink, Info } from 'lucide-react'
 import { X } from 'lucide-react'
 import {
   searchHuggingFaceModels,
   getImageBundles, getVideoBundles,
   getUncensoredTextModels, getMainstreamTextModels,
   detectProviderModelPath, startModelDownloadToPath, luEngineDownloadDir,
-  startModelDownload, searchCivitaiModels,
+  startModelDownload,
   installBundleComplete, checkBundlesInstalled, resolveHfGgufFiles, planModelDownload,
-  type DiscoverModel, type DownloadProgress, type ModelBundle, type CivitAIModelResult, type HfGgufFile,
+  type DiscoverModel, type DownloadProgress, type ModelBundle, type HfGgufFile,
 } from '../../api/discover'
 import { getSystemVRAM } from '../../api/comfyui'
 import { getMaxVramGb, getTotalRamGb, bundleVramNeedGb } from '../../lib/hardware'
 import { openExternal } from '../../api/backend'
 import { useModels } from '../../hooks/useModels'
 import { useDownloadStore } from '../../stores/downloadStore'
-import { CivitaiResultsSkeleton, ModelGridSkeleton } from '../layout/ViewSkeletons'
+import { ModelGridSkeleton } from '../layout/ViewSkeletons'
 import { useProviderStore } from '../../stores/providerStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useModelStore } from '../../stores/modelStore'
-import { useWorkflowStore } from '../../stores/workflowStore'
 import { getProviderIdFromModel } from '../../api/providers'
 import { activateDownloadedBundledModel } from '../../lib/bundled-download-activation'
 import { diagnoseBuiltinEngine } from '../../api/builtin-ensure'
@@ -34,19 +33,17 @@ import { LuEngineSwitchBar } from '../chat/LuEngineSwitchBar'
 import { resolveTextDownloadTarget } from '../../lib/text-download-target'
 import { hfUrlToOllamaRef, hfUrlToLmStudioSubdir, parseHfUrl, extractGgufQuant, isShardedOrIncompatibleGguf } from '../../lib/hf-to-provider'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
-import { GlassCard } from '../ui/GlassCard'
 import { GlowButton } from '../ui/GlowButton'
-import { ProgressBar } from '../ui/ProgressBar'
 import { Modal } from '../ui/Modal'
-import { formatBytes, countLabel } from '../../lib/formatters'
+import { countLabel } from '../../lib/formatters'
 import type { ModelCategory } from '../../types/models'
-import { proxyImageUrl } from '../../lib/privacy'
 import { log } from '../../lib/logger'
 import {
   ModelTile, BundleTile, HardwareChip, groupModels, pickDefaultVariant, computeFit,
   CapLegend,
 } from './ModelTiles'
 import { ICON_SM } from '../ui/icon-size'
+import { CivitaiSearchPanel } from './CivitaiSearchPanel'
 
 interface Props {
   category: ModelCategory
@@ -221,18 +218,6 @@ export function awaitDownloadedFile(
 }
 
 export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }: Props) {
-  const [civitaiResults, setCivitaiResults] = useState<CivitAIModelResult[]>([])
-  const [civitaiSearching, setCivitaiSearching] = useState(false)
-  const [civitaiQuery, setCivitaiQuery] = useState('')
-  // Track whether the *latest* CivitAI search has been issued at least once,
-  // so an empty-state hint can render between "before-first-search" and
-  // "search returned 0 hits". Without this we fall through to the silent gap
-  // diimmortalis described — empty list, no console output, looks like the
-  // button did nothing.
-  const [civitaiSearched, setCivitaiSearched] = useState(false)
-  // CivitAI mirror host (#53) — civitai.red for regions where .com is blocked.
-  const civitaiHost = useWorkflowStore((s) => s.civitaiHost)
-  const setCivitaiHost = useWorkflowStore((s) => s.setCivitaiHost)
   const [loading, setLoading] = useState(false)
   const [systemVRAM, setSystemVRAM] = useState<number | null>(null)
   const [ramGb, setRamGb] = useState<number | null>(null)
@@ -496,27 +481,6 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
       }
     }
     setTimeout(waitForDownloads, 1000)
-  }
-
-  const handleCivitaiSearch = async () => {
-    if (!civitaiQuery.trim()) return
-    setCivitaiSearching(true)
-    setCivitaiSearched(true)
-    // Reuse the CivitAI API key the user already configured for the Workflow
-    // finder. The model search and the workflow finder share the same backend
-    // credential, so plumbing a separate input here would just confuse users.
-    const apiKey = useWorkflowStore.getState().civitaiApiKey || undefined
-    const host = useWorkflowStore.getState().civitaiHost
-    const results = await searchCivitaiModels(civitaiQuery, 'Checkpoint', apiKey, host)
-    setCivitaiResults(results)
-    setCivitaiSearching(false)
-  }
-
-  const handleCivitaiDownload = async (model: CivitAIModelResult) => {
-    if (!model.downloadUrl || !model.filename || !model.subfolder) return
-    dlStore.getState().setMeta(model.filename, model.downloadUrl, model.subfolder)
-    await startModelDownload(model.downloadUrl, model.subfolder, model.filename)
-    dlStore.getState().startPolling()
   }
 
   // The three card states live in lib/bundle-state.ts, pure, because bundles
@@ -1018,105 +982,14 @@ export function DiscoverModels({ category, search = '', searchSubmitToken = 0 }:
         <p className="text-center text-gray-500 py-4 text-sm">No models match this size filter. Try a different one.</p>
       )}
 
-      {/* CivitAI Search (Image & Video) */}
+      {/* CivitAI Search (Image & Video). Checkpoints here; the LoRA rail
+          renders the same panel with type LORA. */}
       {(isImage || isVideo) && (
-        <GlassCard className="p-4 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Search CivitAI</h3>
-            {/* Mirror toggle (#53) — civitai.red for regions where .com is blocked. */}
-            <div className="flex items-center gap-1 t-micro">
-              <span className="text-gray-400 dark:text-gray-500 mr-0.5">mirror</span>
-              {(['civitai.com', 'civitai.red'] as const).map((h) => (
-                <button
-                  key={h}
-                  onClick={() => setCivitaiHost(h)}
-                  title={h === 'civitai.red'
-                    ? 'Use the civitai.red mirror for regions where civitai.com is blocked'
-                    : 'Use civitai.com (default)'}
-                  className={
-                    'px-1.5 py-0.5 rounded font-mono transition-colors ' +
-                    (civitaiHost === h
-                      ? 'bg-gray-200 dark:bg-white/15 text-gray-900 dark:text-white'
-                      : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200')
-                  }
-                >
-                  {h.replace('civitai', '')}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex gap-2 w-full sm:w-2/3 lg:w-1/2 mx-auto">
-            <input
-              value={civitaiQuery}
-              onChange={(e) => setCivitaiQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleCivitaiSearch()}
-              placeholder="e.g. flux, sdxl realistic, anime..."
-              className="flex-1 px-3 py-2 rounded-lg bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-sm text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"
-            />
-            <button
-              onClick={handleCivitaiSearch}
-              disabled={civitaiSearching || !civitaiQuery.trim()}
-              className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/15 disabled:opacity-50 text-gray-700 dark:text-white transition-colors"
-            >
-              {civitaiSearching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-            </button>
-          </div>
-
-          {civitaiResults.length > 0 && (
-            <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-              {civitaiResults.map((model) => {
-                const dlState = model.filename ? downloads[model.filename] : null
-                const isDl = dlState?.status === 'downloading' || dlState?.status === 'connecting'
-                const isDone = dlState?.status === 'complete'
-
-                return (
-                  <div key={model.id} className="flex gap-3 p-3 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10">
-                    {model.thumbnailUrl && (
-                      <img src={proxyImageUrl(model.thumbnailUrl)} alt="" className="w-14 h-14 rounded-lg object-cover flex-shrink-0" loading="lazy" />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{model.name}</span>
-                        {model.sizeGB && <span className="t-micro text-gray-400 flex-shrink-0">{model.sizeGB} GB</span>}
-                      </div>
-                      {model.description && <p className="t-micro text-gray-500 line-clamp-1 mt-0.5">{model.description}</p>}
-                      {isDl && dlState && dlState.total > 0 && (
-                        <div className="mt-1.5">
-                          <ProgressBar progress={(dlState.progress / dlState.total) * 100} />
-                          <span className="t-micro text-gray-400">{formatBytes(dlState.progress)} / {formatBytes(dlState.total)}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {isDone ? (
-                        <CheckCircle size={16} className="text-green-500" />
-                      ) : isDl ? (
-                        <Loader2 size={16} className="animate-spin text-gray-400" />
-                      ) : model.downloadUrl ? (
-                        <button onClick={() => handleCivitaiDownload(model)} className="p-2 rounded-lg bg-green-100 dark:bg-green-500/15 hover:bg-green-200 dark:hover:bg-green-500/25 text-green-700 dark:text-green-400 transition-colors" title="Download" aria-label="Download">
-                          <Download size={14} />
-                        </button>
-                      ) : null}
-                      <button onClick={() => openExternal(model.sourceUrl)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 transition-colors" title="View on CivitAI" aria-label="View on CivitAI">
-                        <ExternalLink size={14} />
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {/* Listen-Ladezustand 2 von 4 — dieselbe Begruendung eine Karte
-              weiter oben, nur mit der Zeilengeometrie der Trefferliste. */}
-          {civitaiSearching && <CivitaiResultsSkeleton />}
-          {!civitaiSearching && civitaiSearched && civitaiResults.length === 0 && (
-            <div className="text-center py-4 t-micro text-gray-500 leading-relaxed">
-              No matches for "{civitaiQuery}". Try a broader query, or add your CivitAI API key
-              in the Workflow finder for the full catalog.
-            </div>
-          )}
-        </GlassCard>
+        <CivitaiSearchPanel
+          modelType="Checkpoint"
+          title="Search CivitAI"
+          placeholder="e.g. flux, sdxl realistic, anime..."
+        />
       )}
 
       {/* ── D-S26 · „Keine Virtualisierung: 53 Karten = 1610 DOM-Knoten,

@@ -41,6 +41,10 @@ const codeOnly = (src: string) =>
 
 const SKELETONS = codeOnly(read('components', 'layout', 'ViewSkeletons.tsx'))
 const DISCOVER = codeOnly(read('components', 'models', 'DiscoverModels.tsx'))
+// Die CivitAI-Karte ist seit dem LoRA-Reiter eine eigene Komponente: dieselbe
+// Karte wird zweimal benutzt (Checkpoints hier, LoRAs unter Models > LoRAs),
+// und ihr Ladezustand ist deshalb auch nur noch einmal da.
+const CIVITAI = codeOnly(read('components', 'models', 'CivitaiSearchPanel.tsx'))
 const SELECTOR = codeOnly(read('components', 'models', 'ModelSelector.tsx'))
 const SETTINGS = codeOnly(read('components', 'settings', 'SettingsPage.tsx'))
 const CSS = read('index.css')
@@ -60,8 +64,8 @@ describe('an allen vier Stellen steht ein Skelett', () => {
   })
 
   it('2/4 — die CivitAI-Trefferliste', () => {
-    expect(DISCOVER).toContain('{civitaiSearching && <CivitaiResultsSkeleton />}')
-    expect(DISCOVER).not.toContain('Searching CivitAI...')
+    expect(CIVITAI).toContain('{searching && <CivitaiResultsSkeleton />}')
+    expect(CIVITAI).not.toContain('Searching CivitAI...')
   })
 
   it('3/4 — die Liste im Modellwaehler', () => {
@@ -109,8 +113,8 @@ describe('die Skelette tragen die Geometrie der Liste, die kommt', () => {
   })
 
   it('die CivitAI-Zeile stimmt in Polsterung, Radius und Thumbnail-Mass', () => {
-    expect(DISCOVER).toContain('flex gap-3 p-3 rounded-lg')
-    expect(DISCOVER).toContain('w-14 h-14 rounded-lg')
+    expect(CIVITAI).toContain('flex gap-3 p-3 rounded-lg')
+    expect(CIVITAI).toContain('w-14 h-14 rounded-lg')
     const s = skeleton('CivitaiResultsSkeleton')
     expect(s).toContain('flex gap-3 p-3 rounded-lg')
     expect(s).toContain('w-14 h-14 rounded-lg')
