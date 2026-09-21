@@ -81,11 +81,13 @@ describe('the plan moved into the panel (C2)', () => {
     // C1 had put the plan APPROVAL card here (a button plus the plan text the
     // user is approving). It went down into the panel too on 2026-08-22: the
     // prompt window is the prompt window.
-    // Matched on what must be there rather than on the exact list: A14 added
-    // the LU Engine switch line to this row, and pinning the literal would
-    // turn every future status line into a failure of THIS claim. The claim is
-    // that no plan lives here, and the two lines below are the whole of it.
-    expect(src).toMatch(/composerAbove=\{<>.*<LoopBar onStop=\{stopCodex\} \/><GoalBar \/><\/>\}/)
+    // 21.09.2026: dieser Composer reicht gar nichts mehr nach oben durch
+    // („NICHTS im prompt fenster!"). LoopBar und GoalBar sind Bedienelemente
+    // und weiterhin da, nur als Geschwister UEBER dem Kasten. Der Anspruch
+    // dieses Falles ist unveraendert: hier lebt kein Plan.
+    expect(src).not.toMatch(/composerAbove/)
+    expect(src).toMatch(/<LoopBar onStop=\{stopCodex\} \/>/)
+    expect(src).toMatch(/<GoalBar \/>/)
     expect(src).not.toMatch(/PlanBar/)
     expect(src).not.toMatch(/PlanApprovalBar/)
   })

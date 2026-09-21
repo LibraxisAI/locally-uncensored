@@ -79,7 +79,7 @@ const COMPONENT_NAMED: Array<[string, string]> = componentFiles().map((f) => [
 const ALL_COMPONENTS = COMPONENT_SRC.join('\n')
 
 /** Der Selektor der Hausregel, einmal, damit die Tests ihn nicht abschreiben. */
-const HOUSE = String.raw`:focus-visible:not\(\[tabindex='-1'\]\):not\(\.lu-primary\):not\(\[data-lu-quiet-focus\]\)`
+const HOUSE = String.raw`:focus-visible:not\(\[tabindex='-1'\]\):not\(\.lu-primary\)`
 
 // ── Die Flaechen, auf denen der Ring wirklich landet ────────────────────
 // `outline-offset: 2px` heisst: der Ring liegt NEBEN dem Control, auf dem
@@ -102,18 +102,23 @@ const LIGHT_SURFACES: Array<[string, string]> = [
 ]
 
 describe('Punkt 4 — der Fokusring existiert, ist 2px und nimmt Tokens', () => {
-  it('es gibt genau eine Hausregel, und sie ist 2px mit 2px Abstand', () => {
+  it('es gibt genau eine Hausregel, und sie faellt fuer jeden auf 2px zurueck', () => {
     const rules = CODE.match(new RegExp(`^${HOUSE}\\s*\\{[^}]*\\}`, 'gm')) ?? []
     expect(rules).toHaveLength(1)
-    expect(rules[0]).toMatch(/outline:\s*2px solid var\(--color-lu-accent\)/)
-    expect(rules[0]).toMatch(/outline-offset:\s*2px/)
+    // Die Vorgabe der Regel IST der alte Ring: 2px Akzent, 2px Abstand. Wer
+    // nichts anderes sagt, bekommt ihn, und das sind alle Knoepfe, Links,
+    // Regler, Kaestchen und Menueausloeser der App.
+    expect(rules[0]).toMatch(/outline:\s*var\(--lu-focus-w,\s*2px\) solid var\(--lu-focus-c,\s*var\(--color-lu-accent\)\)/)
+    expect(rules[0]).toMatch(/outline-offset:\s*var\(--lu-focus-o,\s*2px\)/)
     // Keine Farbe als Literal — sonst laeuft der Ring vom Akzent weg.
     expect(rules[0]).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
   })
 
   it('der Hellmodus nimmt die Kante, nicht den Akzent', () => {
     const light = CODE.match(new RegExp(`^\\.light ${HOUSE}\\s*\\{[^}]*\\}`, 'm'))?.[0] ?? ''
-    expect(light).toMatch(/outline-color:\s*var\(--color-lu-accent-edge\)/)
+    // Auch hier ueber dieselbe Variable, sonst uebermalte der Hellmodus die
+    // leise Haarlinie der Textfelder wieder mit der Akzentkante.
+    expect(light).toMatch(/outline-color:\s*var\(--lu-focus-c,\s*var\(--color-lu-accent-edge\)\)/)
   })
 
   it('der alte 1px-Ring in Fremdblau ist restlos weg', () => {
@@ -197,71 +202,133 @@ describe('Punkt 4 — die Ausnahme steht AN der Regel, nicht gegen sie', () => {
   })
 
   /**
-   * Wer das Attribut tragen darf, und WO sein Fokus stattdessen steht.
+   * Die Entscheidung vom 21.09.2026, und die Sperrklinke dahinter.
    *
    * David, 05.09.2026, am Windows-Bau: „wenn man in das nachrichten feld
-   * klickt kommt eine starke lila umrandung, die soll komplett weg."
-   * Gemessen an der fokussierten Textarea: `outline: solid 1,739px
-   * rgb(160,148,248)`, also diese Hausregel; `focus:outline-none` (0,2,0)
-   * verliert gegen sie (0,3,0). Damals war das EIN Feld, und dieser Fall
-   * zaehlte die Traeger auf eins.
+   * klickt kommt eine starke lila umrandung, die soll komplett weg." Am
+   * 21.09.2026 derselbe Satz fuer die Preset-Werkstatt („der lila balken um
+   * das prompt fenster geht garnicht") und auf Nachfrage fuer die ganze App:
+   * „nirgends."
    *
-   * 21.09.2026 hat David denselben Satz fuer die Preset-Werkstatt wiederholt
-   * („der lila balken um das prompt fenster geht garnicht") und auf Nachfrage
-   * auf die ganze App ausgeweitet: „nirgends". Die Entscheidung ist damit
-   * breiter, die Sperrklinke deshalb nicht schwaecher, sondern anders: nicht
-   * mehr „genau einer", sondern „diese Liste, und jeder darauf ist ein
-   * Promptfeld, dessen Fokus woanders sichtbar wird". Ein Attribut, das den
-   * Ring abschaltet, bleibt eine geladene Waffe mit Nachweispflicht; wer es
-   * an ein siebtes Feld haengt, bekommt hier rot.
+   * Die erste Antwort war ein Attribut (`data-lu-quiet-focus`) an jedem
+   * betroffenen Feld, zuletzt an sechsen. Auf „nirgends" skaliert das nicht:
+   * die App hat 106 `<input>` und dazu die Textareas, 35 der Felder haben
+   * nicht einmal ein `type`. Ein Attribut, das an hundert Stellen haengen
+   * muesste, fehlt an der hundertersten. Also steht die Entscheidung als EINE
+   * Regel in index.css, und die Felder tragen nichts mehr.
    *
-   * Wert der Abbildung: die Datei, die den Fokus dieses Feldes ZEICHNET. Sie
-   * ist meistens dieselbe; `create/ui/PromptField.tsx` ist das gemeinsame
-   * Feld des Create-Tabs und hat keinen eigenen Kasten, seine beiden
-   * Einbindungen in `Composer.tsx` haben ihn.
+   * Dieser Block ist die Sperrklinke in BEIDE Richtungen, denn beides waere
+   * eine Regression:
+   *   • ein Akzentrahmen an einer Texteingabe (der Befund des Eigners),
+   *   • ein Knopf, ein Link, ein Regler oder ein Kaestchen OHNE Ring (die
+   *     Barrierefreiheit, die der Ring 2026 ueberhaupt erst gebracht hat).
    */
-  const PROMPTFELDER: Record<string, string> = {
-    'agents/WorkflowBuilder.tsx': 'agents/WorkflowBuilder.tsx',
-    'chat/ChatInput.tsx': 'chat/ChatInput.tsx',
-    'chat/MessageBubble.tsx': 'chat/MessageBubble.tsx',
-    'create/experimental/PresetWorkshop.tsx': 'create/experimental/PresetWorkshop.tsx',
-    'create/experimental/SpecialIntentControls.tsx': 'create/experimental/SpecialIntentControls.tsx',
-    'create/ui/PromptField.tsx': 'create/experimental/Composer.tsx',
-  }
+  const TEXTFELD_TYPEN = [
+    'text', 'search', 'url', 'email', 'password', 'tel',
+    'number', 'date', 'time', 'datetime-local', 'month', 'week',
+  ]
 
-  it('`data-lu-quiet-focus` steht an genau diesen Promptfeldern und sonst nirgends', () => {
-    const traeger = COMPONENT_NAMED.filter(([, src]) => /data-lu-quiet-focus/.test(src)).map(([n]) => n)
-    expect(traeger.sort()).toEqual(Object.keys(PROMPTFELDER).sort())
+  /** Die beiden Regeln, die den Textfeldern ihre leisen Werte geben. */
+  const LEISE = CODE.match(/^(?:\.light )?textarea,\s*(?:\.light )?input:is\([\s\S]*?\)\s*\{[^}]*\}/gm) ?? []
+
+  it('die leise Haarlinie gilt fuer Textareas UND die Texttypen von input', () => {
+    expect(LEISE).toHaveLength(2)
+    for (const regel of LEISE) {
+      for (const typ of TEXTFELD_TYPEN) {
+        expect(regel, `Texttyp ${typ} fehlt in der Regel`).toContain(`[type='${typ}']`)
+      }
+      // Der Vorgabefall: `<input>` ohne `type` IST ein Textfeld, und daran
+      // haengen 35 der Felder dieser App.
+      expect(regel).toContain(':not([type])')
+    }
   })
 
-  it('und jedes davon ist wirklich ein Textfeld, kein Knopf und kein Regler', () => {
-    for (const [name, src] of COMPONENT_NAMED) {
-      if (!(name in PROMPTFELDER)) continue
-      for (const m of src.matchAll(/(<[a-zA-Z]+)[^>]*?data-lu-quiet-focus/g)) {
-        expect(m[1], `${name}: das Attribut haengt an ${m[1]}`).toBe('<textarea')
+  it('und Bedienelemente sind ausdruecklich NICHT darin', () => {
+    // Ein `type`, in das man nicht schreibt, hat auch keinen Schreibzeiger,
+    // der den Fokus zeigen koennte. Die bleiben beim Ring.
+    for (const regel of LEISE) {
+      for (const typ of ['checkbox', 'radio', 'range', 'file', 'color', 'button', 'submit']) {
+        expect(regel, `${typ} darf den Ring nicht verlieren`).not.toContain(`[type='${typ}']`)
       }
     }
   })
 
-  it('und keines verliert dadurch seine Fokusanzeige', () => {
-    // Die Bedingung, unter der die Ausnahme ueberhaupt zulaessig ist: der
-    // Fokus verschwindet nicht, er zieht um, auf die Kante des Kastens, die
-    // bei `focus-within` heller wird. Faellt sie weg, faellt dieser Fall.
-    for (const [feld, zeichner] of Object.entries(PROMPTFELDER)) {
+  it('die Haarlinie ist 1px, ohne Abstand, und ihre Farbe ist ein Token', () => {
+    const dunkel = LEISE.find((r) => !r.startsWith('.light')) ?? ''
+    expect(dunkel).toMatch(/--lu-focus-w:\s*1px/)
+    expect(dunkel).toMatch(/--lu-focus-o:\s*0px/)
+    expect(dunkel).toMatch(/--lu-focus-c:\s*var\(--color-lu-focus-quiet\)/)
+    const hell = LEISE.find((r) => r.startsWith('.light')) ?? ''
+    expect(hell).toMatch(/--lu-focus-c:\s*var\(--color-lu-focus-quiet-edge\)/)
+    // Kein Literal: sonst laeuft die Haarlinie vom ruhigen Grau weg.
+    for (const regel of LEISE) expect(regel).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
+  })
+
+  it.each(DARK_SURFACES)('die Haarlinie haelt 3:1, dunkel auf %s', (_name, bg) => {
+    expect(contrast(token('color-lu-focus-quiet'), bg)).toBeGreaterThanOrEqual(3)
+  })
+
+  it.each(LIGHT_SURFACES)('die Haarlinie haelt 3:1, hell auf %s', (_name, bg) => {
+    expect(contrast(token('color-lu-focus-quiet-edge'), bg)).toBeGreaterThanOrEqual(3)
+  })
+
+  it('ruhig heisst leiser als der Ring, nicht bunter', () => {
+    // Die Haarlinie darf nicht der Akzent sein, sonst waere es wieder „der
+    // lila balken", nur duenner.
+    expect(token('color-lu-focus-quiet')).not.toBe(token('color-lu-accent'))
+    expect(token('color-lu-focus-quiet-edge')).not.toBe(token('color-lu-accent-edge'))
+  })
+
+  it('`data-lu-quiet-focus` ist restlos weg: Regel UND alle sechs Traeger', () => {
+    // Kein Bauteil traegt es mehr, und die Hausregel klammert es nicht mehr
+    // aus. Ein Attribut, das nur noch in einer Erklaerung vorkommt, ist toter
+    // Code mit Beschriftung.
+    expect(CODE).not.toContain('data-lu-quiet-focus')
+    const traeger = COMPONENT_NAMED.filter(([, src]) => /data-lu-quiet-focus/.test(src)).map(([n]) => n)
+    expect(traeger).toEqual([])
+  })
+
+  /**
+   * Wer die Haarlinie ganz ablegen darf, und unter welcher Bedingung.
+   *
+   * Ein Kasten mit `focus-within:border-*` zeichnet den Fokus bereits als
+   * ganzen Rahmen. Eine Haarlinie darin waere ein zweiter Rahmen INNEN, und
+   * genau der war am 21.09.2026 im Bild, nachdem der Akzentring gefallen war.
+   * Die Klasse nimmt sie deshalb dort weg, und nur dort: sie ist eine geladene
+   * Waffe mit Nachweispflicht, genau wie das Attribut davor.
+   */
+  const AM_KASTEN: Record<string, string> = {
+    'chat/ChatInput.tsx': 'chat/ChatInput.tsx',
+    'create/ui/PromptField.tsx': 'create/experimental/Composer.tsx',
+  }
+
+  it('`lu-fokus-am-kasten` haengt an genau diesen Feldern und sonst nirgends', () => {
+    const traeger = COMPONENT_NAMED.filter(([, src]) => /lu-fokus-am-kasten/.test(src)).map(([n]) => n)
+    expect(traeger.sort()).toEqual(Object.keys(AM_KASTEN).sort())
+  })
+
+  it('und jedes davon sitzt wirklich in einem Kasten, der den Fokus zeichnet', () => {
+    // Die Bedingung selbst. Faellt der `focus-within`-Rahmen weg, hat das Feld
+    // gar keine Fokusanzeige mehr, und dieser Fall faellt mit ihm.
+    for (const [feld, zeichner] of Object.entries(AM_KASTEN)) {
       const src = COMPONENT_NAMED.find(([n]) => n === zeichner)?.[1]
       expect(src, `keine Quelldatei ${zeichner}`).toBeDefined()
-      expect(src, `${feld}: ${zeichner} zeichnet keinen Fokus`)
-        .toMatch(/focus-within:border-|focus:border-/)
+      expect(src, `${feld}: ${zeichner} zeichnet keinen Fokus`).toMatch(/focus-within:border-/)
     }
   })
 
-  it('und der Ring verschwindet nicht ersatzlos: der Kasten darum zeigt den Fokus', () => {
-    // Die Bedingung, unter der die Ausnahme ueberhaupt zulaessig ist. Faellt
-    // `focus-within` am Composer-Kasten weg, hat das Promptfenster gar keine
-    // Fokusanzeige mehr, und dieser Fall faellt zusammen mit ihr.
-    // Namentlich, nicht „der erste Treffer": seit 21.09.2026 tragen sechs
-    // Promptfelder das Attribut, und die beiden Kanten hier gehoeren dem
-    // Chat-Composer allein (die Wolkenkante ist sein Geldzustand).
+  it('die Klasse nimmt die Breite, nicht die Regel', () => {
+    const regel = CODE.match(/^\.lu-fokus-am-kasten\s*\{[^}]*\}/m)?.[0] ?? ''
+    expect(regel).toMatch(/--lu-focus-w:\s*0px/)
+    // Kein `outline: none`: das waere wieder eine zweite Regel gegen die
+    // Hausregel statt einer Angabe an sie.
+    expect(regel).not.toMatch(/outline/)
+  })
+
+  it('der Chat-Composer zeigt seinen Fokus weiterhin am Kasten', () => {
+    // Die Haarlinie ersetzt den Ring, aber der Composer hatte seine eigene,
+    // staerkere Anzeige schon vorher, und die bleibt: faellt sie weg, ist das
+    // Promptfenster die einzige Stelle, an der der Fokus zweimal leiser wird.
     const input = COMPONENT_NAMED.find(([n]) => n === 'chat/ChatInput.tsx')?.[1]
     expect(input, 'keine Quelldatei chat/ChatInput.tsx').toBeDefined()
     expect(input).toMatch(/focus-within:border-lu-cloud\//)
@@ -428,7 +495,7 @@ describe.skipIf(gebaut.css === null)('im gebauten CSS, nicht nur in der Quelle',
    * Zeichen endet.
    */
   const PRESS = /:is\(button,\s*\[role=['"]?button['"]?\]\):not\(:disabled\):not\(\[aria-disabled=['"]?true['"]?\]\):active\{scale:\.97\}/
-  const FOKUSRING = /:focus-visible:not\(\[tabindex="-1"\]\):not\(\.lu-primary\):not\(\[data-lu-quiet-focus\]\)/
+  const FOKUSRING = /:focus-visible:not\(\[tabindex="-1"\]\):not\(\.lu-primary\)\{outline:var\(--lu-focus-w/
 
   it('Fokusring und Press-Regel stehen ausserhalb jedes @layer — an JEDER Fundstelle', () => {
     for (const [name, nadel] of [['Fokusring', FOKUSRING], ['Press-Regel', PRESS]] as const) {
@@ -464,10 +531,21 @@ describe.skipIf(gebaut.css === null)('im gebauten CSS, nicht nur in der Quelle',
   })
 
   it('die Ausnahme des Primaer-Rezepts steht nach der Hausregel und ist ungeschichtet', () => {
-    const house = css.indexOf(':focus-visible:not([tabindex="-1"]):not(.lu-primary):not([data-lu-quiet-focus]){outline:2px')
+    const house = css.indexOf(':focus-visible:not([tabindex="-1"]):not(.lu-primary){outline:var(--lu-focus-w')
     const primary = css.indexOf('.lu-primary:focus-visible{')
     expect(house).toBeGreaterThan(utilitiesEnd)
     expect(primary).toBeGreaterThan(house)
+  })
+
+  it('die leise Haarlinie der Textfelder steht wirklich im Bundle', () => {
+    // Die Quelle allein beweist nichts: eine `:is()`-Liste mit einem Tippfehler
+    // wirft Lightning CSS beim Bauen weg, und die Felder trugen dann still
+    // wieder den Akzentring.
+    const leise = css.indexOf('textarea,input:is(')
+    expect(leise, 'die Regel fuer Texteingaben fehlt im gebauten CSS').toBeGreaterThan(0)
+    expect(css.slice(leise, leise + 400)).toContain('--lu-focus-c:var(--color-lu-focus-quiet)')
+    // Und sie steht ungeschichtet, sonst schluege jede Tailwind-Utility sie.
+    expect(leise).toBeGreaterThan(utilitiesEnd)
   })
 
   it('kein `outline:none` einer Utility steht mehr NACH der Hausregel', () => {

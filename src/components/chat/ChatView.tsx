@@ -12,7 +12,8 @@ import { COMPOSER_MAX_W } from './composer-width'
 import { RAGPanel } from './RAGPanel'
 import { DocsButton } from './DocsButton'
 import { RetrievalErrorBar } from './RetrievalErrorBar'
-import { LuEngineSwitchBar } from './LuEngineSwitchBar'
+import { ChatNotices } from './ChatNotices'
+import { LocalLaneWaitLine } from './LocalLaneWaitLine'
 import { useDocsAvailability } from '../../hooks/useDocsAvailability'
 import { AgentModeToggle } from './AgentModeToggle'
 import { FlashChatNotice } from './FlashChatNotice'
@@ -426,6 +427,16 @@ export function ChatView() {
                       diese Reihenfolge festnagelt.) */}
                   <PlanBar />
 
+                  {/* Der Platz, an den die Zeilen aus dem Composer gezogen
+                      sind (David, 21.09.2026: „NICHTS im prompt fenster!").
+                      Oben im Verlauf, ruhig, mit x, und ausdruecklich NICHT am
+                      Eingabefeld. `ChatNotices` traegt die beiden Zeilen, die
+                      im Composer entstehen (Anhang ist kein Bild, Modell sieht
+                      keine Bilder), `RetrievalErrorBar` den Fehler, dass die
+                      Dokumente zu einer Antwort nicht durchsucht wurden. */}
+                  <ChatNotices onAttachDocs={() => setRagPanelOpen(true)} />
+                  <RetrievalErrorBar />
+
                   {!activeConvIsEmpty && (
                     <MessageList
                       isGenerating={isGenerating}
@@ -746,6 +757,25 @@ export function ChatView() {
             )}
           </AnimatePresence>
 
+          {/* Die stehenden Sitzungsbaender: UEBER dem Kasten, nicht darin.
+              `composerAbove` rendert INNERHALB der Promptbox, und dort darf
+              seit dem 21.09.2026 nichts mehr stehen, was der Nutzer nur liest.
+              LoopBar und GoalBar sind Bedienelemente (Bremse, Loeschen) und
+              bleiben sichtbar, nur eine Etage hoeher; die Wartezeile der
+              lokalen Spur ist ein Hinweis und war vorher im Kasten. */}
+          {chatMode !== 'codex' && (
+            <>
+              <LoopBar onStop={stopGeneration} />
+              <GoalBar />
+              <LocalLaneWaitLine
+                waiting={!!queuedForLocalLane}
+                queuePosition={localLaneQueuePosition}
+                onApproval={waitingOnApproval}
+                onApprovalIn={localLaneHolderTitle}
+              />
+            </>
+          )}
+
           {/* Code mode brings its own composer, so it stays out of this one. */}
           {chatMode !== 'codex' && (
             <ChatInput
@@ -753,16 +783,12 @@ export function ChatView() {
               onStop={stopGeneration}
               isGenerating={busy.thisChat || queuedForLocalLane}
               waitingForLocalLane={queuedForLocalLane}
-              localLaneQueuePosition={localLaneQueuePosition}
-              waitingOnApproval={waitingOnApproval}
-              waitingOnApprovalIn={localLaneHolderTitle}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}
               // Commands need the tool catalog to drive, which only Agent
               // mode has here. Plain chat leaves "/cmd" as ordinary text.
               slashCommands={isAgentActive ? 'agent' : 'chat'}
-              onAttachDocs={() => setRagPanelOpen(true)}
               composerModel={
                 /* What this chat's answers were written by rides on the
                    picker itself now, as a dot plus a tooltip, instead of a
@@ -773,7 +799,13 @@ export function ChatView() {
               // No plan lives here. The prompt window is the prompt window
               // (David, 2026-08-22): the plan band sits in the session strip
               // above, next to the other standing status controls.
-              composerAbove={<><LuEngineSwitchBar /><RetrievalErrorBar /><LoopBar onStop={stopGeneration} /><GoalBar /><GroupCostHint /></>}
+              // Was HIER noch steht, ist genau eine Zeile, und sie steht
+              // unter Vorbehalt: `GroupCostHint` sagt, was der naechste Enter
+              // kostet („1 round = 3 answers = 3x the cost"). Geld wird nicht
+              // stumm geschaltet, ohne dass der Eigner es entschieden hat, und
+              // die Zeile gibt es ueberhaupt nur in einem Gruppenchat. Alles
+              // andere, was hier stand, ist ausgezogen (siehe oben).
+              composerAbove={<GroupCostHint />}
               composerActions={
                 <>
                   {/* Documents (RAG), shown in both modes since A9. In

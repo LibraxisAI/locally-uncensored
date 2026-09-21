@@ -170,7 +170,6 @@ export function WorkflowBuilder({ workflowId, onSave, onCancel }: WorkflowBuilde
                 {/* Type-specific fields */}
                 {step.type === 'prompt' && (
                   <textarea
-                    data-lu-quiet-focus
                     value={step.prompt || ''}
                     onChange={(e) => updateStep(step.id, { prompt: e.target.value })}
                     placeholder="Prompt text (use {{variable}} for interpolation)"

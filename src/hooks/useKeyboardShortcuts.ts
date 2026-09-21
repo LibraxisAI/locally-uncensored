@@ -226,10 +226,10 @@ export function useKeyboardShortcuts() {
     const id = shortcutCommandFor(e, inInput, IS_MAC)
     if (!id) return
     e.preventDefault()
-    // `data-lu-quiet-focus` ist der stabile Erkennungspunkt des
-    // Composer-Feldes (siehe ChatInput.tsx); ein Suchfeld oder ein Modal
-    // traegt das Attribut nicht und setzt die Fahne folglich nicht.
-    if (id === 'new-conversation' && tag === 'TEXTAREA' && target?.hasAttribute('data-lu-quiet-focus')) {
+    // `data-lu-composer` ist der stabile Erkennungspunkt des Composer-Feldes
+    // (siehe ChatInput.tsx); ein Suchfeld, ein Modal oder eine der Textareas
+    // der Preset-Werkstatt traegt es nicht und setzt die Fahne folglich nicht.
+    if (id === 'new-conversation' && tag === 'TEXTAREA' && target?.hasAttribute('data-lu-composer')) {
       markComposerFocusPending()
     }
     SHORTCUT_ACTIONS[id]()

@@ -271,6 +271,29 @@
   --color-lu-on-accent: #111827;
   --color-lu-accent-edge: #8b7cf0;
 
+  /* ── Die ruhige Fokus-Haarlinie an Texteingaben (21.09.2026) ────────
+     David, am Windows-Bau, zuerst fuer das Nachrichtenfeld und dann fuer
+     die Preset-Werkstatt, auf Nachfrage fuer die ganze App: „der lila
+     balken um das prompt fenster geht garnicht ... nirgends."
+
+     Der Akzentring bleibt, wo er hingehoert: an Knoepfen, Links, Reglern,
+     Kaestchen und Menueausloesern, also ueberall, wo die Tastatur sonst
+     nicht zu sehen waere. In ein Textfeld schreibt man dagegen, und dass
+     man das tut, sagt schon der Schreibzeiger. Dort reicht eine Haarlinie
+     in demselben Grau, das `lib/hinweis.ts` dem ruhigen Ton gibt.
+
+     Ruhig heisst nicht unsichtbar: beide Werte halten 1.4.11 (3:1 gegen
+     die Flaeche) auf JEDER Flaeche, auf der ein Feld sitzt. Gerechnet:
+
+       dunkel  #9ca3af  gegen #1e1e1e  8.57:1   #363636  4.38:1
+       hell    #6b7280  gegen #ffffff  4.89:1   #f3f4f6  4.44:1
+
+     Die schwaechste Paarung ist Grau auf dem Schwebeblatt #363636 mit
+     4.38:1, also mit Abstand ueber der Schwelle. Nachgerechnet wird das
+     in fokusring-und-press.test.ts, Flaeche fuer Flaeche. */
+  --color-lu-focus-quiet: #9ca3af;
+  --color-lu-focus-quiet-edge: #6b7280;
+
   /* ── Der Cloud-Akzent (D-T05) ───────────────────────────────────────
      Der Audit las die Lage als „zwei Akzente nebeneinander": #a094f8
      steht hier als Token, #7c3aed stand an 20 Stellen als Literal, und
@@ -795,28 +818,93 @@ input[type="range"]::-webkit-slider-thumb {
    `outline-none`-Fundstellen, die den Ring bisher einzeln abgeschaltet
    haben. Deshalb muss keine davon angefasst werden.
 
-   Warum `:not([data-lu-quiet-focus])`: genau daran haengt die EINE Ausnahme,
-   die das Haus kennt, und sie steht an der Regel statt als zweite Regel
-   dagegen. David, 05.09.2026, am Windows-Bau: „wenn man in das nachrichten
-   feld klickt kommt eine starke lila umrandung, die soll komplett weg."
-   Gemessen an der fokussierten Textarea des Chat-Composers: `outline: solid
-   1,739px rgb(160,148,248)` mit 1,739px Abstand, also diese Hausregel. Das
-   `focus:outline-none` der Textarea (0,2,0) verliert gegen sie (0,3,0).
+   Warum die Regel ihre drei Werte aus Variablen liest: damit es bei EINER
+   Regel bleibt, obwohl es zwei Fokusbilder gibt.
 
-   Es ist die einzige Stelle, an der das Weglassen keinen Fokus verschluckt:
-   die Promptbox zeichnet ihren Fokus SELBST, mit `focus-within:border-*` auf
-   dem Kasten um die Zeile (`border-lu-cloud/40` -> `/70` im Cloud-Modus,
-   `border-gray-200` -> `border-gray-400` sonst). Der Ring lag also als
-   zweiter, staerkerer Rahmen INNERHALB eines Rahmens, der dasselbe schon
-   sagte. Jedes andere Eingabefeld der App behaelt den Ring; wer das Attribut
-   anderswo setzt, nimmt einem Feld seine einzige Fokusanzeige.
+   David, 05.09.2026, am Windows-Bau: „wenn man in das nachrichten feld
+   klickt kommt eine starke lila umrandung, die soll komplett weg." Gemessen
+   an der fokussierten Textarea des Chat-Composers: `outline: solid 1,739px
+   rgb(160,148,248)` mit 1,739px Abstand, also diese Hausregel; das
+   `focus:outline-none` der Textarea (0,2,0) verliert gegen sie (0,3,0).
+   Am 21.09.2026 hat er denselben Satz fuer die Preset-Werkstatt wiederholt
+   und auf Nachfrage auf die ganze App ausgeweitet: „nirgends."
+
+   Die erste Fassung dieser Antwort war ein Attribut (`data-lu-quiet-focus`)
+   an jedem betroffenen Feld, zuletzt an sechsen. Das skaliert nicht auf
+   „nirgends": die App hat 106 Eingabefelder, 35 davon ohne `type`, und ein
+   Attribut, das an 106 Stellen haengen muss, wird an der 107. vergessen.
+   Also steht die Entscheidung hier, an einer Stelle, und die Felder tragen
+   nichts mehr.
+
+   Was sie unterscheidet, ist nicht Geschmack, sondern die Frage, ob der
+   Fokus sonst zu sehen waere. In ein Textfeld schreibt man, und dass der
+   Fokus dort steht, sagt der blinkende Schreibzeiger, ohne den das Tippen
+   gar nicht ginge. Ein Knopf, ein Link, ein Regler, ein Kaestchen und ein
+   Menueausloeser haben nichts dergleichen; nimmt man ihnen den Ring, ist die
+   Tastaturbedienung blind. Deshalb behalten die den 2px-Akzentring, und nur
+   Texteingaben bekommen die Haarlinie.
+
+   Die Haarlinie ist ruhig, nicht unsichtbar: 1px in demselben Grau, das
+   `lib/hinweis.ts` dem ruhigen Ton gibt, ohne Abstand, damit sie dem Radius
+   des Feldes folgt statt einen zweiten Rahmen daneben zu setzen. Die
+   Kontrastrechnung steht am Token oben (4.38:1 im schlechtesten Fall, also
+   ueber der 3:1 von 1.4.11). Was sie NICHT erfuellt, ist die 2px-Staerke aus
+   WCAG 2.2 SC 2.4.13. Das ist die Entscheidung des Eigners, hier benannt
+   und nicht weggeschwiegen, und sie betrifft nur Felder, in denen ohnehin
+   ein Schreibzeiger steht.
+
+   `:not(input)` waere zu grob: `checkbox`, `radio`, `range`, `file`,
+   `color`, `button` und `submit` sind Eingabefelder im Sinne des Elements
+   und Bedienelemente im Sinne des Auges. Die Liste unten nennt deshalb die
+   Typen, in die man schreibt, `:not([type])` inbegriffen (das ist der
+   Vorgabefall `text`, und daran haengen 35 der Felder).
    ───────────────────────────────────────────────────────────────────── */
-:focus-visible:not([tabindex='-1']):not(.lu-primary):not([data-lu-quiet-focus]) {
-  outline: 2px solid var(--color-lu-accent);
-  outline-offset: 2px;
+:focus-visible:not([tabindex='-1']):not(.lu-primary) {
+  outline: var(--lu-focus-w, 2px) solid var(--lu-focus-c, var(--color-lu-accent));
+  outline-offset: var(--lu-focus-o, 2px);
 }
-.light :focus-visible:not([tabindex='-1']):not(.lu-primary):not([data-lu-quiet-focus]) {
-  outline-color: var(--color-lu-accent-edge);
+.light :focus-visible:not([tabindex='-1']):not(.lu-primary) {
+  outline-color: var(--lu-focus-c, var(--color-lu-accent-edge));
+}
+
+/* Die eine Ausnahme von der Ausnahme: ein Feld, dessen KASTEN den Fokus
+   schon zeichnet.
+
+   Der Chat-Composer und das Promptfeld von Create sitzen in einem Kasten mit
+   `focus-within:border-*`: der ganze Rahmen wird heller, sobald der Zeiger im
+   Feld steht. Eine Haarlinie zusaetzlich waere dort ein zweiter Rahmen INNEN,
+   und genau das war am 21.09.2026 im Bild zu sehen, nachdem der Akzentring
+   gefallen war. Zwei Rahmen sind nicht leiser als einer, sie sind zwei.
+
+   Deshalb Breite null, und NUR hier. Die Bedingung, unter der das zulaessig
+   ist, prueft fokusring-und-press.test.ts nach: wer diese Klasse traegt, muss
+   in einem Kasten sitzen, der `focus-within:border-` setzt. Ohne den Kasten
+   naehme sie einem Feld seine einzige Fokusanzeige. */
+.lu-fokus-am-kasten {
+  --lu-focus-w: 0px;
+}
+
+/* Texteingaben: dieselbe eine Regel, nur leiser. Gesetzt wird hier NICHT
+   der Umriss, sondern nur, womit die Regel oben ihn zeichnet. */
+textarea,
+input:is(
+  [type='text'], [type='search'], [type='url'], [type='email'],
+  [type='password'], [type='tel'], [type='number'], [type='date'],
+  [type='time'], [type='datetime-local'], [type='month'], [type='week'],
+  :not([type])
+) {
+  --lu-focus-w: 1px;
+  --lu-focus-o: 0px;
+  --lu-focus-c: var(--color-lu-focus-quiet);
+}
+.light textarea,
+.light input:is(
+  [type='text'], [type='search'], [type='url'], [type='email'],
+  [type='password'], [type='tel'], [type='number'], [type='date'],
+  [type='time'], [type='datetime-local'], [type='month'], [type='week'],
+  :not([type])
+) {
+  --lu-focus-c: var(--color-lu-focus-quiet-edge);
 }
 
 /* ─────────────────────────────────────────────────────────────────────

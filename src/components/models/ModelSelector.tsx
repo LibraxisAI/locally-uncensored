@@ -35,6 +35,7 @@ import {
 } from '../../api/lu-engine-switch'
 import { tryAcquireLuEngineSwap, releaseLuEngineSwap, luEngineSwapInFlight, useLuEngineSwapRunning } from '../../api/lu-engine-swap-lock'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { useLuEngineSwitchStore } from '../../stores/luEngineSwitchStore'
 import { isBuiltinEngineMissing } from '../../lib/builtin-engine-presence'
 import { engineNoticeDismissed, dismissEngineNoticeForSession, resetEngineNoticeDismissal } from '../../lib/engine-notice-session'
 import { log } from '../../lib/logger'
@@ -705,6 +706,25 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
     }
   }
   const showEngineNotice = engineMissing && !engineNoticeHidden
+
+  /**
+   * Die stehende Zeile ueber das Modell, jetzt HIER statt ueber der Eingabe.
+   *
+   * David, 21.09.2026, am echten Windows-Bau: „NICHTS im prompt fenster!"
+   * Gemessen an Bild B3 stand ihr Satz („…is gone from the model list, so the
+   * chat switched to…") mitsamt x IM Kasten des Composers, direkt ueber der
+   * Zeile, in die er tippen wollte.
+   *
+   * Der Satz handelt vom Modell, also gehoert er dorthin, wo man das Modell
+   * waehlt, und zwar in derselben Bauform wie die Engine-Zeile darunter: eine
+   * ruhige Zeile ganz oben im Aufklapper, mit x. Dass die Wahl diesen
+   * Aufklapper schliesst, war frueher der Grund, den Satz ueber den Composer
+   * zu haengen; dagegen steht jetzt der Punkt am Knopf, derselbe, den die
+   * Engine-Zeile schon benutzt. Der Punkt bleibt stehen, wenn das Menue
+   * zufaellt, und fuehrt zurueck zum Text. Der Punkt ist erlaubt, Text nicht.
+   */
+  const engineSwitchNote = useLuEngineSwitchStore((s) => s.note)
+  const engineSwitchTone = useLuEngineSwitchStore((s) => s.tone)
   const [open, setOpen] = useState(false)
   useDismissOnEscape(open, () => setOpen(false))
   // Read by the empty-state probe below, which runs before the render that
@@ -1318,6 +1338,20 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
         />
       )}
 
+      {/* Derselbe Punkt fuer die stehende Modellzeile, damit ihr Umzug in den
+          Aufklapper sie nicht unsichtbar macht: sie steht hinter einem Klick,
+          und dieser Punkt ist der Hinweis darauf, dass es etwas zu lesen gibt.
+          Rot, wenn ein Start gescheitert ist, sonst der gewoehnliche Akzent. */}
+      {engineSwitchNote && !showEngineNotice && (
+        <span
+          data-testid="picker-engine-note-dot"
+          aria-hidden
+          className={`absolute top-0 right-0 w-1.5 h-1.5 rounded-full pointer-events-none ${
+            engineSwitchTone === 'error' ? 'bg-red-500' : 'bg-lu-accent'
+          }`}
+        />
+      )}
+
       {/* ── Dropdown ── */}
       <AnimatePresence>
         {open && (
@@ -1332,6 +1366,29 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
             exit={{ opacity: 0, y: openUpward ? 6 : -6, scale: 0.98 }}
             transition={{ duration: MOTION_S.fast, ease: 'easeOut' }}
           >
+            {/* Noch vor der Engine-Zeile: was sich am Modell selbst geaendert
+                hat, waehrend der Nutzer woanders hinsah. Begruendung des
+                Platzes oben an `engineSwitchNote`. */}
+            {engineSwitchNote && (
+              <div
+                data-testid="picker-engine-note"
+                data-tone={engineSwitchTone}
+                className={`flex items-start gap-1.5 px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] ${
+                  engineSwitchTone === 'error' ? HINWEIS_TEXT.fehler : HINWEIS_TEXT.ruhig
+                }`}
+              >
+                <span className="flex-1 min-w-0 leading-snug">{engineSwitchNote}</span>
+                <button
+                  onClick={() => useLuEngineSwitchStore.getState().dismiss()}
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  className="shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            )}
+
             {/* Ganz oben, vor allem anderen: LU Engine ist aus der
                 Anbieterliste gefallen. Ruhiger Ton statt Rot-Alarm und kein
                 eigener Kasten im Kasten (lib/hinweis.ts), der Akzent traegt

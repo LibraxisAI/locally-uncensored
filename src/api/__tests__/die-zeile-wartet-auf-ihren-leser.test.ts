@@ -116,7 +116,13 @@ describe('die Zeile ueber die mit dem Steckplatz gefallene Wahl', () => {
 
 describe('warum genau diese beiden Seiten', () => {
   it('die Zeile haengt im Chat und auf der Models-Seite', () => {
-    expect(lies('components/chat/ChatView.tsx')).toContain('<LuEngineSwitchBar />')
+    // Im Chat seit dem 21.09.2026 NICHT mehr ueber dem Eingabefeld, sondern
+    // im Modellwaehler, der dort im Composer steht (David: „NICHTS im prompt
+    // fenster!"). Der Satz handelt vom Modell, also steht er, wo man das
+    // Modell waehlt; erreichbar bleibt er ueber den Punkt am Waehlerknopf,
+    // der auch dann stehen bleibt, wenn das Menue zufaellt.
+    expect(lies('components/models/ModelSelector.tsx')).toContain('picker-engine-note')
+    expect(lies('components/chat/ChatView.tsx')).toContain('<ModelSelector')
     const models = lies('components/models/ModelManager.tsx') + lies('components/models/DiscoverModels.tsx')
     expect(models).toContain('<LuEngineSwitchBar />')
   })

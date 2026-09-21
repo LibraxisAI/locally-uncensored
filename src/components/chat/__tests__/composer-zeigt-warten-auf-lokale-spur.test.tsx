@@ -7,9 +7,12 @@
  * it waits.
  *
  * Two levels:
- *  - `ChatInput` itself: given `waitingForLocalLane`, does it show the right
- *    line and the Stop button (not Send), and does clicking Stop still call
- *    `onStop`?
+ *  - `LocalLaneWaitLine`: does it carry the right sentence, and does
+ *    `ChatInput` still swap Send for a working Stop while the send waits?
+ *    Die Zeile stand bis zum 21.09.2026 IM Composer-Kasten und ist von dort
+ *    ausgezogen (David: „NICHTS im prompt fenster!"); das Bauteil ist neu,
+ *    der Wortlaut Wort fuer Wort derselbe, und dieser Test prueft jetzt
+ *    beides getrennt: den Satz am Bauteil, die Knopfarbeit am Composer.
  *  - `useIsQueuedForLocalLane`: does the hook that feeds that prop actually
  *    react to the real `lib/run-lanes.ts` queue (admit/release), the same
  *    module state the three send paths now book into via `runInLane`?
@@ -30,6 +33,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { cleanup, fireEvent, render, screen, renderHook, act } from '@testing-library/react'
 import { ChatInput } from '../ChatInput'
+import { LocalLaneWaitLine } from '../LocalLaneWaitLine'
 import { useIsQueuedForLocalLane, useLocalLaneQueuePosition, useLocalLaneHolderWaitsForApproval, useLocalLaneHolderId } from '../../../lib/run-idle'
 import { admit, release, __resetRunLanesForTests } from '../../../lib/run-lanes'
 import { enqueueApproval, dequeueApproval, resetApprovals } from '../../../lib/approval-queue'
@@ -38,7 +42,7 @@ beforeEach(() => { __resetRunLanesForTests(); resetApprovals() })
 afterEach(() => cleanup())
 
 describe('ChatInput waehrend des Wartens auf die lokale Spur', () => {
-  it('zeigt die englische Wartezeile und den Stop-Knopf statt Senden', () => {
+  it('tauscht Senden gegen ein arbeitendes Stop und sagt dabei selbst NICHTS', () => {
     let stopped = 0
     render(
       <ChatInput
@@ -48,78 +52,67 @@ describe('ChatInput waehrend des Wartens auf die lokale Spur', () => {
         waitingForLocalLane={true}
       />,
     )
-    const line = screen.getByTestId('composer-waiting-local-lane')
-    expect(line.textContent).toContain('Waiting for the local model to finish another answer')
-    expect(line.getAttribute('role')).toBe('status')
-
     expect(screen.queryByRole('button', { name: 'Send message' })).toBeNull()
     const stopBtn = screen.getByRole('button', { name: 'Stop generation' })
     fireEvent.click(stopBtn)
     expect(stopped).toBe(1)
+
+    // Und der Kasten bleibt leer: die Zeile ist ausgezogen, der Composer
+    // zeichnet sie nicht mehr mit.
+    expect(screen.queryByTestId('composer-waiting-local-lane')).toBeNull()
   })
 
-  it('die Zeile verschwindet, sobald der Lauf nicht mehr wartet', () => {
+  it('GEGENPROBE: ohne das Warten steht der Senden-Knopf da', () => {
     render(
       <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={false} waitingForLocalLane={false} />,
     )
-    expect(screen.queryByTestId('composer-waiting-local-lane')).toBeNull()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
+  })
+})
+
+describe('LocalLaneWaitLine, der neue Platz der Wartezeile', () => {
+  it('zeigt die englische Wartezeile als ruhigen Status', () => {
+    render(<LocalLaneWaitLine waiting={true} />)
+    const line = screen.getByTestId('composer-waiting-local-lane')
+    expect(line.textContent).toContain('Waiting for the local model to finish another answer')
+    expect(line.querySelector('[role="status"]')).toBeTruthy()
+  })
+
+  it('die Zeile verschwindet, sobald der Lauf nicht mehr wartet', () => {
+    render(<LocalLaneWaitLine waiting={false} />)
+    expect(screen.queryByTestId('composer-waiting-local-lane')).toBeNull()
   })
 
   it('nennt die Zahl der Wartenden davor, wenn mehr als einer wartet', () => {
-    render(
-      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={true} waitingForLocalLane={true} localLaneQueuePosition={3} />,
-    )
-    const line = screen.getByTestId('composer-waiting-local-lane')
-    expect(line.textContent).toContain('2 more chats ahead of this one')
+    render(<LocalLaneWaitLine waiting={true} queuePosition={3} />)
+    expect(screen.getByTestId('composer-waiting-local-lane').textContent)
+      .toContain('2 more chats ahead of this one')
   })
 
   it('sagt nichts zur Position, wenn diese Unterhaltung als Naechste dran ist', () => {
-    render(
-      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={true} waitingForLocalLane={true} localLaneQueuePosition={1} />,
-    )
-    const line = screen.getByTestId('composer-waiting-local-lane')
-    expect(line.textContent).not.toMatch(/ahead of/)
+    render(<LocalLaneWaitLine waiting={true} queuePosition={1} />)
+    expect(screen.getByTestId('composer-waiting-local-lane').textContent).not.toMatch(/ahead of/)
   })
 
   // Runde 5 (review-lanes.md, Runde 2 Antwort zu Punkt 1): the line must not
   // say "the model is thinking" when the holder is really stuck on a human.
   it('sagt statt der Modell-Zeile, dass der Halter auf eine Freigabe wartet', () => {
-    render(
-      <ChatInput
-        onSend={() => {}}
-        onStop={() => {}}
-        isGenerating={true}
-        waitingForLocalLane={true}
-        waitingOnApproval={true}
-      />,
-    )
+    render(<LocalLaneWaitLine waiting={true} onApproval={true} />)
     const line = screen.getByTestId('composer-waiting-local-lane')
     expect(line.textContent).toContain('waits for your approval')
     expect(line.textContent).not.toContain('finish another answer')
   })
 
   it('nennt die Unterhaltung des Halters, wenn sie bekannt ist', () => {
-    render(
-      <ChatInput
-        onSend={() => {}}
-        onStop={() => {}}
-        isGenerating={true}
-        waitingForLocalLane={true}
-        waitingOnApproval={true}
-        waitingOnApprovalIn="Refactor the billing module"
-      />,
-    )
-    const line = screen.getByTestId('composer-waiting-local-lane')
-    expect(line.textContent).toContain('"Refactor the billing module" is holding the local model')
+    render(<LocalLaneWaitLine waiting={true} onApproval={true} onApprovalIn="Refactor the billing module" />)
+    expect(screen.getByTestId('composer-waiting-local-lane').textContent)
+      .toContain('"Refactor the billing module" is holding the local model')
   })
 
-  // GEGENPROBE: ohne `waitingOnApproval` bleibt die alte, richtige Zeile fuer
-  // den Normalfall stehen (der Halter generiert wirklich).
-  it('GEGENPROBE: ohne waitingOnApproval bleibt es bei der Modell-Zeile', () => {
-    render(
-      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={true} waitingForLocalLane={true} />,
-    )
+  // GEGENPROBE: ohne `onApproval` bleibt die alte, richtige Zeile fuer den
+  // Normalfall stehen (der Halter generiert wirklich).
+  it('GEGENPROBE: ohne onApproval bleibt es bei der Modell-Zeile', () => {
+    render(<LocalLaneWaitLine waiting={true} />)
     const line = screen.getByTestId('composer-waiting-local-lane')
     expect(line.textContent).toContain('finish another answer')
     expect(line.textContent).not.toContain('approval')
