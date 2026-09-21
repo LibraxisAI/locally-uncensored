@@ -40,6 +40,7 @@ vi.mock('../../../api/providers', async () => {
 })
 
 const { ProviderSettings } = await import('../ProviderConfig')
+const { resetEngineNoticeDismissal } = await import('../../../lib/engine-notice-session')
 const { useProviderStore } = await import('../../../stores/providerStore')
 
 const aus = (id: ProviderId, name: string, baseUrl: string, extra: Partial<ProviderConfig> = {}): ProviderConfig =>
@@ -65,6 +66,10 @@ beforeEach(() => {
   checkConnection.mockResolvedValue(true)
   listModels.mockReset()
   listModels.mockResolvedValue([])
+  // Die Wegdrueckung lebt seit dem Umbau in einer Modulvariablen, die Settings
+  // und Modellmenue teilen (lib/engine-notice-session.ts). Ohne diesen Reset
+  // wuerde das X aus einem Fall den naechsten Fall stumm schalten.
+  resetEngineNoticeDismissal()
 })
 afterEach(cleanup)
 

@@ -25,6 +25,7 @@ import { disabledSlotNote } from '../../lib/disabled-slot-note'
 import { HINWEIS_TEXT, HINWEIS_ZEILE, PUNKT_FARBE } from '../../lib/hinweis'
 import { parkApiKeyForBackend, restoreParkedApiKeyForBackend } from '../../lib/parked-key'
 import { isBuiltinEngineMissing } from '../../lib/builtin-engine-presence'
+import { engineNoticeDismissed as engineNoticeDismissedThisSession, dismissEngineNoticeForSession, resetEngineNoticeDismissal } from '../../lib/engine-notice-session'
 
 const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
 
@@ -133,7 +134,9 @@ export function ProviderSettings() {
   // dismissed notice never hides a standing problem across restarts. It also
   // resets the moment the engine is back, so dismissing today's notice does
   // not silently swallow tomorrow's.
-  const [engineNoticeDismissed, setEngineNoticeDismissed] = useState(false)
+  // Sitzungsweit und an EINER Stelle gemerkt, damit das X hier und das X im
+  // Modellmenue des Chats dasselbe X sind (lib/engine-notice-session.ts).
+  const [engineNoticeDismissed, setEngineNoticeDismissed] = useState(engineNoticeDismissedThisSession)
   // Opus review: `managed: false` with no `displaced` record is also the
   // shape a customer who picked Ollama or LM Studio on purpose leaves
   // behind (onboarding, the startup backend selector, Start LM Studio
@@ -148,7 +151,10 @@ export function ProviderSettings() {
   const [engineWasMissing, setEngineWasMissing] = useState(engineMissing)
   if (engineMissing !== engineWasMissing) {
     setEngineWasMissing(engineMissing)
-    if (!engineMissing) setEngineNoticeDismissed(false)
+    if (!engineMissing) {
+      resetEngineNoticeDismissal()
+      setEngineNoticeDismissed(false)
+    }
   }
 
 
@@ -524,7 +530,7 @@ export function ProviderSettings() {
             Restore LU Engine
           </button>
           <button
-            onClick={() => setEngineNoticeDismissed(true)}
+            onClick={() => { dismissEngineNoticeForSession(); setEngineNoticeDismissed(true) }}
             className="self-center shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 transition-opacity"
             aria-label="Dismiss"
             title="Dismiss"
