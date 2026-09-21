@@ -23,7 +23,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 import { contrast, over } from './wcag-contrast'
 
 const ROOT = resolve(__dirname, '..', '..', '..')
@@ -67,6 +67,15 @@ const codeOnly = (src: string) =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 
 const COMPONENT_SRC = componentFiles().map((f) => codeOnly(readFileSync(f, 'utf8')))
+/**
+ * Dieselben Dateien, aber beim Namen (relativ zu `src/components`, immer mit
+ * `/`). Die Liste der Promptfelder unten nennt Dateien, also muss sie sie
+ * auch nachschlagen koennen.
+ */
+const COMPONENT_NAMED: Array<[string, string]> = componentFiles().map((f) => [
+  f.slice(resolve(SRC, 'components').length + 1).split(sep).join('/'),
+  codeOnly(readFileSync(f, 'utf8')),
+])
 const ALL_COMPONENTS = COMPONENT_SRC.join('\n')
 
 /** Der Selektor der Hausregel, einmal, damit die Tests ihn nicht abschreiben. */
@@ -187,27 +196,74 @@ describe('Punkt 4 — die Ausnahme steht AN der Regel, nicht gegen sie', () => {
     expect(CODE).not.toMatch(/\.lu-control(?!--|__)[^{\n]*:focus-visible[^{\n]*\{/)
   })
 
-  it('`data-lu-quiet-focus` traegt GENAU ein Element, und es ist das Promptfenster', () => {
-    // David, 05.09.2026: „wenn man in das nachrichten feld klickt kommt eine
-    // starke lila umrandung, die soll komplett weg." Gemessen am Windows-Bau
-    // an der fokussierten Textarea: `outline: solid 1,739px rgb(160,148,248)`,
-    // also diese Hausregel; `focus:outline-none` (0,2,0) verliert gegen sie
-    // (0,3,0).
-    //
-    // Ein Attribut, das den Ring abschaltet, ist eine geladene Waffe. Deshalb
-    // zaehlt dieser Fall die Traeger: EINER, und zwar der, der seinen Fokus
-    // selbst zeichnet. Wer es an ein zweites Feld haengt, nimmt diesem Feld
-    // seine einzige Fokusanzeige und bekommt hier rot.
-    const traeger = COMPONENT_SRC.filter((s) => /data-lu-quiet-focus/.test(s))
-    expect(traeger).toHaveLength(1)
-    expect(traeger[0]).toMatch(/<textarea\s+data-lu-quiet-focus/)
+  /**
+   * Wer das Attribut tragen darf, und WO sein Fokus stattdessen steht.
+   *
+   * David, 05.09.2026, am Windows-Bau: „wenn man in das nachrichten feld
+   * klickt kommt eine starke lila umrandung, die soll komplett weg."
+   * Gemessen an der fokussierten Textarea: `outline: solid 1,739px
+   * rgb(160,148,248)`, also diese Hausregel; `focus:outline-none` (0,2,0)
+   * verliert gegen sie (0,3,0). Damals war das EIN Feld, und dieser Fall
+   * zaehlte die Traeger auf eins.
+   *
+   * 21.09.2026 hat David denselben Satz fuer die Preset-Werkstatt wiederholt
+   * („der lila balken um das prompt fenster geht garnicht") und auf Nachfrage
+   * auf die ganze App ausgeweitet: „nirgends". Die Entscheidung ist damit
+   * breiter, die Sperrklinke deshalb nicht schwaecher, sondern anders: nicht
+   * mehr „genau einer", sondern „diese Liste, und jeder darauf ist ein
+   * Promptfeld, dessen Fokus woanders sichtbar wird". Ein Attribut, das den
+   * Ring abschaltet, bleibt eine geladene Waffe mit Nachweispflicht; wer es
+   * an ein siebtes Feld haengt, bekommt hier rot.
+   *
+   * Wert der Abbildung: die Datei, die den Fokus dieses Feldes ZEICHNET. Sie
+   * ist meistens dieselbe; `create/ui/PromptField.tsx` ist das gemeinsame
+   * Feld des Create-Tabs und hat keinen eigenen Kasten, seine beiden
+   * Einbindungen in `Composer.tsx` haben ihn.
+   */
+  const PROMPTFELDER: Record<string, string> = {
+    'agents/WorkflowBuilder.tsx': 'agents/WorkflowBuilder.tsx',
+    'chat/ChatInput.tsx': 'chat/ChatInput.tsx',
+    'chat/MessageBubble.tsx': 'chat/MessageBubble.tsx',
+    'create/experimental/PresetWorkshop.tsx': 'create/experimental/PresetWorkshop.tsx',
+    'create/experimental/SpecialIntentControls.tsx': 'create/experimental/SpecialIntentControls.tsx',
+    'create/ui/PromptField.tsx': 'create/experimental/Composer.tsx',
+  }
+
+  it('`data-lu-quiet-focus` steht an genau diesen Promptfeldern und sonst nirgends', () => {
+    const traeger = COMPONENT_NAMED.filter(([, src]) => /data-lu-quiet-focus/.test(src)).map(([n]) => n)
+    expect(traeger.sort()).toEqual(Object.keys(PROMPTFELDER).sort())
+  })
+
+  it('und jedes davon ist wirklich ein Textfeld, kein Knopf und kein Regler', () => {
+    for (const [name, src] of COMPONENT_NAMED) {
+      if (!(name in PROMPTFELDER)) continue
+      for (const m of src.matchAll(/(<[a-zA-Z]+)[^>]*?data-lu-quiet-focus/g)) {
+        expect(m[1], `${name}: das Attribut haengt an ${m[1]}`).toBe('<textarea')
+      }
+    }
+  })
+
+  it('und keines verliert dadurch seine Fokusanzeige', () => {
+    // Die Bedingung, unter der die Ausnahme ueberhaupt zulaessig ist: der
+    // Fokus verschwindet nicht, er zieht um, auf die Kante des Kastens, die
+    // bei `focus-within` heller wird. Faellt sie weg, faellt dieser Fall.
+    for (const [feld, zeichner] of Object.entries(PROMPTFELDER)) {
+      const src = COMPONENT_NAMED.find(([n]) => n === zeichner)?.[1]
+      expect(src, `keine Quelldatei ${zeichner}`).toBeDefined()
+      expect(src, `${feld}: ${zeichner} zeichnet keinen Fokus`)
+        .toMatch(/focus-within:border-|focus:border-/)
+    }
   })
 
   it('und der Ring verschwindet nicht ersatzlos: der Kasten darum zeigt den Fokus', () => {
     // Die Bedingung, unter der die Ausnahme ueberhaupt zulaessig ist. Faellt
     // `focus-within` am Composer-Kasten weg, hat das Promptfenster gar keine
     // Fokusanzeige mehr, und dieser Fall faellt zusammen mit ihr.
-    const input = COMPONENT_SRC.find((s) => /data-lu-quiet-focus/.test(s))!
+    // Namentlich, nicht „der erste Treffer": seit 21.09.2026 tragen sechs
+    // Promptfelder das Attribut, und die beiden Kanten hier gehoeren dem
+    // Chat-Composer allein (die Wolkenkante ist sein Geldzustand).
+    const input = COMPONENT_NAMED.find(([n]) => n === 'chat/ChatInput.tsx')?.[1]
+    expect(input, 'keine Quelldatei chat/ChatInput.tsx').toBeDefined()
     expect(input).toMatch(/focus-within:border-lu-cloud\//)
     expect(input).toMatch(/focus-within:border-gray-400/)
   })

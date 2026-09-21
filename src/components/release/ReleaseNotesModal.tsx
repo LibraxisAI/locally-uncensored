@@ -184,10 +184,15 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
           {note.headline}
         </p>
 
+        {/* Ein Textknopf ohne Flaeche bekommt vom Hausring ein ECKIGES
+            Rechteck (der Ring folgt dem Radius, und der war 0). Eigene
+            Polsterung plus `rounded-md`, nach aussen wieder
+            herausgezogen, damit die Zeile an derselben Stelle steht wie
+            vorher und der Ring rund um den Text liegt. */}
         {expandableKeys.length > 0 && (
           <button
             onClick={toggleAll}
-            className="text-[0.62rem] text-lu-accent hover:text-lu-accent-hover transition-colors"
+            className="-mx-1.5 rounded-md px-1.5 py-0.5 text-[0.62rem] text-lu-accent hover:text-lu-accent-hover transition-colors"
           >
             {allExpanded ? 'Collapse all' : 'Expand all'}
           </button>
@@ -252,7 +257,17 @@ export function ReleaseNoteBody({ note, onClose, onTurnOnCloud }: ReleaseNoteBod
       </div>
 
       <div className="shrink-0 flex items-center gap-2 px-5 py-4 border-t border-white/[0.06]">
+        {/* `data-autofocus`: das Blatt geht beim Start von selbst auf, also
+            ohne vorherige Maus- oder Tastatureingabe. Der Browser wertet
+            den Anfangsfokus dann als Tastaturfokus, und `ui/Modal` setzte
+            ihn auf das erste Bedienelement im Blatt, also auf den kleinen
+            Textknopf "Expand all" mitten im Fliesstext. Der stand damit
+            beim Aufgehen in einem Fokusrahmen und las sich wie ein Fehler.
+            Die Hausmechanik dafuer gibt es schon (dialog-a11y.ts, Regel 1):
+            der Aufrufer sagt, welches Element den Anfangsfokus bekommt.
+            Hier ist es die Hauptaktion des Blattes. */}
         <button
+          data-autofocus
           onClick={onClose}
           className="flex-1 flex items-center justify-center h-9 rounded-lg bg-white text-black text-[0.72rem] font-semibold hover:bg-gray-200 transition-colors"
         >

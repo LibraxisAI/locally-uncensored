@@ -823,6 +823,7 @@ function VoiceChip({
             ) : (
               <div className="p-1.5 space-y-2">
                 <textarea
+                  data-lu-quiet-focus
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   placeholder="What should the character say?"
@@ -987,6 +988,7 @@ function MusicControls() {
             className="overflow-hidden"
           >
             <textarea
+              data-lu-quiet-focus
               value={musicLyrics}
               onChange={(e) => setMusicLyrics(e.target.value)}
               placeholder="Your lyrics. [Verse] and [Chorus] markers make them sing best…"

@@ -446,12 +446,26 @@ function CreateExperimentalInner() {
       {/* Preset-Werkstatt (P6): ein Popup mit X und Escape, dieselbe Sperrklinke
           wie jedes andere Fenster (Modal, siehe src/components/ui/Modal.tsx).
           Die Generation laeuft IM Fenster weiter, auch wenn niemand zusieht,
-          geschlossen wird nur von Hand (Portplan Abschnitt 5/7). */}
+          geschlossen wird nur von Hand (Portplan Abschnitt 5/7).
+
+          Optik (21.09.2026): das Fenster lag auf der blanken
+          `.lu-elevated`-Flaeche (#363636). Fuer ein Menue ist das richtig,
+          fuer ein 4xl breites Arbeitsfenster war es ein mittelgrauer Block
+          vor der fast schwarzen App. Es traegt jetzt dieselbe schwarze
+          Modalflaeche wie das Was-ist-neu-Blatt (`bg-lu-base`), und der
+          Kopf des Hauses entfaellt: die Werkstatt schreibt den Titel des
+          Presets ohnehin in ihre eigene Kopfzeile, also stand er zweimal
+          da, und mit `panelPad="p-0"` klebte er obendrein ohne jeden
+          Abstand in der Ecke. `hideHeader` laesst genau das X stehen, das
+          die Hausregel verlangt; `ariaLabel` haelt den Namen des Dialogs
+          unveraendert. */}
       {selectedPreset && backend === 'cloud' && (
         <Modal
           open={presetDialogOpen}
           onClose={() => setPresetDialogOpen(false)}
           title={selectedPreset.title}
+          hideHeader
+          ariaLabel={selectedPreset.title}
           maxWidth="max-w-4xl"
           panelPad="p-0"
           // Review B2: X/Escape darf den bezahlten Schrittzustand der
@@ -461,8 +475,8 @@ function CreateExperimentalInner() {
           // also ist dies die letzte fehlende Haelfte.
           keepMounted
         >
-          <div className="flex h-[min(600px,90vh)] flex-col overflow-hidden">
-            <Suspense fallback={<div className="flex flex-1 items-center justify-center t-control text-gray-500">Loading…</div>}>
+          <div className="flex h-[min(600px,90vh)] flex-col overflow-hidden rounded-2xl bg-lu-base">
+            <Suspense fallback={<div className="flex flex-1 items-center justify-center t-control text-gray-400">Loading…</div>}>
               <PresetWorkshop
                 key={selectedPreset.id}
                 preset={selectedPreset}

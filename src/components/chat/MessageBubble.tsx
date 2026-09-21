@@ -429,13 +429,14 @@ function MessageBubbleImpl({ message, onRegenerate, onEdit, pendingApprovalId, o
           className={
             'relative ' +
             (isUser
-              ? 'rounded-lg px-2.5 py-1.5 bg-gray-100 dark:bg-white/[0.06] border border-gray-200 dark:border-white/[0.08]'
+              ? 'rounded-lg px-2.5 py-1.5 bg-gray-100 dark:bg-white/[0.06] border border-gray-200 dark:border-white/[0.08] focus-within:border-gray-400 dark:focus-within:border-white/20 transition-colors'
               : 'px-1 py-0.5')
           }
         >
           {isEditing ? (
             <div className="space-y-1">
               <textarea
+                data-lu-quiet-focus
                 ref={editRef}
                 value={editContent}
                 onChange={(e) => {
