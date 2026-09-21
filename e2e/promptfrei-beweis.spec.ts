@@ -118,7 +118,7 @@ test('Chat: der Composer im Fokus traegt eine Haarlinie, keinen Akzentrahmen', a
   await feld.click()
   await feld.type('A prompt, and nothing above it.')
   await page.waitForTimeout(250)
-  await page.screenshot({ path: bild('chat-composer-fokus'), clip: { x: 300, y: 560, width: 700, height: 240 } })
+  await page.screenshot({ path: bild('chat-composer-fokus'), clip: { x: 260, y: 600, width: 840, height: 200 } })
 })
 
 test('Einstellungen: ein Textfeld im Fokus', async ({ page }) => {
@@ -134,7 +134,6 @@ test('Einstellungen: ein Textfeld im Fokus', async ({ page }) => {
   const feld = page.locator('input[type="text"], input[type="number"], input:not([type])').first()
   await expect(feld).toBeVisible()
   await feld.scrollIntoViewIfNeeded()
-  // eslint-disable-next-line no-console
   console.log('Settings-Feld:', await feld.evaluate((e: HTMLInputElement) =>
     `${e.type || 'text'} / ${e.getAttribute('aria-label') ?? e.placeholder}`))
   await feld.click()
@@ -142,7 +141,7 @@ test('Einstellungen: ein Textfeld im Fokus', async ({ page }) => {
   const box = await feld.boundingBox()
   await page.screenshot({
     path: bild('settings-textfeld-fokus'),
-    clip: box ? { x: Math.max(0, box.x - 260), y: Math.max(0, box.y - 50), width: 760, height: 130 } : undefined,
+    clip: box ? { x: Math.max(0, box.x - 420), y: Math.max(0, box.y - 60), width: 900, height: 150 } : undefined,
   })
 })
 
@@ -163,7 +162,6 @@ test('Ein Knopf mit Tastaturfokus behaelt seinen Ring', async ({ page }) => {
   // Kein Screenshot ohne Beleg, was darauf zu sehen ist: der Ring ist 2px.
   expect(gemessen, 'nichts hat den Tastaturfokus').not.toBeNull()
   await page.screenshot({ path: bild('knopf-tastaturfokus') })
-  // eslint-disable-next-line no-console
   console.log('Knopf im Tastaturfokus:', JSON.stringify(gemessen))
 })
 

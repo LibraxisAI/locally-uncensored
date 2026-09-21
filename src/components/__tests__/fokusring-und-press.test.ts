@@ -288,6 +288,43 @@ describe('Punkt 4 — die Ausnahme steht AN der Regel, nicht gegen sie', () => {
     expect(traeger).toEqual([])
   })
 
+  /**
+   * Wer die Haarlinie ganz ablegen darf, und unter welcher Bedingung.
+   *
+   * Ein Kasten mit `focus-within:border-*` zeichnet den Fokus bereits als
+   * ganzen Rahmen. Eine Haarlinie darin waere ein zweiter Rahmen INNEN, und
+   * genau der war am 21.09.2026 im Bild, nachdem der Akzentring gefallen war.
+   * Die Klasse nimmt sie deshalb dort weg, und nur dort: sie ist eine geladene
+   * Waffe mit Nachweispflicht, genau wie das Attribut davor.
+   */
+  const AM_KASTEN: Record<string, string> = {
+    'chat/ChatInput.tsx': 'chat/ChatInput.tsx',
+    'create/ui/PromptField.tsx': 'create/experimental/Composer.tsx',
+  }
+
+  it('`lu-fokus-am-kasten` haengt an genau diesen Feldern und sonst nirgends', () => {
+    const traeger = COMPONENT_NAMED.filter(([, src]) => /lu-fokus-am-kasten/.test(src)).map(([n]) => n)
+    expect(traeger.sort()).toEqual(Object.keys(AM_KASTEN).sort())
+  })
+
+  it('und jedes davon sitzt wirklich in einem Kasten, der den Fokus zeichnet', () => {
+    // Die Bedingung selbst. Faellt der `focus-within`-Rahmen weg, hat das Feld
+    // gar keine Fokusanzeige mehr, und dieser Fall faellt mit ihm.
+    for (const [feld, zeichner] of Object.entries(AM_KASTEN)) {
+      const src = COMPONENT_NAMED.find(([n]) => n === zeichner)?.[1]
+      expect(src, `keine Quelldatei ${zeichner}`).toBeDefined()
+      expect(src, `${feld}: ${zeichner} zeichnet keinen Fokus`).toMatch(/focus-within:border-/)
+    }
+  })
+
+  it('die Klasse nimmt die Breite, nicht die Regel', () => {
+    const regel = CODE.match(/^\.lu-fokus-am-kasten\s*\{[^}]*\}/m)?.[0] ?? ''
+    expect(regel).toMatch(/--lu-focus-w:\s*0px/)
+    // Kein `outline: none`: das waere wieder eine zweite Regel gegen die
+    // Hausregel statt einer Angabe an sie.
+    expect(regel).not.toMatch(/outline/)
+  })
+
   it('der Chat-Composer zeigt seinen Fokus weiterhin am Kasten', () => {
     // Die Haarlinie ersetzt den Ring, aber der Composer hatte seine eigene,
     // staerkere Anzeige schon vorher, und die bleibt: faellt sie weg, ist das

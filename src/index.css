@@ -867,6 +867,23 @@ input[type="range"]::-webkit-slider-thumb {
   outline-color: var(--lu-focus-c, var(--color-lu-accent-edge));
 }
 
+/* Die eine Ausnahme von der Ausnahme: ein Feld, dessen KASTEN den Fokus
+   schon zeichnet.
+
+   Der Chat-Composer und das Promptfeld von Create sitzen in einem Kasten mit
+   `focus-within:border-*`: der ganze Rahmen wird heller, sobald der Zeiger im
+   Feld steht. Eine Haarlinie zusaetzlich waere dort ein zweiter Rahmen INNEN,
+   und genau das war am 21.09.2026 im Bild zu sehen, nachdem der Akzentring
+   gefallen war. Zwei Rahmen sind nicht leiser als einer, sie sind zwei.
+
+   Deshalb Breite null, und NUR hier. Die Bedingung, unter der das zulaessig
+   ist, prueft fokusring-und-press.test.ts nach: wer diese Klasse traegt, muss
+   in einem Kasten sitzen, der `focus-within:border-` setzt. Ohne den Kasten
+   naehme sie einem Feld seine einzige Fokusanzeige. */
+.lu-fokus-am-kasten {
+  --lu-focus-w: 0px;
+}
+
 /* Texteingaben: dieselbe eine Regel, nur leiser. Gesetzt wird hier NICHT
    der Umriss, sondern nur, womit die Regel oben ihn zeichnet. */
 textarea,

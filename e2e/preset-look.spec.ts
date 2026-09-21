@@ -166,12 +166,12 @@ async function akzentfarbe(page: Page): Promise<string> {
   })
 }
 
-interface Ring { style: string; color: string; shadow: string }
+interface Ring { style: string; color: string; shadow: string; width: string }
 
 async function ringOf(locator: ReturnType<Page['locator']>): Promise<Ring> {
   return locator.evaluate((el) => {
     const s = getComputedStyle(el)
-    return { style: s.outlineStyle, color: s.outlineColor, shadow: s.boxShadow }
+    return { style: s.outlineStyle, color: s.outlineColor, shadow: s.boxShadow, width: s.outlineWidth }
   })
 }
 
@@ -183,10 +183,12 @@ async function ringOfActive(page: Page): Promise<Ring & { tag: string; primary: 
     return {
       tag: el.tagName,
       primary: el.classList.contains('lu-primary'),
-      quiet: el.hasAttribute('data-lu-quiet-focus'),
+      quiet: el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT'
+        && ['text', 'search', 'url', 'email', 'password', 'tel', 'number', ''].includes((el as HTMLInputElement).type)),
       style: s.outlineStyle,
       color: s.outlineColor,
       shadow: s.boxShadow,
+      width: s.outlineWidth,
     }
   })
 }
@@ -196,11 +198,16 @@ test('um kein Promptfeld liegt ein Akzentring, um einen Knopf schon', async ({ p
   const akzent = await akzentfarbe(page)
 
   // (1) Das Promptfeld des Create-Composers.
-  const createPrompt = page.locator('textarea[data-lu-quiet-focus]').first()
+  const createPrompt = page.locator('textarea.lu-fokus-am-kasten').first()
   await createPrompt.click()
   await createPrompt.fill('a lighthouse at dusk')
   const createRing = await ringOf(createPrompt)
-  expect(createRing.style, `Create-Composer traegt einen Umriss: ${JSON.stringify(createRing)}`).toBe('none')
+  // 21.09.2026: die Antwort ist nicht mehr „gar kein Umriss ueberall", sondern
+  // „kein AKZENTumriss an einer Texteingabe". Dieses Feld sitzt in einem
+  // Kasten mit `focus-within:border-*`, der den Fokus schon zeichnet, also
+  // bleibt es bei null Breite (`lu-fokus-am-kasten`).
+  expect(createRing.width, `Create-Composer traegt einen Umriss: ${JSON.stringify(createRing)}`).toBe('0px')
+  expect(createRing.color).not.toBe(akzent)
   expect(createRing.shadow).toBe('none')
   await page.screenshot({ path: shotPath('fokus-create') })
 
@@ -221,7 +228,12 @@ test('um kein Promptfeld liegt ein Akzentring, um einen Knopf schon', async ({ p
     haelt.push(`${r.tag} ${r.style} ${r.color}`)
     if (r.style !== 'none' && r.color === akzent) akzentRingGesehen = true
     // Und kein Promptfeld faengt sich unterwegs doch einen.
-    if (r.quiet) expect(r.style, `ein Promptfeld traegt einen Umriss: ${JSON.stringify(r)}`).toBe('none')
+    // Kein Textfeld faengt sich unterwegs einen AKZENTring ein, und keines
+    // traegt mehr als die eine Haarlinie.
+    if (r.quiet) {
+      expect(r.color, `eine Texteingabe traegt den Akzentring: ${JSON.stringify(r)}`).not.toBe(akzent)
+      expect(parseFloat(r.width), `eine Texteingabe traegt einen dicken Umriss: ${JSON.stringify(r)}`).toBeLessThanOrEqual(1.1)
+    }
   }
   expect(akzentRingGesehen, `der Hausring ist weg: ${haelt.join(' | ')}`).toBe(true)
 
@@ -234,7 +246,11 @@ test('um kein Promptfeld liegt ein Akzentring, um einen Knopf schon', async ({ p
   await workshopPrompt.click()
   await workshopPrompt.fill('a bright acoustic tune about a summer road trip')
   const workshopRing = await ringOf(workshopPrompt)
-  expect(workshopRing.style, `Werkstatt traegt einen Umriss: ${JSON.stringify(workshopRing)}`).toBe('none')
+  // Die Werkstatt hat keinen eigenen Kasten mit `focus-within`, ihr Feld
+  // traegt also die ruhige Haarlinie. Was es NICHT traegt, ist der Akzent:
+  // „der lila balken um das prompt fenster geht garnicht" (Eigner, 21.09.).
+  expect(workshopRing.color, `Werkstatt traegt den Akzentring: ${JSON.stringify(workshopRing)}`).not.toBe(akzent)
+  expect(parseFloat(workshopRing.width), `Werkstatt traegt einen dicken Umriss: ${JSON.stringify(workshopRing)}`).toBeLessThanOrEqual(1.1)
   expect(workshopRing.shadow).toBe('none')
   await dialog.screenshot({ path: shotPath('fokus-werkstatt') })
 
@@ -250,11 +266,11 @@ test('auch das Chat-Promptfeld traegt keinen Akzentring', async ({ page }) => {
   await bootIntoCloudCreate(page, false)
   await page.getByRole('button', { name: /^Chat$/ }).click()
 
-  const chatPrompt = page.locator('textarea[data-lu-quiet-focus]').first()
+  const chatPrompt = page.locator('textarea.lu-fokus-am-kasten').first()
   await chatPrompt.click()
   await chatPrompt.fill('hello')
   const ring = await ringOf(chatPrompt)
-  expect(ring.style, `Chat-Composer traegt einen Umriss: ${JSON.stringify(ring)}`).toBe('none')
+  expect(ring.width, `Chat-Composer traegt einen Umriss: ${JSON.stringify(ring)}`).toBe('0px')
   expect(ring.shadow).toBe('none')
   await page.screenshot({ path: shotPath('fokus-chat') })
 })
