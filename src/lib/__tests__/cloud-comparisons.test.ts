@@ -5,13 +5,25 @@ import { expect, it } from 'vitest'
 for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermatic', 'arliai', 'cerebras-code', 'backyard-ai', 'sillyhost']) {
   const html = readFileSync(`docs/vs/${slug}/index.html`, 'utf8')
   const page = new DOMParser().parseFromString(html, 'text/html')
+  // Das Pruefdatum steht im Kopf der Seite und gilt fuer alle sechs Zellen.
+  // Bis zum 13.09.2026 trug die ganze Serie den 09.09. Venice ist am
+  // 14.09.2026 mit Commit 01d26e81 neu veroeffentlicht worden, mit dem
+  // Abschnitt "Which offer fits?" und dem sichtbaren Satz "Venice pricing,
+  // checked September 14, 2026"; seitdem traegt diese eine Seite den 14.09.
+  // Ein fuer alle neun Seiten fest getipptes Datum wuerde jede Nachpruefung
+  // rot faerben und zum Zurueckdatieren zwingen, was ein Pruefdatum nie
+  // darf. Gehalten wird darum: ein Datum je Seite, nicht aelter als der
+  // Serienstart, und in jeder der sechs Zellen dasselbe wie im Kopf.
   it(`${slug} dates and sources every comparative fact on both sides`, () => {
+    const checked = page.querySelector('time')?.getAttribute('datetime')
+    expect(checked, `${slug} nennt kein Pruefdatum`).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(checked! >= '2026-09-09', `${slug} ist zurueckdatiert: ${checked}`).toBe(true)
     const rows = page.querySelectorAll('[data-comparison-row]')
     expect(rows).toHaveLength(3)
     for (const row of rows) {
       expect(row.querySelectorAll('td')).toHaveLength(2)
       for (const cell of row.querySelectorAll('td')) {
-        expect(cell.querySelector('time')?.getAttribute('datetime')).toBe('2026-09-09')
+        expect(cell.querySelector('time')?.getAttribute('datetime')).toBe(checked)
         expect(cell.querySelector('a')?.getAttribute('href')).toMatch(/^https:\/\//)
       }
     }
