@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { useDismissOnEscape } from '../../hooks/useDismissOnEscape'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Ban, ChevronDown, Loader2, Power, PlayCircle, Settings as SettingsIcon, Wrench, X, Cloud } from 'lucide-react'
+import { AlertTriangle, Ban, ChevronDown, Loader2, Power, PlayCircle, Settings as SettingsIcon, Wrench, X, Cloud } from 'lucide-react'
 import { useModels } from '../../hooks/useModels'
 import { useModelStore } from '../../stores/modelStore'
 import { useProviderStore } from '../../stores/providerStore'
@@ -35,6 +35,8 @@ import {
 } from '../../api/lu-engine-switch'
 import { tryAcquireLuEngineSwap, releaseLuEngineSwap, luEngineSwapInFlight, useLuEngineSwapRunning } from '../../api/lu-engine-swap-lock'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
+import { isBuiltinEngineMissing } from '../../lib/builtin-engine-presence'
+import { engineNoticeDismissed, dismissEngineNoticeForSession, resetEngineNoticeDismissal } from '../../lib/engine-notice-session'
 import { log } from '../../lib/logger'
 import { ModelPickerSkeleton } from '../layout/ViewSkeletons'
 import type { AIModel } from '../../types/models'
@@ -673,6 +675,36 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
   // button (Nebenbefund 1, R9 re-measure 2026-08-30).
   const noBackendEnabled = useProviderStore((s) => noChatBackendEnabled(s.providers, appMode))
   const openSettingsAt = useUIStore((s) => s.openSettingsAt)
+  /**
+   * R13D Nebenfund 1, zweite Runde (Eigner, 21.09.2026): "NICHTS im prompt
+   * fenster". Der Hinweis, dass LU Engine aus der Anbieterliste gefallen ist,
+   * stand vorher als eigene Leiste ueber der Chat-Eingabe (EngineMissingBar,
+   * geloescht). Er steht jetzt ganz oben in diesem Menue, wo der Kunde ohnehin
+   * nach einem Modell sucht, plus ein winziger Punkt am Ausloeser, damit er
+   * ueberhaupt bemerkt, dass hier etwas steht.
+   *
+   * Nur im Modus Local: in Cloud laeuft die Antwort nicht ueber den lokalen
+   * Steckplatz, der Satz waere dort wahr und ohne Folgen. `engineOptedOut`
+   * trennt die echte Verdraengung von einem Kunden, der ein anderes lokales
+   * Backend mit Absicht gewaehlt hat (siehe lib/builtin-engine-presence.ts).
+   */
+  const openaiSlot = useProviderStore((s) => s.providers.openai)
+  const engineOptedOut = useProviderStore((s) => s.engineOptedOut)
+  const engineMissing = appMode === 'local' && isBuiltinEngineMissing(openaiSlot, engineOptedOut)
+  const [engineNoticeHidden, setEngineNoticeHidden] = useState(engineNoticeDismissed)
+  // Die Wegdrueckung faellt, sobald die Lage selbst sich aendert, waehrend des
+  // Renderns statt in einem Effekt (react-hooks/set-state-in-effect): der Fall
+  // "Zustand, der mit einer Eigenschaft zurueckfaellt" aus der React-Doku. So
+  // verdeckt ein weggedrueckter Hinweis niemals einen SPAETEREN Vorfall.
+  const [engineWasMissing, setEngineWasMissing] = useState(engineMissing)
+  if (engineMissing !== engineWasMissing) {
+    setEngineWasMissing(engineMissing)
+    if (!engineMissing) {
+      resetEngineNoticeDismissal()
+      setEngineNoticeHidden(false)
+    }
+  }
+  const showEngineNotice = engineMissing && !engineNoticeHidden
   const [open, setOpen] = useState(false)
   useDismissOnEscape(open, () => setOpen(false))
   // Read by the empty-state probe below, which runs before the render that
@@ -1274,6 +1306,18 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
         />
       )}
 
+      {/* Derselbe winzige Punkt, den das Haus schon fuer "hier ist etwas Neues"
+          benutzt (Workflow-Knopf in create/experimental/Composer.tsx, How-to in
+          SpecialIntentControls.tsx): kein Text, keine Leiste, nur die Marke,
+          dass im Menue eine Zeile wartet. Verschwindet mit dem X. */}
+      {showEngineNotice && (
+        <span
+          data-testid="picker-engine-missing-dot"
+          aria-hidden
+          className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-lu-accent pointer-events-none"
+        />
+      )}
+
       {/* ── Dropdown ── */}
       <AnimatePresence>
         {open && (
@@ -1288,6 +1332,38 @@ export function ModelSelector({ openUpward = false, surface = 'chat', answeredBy
             exit={{ opacity: 0, y: openUpward ? 6 : -6, scale: 0.98 }}
             transition={{ duration: MOTION_S.fast, ease: 'easeOut' }}
           >
+            {/* Ganz oben, vor allem anderen: LU Engine ist aus der
+                Anbieterliste gefallen. Ruhiger Ton statt Rot-Alarm und kein
+                eigener Kasten im Kasten (lib/hinweis.ts), der Akzent traegt
+                nur den Textknopf. Der Knopf nimmt denselben Weg nach Settings,
+                den dieses Menue weiter unten schon nimmt. */}
+            {showEngineNotice && (
+              <div
+                data-testid="picker-engine-missing"
+                className={`flex items-start gap-1.5 px-2.5 py-1.5 border-b border-black/5 dark:border-white/[0.06] text-[0.55rem] ${HINWEIS_TEXT.ruhig}`}
+              >
+                <AlertTriangle size={10} className="shrink-0 mt-[1px]" />
+                <span className="flex-1 min-w-0">
+                  LU Engine is missing from your providers.{' '}
+                  <button
+                    data-testid="picker-engine-missing-open"
+                    onClick={() => { setOpen(false); openSettingsAt({ tab: 'backends' }) }}
+                    className="text-lu-accent underline underline-offset-2"
+                  >
+                    Open AI Backends
+                  </button>
+                </span>
+                <button
+                  onClick={() => { dismissEngineNoticeForSession(); setEngineNoticeHidden(true) }}
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  className="shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            )}
+
             {/* Bug Q v2.4.7, surface "Start LM Studio Server" inline when
                 LM Studio is on disk but its server is off. wakeywakeynow's
                 "can't choose any models i have installed" symptom. */}
