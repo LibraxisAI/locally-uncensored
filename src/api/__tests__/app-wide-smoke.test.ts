@@ -48,7 +48,7 @@ function fullNodes(): CategorizedNodes {
       'EmptyMochiLatentVideo', 'EmptyCosmosLatentVideo',
       'CogVideoXEmptyLatents', 'Wan22ImageToVideoLatent',
     ],
-    textEncoders: ['CLIPTextEncode', 'ConditioningZeroOut', 'CogVideoXTextEncode', 'PyramidFlowTextEncode', 'AllegroTextEncode'],
+    textEncoders: ['CLIPTextEncode', 'ConditioningZeroOut', 'TextEncodeQwenImage21', 'CogVideoXTextEncode', 'PyramidFlowTextEncode', 'AllegroTextEncode'],
     decoders: ['VAEDecode', 'CogVideoXVAEDecode', 'PyramidFlowDecode', 'AllegroDecoder'],
     savers: ['SaveImage'],
     videoSavers: ['VHS_VideoCombine', 'SaveAnimatedWEBP'],
@@ -102,7 +102,7 @@ describe('MODEL_TYPE_DEFAULTS — completeness', () => {
 // ── COMPONENT_REGISTRY completeness ─────────────────────────────────────
 
 describe('COMPONENT_REGISTRY — completeness for image models', () => {
-  const imageTypes: ModelType[] = ['flux', 'flux2', 'zimage', 'ernie_image', 'sdxl', 'sd15']
+  const imageTypes: ModelType[] = ['flux', 'flux2', 'zimage', 'ernie_image', 'qwenimage', 'sdxl', 'sd15']
 
   it('every image ModelType that needs UNET/Checkpoint has a registry entry', () => {
     for (const type of imageTypes) {
@@ -211,6 +211,7 @@ describe('classifyModel — representative models', () => {
     ['flux1-dev.safetensors', 'flux'],
     ['flux2-dev.safetensors', 'flux2'],
     ['ernie-image-turbo.safetensors', 'ernie_image'],
+    ['qwen_image_2.1_int8_convrot.safetensors', 'qwenimage'],
     ['wan2.1_fun_14b.safetensors', 'wan'],
     ['hunyuan_video_v2.safetensors', 'hunyuan'],
   ]

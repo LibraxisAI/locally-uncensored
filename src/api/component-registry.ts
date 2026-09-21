@@ -76,6 +76,16 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRequirements> = {
     vae: { matchPatterns: ['ae', 'flux'], downloadFilename: 'ae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors', subfolder: 'vae' },
     clip: { matchPatterns: ['qwen_3_4b', 'qwen3'], downloadFilename: 'qwen_3_4b.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors', subfolder: 'text_encoders' },
   },
+  // Qwen-Image 2.1 (Comfy-Org/Qwen-Image-2.1, verified reachable via HEAD
+  // 2026-09-21). Same three-file shape as Z-Image, with its own autoencoder
+  // and the Qwen3-VL 8B encoder. The match patterns carry the version tag and
+  // the 8B tier because Krea 2's companions (qwen_image_vae, qwen3vl_4b_*)
+  // live in the same two folders and would otherwise answer first.
+  qwenimage: {
+    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'qwen_image',
+    vae: { matchPatterns: ['qwen_image_2.1_vae', 'qwen_image_2.1'], downloadFilename: 'qwen_image_2.1_vae_bf16.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors', subfolder: 'vae' },
+    clip: { matchPatterns: ['qwen3vl_8b'], downloadFilename: 'qwen3vl_8b_int8_convrot.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors', subfolder: 'text_encoders' },
+  },
   ernie_image: {
     loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'flux2',
     vae: { matchPatterns: ['flux2-vae', 'flux2', 'flux'], downloadFilename: 'flux2-vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image/resolve/main/vae/flux2-vae.safetensors', subfolder: 'vae' },

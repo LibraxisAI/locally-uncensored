@@ -153,7 +153,7 @@ export function galleryTypeForFile(
 // 2.5.8: ace / wans2v / wananimate / wanvace are the specialized local-lane
 // architectures (music, talking character, motion control). They are neither
 // image nor video picker material — each lane has its own model list.
-export type ModelType = 'flux' | 'flux2' | 'krea2' | 'zimage' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
+export type ModelType = 'flux' | 'flux2' | 'krea2' | 'zimage' | 'ernie_image' | 'qwenimage' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
 export type VideoBackend = 'wan' | 'animatediff' | 'none'
 
 export interface ClassifiedModel {
@@ -265,6 +265,26 @@ export function classifyModel(name: string | null | undefined): ModelType {
   // ERNIE-Image (Baidu, uses flux2 CLIP type + ConditioningZeroOut for negative)
   if (lower.includes('ernie-image') || lower.includes('ernie_image')) return 'ernie_image'
 
+  // Qwen-Image 2.1 (Comfy-Org repack, September 2026): ONE model for both
+  // generating and editing, on UNETLoader + CLIPLoader(qwen_image) + its own
+  // 64-channel VAE, encoded through TextEncodeQwenImage21.
+  //
+  // Version-bound on purpose. The older Qwen-Image (2508) and Qwen-Image-Edit
+  // (2509/2511) files carry the same `qwen_image` stem but need a different
+  // text-encode node, so a bare stem match would route them onto the 2.1
+  // pipeline and ComfyUI would reject the graph. They keep falling through to
+  // 'unknown', which refuses honestly with "LU could not determine this
+  // model's architecture" instead of guessing.
+  //
+  // Deliberately NOT caught here: the 2.1 text encoder itself
+  // (qwen3vl_8b_int8_convrot) and Z-Image's qwen_3_4b carry no `qwen_image`
+  // stem, and Krea 2's companion qwen_image_vae carries no 2.1 tag. This
+  // function also sees VAE and text-encoder filenames (addonLane), so a match
+  // that was any wider would mislabel a companion file as a main model.
+  // Before the 'krea' check and the 'xl' suffix scan below, so no later tag
+  // can take a 2.1 file first.
+  if (/qwen[._-]?image/.test(lower) && /2[._-]?1/.test(lower)) return 'qwenimage'
+
   // Z-Image (uses qwen_image CLIP type, NOT flux2 — different embedding dimensions)
   if (lower.includes('z_image') || lower.includes('z-image') || lower.includes('zimage')) return 'zimage'
   if (lower.includes('flux-2') || lower.includes('flux2')) return 'flux2'
@@ -301,7 +321,7 @@ export function classifyModel(name: string | null | undefined): ModelType {
 }
 
 export function isImageModelType(type: ModelType): boolean {
-  return type === 'flux' || type === 'flux2' || type === 'krea2' || type === 'zimage' || type === 'ernie_image' || type === 'sdxl' || type === 'sd15' || type === 'unknown'
+  return type === 'flux' || type === 'flux2' || type === 'krea2' || type === 'zimage' || type === 'ernie_image' || type === 'qwenimage' || type === 'sdxl' || type === 'sd15' || type === 'unknown'
 }
 
 export function isVideoModelType(type: ModelType): boolean {
@@ -426,6 +446,11 @@ export const MODEL_TYPE_DEFAULTS: Record<string, ModelTypeDefaults> = {
   // than guessing at the other.
   krea2:  { steps: 8,  cfg: 1.0, sampler: 'euler',           scheduler: 'beta',   width: 1024, height: 1024, frames: 1, fps: 1 },
   zimage: { steps: 12, cfg: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
+  // Qwen-Image 2.1: every number is the one the official Comfy-Org templates
+  // ship (image_qwen_image_2_1_t2i.json and image_qwen_image_2_1_image_edit.json,
+  // KSampler widgets: 25 steps, cfg 1, euler, simple; canvas 1024x1024 at
+  // 1 megapixel). Native 2K is available by raising width/height.
+  qwenimage: { steps: 25, cfg: 1.0, sampler: 'euler',        scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   unknown:{ steps: 25, cfg: 7.0, sampler: 'euler',           scheduler: 'normal', width: 1024, height: 1024, frames: 1, fps: 1 },
   // ── Video ──
   wan: { steps: 30, cfg: 6.0, sampler: 'euler', scheduler: 'normal', width: 832, height: 480, frames: 81, fps: 16 },
@@ -1388,6 +1413,23 @@ function isHunyuan15Vae(name: string): boolean {
   return /hunyuan[._-]?video[._-]?1[._-]?5/.test(name.toLowerCase())
 }
 
+/** Qwen-Image 2.1's own autoencoder (64 channels, RGBA, 16x compression).
+ *  Krea 2's companion `qwen_image_vae.safetensors` is the older 16-channel
+ *  one and shares the stem, so both resolvers have to tell them apart by the
+ *  version tag. Same shape of mistake the Wan 2.1 / Wan 2.2 VAE branch below
+ *  already guards against: the wrong file loads and the decode fails on the
+ *  channel count. */
+function isQwenImage21Vae(name: string): boolean {
+  return /qwen[._-]?image[._-]?2[._-]?1/.test(name.toLowerCase())
+}
+
+/** Qwen-Image 2.1's text encoder tier (Qwen3-VL 8B). Krea 2 uses the 4B
+ *  sibling under a near-identical name, and the two have different embedding
+ *  dimensions. */
+function isQwen3vl8b(name: string): boolean {
+  return /qwen3[._-]?vl[._-]?8b/.test(name.toLowerCase())
+}
+
 export async function findMatchingVAE(modelType: ModelType): Promise<string> {
   const vaes = await getVAEModels()
   if (vaes.length === 0) throw new Error('No VAE models found. Download a VAE for your model type from the Model Manager.')
@@ -1416,12 +1458,24 @@ export async function findMatchingVAE(modelType: ModelType): Promise<string> {
     if (match) return match
     throw new Error(`No FLUX 2 VAE found. Download "flux2-vae.safetensors" from the Model Manager.`)
   }
+  if (modelType === 'qwenimage') {
+    // Qwen-Image 2.1 ships its own autoencoder. Pinned by the version tag so a
+    // box that also carries Krea 2's older qwen_image_vae cannot hand that one
+    // over: it has 16 channels where this model wants 64.
+    const match = vaes.find(v => lower(v) === 'qwen_image_2.1_vae_bf16.safetensors')
+      || vaes.find(v => isQwenImage21Vae(v))
+    if (match) return match
+    throw new Error(`No Qwen-Image 2.1 VAE found. Download "qwen_image_2.1_vae_bf16.safetensors" from the Model Manager.`)
+  }
   if (modelType === 'krea2') {
     // Krea 2's companion VAE is not standardized across CivitAI finetunes
     // (GH #136 saw both qwen_image_vae and wan_2.1_vae). Try a Krea-named
     // file first, then the two variants confirmed by the issue reporter.
+    // The qwen_image hit excludes the Qwen-Image 2.1 autoencoder: it carries
+    // the same stem, sorts next to the file this branch wants, and would
+    // decode a Krea 2 latent with the wrong channel count.
     const match = vaes.find(v => lower(v).includes('krea'))
-      || vaes.find(v => lower(v).includes('qwen_image'))
+      || vaes.find(v => lower(v).includes('qwen_image') && !isQwenImage21Vae(v))
       || vaes.find(v => /wan[._]?2[._]?1/.test(lower(v)))
     if (match) return match
     throw new Error(`No Krea 2 VAE found. Download "qwen_image_vae.safetensors" (or "wan_2.1_vae.safetensors", depending on the checkpoint) from the Model Manager.`)
@@ -1589,12 +1643,24 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
     if (match) return match
     throw new Error(`No ERNIE-Image text encoder found. Download "ernie-image-prompt-enhancer.safetensors" from the Model Manager.`)
   }
+  if (modelType === 'qwenimage') {
+    // Qwen-Image 2.1 uses Qwen3-VL 8B (2.0 and older used Qwen2.5-VL). Pinned
+    // to the 8B tier with no fallback: Krea 2's 4B sibling sits in the same
+    // folder under a near-identical name and has different embedding
+    // dimensions, so a fallback would load silently and encode nonsense.
+    const match = clips.find(c => isQwen3vl8b(c))
+    if (match) return match
+    throw new Error(`No Qwen-Image 2.1 text encoder found. Download "qwen3vl_8b_int8_convrot.safetensors" from the Model Manager.`)
+  }
   if (modelType === 'krea2') {
     // Krea 2 uses Qwen3-VL 4B, shipped under different quant-tier filenames
     // by different finetune authors (GH #136: qwen3vl_4b_int8_convrot vs
     // qwen3vl_4b_fp8_scaled), so match on the qwen3vl family, not one filename.
-    const match = clips.find(c => lower(c).includes('qwen3vl') || lower(c).includes('qwen3_vl'))
-      || clips.find(c => lower(c).includes('qwen') && lower(c).includes('vl'))
+    // The 8B file is excluded throughout: it belongs to Qwen-Image 2.1, and
+    // since that bundle landed in the Model Manager a box can hold both.
+    const match = clips.find(c => /qwen3[._-]?vl[._-]?4b/.test(lower(c)))
+      || clips.find(c => (lower(c).includes('qwen3vl') || lower(c).includes('qwen3_vl')) && !isQwen3vl8b(c))
+      || clips.find(c => lower(c).includes('qwen') && lower(c).includes('vl') && !isQwen3vl8b(c))
     if (match) return match
     throw new Error(`No Krea 2 text encoder found. Download "qwen3vl_4b_fp8_scaled.safetensors" from the Model Manager.`)
   }

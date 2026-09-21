@@ -132,6 +132,7 @@ GLM 5.3 is in the catalog too, but its smallest local quant is 217 GB, so on a d
 | FLUX.1 schnell or dev | 8-10 GB | Fast, or slower and better. |
 | FLUX 2 Klein 4B | 8-10 GB | The newest FLUX, and the quickest of them. |
 | Z-Image Turbo | 10-16 GB | Unfiltered, 8 to 15 seconds per image. |
+| Qwen-Image 2.1 | 16-24 GB | Generates and edits in one model. Needs ComfyUI 0.37.0. Research license, non-commercial. |
 | ERNIE-Image Turbo | 24 GB | Baidu DiT, eight steps. |
 
 ### Video

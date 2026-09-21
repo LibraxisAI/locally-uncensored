@@ -133,6 +133,9 @@ export const MODEL_TYPE_DEFAULTS: Record<ModelType, {
   krea2:       { steps: 8,  cfgScale: 1.0, sampler: 'euler',           scheduler: 'beta',   width: 1024, height: 1024 },
   zimage:      { steps: 12, cfgScale: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   ernie_image: { steps: 20, cfgScale: 4.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
+  // Qwen-Image 2.1: mirrors comfyui.ts MODEL_TYPE_DEFAULTS.qwenimage, which
+  // takes every number straight from the official Comfy-Org templates.
+  qwenimage:   { steps: 25, cfgScale: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   wan:         { steps: 25, cfgScale: 5.0, sampler: 'euler',           scheduler: 'normal', width: 848,  height: 480, frames: 49, fps: 16 },
   wan22:       { steps: 30, cfgScale: 5.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 576, frames: 49, fps: 24 },
   hunyuan:     { steps: 30, cfgScale: 6.0, sampler: 'euler',           scheduler: 'normal', width: 848,  height: 480, frames: 45, fps: 15 },

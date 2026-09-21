@@ -20,6 +20,17 @@ installs stop losing environment variables to it.
   Studio without also fixing the two price-check routes, Create shows "This
   feature needs a newer LU Cloud server. Try again later." instead of
   guessing a price or booking one.
+- **Qwen-Image 2.1 is downloadable in the Model Manager and runs locally on
+  Windows and Linux.** One model does both jobs: write a prompt to generate a
+  picture, or add a reference image plus a prompt to edit one, with no mask to
+  paint. It appears in the Generate picker and the Edit picker like every other
+  installed image model. The bundle pulls three files (about 16 GB together)
+  and needs ComfyUI 0.37.0 or newer for the encode node it runs on; an older
+  ComfyUI is told which version to update to before anything is built. Not in
+  this release: more than one reference image at a time, and painted masks,
+  which this model's encode node cannot take. The weights carry the Qwen
+  Research License, which allows research and evaluation but not commercial
+  use, and the bundle says so with a link before you download it.
 - **Cloud video renders now offer exactly the clip lengths the picked model
   actually supports**, read from the live catalog, instead of a fixed 5s/8s
   pair for every model.

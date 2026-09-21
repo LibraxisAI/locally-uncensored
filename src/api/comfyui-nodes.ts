@@ -146,6 +146,10 @@ export function categorizeNodes(allNodes: Record<string, NodeMetadata>): Categor
     ConditioningZeroOut: 'textEncoders',
     // Text encoding
     CLIPTextEncode: 'textEncoders',
+    // Qwen-Image 2.1's single encode node: prompt AND negative prompt, the
+    // reference images, and the matching empty latent. Ships with ComfyUI
+    // 0.37.0 and newer; determineStrategy gates the lane on it.
+    TextEncodeQwenImage21: 'textEncoders',
     CLIPTextEncodeSDXL: 'textEncoders',
     CogVideoXTextEncode: 'textEncoders',
     PyramidFlowTextEncode: 'textEncoders',

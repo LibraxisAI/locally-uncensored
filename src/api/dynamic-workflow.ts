@@ -64,6 +64,7 @@ export type WorkflowStrategy =
   | 'unet_krea2'      // Krea 2: UNETLoader + CLIPLoader(type="krea2") + VAELoader + EmptyLatentImage (GH #136)
   | 'unet_zimage'     // Z-Image: UNETLoader + CLIPLoader(qwen_image) + VAELoader + EmptySD3LatentImage
   | 'unet_ernie_image' // ERNIE-Image: UNETLoader + CLIPLoader(flux2) + VAELoader + EmptyFlux2LatentImage + ConditioningZeroOut
+  | 'unet_qwenimage'  // Qwen-Image 2.1: UNETLoader + CLIPLoader(qwen_image) + VAELoader + TextEncodeQwenImage21 (generate and edit)
   | 'unet_video'      // Wan/Hunyuan: UNETLoader + CLIPLoader + VAELoader + EmptyHunyuanLatentVideo
   | 'wan22'           // Wan 2.2 TI2V-5B: UNET + CLIP + Wan 2.2 VAE + Wan22ImageToVideoLatent (unified T2V/I2V)
   | 'unet_ltx'        // LTX Video: UNETLoader + CLIPLoader + EmptyLTXVLatentVideo
@@ -110,6 +111,26 @@ export function determineStrategy(
       return { strategy: 'unet_ernie_image', reason: 'ERNIE-Image model → UNETLoader + CLIPLoader(flux2) + ConditioningZeroOut' }
     }
     return { strategy: 'unavailable', reason: 'ERNIE-Image requires UNETLoader + CLIPLoader + VAELoader nodes' }
+  }
+
+  // Qwen-Image 2.1 → UNET + CLIPLoader(qwen_image) + VAE + TextEncodeQwenImage21.
+  // One model, two graphs: without a reference image it generates, with one it
+  // edits. Both official Comfy-Org templates route the prompt through
+  // TextEncodeQwenImage21, so the lane needs that node either way. It arrived
+  // in ComfyUI 0.37.0 (comfy_extras/nodes_qwen.py); an older install gets the
+  // update sentence rather than a ComfyUI 400 on an unknown node class.
+  if (modelType === 'qwenimage') {
+    const hasQwen21Encode = nodes.textEncoders.includes('TextEncodeQwenImage21')
+    if (hasUNET && hasCLIPLoader && hasVAELoader && hasQwen21Encode) {
+      return { strategy: 'unet_qwenimage', reason: 'Qwen-Image 2.1 model → UNETLoader + CLIPLoader(qwen_image) + TextEncodeQwenImage21' }
+    }
+    if (hasUNET && hasCLIPLoader && hasVAELoader) {
+      return {
+        strategy: 'unavailable',
+        reason: 'Qwen-Image 2.1 needs ComfyUI 0.37.0 or newer. Update ComfyUI in Settings.',
+      }
+    }
+    return { strategy: 'unavailable', reason: 'Qwen-Image 2.1 requires UNETLoader + CLIPLoader + VAELoader nodes' }
   }
 
   // Z-Image → UNET + CLIPLoader(qwen_image) + VAE + SD3LatentImage
@@ -433,6 +454,28 @@ function resolveLoaderName(req: string, installed: string[]): string | null {
   return null
 }
 
+/**
+ * The `resolution` widget of TextEncodeQwenImage21, for an edit.
+ *
+ * It is not a width. The node reads it as a total pixel budget per reference
+ * image, resizes each one to about `resolution x resolution` pixels at
+ * multiples of 32 and keeps its aspect ratio, and the result follows the first
+ * reference. So the requested canvas is folded into a single side length and
+ * the edit comes back in the shape of the source at the size the user picked.
+ * At the default 1024x1024 this is exactly 1024, the node's own default.
+ *
+ * Not 0 (the official template's value, meaning "keep the original size"):
+ * a phone photo is 12 megapixels, far past the model's 2K class, and it would
+ * be handed straight to the sampler. Clamped to the node's declared range
+ * (0 to 4096, step 32), with 32 as the floor so a tiny canvas cannot produce
+ * a zero that would silently switch the node back to original size.
+ */
+function qwenEditResolution(width: number, height: number): number {
+  const px = (v: number) => (Number.isFinite(v) && v > 0 ? v : 1024)
+  const side = Math.sqrt(px(width) * px(height))
+  return Math.min(4096, Math.max(32, Math.round(side / 32) * 32))
+}
+
 export async function buildDynamicWorkflow(
   params: GenerateParams | VideoParams,
   modelType?: ModelType,
@@ -476,6 +519,14 @@ export async function buildDynamicWorkflow(
   // Reject other strategies explicitly instead of silently dropping the mask —
   // the pre-2.5.7 behavior was exactly that: a masked edit fell through to
   // plain img2img and repainted the WHOLE image.
+  //
+  // Qwen-Image 2.1 stays behind this gate on purpose, although the model
+  // itself can do local edits. TextEncodeQwenImage21 takes no mask input at
+  // all (see its schema: clip, prompt, negative_prompt, vae, resolution and
+  // the image slots), so a painted mask would be dropped exactly the way this
+  // check exists to prevent. The model's own route for a local change is a
+  // marking drawn into the picture plus a prompt that names it, which is a
+  // different surface from the mask editor and is not built in this cut.
   if (!isVideo && gp.inputImage && gp.maskImage && strategy !== 'checkpoint') {
     throw new WorkflowUnavailableError(
       'Local image editing needs an SD 1.5 / SDXL checkpoint. Pick a checkpoint model for Edit. FLUX and video models are not wired for local inpaint.',
@@ -524,13 +575,16 @@ export async function buildDynamicWorkflow(
     vaeOutputSlot = 2
     samplerModelId = modelNodeId
 
-  } else if (strategy === 'unet_flux' || strategy === 'unet_flux2' || strategy === 'unet_krea2' || strategy === 'unet_zimage' || strategy === 'unet_ernie_image' || strategy === 'unet_video' || strategy === 'unet_ltx'
+  } else if (strategy === 'unet_flux' || strategy === 'unet_flux2' || strategy === 'unet_krea2' || strategy === 'unet_zimage' || strategy === 'unet_ernie_image' || strategy === 'unet_qwenimage' || strategy === 'unet_video' || strategy === 'unet_ltx'
     || strategy === 'unet_mochi' || strategy === 'unet_cosmos') {
     // Separate loaders
     const unetId = String(n++)
     const clipId = String(n++)
 
     const clipType = type === 'zimage' ? 'qwen_image'
+      // Verbatim from the official templates: CLIPLoader type stays
+      // 'qwen_image' for Qwen-Image 2.1, the same widget value Z-Image uses.
+      : type === 'qwenimage' ? 'qwen_image'
       : type === 'ernie_image' ? 'flux2'
       : type === 'flux2' ? 'flux2'
       : type === 'krea2' ? 'krea2'
@@ -764,29 +818,74 @@ export async function buildDynamicWorkflow(
 
   // ─── Phase 2: Text Encoding ───
 
+  // Qwen-Image 2.1 edit: the reference image belongs to the text encoder
+  // (TextEncodeQwenImage21 sees it AND splices it in as VAE reference
+  // latents), not to a VAEEncode latent. Decided here, BEFORE the generic
+  // isI2I test in Phase 3, which would otherwise claim the image and turn an
+  // edit instruction into ordinary latent img2img.
+  const isQwenEdit = !isVideo && strategy === 'unet_qwenimage' && !!gp.inputImage
+
   const posId = String(n++)
   const negId = String(n++)
 
-  workflow[posId] = {
-    class_type: 'CLIPTextEncode',
-    inputs: { text: params.prompt, clip: [clipSourceId, clipOutputSlot] },
-  }
-
-  if (strategy === 'unet_ernie_image' || (strategy === 'unet_krea2' && params.cfgScale === 1)) {
-    // ERNIE-Image always, and Krea 2 at CFG 1 (K9, GH #136, LUSTIFY! v10
-    // Krea2): the negative branch is a no-op at CFG 1, so ConditioningZeroOut
-    // replaces the wasted CLIPTextEncode pass (NOT a plain negative prompt).
-    workflow[negId] = {
-      class_type: 'ConditioningZeroOut',
-      inputs: { conditioning: [posId, 0] },
+  if (strategy === 'unet_qwenimage') {
+    // ONE node carries prompt and negative prompt, the reference image and
+    // the matching empty latent. Outputs: positive 0, negative 1, latent 2.
+    //
+    // Every name here is read off the official Comfy-Org templates
+    // (image_qwen_image_2_1_t2i.json, image_qwen_image_2_1_image_edit.json)
+    // and the node's own schema in comfy_extras/nodes_qwen.py, checked
+    // 2026-09-21. The dotted input id is not a typo: the reference slots are
+    // an Autogrow group called "images" whose entries are named image_1 to
+    // image_16, and ComfyUI joins the two with a dot for the API format.
+    //
+    // The generate path attaches neither image nor vae, exactly as the t2i
+    // template does, and takes its latent from EmptyLatentImage below.
+    // negId is allocated but unused on this path; the graph is keyed by id,
+    // so a gap costs nothing (the I2I override below already leaves one).
+    // `resolution` is declared REQUIRED by the node (no optional flag on its
+    // Int input), so it goes on BOTH paths or ComfyUI answers "Required input
+    // is missing" before anything runs. It only does work when a reference
+    // image is attached; on the generate path it is inert, exactly as in the
+    // t2i template, which also carries the widget and never uses it.
+    const qwenInputs: ComfyNodeInputs = {
+      clip: [clipSourceId, clipOutputSlot],
+      prompt: params.prompt,
+      negative_prompt: params.negativePrompt || '',
+      resolution: qwenEditResolution(params.width, params.height),
     }
+    if (isQwenEdit) {
+      const qwenImageId = String(n++)
+      workflow[qwenImageId] = {
+        class_type: 'LoadImage',
+        inputs: { image: gp.inputImage },
+      }
+      qwenInputs['images.image_1'] = [qwenImageId, 0]
+      qwenInputs.vae = [vaeSourceId, vaeOutputSlot]
+    }
+    workflow[posId] = { class_type: 'TextEncodeQwenImage21', inputs: qwenInputs }
   } else {
-    workflow[negId] = {
+    workflow[posId] = {
       class_type: 'CLIPTextEncode',
-      inputs: {
-        text: params.negativePrompt || '',
-        clip: [clipSourceId, clipOutputSlot],
-      },
+      inputs: { text: params.prompt, clip: [clipSourceId, clipOutputSlot] },
+    }
+
+    if (strategy === 'unet_ernie_image' || (strategy === 'unet_krea2' && params.cfgScale === 1)) {
+      // ERNIE-Image always, and Krea 2 at CFG 1 (K9, GH #136, LUSTIFY! v10
+      // Krea2): the negative branch is a no-op at CFG 1, so ConditioningZeroOut
+      // replaces the wasted CLIPTextEncode pass (NOT a plain negative prompt).
+      workflow[negId] = {
+        class_type: 'ConditioningZeroOut',
+        inputs: { conditioning: [posId, 0] },
+      }
+    } else {
+      workflow[negId] = {
+        class_type: 'CLIPTextEncode',
+        inputs: {
+          text: params.negativePrompt || '',
+          clip: [clipSourceId, clipOutputSlot],
+        },
+      }
     }
   }
 
@@ -796,8 +895,11 @@ export async function buildDynamicWorkflow(
   // "repaint everything". Ported 1:1 from the web app's tested builder
   // (create-workflows.ts): same node classes, same defaults.
   const isInpaint = !isVideo && !!gp.inputImage && !!gp.maskImage && strategy === 'checkpoint'
-  // I2I mode: LoadImage → VAEEncode instead of empty latent
-  const isI2I = !isVideo && !isInpaint && params.inputImage && (params.denoise ?? 1.0) < 1.0
+  // I2I mode: LoadImage → VAEEncode instead of empty latent. A Qwen-Image 2.1
+  // edit is excluded: its reference image is already wired into the text
+  // encoder above, and its sampler runs at denoise 1.0 like the official
+  // template (instruction editing, not a partial re-noise of the source).
+  const isI2I = !isVideo && !isInpaint && !isQwenEdit && params.inputImage && (params.denoise ?? 1.0) < 1.0
 
   const latentId = String(n++)
 
@@ -852,6 +954,19 @@ export async function buildDynamicWorkflow(
       class_type: latentNode,
       inputs: { width: params.width, height: params.height, batch_size: params.batchSize },
     }
+  } else if (strategy === 'unet_qwenimage') {
+    // Qwen-Image 2.1 generate: plain EmptyLatentImage, the node the official
+    // t2i template uses. Its autoencoder has 64 channels and compresses 16x
+    // where this node writes 4 channels at an eighth, but the node reports
+    // its own downscale_ratio_spacial and ComfyUI repairs an all-zero latent
+    // to the model's format before sampling, so the canvas comes out at the
+    // size that was asked for. On the edit path this node is dropped again
+    // further down: there the latent comes from TextEncodeQwenImage21, so
+    // the result follows the reference image.
+    workflow[latentId] = {
+      class_type: 'EmptyLatentImage',
+      inputs: { width: params.width, height: params.height, batch_size: params.batchSize },
+    }
   } else if (strategy === 'unet_zimage') {
     // Z-Image uses SD3 latent (same architecture family)
     const latentNode = nodes.latentInit.includes('EmptySD3LatentImage')
@@ -882,6 +997,18 @@ export async function buildDynamicWorkflow(
   let latentRef: [string, number] = [latentId, 0]
   let positiveRef: [string, number] = [posId, 0]
   let negativeRef: [string, number] = [negId, 0]
+
+  if (strategy === 'unet_qwenimage') {
+    // One encode node, both conditionings (slots 0 and 1).
+    negativeRef = [posId, 1]
+    if (isQwenEdit) {
+      // ...and, with a reference image attached, the latent too (slot 2): an
+      // empty latent on the reference's own size, which the node's tooltip
+      // calls out as required, because any other size shifts the edit.
+      latentRef = [posId, 2]
+      delete workflow[latentId]
+    }
+  }
 
   // I2I override: replace empty latent with LoadImage → VAEEncode
   if (isI2I) {
