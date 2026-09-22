@@ -80,6 +80,11 @@
 
     <p>The stack runs through <a href="https://locallyuncensored.com/">Locally Uncensored</a>, an open-source desktop app that wraps ComfyUI so you never touch a node graph. If you want the deeper mechanics of the video pipeline afterward, the companion <a href="how-to-generate-ai-videos-locally.html">guide to generating AI videos locally</a> goes further on prompt craft and VRAM tuning.</p>
 
+    <aside class="lu-cloud-box">
+      <span class="lu-cloud-kicker">No GPU? Run it online</span>
+      <p>Our hosted video works differently from the local text-to-video below: the <a href="/uncensored-ai-video-generator-online/">video generator online</a> is image-to-video only, you supply the starting frame, and every clip is five seconds long.</p>
+    </aside>
+
     <h2>What "Uncensored" Actually Means Here</h2>
 
     <p>Let's be precise, because the word gets abused. "Uncensored" here does not mean a special model trained to produce anything on command. It means there is <strong>no cloud content filter</strong> standing between your prompt and the model. Hosted generators run every request through a moderation layer; a local model has none, because there's no server in the loop. You type a prompt, your GPU renders frames, and the result stays on your disk.</p>
