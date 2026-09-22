@@ -52,16 +52,24 @@ const ERWARTET = {
   // Inhaltsschranke (`adult: true` im Medienkatalog des Web-Repos) und die
   // zwei Zahlen des Einstiegsabos, die der Kaufknopf und der Abo-Satz nennen.
   //
-  // Gezaehlt wird, was ERZEUGT: `adult: true`, `kind` passend, ohne `ops`.
-  // Das Verlaengerungs-Werkzeug traegt dasselbe Flag und zaehlt nicht mit,
-  // sonst waere die Videozahl um eins zu gross.
+  // Gezaehlt wird, was ERZEUGT und was ein Kunde selbst waehlt: `adult: true`
+  // mit passender `kind`, quer durch den ganzen Katalog. Seit dem Entscheid
+  // vom 22.09.2026 zaehlen die Studio-Eintraege (`ops: ['studio']`) mit, denn
+  // der Kunde klickt sie im Create-Studio genauso an. Heraus fallen weiter die
+  // Verlaengerungs-Werkzeuge, die einen vorhandenen Clip fortsetzen, und die
+  // Studio-Zwillinge mit `sourceModel`, die denselben Endpunkt ein zweites Mal
+  // fuehren.
   //
-  // Die Zehn stammt aus dem am 13.09.2026 umgebauten Katalog. Ein Baum, der
-  // den Umbau noch nicht hat, zaehlt sechs; dann steht
-  // `scripts/check-cloud-sales.mjs` rot, und das ist der gewollte Zustand,
-  // bis der Katalog nachgezogen ist.
-  openImageModels: 3,
-  openVideoModels: 10,
+  // Herleitung: zehn klassische Videomodelle plus wan-3.0-spicy,
+  // wan-3.0-prime-spicy, open-video und open-video-lora sind vierzehn; drei
+  // klassische Bildmodelle plus z-image, nucleus-image, jib-mix-qwen und
+  // wan-2.2-realism sind sieben. Die Herleitung selbst rechnet
+  // `offene-modelle-in-den-texten.test.ts` gegen die Preisseite nach.
+  //
+  // Ein Baum, der den Katalogumbau vom 13.09.2026 nicht hat, zaehlt sechs;
+  // einer ohne den Create-Studio-Katalog zehn.
+  openImageModels: 7,
+  openVideoModels: 14,
   hostedMonthlyEUR: 19,
   hostedCredits: 900_000,
 } as const

@@ -13,6 +13,13 @@
  * Dieser Waechter laeuft bei jedem Commit und haelt die vier Stellen an
  * `CLOUD_PITCH.openVideoModels`.
  *
+ * 22.09.2026, Entscheid David: die Zaehlregel nimmt den Create-Studio-Katalog
+ * auf. Gezaehlt wird jeder Katalogeintrag mit `adult: true` und der passenden
+ * Gattung, auch der mit `ops: ['studio']`; heraus fallen die Werkzeuge, die
+ * einen vorhandenen Clip fortsetzen, und die Studio-Zwillinge, die denselben
+ * Endpunkt unter einem zweiten Namen fuehren. Aus zehn Videomodellen werden so
+ * vierzehn und aus drei Bildmodellen sieben.
+ *
  * Lauf: npx vitest run src/lib/__tests__/offene-modelle-in-den-texten.test.ts
  */
 import { readFileSync } from 'node:fs'
@@ -25,20 +32,23 @@ const lies = (pfad: string) => readFileSync(resolve(WURZEL, pfad), 'utf8')
 const SEITEN = ['docs/index.html', 'docs/cloud/index.html', 'docs/pricing/index.html'] as const
 
 /**
- * Der CHANGELOG zaehlt mit, aber nur sein 3.0.0-Abschnitt: aeltere Abschnitte
- * duerfen "six" sagen, sie beschreiben einen aelteren Katalog. Die Datei nannte
- * oben "10 open video models" und dreissig Zeilen tiefer "Six video models",
- * also zweimal dieselbe Menge mit zwei Zahlen.
+ * Der CHANGELOG zaehlt mit, aber nur sein OBERSTER Abschnitt.
+ *
+ * Bis zum 22.09.2026 stand hier der 3.0.0-Abschnitt. Der ist eine Aussage zu
+ * seinem Datum: am 13.09.2026 zaehlte der Katalog zehn, und wer das heute auf
+ * vierzehn umschreibt, faelscht eine Versionsnotiz. Gehalten wird deshalb der
+ * neueste Abschnitt, also der, in dem die heute gueltige Zahl steht. Aeltere
+ * Abschnitte duerfen "six" und "ten" sagen, sie beschreiben aeltere Kataloge.
  */
 const CHANGELOG = 'CHANGELOG.md'
-const abschnitt300 = () => {
+const neuesterAbschnitt = () => {
   const text = lies(CHANGELOG)
-  const start = text.indexOf('## [3.0.0]')
-  expect(start, 'im CHANGELOG fehlt der 3.0.0-Abschnitt').toBeGreaterThanOrEqual(0)
+  const start = text.indexOf('\n## [')
+  expect(start, 'im CHANGELOG fehlt jeder Versionsabschnitt').toBeGreaterThanOrEqual(0)
   const ende = text.indexOf('\n## [', start + 1)
   return ende === -1 ? text.slice(start) : text.slice(start, ende)
 }
-const ZAHLWORT: Record<number, string> = { 3: 'three', 6: 'six', 10: 'ten', 15: 'fifteen' }
+const ZAHLWORT: Record<number, string> = { 3: 'three', 6: 'six', 7: 'seven', 10: 'ten', 14: 'fourteen', 15: 'fifteen' }
 
 /**
  * Die alte Aussage, an ihrer Form erkannt statt an einem festen Satz: ein
@@ -53,12 +63,54 @@ const nenntSechsModelle = (text: string) =>
 const alsText = (html: string) =>
   new DOMParser().parseFromString(html, 'text/html').body.textContent ?? ''
 
+/**
+ * Die Ids, die ein Tabellenblock der Preisseite fuehrt, jede mit ihrem Preis
+ * geprueft.
+ *
+ * DIE SPICY-REGEL UND IHRE AUSNAHME. Bis zum 22.09.2026 verlangte dieser
+ * Waechter, dass jede Id der Videotabelle auf `spicy` endet. Die Regel war eine
+ * Abkuerzung: im klassischen Katalog hiess jedes offene Videomodell so. Der
+ * Create-Studio-Katalog fuehrt mit `open-video` und `open-video-lora` zwei
+ * offene Endpunkte, die anders heissen. Sie tragen `adult: true` in derselben
+ * Datei wie die zehn anderen und laufen ueber dieselbe Kontoeinstellung; die
+ * Marke haengt seit acaa0c9d am Katalogfeld und nie am Namen. Die Ausnahme ist
+ * deshalb NAMENTLICH und zaehlt genau diese zwei Ids auf, statt die Regel
+ * still zu lockern: eine neue Zeile ohne "spicy" und ohne Eintrag hier faellt
+ * weiter durch.
+ *
+ * Die Bildtabelle hatte diese Regel nie: `chroma`, `prefect-pony` und
+ * `neta-lumina` heissen seit jeher ohne Zusatz.
+ */
+const OFFEN_OHNE_SPICY_IM_NAMEN = new Set(['open-video', 'open-video-lora'])
+
+const blatt = () => new DOMParser().parseFromString(lies('docs/pricing/index.html'), 'text/html')
+
+const geprueftesTabellenblatt = (wahl: string, preisfeld: 'clipCredits' | 'imageCredits') => {
+  const zeilen = [...blatt().querySelectorAll(wahl)]
+  expect(zeilen.length, `${wahl} steht nicht auf der Preisseite`).toBeGreaterThan(0)
+  return zeilen.map((zeile) => {
+    const name = zeile.querySelector<HTMLElement>('[data-adult-model-id]')
+    expect(name, 'eine Zeile ohne Modellanker').toBeTruthy()
+    const id = name!.dataset.adultModelId!
+    if (preisfeld === 'clipCredits' && !OFFEN_OHNE_SPICY_IM_NAMEN.has(id)) {
+      expect(id, `${id} traegt kein spicy und steht in keiner Ausnahme`).toMatch(/spicy$/)
+    }
+    const preis = zeile.querySelector<HTMLElement>(`[data-${preisfeld === 'clipCredits' ? 'clip' : 'image'}-credits]`)
+    expect(preis, `kein Preis fuer ${id}`).toBeTruthy()
+    const credits = Number(preis!.dataset[preisfeld])
+    expect(credits, `Preis 0 fuer ${id}`).toBeGreaterThan(0)
+    // Der Leser sieht den Text, nicht das Attribut. Beide muessen stimmen.
+    expect(preis!.textContent).toBe(credits.toLocaleString('en-US'))
+    return id
+  })
+}
+
 describe('die Zahl der offenen Modelle', () => {
   it('steht auf keiner Seite mehr als sechs', () => {
     for (const seite of SEITEN) {
       expect(nenntSechsModelle(alsText(lies(seite))), `${seite} zaehlt noch sechs`).toBe(false)
     }
-    expect(nenntSechsModelle(abschnitt300()), `${CHANGELOG} zaehlt noch sechs`).toBe(false)
+    expect(nenntSechsModelle(neuesterAbschnitt()), `${CHANGELOG} zaehlt noch sechs`).toBe(false)
   })
 
   it('steht auf jeder Verkaufsflaeche als das gezaehlte Zahlwort', () => {
@@ -68,30 +120,85 @@ describe('die Zahl der offenen Modelle', () => {
       expect(alsText(lies(seite)), `${seite} nennt die offene Videozahl nicht`)
         .toMatch(new RegExp(`\\b${wort}\\b[^.]{0,40}\\b(?:video|image-to-video)`, 'i'))
     }
-    expect(abschnitt300(), `${CHANGELOG} nennt die offene Videozahl nicht`)
+    expect(neuesterAbschnitt(), `${CHANGELOG} nennt die offene Videozahl nicht`)
       .toMatch(new RegExp(`\\b${wort}\\b[^.]{0,40}\\b(?:video|image-to-video)`, 'i'))
   })
 
+  /**
+   * Die Bildzahl stand bis zum 22.09.2026 auf denselben vier Flaechen, aber
+   * ungehalten: nur die Videozahl hatte einen Waechter. Seit die Zaehlregel
+   * beide Gattungen aus demselben Katalog holt, geht auch die Bildzahl bei
+   * jedem Katalogumbau mit, und eine Flaeche, die sie vergisst, faellt hier.
+   */
+  it('und die Bildzahl ebenso', () => {
+    const wort = ZAHLWORT[CLOUD_PITCH.openImageModels]
+    expect(wort, `fuer ${CLOUD_PITCH.openImageModels} fehlt das Zahlwort`).toBeTruthy()
+    for (const seite of SEITEN) {
+      expect(alsText(lies(seite)), `${seite} nennt die offene Bildzahl nicht`)
+        .toMatch(new RegExp(`\\b${wort}\\b[^.]{0,40}\\bimage`, 'i'))
+    }
+    expect(neuesterAbschnitt(), `${CHANGELOG} nennt die offene Bildzahl nicht`)
+      .toMatch(new RegExp(`\\b${wort}\\b[^.]{0,40}\\bimage`, 'i'))
+  })
+
   it('und die Preisseite fuehrt jede offene Videozeile genau einmal', () => {
-    const seite = new DOMParser().parseFromString(lies('docs/pricing/index.html'), 'text/html')
-    const zeilen = [...seite.querySelectorAll('[data-adult-video-row]')]
-    expect(zeilen, 'die Preistabelle zaehlt anders als der Katalog')
+    const ids = geprueftesTabellenblatt('[data-adult-video-row]', 'clipCredits')
+    expect(ids, 'die Preistabelle zaehlt anders als der Katalog')
       .toHaveLength(CLOUD_PITCH.openVideoModels)
-    const ids = zeilen.map((zeile) => {
-      const name = zeile.querySelector<HTMLElement>('[data-adult-model-id]')
-      expect(name, 'eine Zeile ohne Modellanker').toBeTruthy()
-      // Offen heisst im Katalog: die Id traegt spicy. Eine Zeile, die das
-      // nicht tut, gehoert nicht in diese Tabelle.
-      expect(name!.dataset.adultModelId).toMatch(/spicy$/)
-      const preis = zeile.querySelector<HTMLElement>('[data-clip-credits]')
-      expect(preis, `kein Clippreis fuer ${name!.dataset.adultModelId}`).toBeTruthy()
-      const credits = Number(preis!.dataset.clipCredits)
-      expect(credits, `Clippreis 0 fuer ${name!.dataset.adultModelId}`).toBeGreaterThan(0)
-      // Der Leser sieht den Text, nicht das Attribut. Beide muessen stimmen.
-      expect(preis!.textContent).toBe(credits.toLocaleString('en-US'))
-      return name!.dataset.adultModelId
-    })
     expect(new Set(ids).size, 'ein Modell steht zweimal in der Tabelle').toBe(ids.length)
+  })
+
+  it('und jede offene Bildzeile genau einmal', () => {
+    const ids = geprueftesTabellenblatt('[data-adult-image-row]', 'imageCredits')
+    expect(ids, 'die Bildtabelle zaehlt anders als der Katalog')
+      .toHaveLength(CLOUD_PITCH.openImageModels)
+    expect(new Set(ids).size, 'ein Modell steht zweimal in der Tabelle').toBe(ids.length)
+  })
+
+  /**
+   * DIE HERLEITUNG, und nicht nur die Summe.
+   *
+   * Die beiden Zahlen in `CLOUD_PITCH` sind getippt, weil der Katalog im
+   * Web-Repo liegt (siehe den Kopf von `cloud-pitch.ts`). Eine getippte Zahl,
+   * die nur gegen eine Zeilenzahl gehalten wird, laesst sich zu zweit falsch
+   * machen: wer eine Zeile streicht und die Zahl mit, kommt durch. Dieser Test
+   * rechnet deshalb die Herleitung nach, die im Kommentar steht: die
+   * klassischen Zeilen plus genau die Zeilen, die auch im
+   * Create-Studio-Abschnitt derselben Seite stehen, und zwar mit demselben
+   * Preis. Der Studio-Abschnitt ist der Abzug des Studio-Katalogs auf dieser
+   * Seite; er traegt `data-studio-model-id` und `data-studio-credits`.
+   */
+  it('rechnet beide Zahlen aus klassischen und Studio-Zeilen zusammen', () => {
+    const seite = blatt()
+    const studio = new Map(
+      [...seite.querySelectorAll<HTMLElement>('[data-studio-model-id]')].map((name) => [
+        name.dataset.studioModelId!,
+        Number(name.closest('tr')!.querySelector<HTMLElement>('[data-studio-credits]')!.dataset.studioCredits),
+      ]),
+    )
+    expect(studio.size, 'der Seite fehlt der Create-Studio-Abschnitt').toBeGreaterThan(0)
+
+    const teile = (wahl: string, preisfeld: 'clipCredits' | 'imageCredits') => {
+      let klassisch = 0
+      let ausDemStudio = 0
+      for (const zeile of seite.querySelectorAll<HTMLElement>(wahl)) {
+        const id = zeile.querySelector<HTMLElement>('[data-adult-model-id]')!.dataset.adultModelId!
+        const preis = Number(zeile.querySelector<HTMLElement>(`[data-${preisfeld === 'clipCredits' ? 'clip' : 'image'}-credits]`)!.dataset[preisfeld])
+        if (studio.has(id)) {
+          expect(studio.get(id), `${id} kostet im Studio-Abschnitt etwas anderes`).toBe(preis)
+          ausDemStudio += 1
+        } else {
+          klassisch += 1
+        }
+      }
+      return { klassisch, ausDemStudio }
+    }
+
+    // Die Herleitung aus dem Kommentar in cloud-pitch.ts, Zahl fuer Zahl.
+    expect(teile('[data-adult-video-row]', 'clipCredits')).toEqual({ klassisch: 10, ausDemStudio: 4 })
+    expect(teile('[data-adult-image-row]', 'imageCredits')).toEqual({ klassisch: 3, ausDemStudio: 4 })
+    expect(CLOUD_PITCH.openVideoModels).toBe(10 + 4)
+    expect(CLOUD_PITCH.openImageModels).toBe(3 + 4)
   })
 
   it('und das Blatt liest die Zahl, statt sie zu tippen', () => {

@@ -2,6 +2,22 @@
 
 All notable changes to Locally Uncensored are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **The count of open models now takes the Create Studio endpoints in.**
+  Fourteen video models and seven image models in the cloud catalogue run
+  without a built-in content restriction, counted the way a customer picks
+  them: every catalogue entry marked adult, whether it sits in the classic
+  picker or on the Create Studio shelf. The old rule left the Studio shelf out
+  and reported ten and three, so four open image-to-video endpoints and four
+  open image models were sold short. Two of the fourteen, OpenVideo and
+  OpenVideo + Style LoRA, do not carry Spicy in the name and are open all the
+  same; the mark comes from the catalogue field, never from the name. An entry
+  that is the same endpoint under a second name is counted once, and the
+  extend tools stay out because they continue a clip instead of making one.
+
 ## [3.0.1] - 2026-09-18
 
 A GPU without a measured free reading gets a safer plan, and Linux/AppImage
