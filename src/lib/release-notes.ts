@@ -130,13 +130,30 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  // Auflage 2 (review-gesamt.md): package.json, src-tauri/Cargo.toml (plus
-  // Cargo.lock) und src-tauri/tauri.conf.json stehen jetzt alle auf 3.0.1, in
-  // einem Zug mit diesem Eintrag, damit kein Release still bleibt (Gedaechtnis
+  // Stand 22.09.2026: package.json, src-tauri/Cargo.toml (plus Cargo.lock) und
+  // src-tauri/tauri.conf.json stehen jetzt alle auf 3.0.2, in einem Zug mit
+  // dem Eintrag darunter, damit kein Release still bleibt (Gedaechtnis
   // lu-265-plan-2026-08-10, "release-notes.ts vergessen = stummes Release").
-  // Der 3.0.0-Eintrag darunter bleibt der VEROEFFENTLICHTE Notizzettel (v3.0.0
-  // auf 10df943e, 14.09.2026, auf origin) und traegt keine Zusage mehr, die
-  // 3.0.0 selbst nicht enthielt.
+  // 3.0.1 IST veroeffentlicht (v3.0.1 auf 49d276bd, 21.09.2026), der
+  // 3.0.1-Eintrag ist damit ein Notizzettel der Vergangenheit wie der
+  // 3.0.0-Eintrag darunter (v3.0.0 auf 10df943e, 14.09.2026): beide bleiben
+  // unveraendert und tragen keine Zusage, die ihre eigene Version nicht
+  // enthielt. Der Hotfix 3.0.2 repariert eine Regression AUS 3.0.1, also
+  // steht sie im neuen Eintrag beim Namen.
+  {
+    version: '3.0.2',
+    headline: 'A hotfix for the Code tab: a long conversation scrolls again and the input box stays in view. The count of open cloud models also takes the Create Studio shelf in now.',
+    lines: [
+      {
+        title: 'The Code tab scrolls again, and its input box stays in view.',
+        detail: 'The Code tab lost its scrollbar and its input box once a conversation grew taller than the window (issue 138, a regression in 3.0.1). The frame around the transcript and the composer stopped being a scroll container, so it grew with the transcript instead of staying inside the window: only the start of a long conversation was visible, the mouse wheel did nothing, and the composer with its toolbar sat below the bottom edge. The frame is held to the window height again, so the transcript scrolls and the input box stays where you can reach it. The Chat tab was never affected.',
+      },
+      {
+        title: 'The count of open cloud models now takes the Create Studio shelf in.',
+        detail: 'Fourteen video models and seven image models in the cloud catalogue run without a built-in content restriction, counted the way a customer picks them: every catalogue entry marked adult, whether it sits in the classic picker or on the Create Studio shelf. The old rule left the Studio shelf out and reported ten and three, so four open image-to-video endpoints and four open image models were sold short. Two of the fourteen, OpenVideo and OpenVideo + Style LoRA, do not carry Spicy in the name and are open all the same; the mark comes from the catalogue field, never from the name.',
+      },
+    ],
+  },
   {
     version: '3.0.1',
     // Auflage 4 (Bauer, Runde 2, 19.09.2026): die zwei Saetze, die unter der

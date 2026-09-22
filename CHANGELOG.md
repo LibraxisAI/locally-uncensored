@@ -2,7 +2,11 @@
 
 All notable changes to Locally Uncensored are documented here.
 
-## [Unreleased]
+## [3.0.2] - 2026-09-22
+
+A hotfix for the Code tab, where a conversation taller than the window lost its
+scrollbar and its input box. The count of open models in the cloud catalogue
+also takes the Create Studio endpoints in now, fourteen video and seven image.
 
 ### Fixed
 

@@ -57,7 +57,7 @@ describe('the notes table', () => {
     }
   })
 
-  it('every 3.0.1 line has a title, and no title is a text wall', () => {
+  it('every line of the shipping entry has a title, and no title is a text wall', () => {
     // Runde 2 (19.09.2026): the sheet used to show 35 developer paragraphs
     // with nothing to skim. Every line of the SHIPPING version now has to
     // carry a short `title`, or the redesign quietly regresses to walls of
@@ -275,16 +275,16 @@ describe('the notes table', () => {
     expect(prose).toContain('photograph of a real, identifiable person without their consent')
   })
 
-  it('the 3.0.1 entry names its own fixes, now that it is the shipping version', () => {
+  it('the 3.0.1 entry names its own fixes', () => {
     // Auflage 2 (review-gesamt.md): package.json, Cargo.toml/.lock and
     // tauri.conf.json all moved to 3.0.1 in one commit, so THIS is now the
     // shipping entry the earlier existence guard checks. Same blind spot as
     // 2.6.8/2.6.9/3.0.0 above: an anchor per fix, so a later edit that drops
     // one fails here instead of shipping quietly incomplete.
-    const shipping = JSON.parse(
-      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
-    ).version as string
-    expect(shipping).toBe('3.0.1')
+    // 3.0.2 shipped on top of it (package.json), so this pins the 3.0.1 entry
+    // by its own version like the 2.6.8, 2.6.9 and 3.0.0 blocks above do, and
+    // the 3.0.2 entry gets its own anchors below.
+    const shipping = '3.0.1'
     const prose = proseOf(shipping)
     for (const anchor of [
       'avx2', 'total capacity, not free memory', 'ld_library_path',
@@ -302,6 +302,32 @@ describe('the notes table', () => {
       // ENG-14, matrix point 83 (review-venvhint.md): the fix itself was
       // stdout being discarded; this is the sentence the sheet promises for it.
       'python3-venv', 'lu only read stderr',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
+  })
+
+  it('the 3.0.2 entry names the Code tab hotfix and the new count, now that it is the shipping version', () => {
+    // Hotfix fuer Issue 138: package.json, Cargo.toml/.lock and
+    // tauri.conf.json all moved to 3.0.2 in one commit, so THIS is now the
+    // shipping entry the earlier existence guard checks. Same blind spot as
+    // 2.6.8/2.6.9/3.0.0/3.0.1 above: an anchor per statement, so a later edit
+    // that drops one fails here instead of shipping quietly incomplete. The
+    // two statements are the only two the CHANGELOG carries for 3.0.2.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    expect(shipping).toBe('3.0.2')
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      // Der Fehler, sein Bericht und die Version, aus der er stammt.
+      'issue 138', 'a regression in 3.0.1', 'scroll container',
+      'the mouse wheel did nothing', 'held to the window height again',
+      // Und die Grenze der Aussage: der Chat-Reiter war nie betroffen.
+      'the chat tab was never affected',
+      // Die neue Zaehlung, beide Gattungen und die Herkunft der Marke.
+      'fourteen video models', 'seven image models', 'create studio shelf',
+      'reported ten and three', 'never from the name',
     ]) {
       expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
     }
