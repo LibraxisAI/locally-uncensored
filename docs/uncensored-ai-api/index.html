@@ -71,7 +71,7 @@
 
     <p>The LU Labs inference API speaks the OpenAI chat completions shape, so any OpenAI SDK or client works once you change the base URL to <code>https://lu-labs.ai/api/inference/v1</code> and pass an <code>lu_</code> key. One key reaches all 47 hosted chat models, and we add no moderation layer of our own on text. Credits start at 15 EUR with no subscription.</p>
 
-    <p>We build <a href="/">Locally Uncensored</a>, the open source AI studio that runs models on your own machine. The hosted side at <a href="https://lu-labs.ai/" target="_blank" rel="noopener">LU Labs</a> exists for the models a single card cannot hold, and this page is about reaching it from your own code instead of from the chat window.</p>
+    <p>We build <a href="/">Locally Uncensored</a>, the open source AI studio that runs models on your own machine. The hosted side at <a href="https://lu-labs.ai/" target="_blank" rel="noopener">LU Labs</a> exists for the models a single card cannot hold, and this page is about reaching it from your own code instead of from the chat window. What <a href="/uncensored-ai/">uncensored AI</a> means on each route is set out on its own page.</p>
 
     <h2>Endpoint and authentication</h2>
 
@@ -187,7 +187,7 @@ for await (const chunk of stream) {
 
     <p>If a hosted request is the wrong shape for your work, the desktop app for Windows and Linux is free and AGPL-3.0, and it runs whatever model you install on your own hardware, including abliterated builds. It also carries its own OpenAI compatible server: Settings, Voice &amp; Remote, Local API starts one on port 8129 for every model on the machine, guarded by a token every request must carry, with a switch that decides whether the rest of your LAN may reach it. That is the same client integration story as above with nothing leaving the building.</p>
 
-    <p>The background on abliterated weights and what they actually change is in <a href="/blog/abliterated-models-guide.html">the abliterated models guide</a>, and the offline setup route is in <a href="/blog/run-uncensored-ai-locally.html">how to run uncensored AI locally</a>. If you want the browser chat window rather than an endpoint, that is <a href="/uncensored-ai-chat-online/">uncensored AI chat online</a>. For how the hosted side compares with another provider, see <a href="/vs/venice/">LU Labs against Venice</a>.</p>
+    <p>The background on abliterated weights and what they actually change is in <a href="/blog/abliterated-models-guide.html">the abliterated models guide</a>, and the offline setup route is in <a href="/blog/run-uncensored-ai-locally.html">how to run uncensored AI locally</a>. If you want the browser chat window rather than an endpoint, that is <a href="/uncensored-ai-chat-online/">uncensored AI chat online</a>. For how the hosted side compares with another provider, see <a href="/vs/venice/">LU Labs against Venice</a>. <a href="/uncensored-ai/">What uncensored AI means, local and online</a> covers the word itself on both sides.</p>
 
     <h2>FAQ</h2>
 

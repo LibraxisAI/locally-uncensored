@@ -50,7 +50,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Agent Mode with 14 tools, MCP integration, sub-agent delegation, budget caps
 - Mobile remote access via LAN or Cloudflare Tunnel with 6-digit passcode + QR setup
 - A/B Model Compare and Local Benchmark built in
-- Memory system and Document Chat (RAG) — local embeddings, no cloud
+- Memory system and Document Chat (RAG): local embeddings, no cloud
 - Voice STT (Whisper) and TTS
 - Auto-update over signed NSIS channel for Windows
 - Single-instance lock (v2.4.0): double-launch focuses existing window
@@ -59,13 +59,13 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Chat and memory persistence moved to IndexedDB, removing the old 5 MB storage cap (v2.5.0)
 - Editable memory with a user-settable injected-memory limit (v2.5.0)
 - Import existing ChatGPT, Claude, and Gemini conversations into the app (v2.5.0)
-- Small-model mode: a tool-calling reliability profile tuned for 3B–8B local models (v2.5.0)
+- Small-model mode: a tool-calling reliability profile tuned for 3B to 8B local models (v2.5.0)
 - Repo-Map with Aider-style PageRank for repository-aware coding (v2.5.0)
 - Streaming local voice: Whisper STT plus Piper neural TTS with one-click in-app install (v2.5.0)
 - Document Chat (RAG) with one-click nomic-embed-text install; embedding chunks survive NSIS auto-updates (v2.4.9)
-- VRAM tier filter (Lightweight ≤10 GB / Mid-Range 10–16 GB / High-End >16 GB) across text, image, and video models in Discover (v2.4.9)
+- VRAM tier filter (Lightweight ≤10 GB / Mid-Range 10 to 16 GB / High-End >16 GB) across text, image, and video models in Discover (v2.4.9)
 - Detects the ComfyUI Desktop App layout, not just classic main.py installs (v2.4.9)
-- Configurable image/video generation timeouts (1–480 min) for CPU/iGPU users (v2.4.7)
+- Configurable image/video generation timeouts (1 to 480 min) for CPU/iGPU users (v2.4.7)
 - Inline "Start LM Studio Server" button when LM Studio is installed but its server is off (v2.4.7)
 - Linux installer auto-detects deb/rpm/AppImage family; ComfyUI CPU mode + Arch venv auto-create (v2.4.5)
 
@@ -186,8 +186,8 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Uncensored AI Chat Online (browser, desktop Cloud switch, or API key): https://locallyuncensored.com/blog/uncensored-ai-chat-online-guide.html
 - What No Filter Actually Means Here (the honest limits): https://locallyuncensored.com/blog/what-no-filter-means-online.html
 - Uncensored AI chat online, no filter on text (landing page): https://locallyuncensored.com/uncensored-ai-chat-online/
-- Uncensored AI image generator online (adult-capable models from 1,000 credits per image, content policy setting on the account): https://locallyuncensored.com/uncensored-ai-image-generator-online/
-- Uncensored AI video generator online (image-to-video only, five-second clips): https://locallyuncensored.com/uncensored-ai-video-generator-online/
+- Uncensored AI image generator online (seven adult-capable models from 1,000 credits per image, content policy setting on the account): https://locallyuncensored.com/uncensored-ai-image-generator-online/
+- Uncensored AI video generator online (fourteen adult-capable models, image-to-video only, five-second clips): https://locallyuncensored.com/uncensored-ai-video-generator-online/
 - Uncensored AI API (OpenAI-compatible, base URL https://lu-labs.ai/api/inference/v1, keys spend credits): https://locallyuncensored.com/uncensored-ai-api/
 - Locally Uncensored vs Open WebUI / LM Studio / Jan / GPT4All / Msty / SillyTavern / KoboldCpp: https://locallyuncensored.com/blog/
 
