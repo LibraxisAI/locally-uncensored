@@ -81,6 +81,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 
 ## Supported Image Models (via ComfyUI)
 - FLUX 2 Klein, FLUX.1
+- Qwen-Image 2.1 (generates and edits with one model; Qwen Research License, non-commercial)
 - Z-Image Turbo (uncensored)
 - Juggernaut XL, Dreamshaper, RealVis
 - ERNIE-Image (Baidu, Turbo + Base)
@@ -131,6 +132,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
   - Handbook chapter, Settings and troubleshooting: https://locallyuncensored.com/guide/settings-and-troubleshooting/
   - Handbook chapter, FAQ and glossary: https://locallyuncensored.com/guide/faq-and-glossary/
 - Blog (guides, comparisons, release notes): https://locallyuncensored.com/blog/
+- Qwen-Image 2.1 in Locally Uncensored (tutorial, explainer and handbook section in one place): https://locallyuncensored.com/qwen-image-2-1/
 - Full text for LLMs: https://locallyuncensored.com/llms-full.txt
 - How to Run AI Locally (5-minute beginner guide): https://locallyuncensored.com/blog/how-to-run-ai-locally.html
 - LM Studio Alternatives 2026: https://locallyuncensored.com/blog/lm-studio-alternatives.html
@@ -172,6 +174,8 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Kimi K3 vs DeepSeek V4 (price, thinking, vision, and which plan): https://locallyuncensored.com/blog/kimi-k3-vs-deepseek-v4.html
 - How to run Qwen 3.8 without a GPU (hosted Studio, API key, or the 27B at home): https://locallyuncensored.com/blog/run-qwen-3-8-without-gpu.html
 - Qwen 3.8 Max vs Qwen 3.8 A95B (the thinking switch, the price, the licence): https://locallyuncensored.com/blog/qwen-3-8-max-vs-a95b-explained.html
+- How to Run Qwen-Image 2.1 Locally (three files, ComfyUI 0.37.0, maskless editing, research licence): https://locallyuncensored.com/blog/how-to-run-qwen-image-2-1-locally.html
+- Qwen-Image 2.1 Explained (7B image model, alpha channel, ten references, no longer Apache 2.0): https://locallyuncensored.com/blog/qwen-image-2-1-explained.html
 - Flux 2 Online Without a 24 GB Card (browser image generation, credit math): https://locallyuncensored.com/blog/flux-2-online-without-gpu.html
 - Flux 2 Dev vs Flux Dev vs Flux Schnell (cost per image and which to default to): https://locallyuncensored.com/blog/flux-2-dev-vs-flux-dev-vs-schnell.html
 - LM Studio Alternative for Mac (browser Studio setup, no native Mac build): https://locallyuncensored.com/blog/lm-studio-alternative-for-mac.html
