@@ -35,13 +35,15 @@ Take the latest build from [Releases](https://github.com/PurpleDoubleD/locally-u
 
 | Platform | File | Status |
 |----------|------|--------|
-| Windows 10 and 11 | [`Locally.Uncensored_3.0.1_x64-setup.exe`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_x64-setup.exe) (NSIS, recommended) or [`Locally.Uncensored_3.0.1_x64_en-US.msi`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_x64_en-US.msi) | Tested every release, signed auto update channel |
-| Linux | [`Locally.Uncensored_3.0.1_amd64.AppImage`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_amd64.AppImage), [`Locally.Uncensored_3.0.1_amd64.deb`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.1_amd64.deb) or [`Locally.Uncensored-3.0.1-1.x86_64.rpm`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored-3.0.1-1.x86_64.rpm) | Built on every release |
+| Windows 10 and 11 | [`Locally.Uncensored_3.0.2_x64-setup.exe`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.2_x64-setup.exe) (NSIS, recommended) or [`Locally.Uncensored_3.0.2_x64_en-US.msi`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.2_x64_en-US.msi) | Tested every release, signed auto update channel |
+| Linux | [`Locally.Uncensored_3.0.2_amd64.AppImage`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.2_amd64.AppImage), [`Locally.Uncensored_3.0.2_amd64.deb`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored_3.0.2_amd64.deb) or [`Locally.Uncensored-3.0.2-1.x86_64.rpm`](https://github.com/PurpleDoubleD/locally-uncensored/releases/latest/download/Locally.Uncensored-3.0.2-1.x86_64.rpm) | Built on every release |
 | macOS | no desktop build | LU Cloud runs in the browser at [lu-labs.ai](https://lu-labs.ai) |
 
 Some antivirus engines flag unsigned NSIS installers that download other binaries, which is a false positive. The installer is built by GitHub Actions from the public source on `master`, and the update channel is signed against a public minisign key, so you can verify both: see [SECURITY.md](SECURITY.md#antivirus--browser-false-positives).
 
-Current release: **v3.0.1** (September 2026). Every change since 1.0.0 is in [CHANGELOG.md](CHANGELOG.md).
+Current release: **v3.0.2** (September 2026). Every change since 1.0.0 is in [CHANGELOG.md](CHANGELOG.md).
+
+3.0.2 is a hotfix: the Code tab lost its scrollbar and its input box once a conversation grew taller than the window (issue 138, a regression in 3.0.1) and is held to the window height again, and the count of open cloud models now takes the Create Studio endpoints in, which makes it fourteen video models and seven image models.
 
 ### What is new in 3.0.1
 

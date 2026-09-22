@@ -16,7 +16,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 
 ## Key Facts
 - Name: Locally Uncensored
-- Current Version: v3.0.1 (September 2026)
+- Current Version: v3.0.2 (September 2026)
 - Type: Desktop AI Application (local AI studio)
 - License: AGPL-3.0 (free and open source)
 - Platforms: Windows 10/11, Linux (deb, rpm, AppImage)
@@ -133,6 +133,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
   - Handbook chapter, FAQ and glossary: https://locallyuncensored.com/guide/faq-and-glossary/
 - Blog (guides, comparisons, release notes): https://locallyuncensored.com/blog/
 - Qwen-Image 2.1 in Locally Uncensored (tutorial, explainer and handbook section in one place): https://locallyuncensored.com/qwen-image-2-1/
+- v3.0.2 Release Notes (hotfix: the Code tab scrolls again, issue 138, and the corrected count of open cloud models): https://locallyuncensored.com/blog/locally-uncensored-v3-0-2-hotfix.html
 - Full text for LLMs: https://locallyuncensored.com/llms-full.txt
 - How to Run AI Locally (5-minute beginner guide): https://locallyuncensored.com/blog/how-to-run-ai-locally.html
 - LM Studio Alternatives 2026: https://locallyuncensored.com/blog/lm-studio-alternatives.html
