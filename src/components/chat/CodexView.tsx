@@ -207,9 +207,18 @@ export function CodexView() {
     // laesst aber kein programmatisches Scrollen zu. Kein Nachkomme in dieser
     // Datei haengt scrollTop, scrollTo oder scrollIntoView an dieses Element
     // (grep gegen src/components/chat/CodexView.tsx bestaetigt das).
-    <div className="flex-1 flex overflow-clip">
-      {/* Main panel */}
-      <div className="flex-1 flex flex-col min-w-0 relative">
+    // min-h-0 gehoert zwingend dazu (Issue 138): overflow-hidden machte dieses
+    // Element zum Bildlaufbehaelter, und darin ist die automatische
+    // Mindesthoehe eines Flex-Kindes 0. overflow-clip ist KEIN
+    // Bildlaufbehaelter, also faellt min-height auf die Inhaltshoehe zurueck,
+    // der Rahmen waechst mit dem Verlauf ueber das Fenster hinaus und schiebt
+    // den Composer hinaus. ChatView.tsx Zeile 300 traegt dasselbe min-h-0.
+    <div className="flex-1 flex overflow-clip min-h-0">
+      {/* Main panel. min-h-0 aus demselben Grund wie am Rahmen darueber
+          (Issue 138, ChatView.tsx Zeile 300): sonst erzwingt der Verlauf in
+          dieser Spalte seine volle Inhaltshoehe und der Composer darunter
+          landet unter dem Fensterrand. */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         {/* Codex header */}
         <div
           data-testid="codex-header"

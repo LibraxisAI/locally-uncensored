@@ -4,6 +4,17 @@ All notable changes to Locally Uncensored are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Code tab lost its scrollbar and its input box once a conversation grew
+  taller than the window** (issue 138, a regression in 3.0.1). The outer frame
+  around the transcript and the composer stopped being a scroll container in
+  3.0.1, so it grew with the transcript instead of staying inside the window:
+  only the start of a long conversation was visible, the mouse wheel did
+  nothing, and the composer with its toolbar sat below the bottom edge. The
+  frame is held to the window height again, so the transcript scrolls and the
+  input box stays in view. The Chat tab was never affected.
+
 ### Changed
 
 - **The count of open models now takes the Create Studio endpoints in.**
