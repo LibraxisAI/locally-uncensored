@@ -1,4 +1,5 @@
 import { classifyModel, findMatchingVAE, findMatchingCLIP, findFluxCLIPPair } from './comfyui'
+import { isMlxImageModel } from './mlx-image'
 import type { ModelType, GenerateParams, VideoParams } from './comfyui'
 import { log } from '../lib/logger'
 import { resolveRunSeed } from '../lib/run-seed'
@@ -59,6 +60,7 @@ export type WorkflowStrategy =
   | 'unet_flux'       // FLUX 1: UNETLoader + CLIPLoader + VAELoader + EmptySD3LatentImage
   | 'unet_flux2'      // FLUX 2: UNETLoader + CLIPLoader + VAELoader + EmptyFlux2LatentImage
   | 'unet_zimage'     // Z-Image: UNETLoader + CLIPLoader(qwen_image) + VAELoader + EmptySD3LatentImage
+  | 'unet_qwen_image_edit' // Qwen-Image-Edit: UNETLoader + CLIPLoader(qwen_image) + TextEncodeQwenImageEditPlus + AuraFlow
   | 'unet_ernie_image' // ERNIE-Image: UNETLoader + CLIPLoader(flux2) + VAELoader + EmptyFlux2LatentImage + ConditioningZeroOut
   | 'unet_video'      // Wan/Hunyuan: UNETLoader + CLIPLoader + VAELoader + EmptyHunyuanLatentVideo
   | 'wan22'           // Wan 2.2 TI2V-5B: UNET + CLIP + Wan 2.2 VAE + Wan22ImageToVideoLatent (unified T2V/I2V)
@@ -106,6 +108,23 @@ export function determineStrategy(
       return { strategy: 'unet_ernie_image', reason: 'ERNIE-Image model → UNETLoader + CLIPLoader(flux2) + ConditioningZeroOut' }
     }
     return { strategy: 'unavailable', reason: 'ERNIE-Image requires UNETLoader + CLIPLoader + VAELoader nodes' }
+  }
+
+  // Qwen-Image-Edit → UNET + CLIPLoader(qwen_image) + VAE + TextEncodeQwenImageEditPlus.
+  // Confirmed on the live ComfyUI 0.33 instance (port 8080): the 2511 file is
+  // in UNETLoader.unet_name, not CheckpointLoaderSimple.ckpt_name.
+  if (modelType === 'qwen_image_edit') {
+    const hasEncode = nodes.textEncoders.includes('TextEncodeQwenImageEditPlus')
+      || nodes.textEncoders.includes('TextEncodeQwenImageEdit')
+    const hasShift = nodes.samplers.includes('ModelSamplingAuraFlow')
+    const hasSd3 = nodes.latentInit.includes('EmptySD3LatentImage')
+    if (hasUNET && hasCLIPLoader && hasVAELoader && hasEncode && hasShift && hasSd3) {
+      return { strategy: 'unet_qwen_image_edit', reason: 'Qwen Image Edit → UNETLoader + TextEncodeQwenImageEditPlus' }
+    }
+    return {
+      strategy: 'unavailable',
+      reason: 'Qwen Image Edit needs UNETLoader, CLIPLoader, VAELoader, TextEncodeQwenImageEditPlus, ModelSamplingAuraFlow and EmptySD3LatentImage. Update ComfyUI (0.3.43 or newer).',
+    }
   }
 
   // Z-Image → UNET + CLIPLoader(qwen_image) + VAE + SD3LatentImage
@@ -414,11 +433,29 @@ export async function buildDynamicWorkflow(
     return buildRemoveBgWorkflow(gp, rmbgMeta)
   }
 
+  // An MLX picker id is not a ComfyUI file. CheckpointLoaderSimple rejects it
+  // with "Value not in list" (seen with ckpt_name "MLX NSFW-gen v2" on the
+  // img2img/expand graph). Text-to-image on Apple Silicon never reaches this
+  // builder; a Comfy lane must already have swapped to a real checkpoint.
+  if (isMlxImageModel(params.model)) {
+    throw new WorkflowUnavailableError(
+      `"${params.model}" is an on-device MLX model, not a ComfyUI checkpoint. Pick a ComfyUI checkpoint for this edit.`,
+      'unavailable',
+    )
+  }
+
   const { strategy, reason, installHint } = determineStrategy(type, isVideo, nodes, models)
   log.info(`[dynamic-workflow] Strategy: ${strategy} (${reason})`)
 
   if (strategy === 'unavailable') {
     throw new WorkflowUnavailableError(reason, strategy, installHint)
+  }
+
+  if (strategy === 'unet_qwen_image_edit' && models.unets.length > 0 && !models.unets.includes(params.model)) {
+    throw new WorkflowUnavailableError(
+      `"${params.model}" is not in UNETLoader's list. Put the file in ComfyUI's diffusion_models folder.`,
+      'unavailable',
+    )
   }
 
   // Local Edit (mask inpaint) runs on the SDXL/SD1.5 checkpoint pipeline only.
@@ -461,6 +498,20 @@ export async function buildDynamicWorkflow(
   let samplerModelId: string
 
   if (strategy === 'checkpoint') {
+    // A populated checkpoint enum is the truth. An empty one means this
+    // call has no list (offline fixture) and the historical graph still
+    // builds. A name that is not in a real list must not be sent as
+    // ckpt_name — ComfyUI answers "Value not in list" and we do not
+    // substitute another file.
+    if (models.checkpoints.length > 0 && !models.checkpoints.includes(params.model)) {
+      const inUnet = models.unets.includes(params.model)
+      throw new WorkflowUnavailableError(
+        inUnet
+          ? `"${params.model}" is a diffusion model (UNETLoader), not a ComfyUI checkpoint. It lives in diffusion_models, and this build has no graph for that family.`
+          : `"${params.model}" is not in ComfyUI's checkpoint list. CheckpointLoaderSimple only loads files from the checkpoints folder.`,
+        'unavailable',
+      )
+    }
     // Single loader: outputs MODEL (0), CLIP (1), VAE (2)
     modelNodeId = String(n++)
     workflow[modelNodeId] = {
@@ -473,13 +524,13 @@ export async function buildDynamicWorkflow(
     vaeOutputSlot = 2
     samplerModelId = modelNodeId
 
-  } else if (strategy === 'unet_flux' || strategy === 'unet_flux2' || strategy === 'unet_zimage' || strategy === 'unet_ernie_image' || strategy === 'unet_video' || strategy === 'unet_ltx'
+  } else if (strategy === 'unet_flux' || strategy === 'unet_flux2' || strategy === 'unet_zimage' || strategy === 'unet_qwen_image_edit' || strategy === 'unet_ernie_image' || strategy === 'unet_video' || strategy === 'unet_ltx'
     || strategy === 'unet_mochi' || strategy === 'unet_cosmos') {
     // Separate loaders
     const unetId = String(n++)
     const clipId = String(n++)
 
-    const clipType = type === 'zimage' ? 'qwen_image'
+    const clipType = type === 'zimage' || type === 'qwen_image_edit' ? 'qwen_image'
       : type === 'ernie_image' ? 'flux2'
       : type === 'flux2' ? 'flux2'
       : type === 'flux' ? 'flux'
@@ -666,6 +717,17 @@ export async function buildDynamicWorkflow(
     vaeOutputSlot = 0
   }
 
+  if (strategy === 'unet_qwen_image_edit') {
+    // Official Qwen-Image-Edit graph shifts the flow-matching schedule.
+    // ComfyUI 0.33 ships ModelSamplingAuraFlow; shift 3.1 is the template value.
+    const shiftId = String(n++)
+    workflow[shiftId] = {
+      class_type: 'ModelSamplingAuraFlow',
+      inputs: { model: [samplerModelId, 0], shift: 3.1 },
+    }
+    samplerModelId = shiftId
+  }
+
   if (params.clipSkip && params.clipSkip > 0) {
     const skipId = String(n++)
     workflow[skipId] = {
@@ -681,8 +743,43 @@ export async function buildDynamicWorkflow(
 
   // ─── Phase 2: Text Encoding ───
 
-  const posId = String(n++)
-  const negId = String(n++)
+  let posId: string
+  let negId: string
+
+  if (strategy === 'unet_qwen_image_edit') {
+    const encodeClass = nodes.textEncoders.includes('TextEncodeQwenImageEditPlus')
+      ? 'TextEncodeQwenImageEditPlus'
+      : 'TextEncodeQwenImageEdit'
+    let imageNodeId: string | undefined
+    if (!isVideo && gp.inputImage) {
+      imageNodeId = String(n++)
+      workflow[imageNodeId] = {
+        class_type: 'LoadImage',
+        inputs: { image: gp.inputImage },
+      }
+    }
+    posId = String(n++)
+    negId = String(n++)
+    const posInputs: Record<string, unknown> = {
+      prompt: params.prompt,
+      clip: [clipSourceId, clipOutputSlot],
+      vae: [vaeSourceId, vaeOutputSlot],
+    }
+    if (imageNodeId) {
+      posInputs[encodeClass === 'TextEncodeQwenImageEditPlus' ? 'image1' : 'image'] = [imageNodeId, 0]
+    }
+    workflow[posId] = { class_type: encodeClass, inputs: posInputs }
+    workflow[negId] = {
+      class_type: encodeClass,
+      inputs: {
+        prompt: params.negativePrompt || '',
+        clip: [clipSourceId, clipOutputSlot],
+        vae: [vaeSourceId, vaeOutputSlot],
+      },
+    }
+  } else {
+  posId = String(n++)
+  negId = String(n++)
 
   workflow[posId] = {
     class_type: 'CLIPTextEncode',
@@ -704,6 +801,7 @@ export async function buildDynamicWorkflow(
       },
     }
   }
+  }
 
   // ─── Phase 3: Latent Initialization ───
   // Inpaint mode (local Edit): source + painted mask on the checkpoint path.
@@ -712,7 +810,9 @@ export async function buildDynamicWorkflow(
   // (create-workflows.ts): same node classes, same defaults.
   const isInpaint = !isVideo && !!gp.inputImage && !!gp.maskImage && strategy === 'checkpoint'
   // I2I mode: LoadImage → VAEEncode instead of empty latent
-  const isI2I = !isVideo && !isInpaint && params.inputImage && (params.denoise ?? 1.0) < 1.0
+  // Qwen Image Edit feeds the still into TextEncodeQwenImageEditPlus, not
+  // VAEEncode. Denoise stays 1; the reference is conditioning.
+  const isI2I = strategy !== 'unet_qwen_image_edit' && !isVideo && !isInpaint && params.inputImage && (params.denoise ?? 1.0) < 1.0
 
   const latentId = String(n++)
 
@@ -767,7 +867,7 @@ export async function buildDynamicWorkflow(
       class_type: latentNode,
       inputs: { width: params.width, height: params.height, batch_size: params.batchSize },
     }
-  } else if (strategy === 'unet_zimage') {
+  } else if (strategy === 'unet_zimage' || strategy === 'unet_qwen_image_edit') {
     // Z-Image uses SD3 latent (same architecture family)
     const latentNode = nodes.latentInit.includes('EmptySD3LatentImage')
       ? 'EmptySD3LatentImage'

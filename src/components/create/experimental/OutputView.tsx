@@ -232,9 +232,9 @@ export function ResultView({ item, onFullscreen, onSendToEditor }: ResultProps) 
             {item.prompt && (
               <p className="t-body text-gray-400 text-center line-clamp-2">{item.prompt}</p>
             )}
-            <audio src={url} controls onError={onError} className="w-full" onLoadedData={() => markGalleryItemAvailable(item)} />
+            {url ? <audio src={url} controls onError={onError} className="w-full" onLoadedData={() => markGalleryItemAvailable(item)} /> : null}
           </div>
-        ) : isVideo ? (
+        ) : !url ? null : isVideo ? (
           <video
             src={url}
             controls

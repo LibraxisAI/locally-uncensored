@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   fetchGalleryItemBlob,
   galleryItemUrl,
+  isComfyViewUrl,
   proxiedComfyBlobUrl,
   recoverGalleryUrl,
 } from '../galleryUrl'
@@ -237,6 +238,13 @@ describe('recoverGalleryUrl — local MLX renders on disk', () => {
     // asked the wrong server about a file it never made.
     const item = { ...baseItem, id: 'disk-noproxy', localPath: '/tmp/mlx-3.png' }
     expect(await proxiedComfyBlobUrl(item)).toBeNull()
+  })
+
+  it('recognises a Comfy /view URL and ignores blob and data URLs', () => {
+    expect(isComfyViewUrl('http://127.0.0.1:8080/view?filename=a.png&type=output')).toBe(true)
+    expect(isComfyViewUrl('/comfyui/view?filename=a.png')).toBe(true)
+    expect(isComfyViewUrl('blob:http://localhost/uuid')).toBe(false)
+    expect(isComfyViewUrl('data:image/png;base64,aaaa')).toBe(false)
   })
 
   it('still marks a ComfyUI item unavailable — no localPath, nothing to re-read', async () => {

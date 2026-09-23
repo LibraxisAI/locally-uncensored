@@ -109,18 +109,16 @@ test('local mode: local lanes usable, cloud-only ops shown as locked teasers', a
   await expect(page.getByRole('radio', { name: 'Animate Image', exact: true })).toBeVisible()
   await expect(page.getByRole('radio', { name: 'Music', exact: true })).toBeVisible()
 
-  // Character Studio joined the local lanes in 2.6.0 (musubi trainer ships
-  // in trainer.rs), so it renders as a plain selectable tab now.
+  // Character Studio is the musubi trainer — a real local tab on Mac without ComfyUI.
   await expect(page.getByRole('radio', { name: 'Character Studio', exact: true })).toBeVisible()
 
-  // cloudOnly WITHOUT a local lane (upscale / eraser) renders locked:
-  // aria-label gains ", runs on LU Cloud" and a click opens the teaser
-  // instead of switching the lane.
-  await expect(page.getByRole('radio', { name: 'Upscale, runs on LU Cloud' })).toBeVisible()
-  await expect(page.getByRole('radio', { name: 'Erase Object, runs on LU Cloud' })).toBeVisible()
+  // Upscale / eraser now have local ComfyUI lanes, so they are selectable
+  // radios (not locked teasers) on a Comfy host. Playwright CI is not a Mac.
+  await expect(page.getByRole('radio', { name: 'Upscale', exact: true })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Erase Object', exact: true })).toBeVisible()
 
-  await page.getByRole('radio', { name: 'Upscale, runs on LU Cloud' }).click()
-  await expect(page.getByRole('radio', { name: 'Image', exact: true })).toBeChecked()
+  await page.getByRole('radio', { name: 'Upscale', exact: true }).click()
+  await expect(page.getByRole('radio', { name: 'Upscale', exact: true })).toBeChecked()
 })
 
 test('media_live=false: generate shows the honest coming-soon message', async ({ page }) => {

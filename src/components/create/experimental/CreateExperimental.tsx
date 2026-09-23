@@ -20,9 +20,9 @@ import { Hinweis } from '../../ui/Hinweis'
 import { BannerText } from './BannerText'
 import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
-import { INTENT_MAP, isIntentAvailable } from './intents'
+import { INTENT_MAP, intentNeedsComfyGraph, isIntentAvailable, mlxOnlyCreateHost } from './intents'
 import { stageShowsSetupCard, laneModelCount } from './stageGate'
-import { isMlxImageHost } from '../../../api/mlx-image'
+import { isMlxImageHost, isMlxImageModel } from '../../../api/mlx-image'
 import { fetchGalleryItemBlob } from './galleryUrl'
 import { loadImageRef } from './loadImage'
 
@@ -54,6 +54,7 @@ function CreateExperimentalInner() {
   const audioModelList = useCreateStore((s) => s.audioModelList)
   const lipsyncModelList = useCreateStore((s) => s.lipsyncModelList)
   const motionModelList = useCreateStore((s) => s.motionModelList)
+  const comfyRunning = useCreateStore((s) => s.comfyRunning)
   const { modelLoadError, connected, modelsLoaded, mlxMissing, comfyOnCpu, comfyCpuBanner } = useCreateExp()
 
   const [shownId, setShownId] = useState<string | null>(null)
@@ -169,14 +170,21 @@ function CreateExperimentalInner() {
   // `error` ist davon ausgenommen: das sind Laufzeitfehler eines konkreten
   // Laufs, die die Karte nicht erklaert — und nur sie tragen das
   // Schliesskreuz.
+  const imageForLane = intentNeedsComfyGraph(intent) && intent !== 'edit'
+    ? imageModelList.filter((m) => !isMlxImageModel(m.name))
+    : imageModelList
+  const videoForLane = intentNeedsComfyGraph(intent)
+    ? videoModelList.filter((m) => !isMlxImageModel(m.name))
+    : videoModelList
   const setupCardOwnsStage = stageShowsSetupCard({
     backend,
     requiresModels: INTENT_MAP[intent].requiresModels,
     mlxMissing,
     connected,
     modelsLoaded,
+    comfyRunning,
     laneModelCount: laneModelCount(intent, INTENT_MAP[intent].requiresModels, {
-      image: imageModelList, video: videoModelList, audio: audioModelList,
+      image: imageForLane, video: videoForLane, audio: audioModelList,
       lipsync: lipsyncModelList, motion: motionModelList,
     }),
   })
@@ -187,7 +195,7 @@ function CreateExperimentalInner() {
   // generate DROPS the source + mask — it silently produced an unrelated fresh
   // text-to-image instead of an edit). Hide the action where the lane can't
   // run, using the same rule the IntentBar renders from.
-  const editAvailable = isIntentAvailable('edit', backend, isMlxImageHost())
+  const editAvailable = isIntentAvailable('edit', backend, mlxOnlyCreateHost(isMlxImageHost(), comfyRunning))
 
   // Pull a finished result back in as the working source (ImageRef). Needed
   // because a text-to-image run leaves `source` empty — without this, "Edit

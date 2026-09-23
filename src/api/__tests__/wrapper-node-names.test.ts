@@ -45,6 +45,8 @@ const CORE_NODES = new Set([
   // conditioning
   'CLIPTextEncode', 'CLIPSetLastLayer', 'CLIPVisionEncode', 'ConditioningZeroOut',
   'InpaintModelConditioning', 'AudioEncoderEncode', 'ModelSamplingSD3',
+  // ModelSamplingAuraFlow: ComfyUI 0.33 core nodes.py; Qwen-Image-Edit flow-matching shift (shift 3.1).
+  'ModelSamplingAuraFlow',
   'SVD_img2vid_Conditioning', 'VideoLinearCFGGuidance',
   // latents
   'EmptyLatentImage', 'EmptyLTXVLatentVideo', 'Wan22ImageToVideoLatent', 'TrimVideoLatent',

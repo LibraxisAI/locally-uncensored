@@ -798,21 +798,20 @@ describe('createStore', () => {
     })
   })
 
-  // David 2026-07-10: edit/animate/upscale/eraser are cloud-only — flipping
-  // the backend to local must clear every cloud-only intent (the IntentBar no
-  // longer shows them) so the surface never strands on a hidden op.
+  // Flipping the backend to local must clear hosted-only intents that have
+  // no local lane. Upscale/eraser now keep on a ComfyUI host.
   describe('setBackend local-flip clears cloud-only intents', () => {
     const ref = { filename: 'src.png', url: 'data:image/png;base64,x', width: 8, height: 8 }
 
-    it('clears a utility op (upscale) with its mask', () => {
+    it('keeps a utility op (upscale) on a ComfyUI host', () => {
       const s = useCreateStore.getState()
       s.setBackend('cloud')
       s.setIntent('upscale')
       s.setSource(ref)
       useCreateStore.getState().setBackend('local')
       const after = useCreateStore.getState()
-      expect(after.utilityOp).toBeNull()
-      expect(after.intent()).not.toBe('upscale')
+      expect(after.utilityOp).toBe('upscale')
+      expect(after.intent()).toBe('upscale')
     })
 
     it('keeps edit — it has a local lane via checkpoint inpaint (2.5.7)', () => {

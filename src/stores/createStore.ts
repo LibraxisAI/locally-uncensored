@@ -38,9 +38,9 @@ export type CreateIntent =
   | 'image' | 'edit' | 'removebg' | 'video' | 'animate' | 'upscale' | 'eraser'
   | CloudOp
 
-/** Cloud-only single-purpose WaveSpeed endpoints (2.5.7): super-resolution
- *  and masked object removal. Local backends have no lane for them, so the
- *  IntentBar only offers these while the cloud backend is active. */
+/** Single-purpose utility intents (2.5.7): super-resolution and masked
+ *  object removal. Cloud still has WaveSpeed clips; local ComfyUI now
+ *  runs them too (`LOCAL_UTILITY_OPS`) via ImageScale / inpaint. */
 export type UtilityOp = 'upscale' | 'eraser'
 
 /** 2.5.8 specialized Create categories (2026-07-17 David):
@@ -59,6 +59,11 @@ export type CloudOp = 'character' | 'lipsync' | 'music' | 'extend' | 'motion'
 // the train lane is a real local tab now (it was cloud-first while 2.5.8
 // had no trainer runtime).
 export const LOCAL_LANE_OPS: ReadonlySet<CloudOp> = new Set(['music', 'lipsync', 'extend', 'motion', 'character'])
+
+/** Upscale (core ImageScale) and eraser (checkpoint inpaint + mask) when
+ *  ComfyUI is connected. Kept off the CloudOp set so the specialized-lane
+ *  picker is unchanged; IntentBar unlocks them via `hasLocalLane`. */
+export const LOCAL_UTILITY_OPS: ReadonlySet<UtilityOp> = new Set(['upscale', 'eraser'])
 
 /** An audio/video file (or training image) staged in the composer before
  *  upload. `blob` carries the bytes for the cloud upload; `url` is a local
@@ -117,6 +122,7 @@ export const MODEL_TYPE_DEFAULTS: Record<ModelType, {
   flux:        { steps: 20, cfgScale: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   flux2:       { steps: 20, cfgScale: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   zimage:      { steps: 12, cfgScale: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
+  qwen_image_edit: { steps: 20, cfgScale: 4.0, sampler: 'euler',       scheduler: 'simple', width: 1024, height: 1024 },
   ernie_image: { steps: 20, cfgScale: 4.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024 },
   wan:         { steps: 25, cfgScale: 5.0, sampler: 'euler',           scheduler: 'normal', width: 848,  height: 480, frames: 49, fps: 16 },
   wan22:       { steps: 30, cfgScale: 5.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 576, frames: 49, fps: 24 },
@@ -799,28 +805,24 @@ export const useCreateStore = create<CreateState>()(
         set((s) => {
           if (backend !== 'local') return { backend }
           const patch: Record<string, unknown> = { backend }
-          if (s.utilityOp) Object.assign(patch, { utilityOp: null, mask: null, error: null })
+          const mlxOnly = isMlxImageHost() && !s.comfyRunning
+          if (s.utilityOp && (mlxOnly || !LOCAL_UTILITY_OPS.has(s.utilityOp))) {
+            Object.assign(patch, { utilityOp: null, mask: null, error: null })
+          }
           // music/lipsync/extend/motion (2.5.8) and character (2.6.0, local
           // musubi trainer) run locally, so a backend flip keeps them
-          // selected; only the genuinely hosted-only ops (upscale/eraser)
-          // drop. LOCAL_LANE_OPS is the single source of truth.
+          // selected; only the genuinely hosted-only ops drop.
+          // LOCAL_LANE_OPS is the single source of truth for CloudOp.
           if (s.cloudOp && !LOCAL_LANE_OPS.has(s.cloudOp)) {
             Object.assign(patch, { cloudOp: null, error: null })
           }
-          // Und auf einem Mac laeuft lokal MLX, nicht ComfyUI. MLX kann weder
-          // Edit noch Cutout noch Animate, `visibleIntents` blendet die drei
-          // dort deshalb aus. Bleibt eine davon gewaehlt, findet die
-          // Werkzeugleiste ihren eigenen Eintrag nicht mehr und steht ohne
-          // Auswahl da. Gemessen am 04.09.2026: erreichbar ohne einen einzigen
-          // Klick in der Leiste, allein ueber den Backend-Schalter.
-          //
-          // Nur wenn wirklich das Grundwerkzeug zu sehen ist: haelt der Nutzer
-          // eine der lokalen Bahnen (Music, Lipsync, Extend, Motion,
-          // Character), bleibt seine Wahl fuer img2img und i2v unangetastet,
-          // damit sie beim Zurueckschalten noch da ist.
+          // Und auf einem Mac OHNE verbundenes ComfyUI laeuft lokal MLX, nicht
+          // ComfyUI. MLX kann weder Edit noch Cutout noch Animate. Bleibt eine
+          // davon gewaehlt, findet die Werkzeugleiste ihren Eintrag nicht mehr.
+          // Ist ComfyUI auf :8080 verbunden, bleiben sie stehen.
           const opBleibt = ('cloudOp' in patch ? patch.cloudOp : s.cloudOp)
             || ('utilityOp' in patch ? patch.utilityOp : s.utilityOp)
-          if (isMlxImageHost() && !opBleibt) {
+          if (mlxOnly && !opBleibt) {
             if (s.removebg) Object.assign(patch, { removebg: false })
             if (s.imageSubMode === 'img2img') Object.assign(patch, { imageSubMode: 'text2img' })
             if (s.videoSubMode === 'i2v') Object.assign(patch, { videoSubMode: 't2v' })

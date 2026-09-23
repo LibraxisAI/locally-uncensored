@@ -146,6 +146,10 @@ export function categorizeNodes(allNodes: Record<string, NodeMetadata>): Categor
     ConditioningZeroOut: 'textEncoders',
     // Text encoding
     CLIPTextEncode: 'textEncoders',
+    TextEncodeQwenImageEdit: 'textEncoders',
+    TextEncodeQwenImageEditPlus: 'textEncoders',
+    // ComfyUI 0.33 core nodes.py (AuraFlow shift); Qwen-Image-Edit flow-matching.
+    ModelSamplingAuraFlow: 'samplers',
     CLIPTextEncodeSDXL: 'textEncoders',
     CogVideoXTextEncode: 'textEncoders',
     PyramidFlowTextEncode: 'textEncoders',

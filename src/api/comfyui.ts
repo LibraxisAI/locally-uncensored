@@ -152,7 +152,7 @@ export function galleryTypeForFile(
 // 2.5.8: ace / wans2v / wananimate / wanvace are the specialized local-lane
 // architectures (music, talking character, motion control). They are neither
 // image nor video picker material — each lane has its own model list.
-export type ModelType = 'flux' | 'flux2' | 'zimage' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
+export type ModelType = 'flux' | 'flux2' | 'zimage' | 'qwen_image_edit' | 'ernie_image' | 'sdxl' | 'sd15' | 'wan' | 'wan22' | 'hunyuan' | 'ltx' | 'mochi' | 'cosmos' | 'cogvideo' | 'svd' | 'framepack' | 'pyramidflow' | 'allegro' | 'ace' | 'wans2v' | 'wananimate' | 'wanvace' | 'animatediff' | 'unknown'
 export type VideoBackend = 'wan' | 'animatediff' | 'none'
 
 export interface ClassifiedModel {
@@ -257,6 +257,16 @@ export function classifyModel(name: string | null | undefined): ModelType {
   if (lower.includes('hunyuan')) return 'hunyuan'
   if (lower.includes('ltx')) return 'ltx'
 
+  // Qwen-Image-Edit (2511 and the same family) is a diffusion UNET. It is not
+  // in CheckpointLoaderSimple's list — ComfyUI 0.33 lists it on UNETLoader.
+  // "vae" / "vl" keep the VAE and the Qwen2.5-VL text encoder out of this lane.
+  if (
+    !lower.includes('vae') && !lower.includes('vl') && (
+      lower.includes('qwen_image_edit') || lower.includes('qwen-image-edit')
+      || (lower.includes('qwen') && lower.includes('image') && lower.includes('edit'))
+    )
+  ) return 'qwen_image_edit'
+
   // ERNIE-Image (Baidu, uses flux2 CLIP type + ConditioningZeroOut for negative)
   if (lower.includes('ernie-image') || lower.includes('ernie_image')) return 'ernie_image'
 
@@ -284,7 +294,7 @@ export function classifyModel(name: string | null | undefined): ModelType {
 }
 
 export function isImageModelType(type: ModelType): boolean {
-  return type === 'flux' || type === 'flux2' || type === 'zimage' || type === 'ernie_image' || type === 'sdxl' || type === 'sd15' || type === 'unknown'
+  return type === 'flux' || type === 'flux2' || type === 'zimage' || type === 'qwen_image_edit' || type === 'ernie_image' || type === 'sdxl' || type === 'sd15' || type === 'unknown'
 }
 
 export function isVideoModelType(type: ModelType): boolean {
@@ -400,6 +410,10 @@ export const MODEL_TYPE_DEFAULTS: Record<string, ModelTypeDefaults> = {
   flux:   { steps: 20, cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   flux2:  { steps: 20, cfg: 1.0, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   zimage: { steps: 12, cfg: 3.5, sampler: 'euler',           scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
+  // Qwen-Image-Edit 2511 template on ComfyUI 0.33: euler / simple / cfg 4,
+  // ModelSamplingAuraFlow shift 3.1. cfg 7 (the SD default) still validates
+  // but washes the edit.
+  qwen_image_edit: { steps: 20, cfg: 4.0, sampler: 'euler', scheduler: 'simple', width: 1024, height: 1024, frames: 1, fps: 1 },
   unknown:{ steps: 25, cfg: 7.0, sampler: 'euler',           scheduler: 'normal', width: 1024, height: 1024, frames: 1, fps: 1 },
   // ── Video ──
   wan: { steps: 30, cfg: 6.0, sampler: 'euler', scheduler: 'normal', width: 832, height: 480, frames: 81, fps: 16 },
@@ -467,6 +481,11 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRequirements> = {
     loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'qwen_image',
     vae: { matchPatterns: ['ae', 'flux'], downloadFilename: 'ae.safetensors' },
     clip: { matchPatterns: ['qwen_3_4b', 'qwen3'], downloadFilename: 'qwen_3_4b.safetensors' },
+  },
+  qwen_image_edit: {
+    loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'qwen_image',
+    vae: { matchPatterns: ['qwen_image'], downloadFilename: 'qwen_image_vae.safetensors' },
+    clip: { matchPatterns: ['qwen_2.5_vl', 'qwen'], downloadFilename: 'qwen_2.5_vl_7b_fp8_scaled.safetensors' },
   },
   ernie_image: {
     loader: 'UNETLoader', needsSeparateVAE: true, needsSeparateCLIP: true, clipType: 'flux2',
@@ -1443,6 +1462,11 @@ export async function findMatchingVAE(modelType: ModelType): Promise<string> {
   if (vaes.length === 0) throw new Error('No VAE models found. Download a VAE for your model type from the Model Manager.')
   const lower = (s: string) => s.toLowerCase()
 
+  if (modelType === 'qwen_image_edit') {
+    const match = vaes.find(v => lower(v).includes('qwen_image'))
+    if (match) return match
+    throw new Error(`No Qwen Image VAE found. Put "qwen_image_vae.safetensors" in ComfyUI's vae folder.`)
+  }
   if (modelType === 'zimage') {
     // Z-Image uses ae.safetensors (same as FLUX but prefer exact match)
     const match = vaes.find(v => lower(v) === 'ae.safetensors')
@@ -1574,6 +1598,13 @@ export async function findMatchingCLIP(modelType: ModelType, activeModelName?: s
   const modelLc = activeModelName ? lower(activeModelName) : ''
   const modelIsFp4 = /fp4|nf4/.test(modelLc)
 
+  if (modelType === 'qwen_image_edit') {
+    // Qwen-Image-Edit's text tower is Qwen2.5-VL, not the Z-Image qwen_3_4b.
+    const match = clips.find(c => lower(c).includes('qwen_2.5_vl') || lower(c).includes('qwen2.5-vl') || lower(c).includes('qwen2.5_vl'))
+      || clips.find(c => lower(c).includes('qwen') && lower(c).includes('vl'))
+    if (match) return match
+    throw new Error(`No Qwen Image text encoder found. Put "qwen_2.5_vl_7b_fp8_scaled.safetensors" in ComfyUI's text_encoders folder.`)
+  }
   if (modelType === 'zimage') {
     // Z-Image uses qwen_3_4b.safetensors (NOT the fp4_flux2 variant — different embedding dimensions!)
     const match = clips.find(c => lower(c) === 'qwen_3_4b.safetensors')

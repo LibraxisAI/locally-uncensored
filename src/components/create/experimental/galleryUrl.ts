@@ -3,9 +3,14 @@ import { refreshResultUrl, resolveResultUrl } from '../../../api/cloud/jobs'
 import { backendCall, fetchLocalhostBytes, isTauri } from '../../../api/backend'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
 
-/** Resolve a gallery item's display URL. Priority mirrors MediaViewer/Gallery:
- *  remoteUrl (cloud signed URL) → dataUrl (in-memory self-contained fallback)
- *  → ComfyUI /view path (filename/subfolder). */
+/** A ComfyUI `/view` URL (absolute or the dev `/comfyui/view` proxy path).
+ *  blob: and data: are not views. Putting a cross-origin `/view` on an
+ *  `<img>` is what ComfyUI 0.19 answers with 403. */
+export function isComfyViewUrl(url: string): boolean {
+  if (!url || url.startsWith('blob:') || url.startsWith('data:')) return false
+  return /\/view\?/.test(url)
+}
+
 export function galleryItemUrl(item: GalleryItem): string {
   return item.remoteUrl
     ?? item.dataUrl
