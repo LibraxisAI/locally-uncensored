@@ -52,6 +52,15 @@ npm run dev           # serves at http://localhost:5173
 # Production build — emits a signed .exe / .msi / .AppImage / .deb / .rpm into
 # src-tauri/target/release/bundle/. Use when you want to test a real installer.
 npm run tauri:build
+
+# macOS local .app / notarized DMG (Developer ID). `make help` is the catalog.
+make help
+make install-app     # signed .app → /Applications (LU must be quit)
+make release         # signed + notarized .app + .dmg
+# Credentials: APPLE_SIGNING_IDENTITY or ~/.keys/signing-identity.txt;
+# notary: APPLE_ID+APPLE_PASSWORD+APPLE_TEAM_ID or ~/.keys/.notary.env.
+# mise run install-app / mise run release wrap the same Makefile targets.
+# Always from the repository root — never `cd src-tauri` for make, tauri, or loct.
 ```
 
 Most pull requests only need `npm run tauri:dev`. Thanks to @k-wilkinson for
