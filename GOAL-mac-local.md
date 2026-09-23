@@ -53,8 +53,10 @@ Legenda: `[ ]` otwarte · `[~]` w trakcie · `[x]` zielone (zweryfikowane) · `[
 - Testy: 5 nowych w os_paths + 1 w mlx; pełny `cargo test` 546/546 zielonych
 - config.json zapisany: `"models_root": "/workspace/lu-models"`; builtin-models (80 MB) przeniesione
 - Settings UI: `ModelsRootSetting` writes `models_root` (folder picker + path). `get_models_root` returns the config key only (empty = defaults).
-- **TODO:** rsync ~97 GB `mlx/cache` → `<root>/hf-home` PO zakończeniu kopiowania 658 GB (dysk docelowy: 112 GB wolne), weryfikacja live (Models ✓ + render sd-turbo), dopiero potem usunięcie starego cache
-- Uwaga: zainstalowana 2.6.7 (stary binary) ignoruje `models_root` i czyta dalej stare ścieżki — do czasu nowego builda stary cache musi zostać na dysku
+- 2026-09-23: config przez chwilę wskazywał `/workspace/shared-models` (tam lądowały nowe modele). Skonsolidowane z powrotem do `lu-models`: `hf-home` (27 GB, 5 modeli obrazów), `mlx-video` (78 GB, wan21/wan22), `builtin-models` (nomic-embed GGUF). W `vibecrafted-models` zostały symlinki `hf-home`/`mlx-video`/`builtin-models` → `../lu-models/…`. Backup configu: `config.json.bak-20260923`.
+- ComfyUI (zewnętrzny, :8080) czyta `/workspace/comfy-models/*` — przeniesienie go nie dotyczy. `custom_model_dir` (HF download override) dalej = `vibecrafted-models`.
+- **TODO:** weryfikacja live w buildzie 3.0.0 (Models ✓ + render sd-turbo + built-in engine widzi GGUF), potem decyzja o duplikatach: `lu-models/hf-home.stale-20260923` (8 GB, stara kopia NSFW-gen-v2) i `lu-labs/mlx/cache` (4,9 GB, ta sama)
+- Build 3.0.0 z tego brancha czyta `models_root`; uwaga o 2.6.7 ignorującym `models_root` jest nieaktualna
 
 ---
 
