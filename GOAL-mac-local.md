@@ -1,212 +1,77 @@
-# **CEL — Dokończyć budowę aplikacji LU Mac Desktop w trybie lokalnym**
+# GOAL — LU Mac Desktop App, Local-Modus fertig bauen
 
-Zlecenie David 2026-07-22: Dokończyć tryb lokalny aplikacji Mac (Cloud gotowy).
-Każda funkcja **Chat / Agent / Coding** + każde narzędzie przetestowane osobno, długie sesje,
-5 licencjonowanych + 5 niescenzurowanych modeli obrazów i 5 licencjonowanych + 5 niescenzurowanych modeli wideo
-uruchomione po razie. **Twarda zasada:** Media na Mac = **tylko MLX, NIGDY ComfyUI**.
-Decyzja Davida: całkowicie przebudować MLX-Media.
+Auftrag David 2026-07-22: Mac-App Local-Modus zu Ende bauen (Cloud ist fertig).
+Jede Chat/Agent/Coding-Funktion + jedes Tool einzeln testen, Langzeitläufe,
+5 licensed + 5 uncensored Bildmodelle und 5 licensed + 5 uncensored Videomodelle
+je einmal durchlaufen. Harte Regel: Media auf Mac = MLX only, NIEMALS ComfyUI.
+David-Entscheid: MLX-Media komplett neu bauen.
 
-Gałąź: `feat/mac-local-mode` (z `release/2.5.7-merged`). Commit na każdy krok, bez push.
-Legenda: `[ ]` otwarte · `[~]` w trakcie · `[x]` zielone (zweryfikowane) · `[!]` zablokowane / uczciwy limit
-
----
-
-## **Faza 1 — Fundament (Un-wall + działająca lokalna aplikacja)**
-
-### 1.1 **Zdjąć blokadę** `[~]`
-- `isCloudOnly()` → false (14 bramek przełączalnych)
-- Martwe gałęzie usunąć = otwarte (commit porządkujący)
-
-#### 1.1.1 **Migracja v14** `[x]`
-- Wymuszone `cloud` na Mac przywrócone jednorazowo do `local` (settingsStore)
-
-### 1.2 **tsc / vitest** `[x]`
-- `tsc` (`tsconfig.app.json`) Baseline-Diff = 0 nowych błędów (331 baza bez zmian)
-- `vitest` dot. Stores 108 zielonych
-
-#### 1.2.1 **Test jednostkowy migracji v14** `[x]`
-- Plik: `settingsStore-migrate-v14.test.ts`
-- 4/4 zielone (Mac cloud→local, Win zostaje cloud, v14-cloud zostaje, Personas przebudowane)
-- Commit: `b261e9d`
-
-### 1.3 **e2e-Specs** `[ ]`
-- Dostosowane do nowego stanu, zielone
-
-### 1.4 **Start lokalny aplikacji** `[~]`
-- `tauri:dev` działa (v2.5.7)
-- Local-Onboarding renderuje (UI-Smoke :5173)
-- Switch/Local live do potwierdzenia
-
-### 1.5 **Dowód działania lokalnej inferencji** `[~]`
-- Ollama :11434 (qwen2.5:0.5b) → „LOCAL OK”
-- Po restarcie Rust: aplikacja startuje w lokalnym (bez `[Offload] cloud`)
-- **TODO:** Pobranie Builtin-Engine-GGUF (Faza 2.4)
-
-### 1.6 **ComfyUI connect-only on Mac (default 8080)** `[~]`
-- Spawn/install stay refused (`comfy_supported_here`). Connecting to an already-running instance is the goal.
-- Default listen port on macOS is 8080 (elsewhere 8188). Settings Host/Port persist via `set_comfyui_port`. Health probes live `comfy_port`, not a zombie :8188.
-
-### 1.7 **Modele na /workspace (config `models_root`)** `[~]`
-- Rust: `os_paths::configured_models_root()` (config.json `models_root` → env `LU_MODELS_ROOT` → domyślne ścieżki bez zmian)
-- `mlx.rs` `hf_home()` → `<root>/hf-home` (3× HF_HOME + `image_model_cache_dir`); venv ZOSTAJE w lu-labs (absolute shebangi)
-- `video.rs` `models_root()` → `<root>/mlx-video`; `engine.rs` `builtin_models_dir()` → `<root>/builtin-models`
-- Testy: 5 nowych w os_paths + 1 w mlx; pełny `cargo test` 546/546 zielonych
-- config.json zapisany: `"models_root": "/workspace/lu-models"`; builtin-models (80 MB) przeniesione
-- Settings UI: `ModelsRootSetting` writes `models_root` (folder picker + path). `get_models_root` returns the config key only (empty = defaults).
-- 2026-09-23: config przez chwilę wskazywał `/workspace/shared-models` (tam lądowały nowe modele). Skonsolidowane z powrotem do `lu-models`: `hf-home` (27 GB, 5 modeli obrazów), `mlx-video` (78 GB, wan21/wan22), `builtin-models` (nomic-embed GGUF). W `vibecrafted-models` zostały symlinki `hf-home`/`mlx-video`/`builtin-models` → `../lu-models/…`. Backup configu: `config.json.bak-20260923`.
-- ComfyUI (zewnętrzny, :8080) czyta `/workspace/comfy-models/*` — przeniesienie go nie dotyczy. `custom_model_dir` (HF download override) dalej = `vibecrafted-models`.
-- **TODO:** weryfikacja live w buildzie 3.0.0 (Models ✓ + render sd-turbo + built-in engine widzi GGUF), potem decyzja o duplikatach: `lu-models/hf-home.stale-20260923` (8 GB, stara kopia NSFW-gen-v2) i `lu-labs/mlx/cache` (4,9 GB, ta sama)
-- Build 3.0.0 z tego brancha czyta `models_root`; uwaga o 2.6.7 ignorującym `models_root` jest nieaktualna
+Branch: `feat/mac-local-mode` (von `release/2.5.7-merged`). Commit pro Schritt, kein Push.
+Legende: [ ] offen · [~] in Arbeit · [x] grün (verifiziert) · [!] blockiert/ehrlicher Cap
 
 ---
 
-## **Faza 2 — Lokalny Chat**
+## Phase 1 — Fundament (Un-wall + lauffähige Local-App)
+- [~] 1.1 Wall lösen: `isCloudOnly()`→false (14 Gates schaltbar); tote Äste sauber entfernen = offen (Cleanup-Commit)
+  - [x] Migration v14: Mac-Zwangs-`cloud` einmalig auf `local` zurückgesetzt (settingsStore)
+- [x] 1.2 tsc (`tsconfig.app.json`) Baseline-Diff = 0 neue Fehler (331 Baseline unverändert); vitest berührte Stores 108 grün
+  - [x] v14-Migrate-Unit-Test `settingsStore-migrate-v14.test.ts` 4/4 grün (Mac cloud→local, Win bleibt cloud, v14-cloud bleibt, Personas rebuild) — commit `b261e9d`
+- [ ] 1.3 e2e-Specs an neuen Zustand angepasst, grün
+- [~] 1.4 App startet lokal (`tauri:dev` läuft, v2.5.7); Local-Onboarding rendert (UI-Smoke :5173); Switch/Local live noch zu bestätigen
+- [~] 1.5 Local-Inferenz bewiesen: Ollama :11434 (qwen2.5:0.5b) → „LOCAL OK". Nach Rust-Restart bootet App in local (kein `[Offload] cloud`). Builtin-Engine-GGUF-Download noch (Phase 2.4)
+- [ ] 1.6 ComfyUI auf Mac überall aus (harte Regel), keine Crashes/Dead-Ends
 
-### 2.1 **Chat streamuje tokeny** `[ ]`
-- Przez Builtin-Engine (Qwen)
+## Phase 2 — Local Chat
+- [ ] 2.1 Chat streamt Tokens über Builtin-Engine (Qwen)
+- [ ] 2.2 Think-Toggle wo unterstützt
+- [ ] 2.3 Modell-Swap (2. Modell)
+- [~] 2.4 Discover-Download für Builtin-Engine: CODE FERTIG (commit `39d2f06`) — `detect_model_path` akzeptiert Anzeigename-Aliase; DiscoverModels hat Built-in-Zweig (flach schreiben → engine booten). tsc/cargo grün. Live „2. Modell lädt" = nach Rebuild
+- [ ] Phase-6-Richtung (Bridge-MLX vs In-Process-MLX): Recon-Agent kartiert lu-bridge-Architektur — Ergebnis abwarten, DANN Phase 6 planen
+- [ ] 2.5 Langzeit: langer Multi-Turn-Chat stabil
 
-### 2.2 **Think-Toggle** `[ ]`
-- Tam, gdzie wspierane
+## Phase 3 — Agent-Modus: jedes Tool einzeln (29 Builtin + MCP)
+web (auto): [ ] web_search · [ ] web_fetch
+filesystem: [ ] file_read · [ ] file_write · [ ] file_list · [ ] file_search
+terminal: [ ] shell_execute · [ ] code_execute · [ ] shell_execute_background · [ ] shell_task_status · [ ] shell_task_kill · [ ] shell_task_list
+git: [ ] git_status · [ ] git_commit · [ ] git_push · [ ] git_log · [ ] git_diff
+dev: [ ] project_init · [ ] pr_resume · [ ] gh_pr_create · [ ] run_tests
+system: [ ] system_info · [ ] process_list · [ ] get_current_time
+desktop: [~] screenshot — macOS-Impl NEU (`/usr/sbin/screencapture`), kompiliert; live-grün braucht Screen-Recording-Grant für LU (OS-TCC)
+workflow: [ ] run_workflow · [ ] delegate_task
+extern: [ ] MCP-Tool (mind. 1 externer Server)
+media-Tools (in Phase 6): [ ] image_generate · [ ] video_generate (via MLX)
 
-### 2.3 **Zmiana modelu (2. model)** `[ ]`
+## Phase 4 — Coding (Codex) Modus
+- [ ] 4.1 Codex-Tools verfügbar (builtin minus desktop/workflow)
+- [ ] 4.2 Ganze Multi-Datei-Coding-Aufgabe live grün
+- [ ] 4.3 Review-Mode strippt mutierende Tools (verifiziert)
 
-### 2.4 **Discover-Download dla Builtin-Engine** `[~]`
-- **Commit:** `39d2f06`
-- `detect_model_path` akceptuje aliasy nazw wyświetlanych
-- `DiscoverModels` ma gałąź Built-in (flat write → uruchomienie silnika)
-- `tsc` / `cargo` zielone
-- Live „2. Model ładuje” = po przebudowie
+## Phase 5 — Langzeitläufe / Stabilität
+- [ ] 5.1 Langer Agent-Run (viele Tool-Calls, mehrstufig)
+- [ ] 5.2 Langer Coding-Run
+- [ ] 5.3 Memory + RAG über lange Session persistent
+- [ ] 5.4 Kein Leak/Absturz, RAM sauber (offload wo nötig)
 
-### 2.5 **Kierunek Faza-6 (Bridge-MLX vs In-Process-MLX)** `[ ]`
-- Recon-Agent mapuje architekturę lu-bridge
-- Czekać na wynik, POTEM planować Fazę 6
+## Phase 6 — MLX-Media via lu-bridge-Sidecar (Mac, only MLX)
+ARCHITEKTUR-ENTSCHEID: NICHT neu bauen — die bestehende `lu-bridge` (uselu/apps/bridge,
+Rust-Daemon :47711 + eingebetteter MLX-Python-Sidecar :47712 + `mlx-video`) als managed
+Sidecar bündeln (Muster wie llama-server). Honoriert Hardrule „only mlx via lu-bridge".
+- [x] 6.1 MLX-Runtime GEKLÄRT: Bridge-Source gefunden, Bild=diffusers/torch-MPS (Apple-nativ, kein ComfyUI), Video=`mlx-video`. Beide Engines auf diesem Mac bereits installiert (venv da)
+- [x] 6.2 Rust: `commands::bridge` start/stop/status-Sidecar (commit `7490585`), externalBin `bin/lu-bridge`, cargo grün
+- [x] 6.2b **BACKEND LIVE VALIDIERT (GUI-frei)**: gebündeltes Binary headless gestartet → `/health` ok, Bild+Video-Katalog geliefert, **echter sd-turbo-Render 512×512 PNG via `/cmd/mlx_generate` (HTTP 200, 432 KB)**. Fund: kalter Erst-Call braucht Sidecar-Readiness-Wait (JS-Port muss mlx_start→poll→generate wie Web `generateMlxImageDataUrl`)
+- [ ] 6.3 Frontend: `src/api/mlx-image.ts`+`mlx-video.ts` (localFetch→:47711), Mac-Local-Create → MLX-Zweig in useCreate, ComfyUI-Pfad Mac aus, AppShell setzt videoBackend='mlx' auf Apple Silicon
+- [ ] 6.4 Bild-Katalog: 5 licensed
+  - [ ] img-L1 · [ ] img-L2 · [ ] img-L3 · [ ] img-L4 · [ ] img-L5
+- [ ] 6.5 Bild-Katalog: 5 uncensored
+  - [ ] img-U1 · [ ] img-U2 · [ ] img-U3 · [ ] img-U4 · [ ] img-U5
+- [ ] 6.6 Video-Katalog: 5 licensed (ehrlicher Cap möglich)
+  - [ ] vid-L1 · [ ] vid-L2 · [ ] vid-L3 · [ ] vid-L4 · [ ] vid-L5
+- [ ] 6.7 Video-Katalog: 5 uncensored (ehrlicher Cap möglich)
+  - [ ] vid-U1 · [ ] vid-U2 · [ ] vid-U3 · [ ] vid-U4 · [ ] vid-U5
+- [ ] 6.8 Jedes Bildmodell 1x durchgelaufen (billigste Settings)
+- [ ] 6.9 Jedes Videomodell 1x durchgelaufen (billigste Settings)
 
-### 2.6 **Długie sesje** `[ ]`
-- Stabilny multi-turn chat
-
----
-
-## **Faza 3 — Tryb Agenta: każde narzędzie osobno (29 Builtin + MCP)**
-
-### 3.1 **Web (auto)**
-- [ ] web*_search
-- [ ] web_*fetch
-
-### 3.2 **Filesystem**
-- [ ] file*_read
-- [ ] file_*write
-- [ ] file*_list
-- [ ] file_*search
-
-### 3.3 **Terminal**
-- [ ] shell*_execute
-- [ ] code_*execute
-- [ ] shell*_execute_*background
-- [ ] shell*_task_*status
-- [ ] shell*_task_*kill
-- [ ] shell*_task_*list
-
-### 3.4 **Git**
-- [ ] git*_status
-- [ ] git_*commit
-- [ ] git*_push
-- [ ] git_*log
-- [ ] git_diff
-
-### 3.5 **Dev**
-- [ ] project*_init
-- [ ] pr_*resume
-- [ ] gh*_pr_*create
-- [ ] run_tests
-
-### 3.6 **System**
-- [ ] system*_info
-- [ ] process_*list
-- [ ] get*_current_*time
-
-### 3.7 **Desktop** `[~]`
-- screenshot — nowa implementacja macOS (`/usr/sbin/screencapture`)
-  - Kompiluje się
-  - Live-zielone wymaga **Screen-Recording (OS-TCC)** dla LU
-
-### 3.8 **Workflow**
-- [ ] run*_workflow
-- [ ] delegate_*task
-
-### 3.9 **Extern**
-- [ ] MCP-Tool (min. 1 zewnętrzny serwer)
-
-### 3.10 **Media-Tools (Faza 6)**
-- [ ] image*_generate
-- [ ] video_*generate (przez MLX)
-
----
-
-## **Faza 4 — Tryb Coding (Codex)**
-
-### 4.1 **Narzędzia Codex dostępne** `[ ]`
-- builtin bez desktop/workflow
-
-### 4.2 **Multi-file Coding Live Green** `[ ]`
-
-### 4.3 **Tryb Review** `[ ]`
-- Usuwa narzędzia mutujące (zweryfikowane)
-
----
-
-## **Faza 5 — Długie sesje / Stabilność**
-- **5.1 [ ]** Długi bieg Agenta (wiele wywołań narzędzi, wieloetapowo)
-- **5.2 [ ]** Długi bieg Coding
-- **5.3 [ ]** Pamięć + RAG trwałe w długiej sesji
-- **5.4 [ ]** Brak wycieków/crashy, RAM czysty (offload gdzie trzeba)
-
----
-
-## **Faza 6 — MLX-Media przez lu-bridge-Sidecar (Mac, tylko MLX)**
-
-### 6.1 **MLX-Runtime WYJAŚNIONY** `[x]`
-- Bridge-Source znaleziony
-- Obraz = diffusers/torch-MPS (Apple-native, bez ComfyUI)
-- Wideo = `mlx-video`
-- Oba silniki zainstalowane na tym Mac (venv gotowe)
-
-### 6.2 **Rust: commands::bridge start/stop/status-Sidecar** `[x]`
-- Commit `7490585`
-- externalBin `bin/lu-bridge`, cargo zielone
-
-#### 6.2.1 **Backend LIVE ZWERYFIKOWANY (bez GUI)** `[x]`
-- Zbundlowane binary uruchomione headless → `/health` OK
-- Katalog Obraz+Wideo zwrócony
-- Render `sd-turbo 512×512 PNG` przez `/cmd/mlx_generate` *(HTTP 200, 432 KB)*
-- Pierwszy „zimny” call wymaga oczekiwania na gotowość Sidecar
-
-### 6.3 **Frontend** `[ ]`
-- `src/api/mlx-image.ts` + `mlx-video.ts` (localFetch → :47711)
-- Mac-Local-Create → gałąź MLX w useCreate
-- Ścieżka ComfyUI Mac wyłączona
-- AppShell ustawia `videoBackend = 'mlx'` na Apple Silicon
-
-### 6.4 **Katalog obrazów: 5 licencjonowanych** `[ ]`
-- img-L1 · L2 · L3 · L4 · L5
-
-### 6.5 **Katalog obrazów: 5 niescenzurowanych** `[ ]`
-- img-U1 · U2 · U3 · U4 · U5
-
-### 6.6 **Katalog wideo: 5 licencjonowanych** `[ ]`
-- vid-L1 · L2 · L3 · L4 · L5
-
-### 6.7 **Katalog wideo: 5 niescenzurowanych** `[ ]`
-- vid-U1 · U2 · U3 · U4 · U5
-
-### 6.8 **Każdy model obrazu 1x** `[ ]`
-- Najtańsze ustawienia
-
-### 6.9 **Każdy model wideo 1x** `[ ]`
-- Najtańsze ustawienia
-
----
-
-## **Faza 7 — Zakończenie**
-- **7.1 [ ]** tsc + vitest + e2e zielone, Baseline-Diff czysty
-- **7.2 [ ]** Live-Green-Log zapisany dla każdego punktu celu
-- **7.3 [ ]** Commit na każdy krok, Podsumowanie, bez push (Go Davida)
+## Phase 7 — Abschluss
+- [ ] 7.1 tsc + vitest + e2e grün, Baseline-Diff sauber
+- [ ] 7.2 Live-Green-Log je Goal-Punkt festgehalten
+- [ ] 7.3 Commit pro Schritt, Zusammenfassung, kein Push (Davids Go)

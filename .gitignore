@@ -94,3 +94,6 @@ SETUP_REPORT.md
 # so clones still fail-closed on mkdir; `loct scan` cache writes are a
 # separate hole covered by scripts/assert-loct-repo-root.sh + scripts/bin/loct.
 !src-tauri/.loctree
+
+# Local agent journals and session state stay out of the public tree
+.vibecrafted/

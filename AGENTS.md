@@ -126,7 +126,7 @@ Take these seriously — the app intentionally runs uncensored local models and 
 3. **Prove the integrated tree ships** — run `make release` from the repo root (signed + notarized `.app` + `.dmg`; do not skip notarization).
 4. **Open the built app** — `open release/macos/LU.app` (or the path `make release` prints).
 
-**When our fix is better than upstream:** draft a PR title + body the team could send upstream. Do not open the PR unless a maintainer asked — just leave the draft text (e.g. in `.vibecrafted/JOURNAL.md` or the task summary).
+**When our fix is better than upstream:** draft a PR title + body the team could send upstream. Do not open the PR unless a maintainer asked — just leave the draft text (e.g. in a local, untracked `.vibecrafted/JOURNAL.md` or the task summary).
 
 macOS release credentials and artifact layout: see `make help` / `Makefile` (`release/macos/LU.dmg`, versioned DMG, `SHA256SUMS.txt`).
 
