@@ -82,8 +82,12 @@ function smallest<T extends { sizeBytes: number; installed: boolean }>(models: T
 
 /** The image-engine install already pre-pulls the smallest model. If any image
  * model is now installed, the local lane is usable and setup is finished; do
- * not interpret the next missing catalog entry as another required download. */
-export function starterForEmptyImageLane<T extends { sizeGB: number; installed: boolean }>(
+ * not interpret the next missing catalog entry as another required download.
+ *
+ * Size is `sizeBytes` (same field `smallest` compares). Catalog `sizeGB` is
+ * converted at `listMlxImageModels` / `listVideoModels`; this helper must not
+ * reintroduce `sizeGB` or `undefined < undefined` keeps the first row. */
+export function starterForEmptyImageLane<T extends { sizeBytes: number; installed: boolean }>(
   models: T[],
 ): T | null {
   return models.some((m) => m.installed) ? null : smallest(models)

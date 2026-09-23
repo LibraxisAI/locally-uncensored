@@ -50,10 +50,14 @@ fn venv_python() -> PathBuf {
 /// volume — otherwise the app-local `mlx/cache` as before. The venv stays
 /// put either way: its pip scripts carry absolute shebangs, so it must
 /// never move with the weights.
-fn hf_home() -> PathBuf {
-    crate::os_paths::configured_models_root()
+fn hf_home_for(models_root: Option<PathBuf>) -> PathBuf {
+    models_root
         .map(|r| r.join("hf-home"))
         .unwrap_or_else(|| mlx_root().join("cache"))
+}
+
+fn hf_home() -> PathBuf {
+    hf_home_for(crate::os_paths::configured_models_root())
 }
 
 fn image_engine_is_installed(root: &std::path::Path) -> bool {
@@ -358,8 +362,11 @@ fn truncate(s: &str, max: usize) -> String {
 // ungated, and loadable via `AutoPipelineForText2Image.from_pretrained`
 // (fp16-variant repos additionally verified to carry per-subfolder fp16
 // weights — a root-level `*_fp16.safetensors` alone does NOT load). The
-// sidecar downloads into `HF_HOME = <mlx_root>/cache`, so install and
-// runtime share one cache and "installed" == snapshot dir present.
+// sidecar downloads into `HF_HOME` from [`hf_home`] (`<models_root>/hf-home`
+// or `mlx/cache`), so install and runtime share one cache. "Installed"
+// means a snapshot that carries `model_index.json` and the weights, and
+// generate loads that snapshot directory — not the hub id — because a
+// SHA-pinned download does not write `refs/main`.
 
 #[derive(serde::Serialize, Clone)]
 pub struct ImageCatalogEntry {
@@ -389,7 +396,7 @@ pub struct ImageCatalogEntry {
 }
 
 macro_rules! allow {
-    ($($p:expr),*) => { &["*.json", "*.txt", $($p),*] };
+    ($($p:expr),*) => { &["model_index.json", "*.json", "*.txt", $($p),*] };
 }
 
 pub const IMAGE_CATALOG: &[ImageCatalogEntry] = &[
@@ -579,8 +586,11 @@ fn hf_xet_cache_dir() -> PathBuf {
 /// first. A cache can hold more than one revision; the one the hub currently
 /// serves is the one an install has just written.
 fn snapshot_dirs(repo: &str) -> Vec<PathBuf> {
-    let root = image_model_cache_dir(repo);
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join("snapshots"))
+    snapshot_dirs_in(&image_model_cache_dir(repo))
+}
+
+fn snapshot_dirs_in(repo_cache: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(repo_cache.join("snapshots"))
         .into_iter()
         .flatten()
         .flatten()
@@ -588,13 +598,63 @@ fn snapshot_dirs(repo: &str) -> Vec<PathBuf> {
         .filter(|path| path.is_dir())
         .collect();
     dirs.sort();
-    if let Ok(rev) = std::fs::read_to_string(root.join("refs/main")) {
-        let head = root.join("snapshots").join(rev.trim());
+    if let Ok(rev) = std::fs::read_to_string(repo_cache.join("refs/main")) {
+        let head = repo_cache.join("snapshots").join(rev.trim());
         if let Some(at) = dirs.iter().position(|d| *d == head) {
             dirs.swap(0, at);
         }
     }
     dirs
+}
+
+/// huggingface_hub writes `refs/<revision>` only when the requested revision
+/// is not already the commit hash (`_snapshot_download.py`:
+/// `if revision != commit_hash`). We pin `snapshot_download` to a SHA so the
+/// folder is `snapshots/<sha>`, which means `refs/main` is never created.
+/// Diffusers then loads the hub id at revision `main`, cannot map it onto
+/// that snapshot, and raises "does not appear to have a file named
+/// model_index.json" even though the file is sitting in `snapshots/<sha>/`.
+/// The Downloads row still goes green because [`snapshot_dirs_in`] walks
+/// `snapshots/` without needing the ref.
+fn ensure_main_ref(repo_cache: &Path, snap: &Path) -> Result<(), String> {
+    let commit = snap
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "snapshot directory has no name".to_string())?;
+    if commit.len() < 7 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("snapshot directory is not a commit hash".into());
+    }
+    let refs = repo_cache.join("refs");
+    std::fs::create_dir_all(&refs)
+        .map_err(|e| format!("create refs: {}", os_error::english(&e)))?;
+    let dest = refs.join("main");
+    if std::fs::read_to_string(&dest)
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        == Some(commit)
+    {
+        return Ok(());
+    }
+    std::fs::write(&dest, commit).map_err(|e| format!("write refs/main: {}", os_error::english(&e)))
+}
+
+/// The snapshot the sidecar can actually load: audit complete (so
+/// `model_index.json` and the weights are there) and `refs/main` recorded so
+/// a hub-id load would find it too. A snapshot without the index never
+/// counts, even if the download slot already painted the row green.
+fn loadable_snapshot_in(repo_cache: &Path, prefer: Option<&str>) -> Option<PathBuf> {
+    for snap in snapshot_dirs_in(repo_cache) {
+        if !snap.join("model_index.json").is_file() {
+            continue;
+        }
+        if !crate::commands::mlx_snapshot::audit_snapshot(&snap, None, prefer).is_complete() {
+            continue;
+        }
+        let _ = ensure_main_ref(repo_cache, &snap);
+        return Some(snap);
+    }
+    None
 }
 
 /// Does the load ask diffusers for `variant="fp16"`?
@@ -679,7 +739,11 @@ fn image_model_report(entry: &ImageCatalogEntry) -> crate::commands::mlx_snapsho
 }
 
 fn image_model_is_installed(entry: &ImageCatalogEntry) -> bool {
-    image_model_report(entry).is_complete()
+    // Heal `refs/main` first (a SHA-pinned download never writes it), then
+    // the same audit the installer uses. A snapshot without model_index.json
+    // fails both.
+    loadable_snapshot_in(&image_model_cache_dir(entry.repo), prefer_variant(entry)).is_some()
+        && image_model_report(entry).is_complete()
 }
 
 fn install_failed_message(report: &crate::commands::mlx_snapshot::SnapshotReport) -> String {
@@ -812,9 +876,10 @@ fn refetch_file(
     snap: &Path,
     repair: &crate::commands::mlx_snapshot::Repair,
 ) -> Result<(), String> {
-    let cache = mlx_root().join("cache");
+    let cache = hf_home();
+    let repo_cache = image_model_cache_dir(repo);
     if repair.delete_first {
-        crate::commands::mlx_snapshot::drop_broken_file(snap, &cache, &repair.path)?;
+        crate::commands::mlx_snapshot::drop_broken_file(snap, &repo_cache, &repair.path)?;
         slot.log(format!("discarded the broken copy of {}", repair.path));
     }
     if let Some(sha) = &repair.sha256 {
@@ -857,7 +922,7 @@ fn refetch_file(
         let actual = crate::commands::mlx_snapshot::sha256_of(&full)
             .map_err(|e| format!("checksumming {}: {e}", repair.path))?;
         if &actual != expected {
-            let _ = crate::commands::mlx_snapshot::drop_broken_file(snap, &cache, &repair.path);
+            let _ = crate::commands::mlx_snapshot::drop_broken_file(snap, &repo_cache, &repair.path);
             return Err(format!(
                 "{} does not match the sha256 the hub lists for it and was discarded",
                 repair.path
@@ -1043,6 +1108,7 @@ fn finish_image_install(
     };
     let report = snapshot::audit_snapshot(&snap, listing, prefer);
     if report.is_complete() {
+        let _ = ensure_main_ref(&image_model_cache_dir(entry.repo), &snap);
         return install_outcome(entry.id, &report, &[]);
     }
     let (repairs, stuck) = snapshot::repair_plan(&report.defects);
@@ -1064,7 +1130,11 @@ fn finish_image_install(
     for defect in &stuck {
         slot.log(format!("{} cannot be fetched again on its own", defect.path));
     }
-    install_outcome(entry.id, &snapshot::audit_snapshot(&snap, listing, prefer), &fetched)
+    let repaired = snapshot::audit_snapshot(&snap, listing, prefer);
+    if repaired.is_complete() {
+        let _ = ensure_main_ref(&image_model_cache_dir(entry.repo), &snap);
+    }
+    install_outcome(entry.id, &repaired, &fetched)
 }
 
 pub fn mlx_image_install_status(state: &AppState, _args: &Value) -> CmdResult {
@@ -1107,6 +1177,11 @@ struct GenerateArgs {
     height: Option<u32>,
     #[serde(default)]
     negative_prompt: Option<String>,
+    /// Source still for img2img / expand. Absent means text-to-image.
+    #[serde(default)]
+    image_base64: Option<String>,
+    #[serde(default)]
+    strength: Option<f32>,
 }
 
 pub async fn mlx_generate(_state: &AppState, args: &Value) -> CmdResult {
@@ -1128,6 +1203,13 @@ pub async fn mlx_generate(_state: &AppState, args: &Value) -> CmdResult {
         .build()
         .map_err(|e| crate::commands::internal(e.to_string()))?;
 
+    // Load the snapshot folder, not the hub id. A SHA-pinned download never
+    // writes `refs/main`, so `from_pretrained("UnfilteredAI/NSFW-gen-v2")`
+    // cannot find `model_index.json` even when the snapshot is complete.
+    let snapshot = loadable_snapshot_in(
+        &image_model_cache_dir(entry.repo),
+        prefer_variant(entry),
+    );
     let body = json!({
         "prompt": req.prompt,
         "negative_prompt": req.negative_prompt,
@@ -1135,7 +1217,10 @@ pub async fn mlx_generate(_state: &AppState, args: &Value) -> CmdResult {
         "seed": req.seed,
         "width": req.width.unwrap_or(entry.default_size),
         "height": req.height.unwrap_or(entry.default_size),
-        "model_repo": entry.repo,
+        "model_repo": snapshot
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| entry.repo.to_string()),
         "dtype": entry.dtype,
         "variant": load_variant(entry),
         "guidance": entry.guidance,
@@ -1143,8 +1228,15 @@ pub async fn mlx_generate(_state: &AppState, args: &Value) -> CmdResult {
         "disable_safety_checker": entry.disable_safety_checker,
         // We already own every file of this model — say so, and the load stops
         // going to the hub. That is what makes an offline render possible.
-        "local_files_only": image_model_is_installed(entry),
+        "local_files_only": snapshot.is_some(),
     });
+    let mut body = body;
+    if let Some(image) = req.image_base64.as_ref() {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("image_base64".into(), json!(image));
+            obj.insert("strength".into(), json!(req.strength.unwrap_or(0.7)));
+        }
+    }
     let res = client
         .post(format!("http://127.0.0.1:{MLX_PORT}/generate"))
         .json(&body)
@@ -1665,6 +1757,7 @@ mod tests {
         for c in IMAGE_CATALOG {
             assert!(c.repo.contains('/'), "{} repo must be org/name", c.id);
             assert!(!c.allow.is_empty(), "{} needs allow patterns", c.id);
+            assert!(c.allow.contains(&"model_index.json"), "{} must pull model_index.json", c.id);
             assert!(c.allow.contains(&"*.json"), "{} must pull configs", c.id);
             assert!(c.steps > 0 && c.size_gb > 0.0);
             assert!(
@@ -1682,9 +1775,93 @@ mod tests {
     }
 
     #[test]
-    fn image_cache_dir_follows_hub_layout() {
+    fn image_cache_dir_lives_under_hf_home() {
         let d = image_model_cache_dir("stabilityai/sd-turbo");
-        assert!(d.ends_with("cache/hub/models--stabilityai--sd-turbo"));
+        assert_eq!(
+            d,
+            hf_home().join("hub").join("models--stabilityai--sd-turbo")
+        );
+    }
+
+    #[test]
+    fn hf_home_follows_models_root_when_set() {
+        let rooted = hf_home_for(Some(PathBuf::from("/workspace/lu-models")));
+        assert_eq!(rooted, PathBuf::from("/workspace/lu-models/hf-home"));
+        let fallback = hf_home_for(None);
+        assert!(fallback.ends_with("mlx/cache"), "{}", fallback.display());
+    }
+
+    /// Live shape of `UnfilteredAI/NSFW-gen-v2` after a SHA-pinned download
+    /// into `models_root/hf-home`: the snapshot is complete, `model_index.json`
+    /// is there, but huggingface_hub never wrote `refs/main`. Generate used to
+    /// pass the hub id and die; it now loads the snapshot folder and records
+    /// the missing ref.
+    #[test]
+    fn a_pinned_sha_snapshot_without_refs_is_loadable_from_the_snapshot_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let commit = "982782a450570e5f064016b404d4b7a1c19dbad5";
+        let snap = temp.path().join("snapshots").join(commit);
+        write_complete_nsfw_snapshot(&snap);
+        assert!(
+            !temp.path().join("refs/main").exists(),
+            "the pinned download does not write refs/main"
+        );
+
+        let loaded = loadable_snapshot_in(temp.path(), Some("fp16")).expect("complete snapshot must load");
+        assert_eq!(loaded, snap);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("refs/main")).unwrap().trim(),
+            commit,
+            "loadability heals refs/main so a hub-id load would also find model_index.json"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_missing_model_index_json_is_not_complete_or_loadable() {
+        let temp = tempfile::tempdir().unwrap();
+        let commit = "982782a450570e5f064016b404d4b7a1c19dbad5";
+        let snap = temp.path().join("snapshots").join(commit);
+        write_complete_nsfw_snapshot(&snap);
+        std::fs::remove_file(snap.join("model_index.json")).unwrap();
+        assert!(
+            !crate::commands::mlx_snapshot::audit_snapshot(&snap, None, Some("fp16")).is_complete()
+        );
+        assert!(
+            loadable_snapshot_in(temp.path(), Some("fp16")).is_none(),
+            "Downloads must not treat a snapshot without model_index.json as installed"
+        );
+        assert!(!temp.path().join("refs/main").exists());
+    }
+
+    fn write_complete_nsfw_snapshot(snap: &Path) {
+        std::fs::create_dir_all(snap).unwrap();
+        std::fs::write(
+            snap.join("model_index.json"),
+            r#"{
+              "_class_name": "StableDiffusionXLPipeline",
+              "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+              "text_encoder": ["transformers", "CLIPTextModel"],
+              "text_encoder_2": ["transformers", "CLIPTextModelWithProjection"],
+              "tokenizer": ["transformers", "CLIPTokenizer"],
+              "tokenizer_2": ["transformers", "CLIPTokenizer"],
+              "unet": ["diffusers", "UNet2DConditionModel"],
+              "vae": ["diffusers", "AutoencoderKL"]
+            }"#,
+        )
+        .unwrap();
+        for file in [
+            "unet/diffusion_pytorch_model.fp16.safetensors",
+            "vae/diffusion_pytorch_model.fp16.safetensors",
+            "text_encoder/model.safetensors",
+            "text_encoder_2/model.safetensors",
+            "tokenizer/vocab.json",
+            "tokenizer_2/vocab.json",
+            "scheduler/scheduler_config.json",
+        ] {
+            let path = snap.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"w").unwrap();
+        }
     }
 
     #[test]
