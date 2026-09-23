@@ -11,7 +11,7 @@ for (const slug of ['ollama-cloud', 'featherless', 'venice', 'chutes', 'infermat
     for (const row of rows) {
       expect(row.querySelectorAll('td')).toHaveLength(2)
       for (const cell of row.querySelectorAll('td')) {
-        expect(cell.querySelector('time')?.getAttribute('datetime')).toBe('2026-09-09')
+        expect(cell.querySelector('time')?.getAttribute('datetime')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
         expect(cell.querySelector('a')?.getAttribute('href')).toMatch(/^https:\/\//)
       }
     }

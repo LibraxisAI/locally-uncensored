@@ -3,21 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Getting Started: Set Up Your Local AI Studio in Minutes</title>
-<meta name="description" content="Step-by-step setup for Locally Uncensored: install, chat, generate images and videos locally. No command line, zero config, fully private.">
+<title>Locally Uncensored Handbook: Install, Chat, Agent, Code, Create, Cloud</title>
+<meta name="description" content="The complete manual for Locally Uncensored 3.0: install on Windows or Linux, set up the LU Engine, chat, use the agent and the Code tab, generate images, video and audio, use LU Cloud, and fix the usual problems.">
 <meta name="robots" content="index, follow">
 <meta name="theme-color" content="#0a0a0a">
 <link rel="canonical" href="https://locallyuncensored.com/guide/">
-<meta property="og:title" content="Getting Started: Set Up Your Local AI Studio in Minutes">
-<meta property="og:description" content="Step-by-step setup for Locally Uncensored: install, chat, generate images and videos locally. No command line, zero config, fully private.">
+<meta property="og:title" content="Locally Uncensored Handbook: Install, Chat, Agent, Code, Create, Cloud">
+<meta property="og:description" content="The complete manual for Locally Uncensored 3.0: install on Windows or Linux, set up the LU Engine, chat, use the agent and the Code tab, generate images, video and audio, use LU Cloud, and fix the usual problems.">
 <meta property="og:url" content="https://locallyuncensored.com/guide/">
-<meta property="og:type" content="website">
+<meta property="og:type" content="article">
 <meta property="og:image" content="https://locallyuncensored.com/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebPage","name":"Getting Started: Set Up Your Local AI Studio in Minutes","description":"Step-by-step setup for Locally Uncensored: install, chat, generate images and videos locally. No command line, zero config, fully private.","url":"https://locallyuncensored.com/guide/","isPartOf":{"@type":"WebSite","name":"Locally Uncensored","url":"https://locallyuncensored.com/"}}
+{"@context":"https://schema.org","@type":"WebPage","name":"Locally Uncensored Handbook: Install, Chat, Agent, Code, Create, Cloud","description":"The complete manual for Locally Uncensored 3.0: install on Windows or Linux, set up the LU Engine, chat, use the agent and the Code tab, generate images, video and audio, use LU Cloud, and fix the usual problems.","url":"https://locallyuncensored.com/guide/","dateModified":"2026-09-11","inLanguage":"en","isPartOf":{"@type":"WebSite","name":"Locally Uncensored","url":"https://locallyuncensored.com/"},"hasPart":[{"@type":"TechArticle","name":"What Locally Uncensored is","url":"https://locallyuncensored.com/guide/what-it-is/"},{"@type":"TechArticle","name":"Install and update","url":"https://locallyuncensored.com/guide/install/"},{"@type":"TechArticle","name":"First start: the setup wizard","url":"https://locallyuncensored.com/guide/first-start/"},{"@type":"TechArticle","name":"Chat","url":"https://locallyuncensored.com/guide/chat/"},{"@type":"TechArticle","name":"Agent mode","url":"https://locallyuncensored.com/guide/agent/"},{"@type":"TechArticle","name":"The Code tab","url":"https://locallyuncensored.com/guide/code/"},{"@type":"TechArticle","name":"Create: images, video, audio and characters","url":"https://locallyuncensored.com/guide/create/"},{"@type":"TechArticle","name":"LU Cloud","url":"https://locallyuncensored.com/guide/cloud/"},{"@type":"TechArticle","name":"Settings and troubleshooting","url":"https://locallyuncensored.com/guide/settings-and-troubleshooting/"},{"@type":"TechArticle","name":"FAQ and glossary","url":"https://locallyuncensored.com/guide/faq-and-glossary/"}]}
 </script>
-<link rel="icon" href="../favicon.png">
+<link rel="icon" href="/favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -46,303 +46,68 @@
     <button type="button" class="lu-nav-toggle" aria-label="Menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
   </div>
 </nav>
+<article class="lu-doc" data-handbook-hub>
+<div class="breadcrumb"><a href="/">Home</a> &rsaquo; Handbook</div>
+<h1>The Locally Uncensored handbook</h1>
+<p class="subtitle">Everything you need to install the app, run a model on your own machine, use the agent, the Code tab and the Create studios, add LU Cloud when your hardware runs out, and fix the usual problems yourself. Written for version 3.0.0 from the app's own source.</p>
+<p>Locally Uncensored is a desktop app for Windows and Linux that runs AI models on your own computer. Chat, an agent that can use tools, a coding tab, and a Create tab for images, video and audio all sit in one window. When a model is too big for your graphics card, the same window can hand the work to LU Cloud, the hosted twin of the app that also runs in a browser at <a href="https://lu-labs.ai">lu-labs.ai</a>.</p>
 
-<div class="container lu-doc">
+<p>This handbook is written for someone who has never used a local AI app. Each chapter explains what a part of the app is for, then walks through it in numbered steps with the button labels exactly as they appear on screen, and ends with the things that usually go wrong and how to fix them. Every fact comes from the app's source code for version 3.0.0, so where the code does not settle a question, the handbook says so instead of guessing.</p>
 
-<a href="../" class="back">&#8592; Back to home</a>
+<h2 id="chapters">Chapters</h2>
 
-<h1>Getting Started</h1>
-<p class="subtitle">From download to your first AI chat, image, and video in under 10 minutes. Locally Uncensored is a plug-and-play local AI studio: one installer, no command line, no Docker &mdash; the setup wizard handles the rest. New to local AI entirely? Start with the <a href="/blog/how-to-run-ai-locally.html">5-minute beginner guide</a>.</p>
+<div class="post-card" data-handbook-chapter="what-it-is"><h2><a href="/guide/what-it-is/">1. What Locally Uncensored is</a></h2><p>Local on your machine versus hosted on ours, what needs a GPU, and what costs nothing.</p></div>
+<div class="post-card" data-handbook-chapter="install"><h2><a href="/guide/install/">2. Install and update</a></h2><p>Windows installer, Linux packages, the SmartScreen warning, updates, file locations, uninstall.</p></div>
+<div class="post-card" data-handbook-chapter="first-start"><h2><a href="/guide/first-start/">3. First start: the setup wizard</a></h2><p>The wizard step by step, with the exact button labels, and why the starter model is 7B.</p></div>
+<div class="post-card" data-handbook-chapter="chat"><h2><a href="/guide/chat/">4. Chat</a></h2><p>Model picker, context window, thinking, sampling controls, personas, memory, documents, voice, export.</p></div>
+<div class="post-card" data-handbook-chapter="agent"><h2><a href="/guide/agent/">5. Agent mode</a></h2><p>Tools, the workspace folder and the sandbox, approvals, Stop, background agents, loops.</p></div>
+<div class="post-card" data-handbook-chapter="code"><h2><a href="/guide/code/">6. The Code tab</a></h2><p>What it is for, the modes, the plan bar, the folder rules, the token limit note, the sign in.</p></div>
+<div class="post-card" data-handbook-chapter="create"><h2><a href="/guide/create/">7. Create: images, video, audio and characters</a></h2><p>Image, video, audio, the Character Studio and the LoRA trainer, with local requirements and the hosted route.</p></div>
+<div class="post-card" data-handbook-chapter="cloud"><h2><a href="/guide/cloud/">8. LU Cloud</a></h2><p>Account, plans and packs, the Flash allowance, the No refusals mark, the content policy setting, API keys.</p></div>
+<div class="post-card" data-handbook-chapter="settings-and-troubleshooting"><h2><a href="/guide/settings-and-troubleshooting/">9. Settings and troubleshooting</a></h2><p>Every settings tab, the log file, the exact engine and trainer errors with fixes, Linux notes, storage paths, reset.</p></div>
+<div class="post-card" data-handbook-chapter="faq-and-glossary"><h2><a href="/guide/faq-and-glossary/">10. FAQ and glossary</a></h2><p>The questions from the help channels, and the words the app uses.</p></div>
 
-<nav class="toc">
-<div class="toc-title">Contents</div>
-<a href="#requirements">System Requirements</a>
-<a href="#install">1. Install</a>
-<a href="#onboarding">2. Onboarding</a>
-<a href="#chat">3. Your First Chat</a>
-<a href="#images">4. Generate Images</a>
-<a href="#videos">5. Generate Videos</a>
-<a href="#settings">6. Settings</a>
-<a href="#troubleshooting">7. Troubleshooting</a>
-</nav>
+<h2 id="how-to-read">If you only read one page</h2>
 
-<!-- ─── Requirements ──────────────────────────── -->
+<p>Install the app (chapter 2), let the wizard set up the LU Engine and download the starter model (chapter 3), and send your first message (chapter 4). That is a working local AI on most machines with a graphics card that has 6 GB of memory or more. Everything else in the handbook is optional and can wait until you want it.</p>
 
-<h2 id="requirements">System Requirements</h2>
+<section class="callout info" aria-labelledby="data-boundaries">
+<h2 id="data-boundaries">Local by default, with optional network features</h2>
+<p>The app runs locally by default. Chat, agent runs and image and video generation on a local model happen on your machine, and the app sends no telemetry and no analytics. Model downloads, update checks against GitHub Releases, and the anonymous daily count that is sent when you press the Cloud switch still use the network. Hosted requests leave your machine and are sent to the selected service, including any content you attach to that request. Remote access can also expose app content to a device you paired. Review the selected provider and the tool permissions before sharing private material.</p>
+<p>For what the hosted service does and does not do, read <a href="/cloud/">the cloud overview</a>. Local chat needs a downloaded model, and document chat also needs an embedding model. Image and video generation need ComfyUI and additional model downloads, which the app installs for you. None of this is a promise that every computer performs the same way.</p>
+</section>
 
-<table class="req-table">
-<tr><td>Operating System</td><td>Windows 10 or later (64-bit)</td></tr>
-<tr><td>RAM</td><td>8 GB minimum, 16 GB recommended</td></tr>
-<tr><td>GPU (for chat)</td><td>Optional. CPU inference works, GPU is faster.</td></tr>
-<tr><td>GPU (for images)</td><td>NVIDIA GPU with 6+ GB VRAM recommended</td></tr>
-<tr><td>GPU (for video)</td><td>NVIDIA GPU with 8-12+ GB VRAM recommended</td></tr>
-<tr><td>Disk Space</td><td>2 GB for the app. 5-50 GB for models depending on selection.</td></tr>
-</table>
+<h2 id="before-you-install">Before you install: the security warnings</h2>
 
-<div class="callout info">
-<div class="callout-title">No GPU?</div>
-You can still use the chat features with CPU inference. It will be slower but fully functional. Image and video generation require a dedicated NVIDIA GPU.
-</div>
+<p>The Windows installer is not yet signed with a Microsoft code signing certificate, so Windows SmartScreen shows an "unrecognized app" warning on first run, and some antivirus engines flag the file with a heuristic. Chapter 2 explains what is behind that. The short version: confirm that the file came from the project's <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases/latest">official Releases page</a> and matches the exact version you meant to download. Source availability alone does not verify a downloaded executable. Stop if the source or checksum does not match.</p>
 
-<!-- ─── Install ──────────────────────────── -->
-
-<h2 id="install">1. Install</h2>
-
-<div class="step">
-<span class="step-num">1</span>
-<span class="step-title">Download the installer</span>
-<div class="step-body">
-<p>Download the latest release from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases/latest">Releases page</a> or from <a href="https://locallyuncensored.com">locallyuncensored.com</a>. The file is called <code>Locally Uncensored_x.x.x_x64-setup.exe</code>.</p>
-</div>
-</div>
-
-<div class="step">
-<span class="step-num">2</span>
-<span class="step-title">Run the installer</span>
-<div class="step-body">
-<p>Double-click the downloaded file. Windows may show a SmartScreen warning because the app is not code-signed. Click "More info", then "Run anyway". The installer completes in a few seconds.</p>
-<div class="callout warn">
-<div class="callout-title">Windows SmartScreen</div>
-This warning appears for all unsigned applications. The app is open source and the full source code is available on <a href="https://github.com/PurpleDoubleD/locally-uncensored">GitHub</a> for review.
-</div>
-</div>
-</div>
-
-<div class="step">
-<span class="step-num">3</span>
-<span class="step-title">Launch the app</span>
-<div class="step-body">
-<p>After installation, the app launches automatically. You will see the onboarding wizard that guides you through the initial setup.</p>
-</div>
-</div>
-
-<!-- ─── Onboarding ──────────────────────────── -->
-
-<h2 id="onboarding">2. Onboarding</h2>
-
-<p>On first launch, a setup wizard walks you through five steps. Each step takes less than a minute.</p>
-
-<h3>Step 1: Welcome</h3>
-<p>Click "Get Started" to begin.</p>
-<img src="01-welcome.png" alt="Welcome screen" loading="lazy">
-
-<h3>Step 2: Theme</h3>
-<p>Choose Light or Dark mode. You can change this later in Settings.</p>
-<img src="02-theme.png" alt="Theme selection" loading="lazy">
-
-<h3>Step 3: Backend</h3>
-<p>The app scans your system for local AI backends. If Ollama is installed and running, it detects it automatically. If no backend is found, click "Install Ollama" to download and install it directly from the app with a progress bar.</p>
-<img src="03-backend.png" alt="Backend detection" loading="lazy">
-
-<div class="callout tip">
-<div class="callout-title">What is a backend?</div>
-A backend is the software that runs AI models on your machine. Ollama is the recommended option. It is free, lightweight, and supports hundreds of models. The app installs it for you in one click if needed.
-</div>
-
-<h3>Step 4: ComfyUI</h3>
-<p>If you want image and video generation, the app detects or installs ComfyUI automatically. If ComfyUI is already installed on your system, the app finds it and shows the path. If not, click "Install ComfyUI" for a one-click installation with step-by-step progress.</p>
-<img src="04-comfyui.png" alt="ComfyUI setup" loading="lazy">
-
-<h3>Step 5: Models</h3>
-<p>Choose which AI models to download. Models are split into "Uncensored" and "Mainstream" tabs. Each card shows the model name, a short description, file size, and VRAM requirement. Select the ones you want and click "Download Selected". You can always add more models later from the Model Manager.</p>
-<img src="05-models.png" alt="Model selection" loading="lazy">
-
-<div class="callout tip">
-<div class="callout-title">Which model should I pick?</div>
-If you are not sure, start with <strong>Llama 3.1 8B</strong> (marked as Recommended). It is a solid all-rounder that works on most hardware. For uncensored use, try <strong>Hermes 3 8B</strong> or <strong>Qwen 2.5 7B Abliterate</strong>.
-</div>
-
-<p>After setup, you see "You're all set!" and the app takes you to the main interface.</p>
-<img src="06-done.png" alt="Setup complete" loading="lazy">
-
-<!-- ─── Chat ──────────────────────────── -->
-
-<h2 id="chat">3. Your First Chat</h2>
-
-<div class="step">
-<span class="step-num">1</span>
-<span class="step-title">Open a new chat</span>
-<div class="step-body">
-<p>Click "+ New Chat" in the bottom left corner of the sidebar. The main area shows an empty chat with a message input at the bottom.</p>
-</div>
-</div>
-
-<div class="step">
-<span class="step-num">2</span>
-<span class="step-title">Type a message and send</span>
-<div class="step-body">
-<p>Type your message in the input field and press Enter. The AI responds in real time with streaming text.</p>
-</div>
-</div>
-
-<img src="08-chat-active.png" alt="Active chat conversation" loading="lazy">
-
-<div class="step">
-<span class="step-num">3</span>
-<span class="step-title">Switch models</span>
-<div class="step-body">
-<p>Click the model name in the top header bar (e.g. "phi4") to open the model dropdown. Select a different model to switch. Each conversation remembers which model it uses.</p>
-</div>
-</div>
-
-<h3>Think Mode</h3>
-<p>Click the "Think" toggle in the message input to enable chain-of-thought reasoning. The AI shows its reasoning process before giving the final answer. Works with compatible models like QwQ, DeepSeek-R1, and Qwen 3.</p>
-
-<h3>Agent Mode</h3>
-<p>Toggle "Agent" in the top right to enable tool-calling capabilities. The AI can search the web, read and write files, execute code, and take screenshots. Requires a compatible model (Hermes 3, Qwen 3, Gemma 4).</p>
-
-<!-- ─── Images ──────────────────────────── -->
-
-<h2 id="images">4. Generate Images</h2>
-
-<div class="step">
-<span class="step-num">1</span>
-<span class="step-title">Open the Create view</span>
-<div class="step-body">
-<p>Click the paintbrush icon in the top header bar or navigate to Create in the sidebar.</p>
-</div>
-</div>
-
-<img src="11-create.png" alt="Create view for image generation" loading="lazy">
-
-<div class="step">
-<span class="step-num">2</span>
-<span class="step-title">Install an image model</span>
-<div class="step-body">
-<p>If you have not installed an image model yet, go to the Model Manager (grid icon in the header), switch to the "Discover" tab, and look under "Image" models. Click "Install" on a model bundle. Recommended starting models:</p>
+<section aria-labelledby="antivirus-warning">
+<h3 id="antivirus-warning">If your antivirus flags the app</h3>
 <ul>
-<li><strong>SDXL</strong> -- High quality, widely supported, needs 6+ GB VRAM</li>
-<li><strong>Z-Image Turbo</strong> -- Fast generation (5 steps), uncensored, 8+ GB VRAM</li>
-<li><strong>FLUX 2 Klein</strong> -- Latest FLUX architecture, needs 8+ GB VRAM</li>
+<li>Keep protection enabled and leave the file blocked or quarantined while you check. Do not add a blanket folder exclusion.</li>
+<li>Look up the detection name and the affected file in your security product's history, update its definitions and scan again with its normal controls.</li>
+<li>A false positive is possible on this installer, and it must be investigated rather than assumed. Report the app version, the release file name and the detection name in the project's issue tracker. Do not post private files, credentials or unredacted logs.</li>
+<li>Microsoft's own guidance is at <a href="https://support.microsoft.com/en-us/windows/security/threat-malware-protection/virus-and-threat-protection-in-the-windows-security-app">Virus and threat protection in the Windows Security app</a>. Exclusions reduce protection and are not a normal installation step.</li>
 </ul>
-</div>
-</div>
+</section>
 
-<img src="12-models.png" alt="Model Manager with Discover tab" loading="lazy">
+<h2 id="help">Where to get help</h2>
 
-<div class="step">
-<span class="step-num">3</span>
-<span class="step-title">Generate</span>
-<div class="step-body">
-<p>Back in the Create view, select your installed model from the dropdown, type a prompt describing what you want, and click "Generate". The first generation takes longer because the model needs to load into VRAM. Subsequent generations are faster.</p>
-</div>
-</div>
-
-<div class="callout info">
-<div class="callout-title">Edit / Image to Image</div>
-Switch to the "Edit / Image to Image" tab to upload a source image and transform it with a prompt. Leave the mask empty and it restyles the whole image; paint an area and it changes only that part. The "Edit strength" slider controls how far the result moves from the original. Lower values (0.2-0.4) make subtle edits. Higher values (0.6-0.8) create major changes.
-</div>
-
-<!-- ─── Videos ──────────────────────────── -->
-
-<h2 id="videos">5. Generate Videos</h2>
-
-<div class="step">
-<span class="step-num">1</span>
-<span class="step-title">Install a video model</span>
-<div class="step-body">
-<p>Go to the Model Manager, switch to "Discover", and look under "Video" models. The VRAM tier tabs (All / Lightweight / Mid-Range / High-End) help you find models that match your GPU. Recommended:</p>
-<ul>
-<li><strong>AnimateDiff Lightning</strong> -- Lightweight, works on 4+ GB VRAM, short animations</li>
-<li><strong>Wan 2.1</strong> -- High quality, needs 8+ GB VRAM</li>
-<li><strong>LTX 2.3</strong> -- Good balance of speed and quality</li>
-</ul>
-</div>
-</div>
-
-<div class="step">
-<span class="step-num">2</span>
-<span class="step-title">Generate a video</span>
-<div class="step-body">
-<p>In the Create view, switch to the "Video" tab. Select your installed model, type a prompt, and click "Generate". Video generation takes 2-10 minutes depending on the model, resolution, and your hardware.</p>
-</div>
-</div>
-
-<div class="callout warn">
-<div class="callout-title">VRAM usage</div>
-Video generation uses significantly more VRAM than image generation. If you see out-of-memory errors, try a smaller resolution, fewer frames, or switch to a lightweight model like AnimateDiff.
-</div>
-
-<!-- ─── Settings ──────────────────────────── -->
-
-<h2 id="settings">6. Settings</h2>
-
-<p>Click the gear icon in the top right corner to open Settings.</p>
-
-<img src="09-settings.png" alt="Settings page" loading="lazy">
-
-<h3>Providers</h3>
-<p>Manage your AI backends. Ollama is enabled by default. You can add cloud providers (OpenAI, Anthropic, Groq) or additional local backends (LM Studio, vLLM, KoboldCpp). Click "+ Add Provider" to see all 20+ presets.</p>
-
-<h3>ComfyUI (Image and Video)</h3>
-<p>View ComfyUI status, start/stop/restart it, and configure the path and port. If you use the ComfyUI Desktop App instead of the browser-based version, you may need to change the port here to match your setup.</p>
-
-<img src="10-settings-comfyui.png" alt="ComfyUI settings with port configuration" loading="lazy">
-
-<h3>Generation</h3>
-<p>Adjust temperature, top-p, top-k, and max tokens for chat responses.</p>
-
-<h3>Other sections</h3>
-<ul>
-<li><strong>Voice</strong> -- Text-to-speech and speech-to-text settings</li>
-<li><strong>Memory</strong> -- Persistent memory system that remembers facts across conversations</li>
-<li><strong>Personas</strong> -- Create and manage AI personas with custom system prompts</li>
-<li><strong>Agent Permissions</strong> -- Control what tools the AI agent can use (file access, shell, web search)</li>
-<li><strong>Updates</strong> -- Check for new versions</li>
-</ul>
-
-<!-- ─── Troubleshooting ──────────────────────────── -->
-
-<h2 id="troubleshooting">7. Troubleshooting</h2>
-
-<h3>Chat does not respond</h3>
-<ul>
-<li>Make sure Ollama is running. Check in Settings under Providers -- the green dot next to Ollama should be visible.</li>
-<li>If the dot is gray or red, click "Test" to check the connection.</li>
-<li>Try restarting Ollama: open a terminal and run <code>ollama serve</code>.</li>
-</ul>
-
-<h3>ComfyUI not connecting</h3>
-<ul>
-<li>Go to Settings and expand "ComfyUI (Image & Video)". Check the status indicator.</li>
-<li>If it shows "Stopped", click "Start".</li>
-<li>If you use the <strong>ComfyUI Desktop App</strong> (not the browser version), you may need to change the port. The Desktop App often uses a different port than the default 8188. Check which port your ComfyUI is running on and enter it in the Port field.</li>
-<li>If the path is wrong, paste the correct path to your ComfyUI installation and click "Connect".</li>
-</ul>
-
-<h3>Image generation fails</h3>
-<ul>
-<li>Check that ComfyUI shows "Running" in Settings.</li>
-<li>Make sure you have installed an image model from the Model Manager.</li>
-<li>If you see out-of-memory errors, try a smaller resolution or a model that requires less VRAM.</li>
-</ul>
-
-<h3>Downloads are slow or stuck</h3>
-<ul>
-<li>Click the retry button next to the failed download in the Download Badge (top header bar).</li>
-<li>Check your internet connection.</li>
-<li>Large models (10+ GB) take time on slower connections. The progress bar shows the current speed.</li>
-</ul>
-
-<h3>Windows SmartScreen blocks the installer</h3>
-<ul>
-<li>Click "More info" in the SmartScreen dialog, then click "Run anyway".</li>
-<li>This appears because the app is not code-signed. The source code is fully open and auditable on GitHub.</li>
-</ul>
-
-<h3>Antivirus flags the app</h3>
-<ul>
-<li>Some antivirus software flags unsigned Tauri applications as suspicious. This is a false positive.</li>
-<li>Add the installation directory to your antivirus exceptions list.</li>
-</ul>
-
-<!-- ─── Footer ──────────────────────────── -->
-
-<div class="footer">
-<p>Locally Uncensored is AGPL-3.0 licensed and free to use.</p>
-<p><a href="https://github.com/PurpleDoubleD/locally-uncensored">GitHub</a> &middot; <a href="https://github.com/PurpleDoubleD/locally-uncensored/discussions">Community</a> &middot; <a href="../">Home</a></p>
-</div>
-
-</div>
+<p>Most problems are covered in chapter 9. When you ask for help in the <a href="https://locallyuncensored.com/discord" target="_blank" rel="noopener">Discord</a> or in a <a href="https://github.com/PurpleDoubleD/locally-uncensored/issues">GitHub issue</a>, say which surface you are on (the desktop app or the browser at lu-labs.ai), which version, which operating system, which graphics card, and attach today's log file from Settings, General, Troubleshoot. The log holds what the app was doing right before the problem, which a screenshot cannot show.</p>
+</article>
+<footer>
+  <div class="footer-row footer-meta"><span>&copy; 2026 &middot; Locally Uncensored &middot; AGPL-3.0</span></div>
+  <div class="footer-row footer-links">
+    <a href="https://locallyuncensored.com/blog/">Blog</a>
+    <a href="https://locallyuncensored.com/guide/">Guide</a>
+    <a href="https://locallyuncensored.com/remote-access/">Remote access</a>
+    <a href="https://locallyuncensored.com/discord" target="_blank" rel="noopener">Discord</a>
+    <a href="https://github.com/PurpleDoubleD/locally-uncensored">GitHub</a>
+    <a href="https://github.com/PurpleDoubleD/locally-uncensored/discussions">Discussions</a>
+    <a href="https://github.com/PurpleDoubleD/locally-uncensored/issues">Issues</a>
+    <a href="https://reddit.com/user/GroundbreakingMall54">Reddit</a>
+    <a href="https://www.linkedin.com/in/david-drobnitza-locallyuncensored/" rel="me noopener" target="_blank">LinkedIn</a>
+  </div>
+</footer>
 </body>
 </html>

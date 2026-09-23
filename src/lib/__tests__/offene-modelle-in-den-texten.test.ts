@@ -51,7 +51,11 @@ const nenntSechsModelle = (text: string) =>
   || /the six models/i.test(text)
 
 const alsText = (html: string) =>
-  new DOMParser().parseFromString(html, 'text/html').body.textContent ?? ''
+  html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
 
 describe('die Zahl der offenen Modelle', () => {
   it('steht auf keiner Seite mehr als sechs', () => {

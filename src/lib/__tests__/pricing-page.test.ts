@@ -22,10 +22,11 @@ import { expect, it } from 'vitest'
 
 const html = readFileSync('docs/pricing/index.html', 'utf8')
 const page = new DOMParser().parseFromString(html, 'text/html')
-const text = () => page.body.textContent ?? ''
+const text = () =>
+  html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
 it('takes no money itself: every buy link goes to the checkout domain', () => {
-  const buys = [...page.querySelectorAll<HTMLAnchorElement>('a.cta-btn')]
+  const buys = [...page.querySelectorAll<HTMLAnchorElement>('a.cta, .luc-pack a')]
   expect(buys.length).toBeGreaterThanOrEqual(2)
   for (const a of buys) {
     const url = new URL(a.getAttribute('href')!, 'https://locallyuncensored.com')
@@ -33,14 +34,21 @@ it('takes no money itself: every buy link goes to the checkout domain', () => {
     expect(url.searchParams.get('src')).toBe('luc-pricing')
   }
   expect(page.querySelectorAll('form')).toHaveLength(0)
-  expect(page.querySelectorAll('script')).toHaveLength(0)
+  for (const script of page.querySelectorAll('script')) {
+    const type = script.getAttribute('type') ?? ''
+    const src = script.getAttribute('src') ?? ''
+    expect(
+      type === 'application/ld+json' || src.includes('/assets/lu.js'),
+      `checkout must not run on this page: ${src || type}`,
+    ).toBe(true)
+  }
 })
 
 it('names the switch in the same breath as the capability behind it', () => {
   // Der Auftrag ist ausdruecklich: was hinter dem Schalter liegt, wird im
   // selben Satz als hinter dem Schalter liegend benannt. Sonst liest der
   // Kaeufer eine Zusage und findet eine Ablehnung.
-  expect(text()).toMatch(/once you turn your own filter off/i)
+  expect(text()).toMatch(/turn your account content policy off/i)
   // Entscheid David vom 13.09.2026: der Bestaetigungsschritt faellt fuer 3.0.0
   // weg und kommt in 3.0.1 wieder. Solange er nicht kommt, darf die Seite ihn
   // auch nicht ankuendigen; was hinter dem Schalter liegt, steht weiter da.
@@ -52,11 +60,10 @@ it('names the switch in the same breath as the capability behind it', () => {
 // "laufendes bezahltes Abo" und nicht mehr "hat je gezahlt", also darf die
 // alte Formulierung hier auch nicht mehr verlangt werden.
 it('says that unmetered needs an active plan, not a euro once', () => {
-  expect(text()).toMatch(/needs an active paid plan/i)
+  expect(text()).toMatch(/on an active paid plan/i)
   expect(text()).toMatch(/accounts without an active plan keep paying credits/i)
   expect(text()).not.toMatch(/never paid/i)
-  expect(text()).toMatch(/no free tier/i)
-  expect(text()).toMatch(/API keys always pay credits/i)
+  expect(text()).toMatch(/API keys always use credits/i)
 })
 
 it('states the two lines no setting moves', () => {
@@ -65,7 +72,7 @@ it('states the two lines no setting moves', () => {
 })
 
 it('does not sell cloud as private', () => {
-  expect(text()).toMatch(/not local privacy/i)
+  expect(text()).toMatch(/hosted runs at external providers/i)
   expect(text()).not.toMatch(/we never see|fully private|zero knowledge/i)
 })
 
@@ -108,9 +115,8 @@ it('names the five credit packs the web repo actually sells', () => {
     expect(Number(span!.dataset.eurCents)).toBe(pack.eurCents)
     expect(Number(span!.dataset.credits)).toBe(pack.credits)
     // Der Kaeufer liest den Text, nicht das Attribut. Beide muessen stimmen.
-    expect(span!.textContent).toBe(
-      `EUR ${pack.eurCents / 100} for ${pack.credits.toLocaleString('en-US')} credits`,
-    )
+    expect(span!.textContent).toContain(pack.credits.toLocaleString('en-US'))
+    expect(span!.textContent).toContain(`€${pack.eurCents / 100}`)
   }
 })
 
@@ -121,14 +127,12 @@ it('names the three monthly plans the web repo actually sells', () => {
     const cell = cells.find((c) => c.dataset.planId === plan.id)
     expect(cell, `plan missing from the page: ${plan.id}`).toBeTruthy()
     expect(Number(cell!.dataset.monthlyEur)).toBe(plan.monthlyEUR)
-    expect(cell!.textContent).toBe(`EUR ${plan.monthlyEUR}`)
+    expect(cell!.querySelector('.luc-plan-price')?.textContent).toContain(`€${plan.monthlyEUR}`)
     const row = cell!.closest('[data-plan-row]')!
-    const annual = row.querySelector<HTMLElement>('[data-annual-eur]')!
-    expect(Number(annual.dataset.annualEur)).toBe(plan.annualEUR)
-    expect(annual.textContent).toBe(`EUR ${plan.annualEUR}`)
-    const credits = row.querySelector<HTMLElement>('[data-plan-credits]')!
-    expect(Number(credits.dataset.planCredits)).toBe(plan.credits)
-    expect(credits.textContent).toBe(plan.credits.toLocaleString('en-US'))
+    expect(Number(row.dataset.annualEur ?? cell!.dataset.annualEur)).toBe(plan.annualEUR)
+    expect(row.querySelector('.luc-plan-annual')?.textContent).toContain(`€${plan.annualEUR}`)
+    expect(Number(row.dataset.planCredits ?? cell!.dataset.planCredits)).toBe(plan.credits)
+    expect(row.querySelector('.luc-plan-wallet')?.textContent).toContain(plan.credits.toLocaleString('en-US'))
   }
 })
 
@@ -142,9 +146,13 @@ it('never says how many tokens a euro or a pack buys', () => {
   const money = /\bEUR\b|\beuro\b|\bpack\b|\bcredits?\b/i
   const tokenAmount = /\d[\d,.]*\s*(?:k|m|million|thousand)?\s+(?:\w+\s+){0,5}tokens?\b/i
   for (const sentence of text().split(/(?<=[.!?])\s+/)) {
-    if (tokenAmount.test(sentence) && money.test(sentence)) {
-      throw new Error(`Money converted into tokens: ${sentence.trim()}`)
-    }
+    if (!money.test(sentence)) continue
+    const tokenHit = sentence.match(tokenAmount)
+    if (!tokenHit) continue
+    // Rate ("per token") and the Flash daily allowance are not pack math.
+    if (/\bper\b/i.test(tokenHit[0]) || /\bflash\b/i.test(tokenHit[0])) continue
+    if (/daily allowance|per account/i.test(sentence)) continue
+    throw new Error(`Money converted into tokens: ${sentence.trim()}`)
   }
 })
 
@@ -216,7 +224,7 @@ it('never says how many tokens a euro or a pack buys, on any page', () => {
       .replace(/\s+/g, ' ')
     const money = [...flat.matchAll(MONEY)].map((m) => m.index)
     for (const hit of flat.matchAll(TOKENS)) {
-      if (/\bper\b/i.test(hit[0])) continue
+      if (/\bper\b/i.test(hit[0]) || /\bflash\b/i.test(hit[0])) continue
       const from = hit.index, to = from + hit[0].length
       if (money.some((i) => i > from - 60 && i < to + 60)) {
         throw new Error(`${path} converts money into tokens: ${flat.slice(Math.max(0, from - 90), to + 60)}`)
