@@ -93,7 +93,7 @@ export function CloudTeaserModal() {
   // "Try local" button for lanes the bar doesn't even show (MAC-2).
   const localLane =
     target?.surface === 'intent' &&
-    isIntentAvailable(target.intent as CreateIntent, 'local', mlxOnlyCreateHost(isMlxImageHost(), comfyRunning))
+    isIntentAvailable(target.intent as CreateIntent, 'local', mlxOnlyCreateHost(isMlxImageHost(), comfyRunning), isMlxImageHost())
       ? target.intent
       : null
   const copy: TeaserCopy | null =

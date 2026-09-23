@@ -866,15 +866,17 @@ describe('createStore', () => {
   describe('setBackend local-flip clears cloud-only intents', () => {
     const ref = { filename: 'src.png', url: 'data:image/png;base64,x', width: 8, height: 8 }
 
-    it('keeps a utility op (upscale) on a ComfyUI host', () => {
+    it('drops a utility op (upscale) on a Windows/Linux ComfyUI host — LU Cloud tool there', () => {
+      // Local upscale / eraser are Mac-fork only (`localLaneMacOnly`); the Mac
+      // case lives in der-mac-strandet-nicht-auf-einem-werkzeug.test.ts.
       const s = useCreateStore.getState()
       s.setBackend('cloud')
       s.setIntent('upscale')
       s.setSource(ref)
       useCreateStore.getState().setBackend('local')
       const after = useCreateStore.getState()
-      expect(after.utilityOp).toBe('upscale')
-      expect(after.intent()).toBe('upscale')
+      expect(after.utilityOp).toBeNull()
+      expect(after.intent()).not.toBe('upscale')
     })
 
     it('keeps edit — it has a local lane via checkpoint inpaint (2.5.7)', () => {

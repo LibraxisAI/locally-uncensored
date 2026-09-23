@@ -872,7 +872,9 @@ export const useCreateStore = create<CreateState>()(
           if (backend !== 'local') return { backend }
           const patch: Record<string, unknown> = { backend }
           const mlxOnly = isMlxImageHost() && !s.comfyRunning
-          if (s.utilityOp && (mlxOnly || !LOCAL_UTILITY_OPS.has(s.utilityOp))) {
+          // Upscale / eraser run locally only in the Mac fork (Comfy connected);
+          // Windows/Linux keep them as LU Cloud tools (`localLaneMacOnly`).
+          if (s.utilityOp && (mlxOnly || !isMlxImageHost() || !LOCAL_UTILITY_OPS.has(s.utilityOp))) {
             Object.assign(patch, { utilityOp: null, mask: null, error: null })
           }
           // music/lipsync/extend/motion (2.5.8) and character (2.6.0, local

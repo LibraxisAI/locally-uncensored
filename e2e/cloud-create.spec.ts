@@ -114,14 +114,16 @@ test('local mode: local lanes usable, cloud-only ops shown as locked teasers', a
   // Character Studio is the musubi trainer — a real local tab on Mac without ComfyUI.
   await expect(page.getByRole('radio', { name: 'Character Studio', exact: true })).toBeVisible()
 
-  // Enhance Image / eraser have local ComfyUI lanes (hasLocalLane), so they
-  // are selectable radios on a Comfy host. Playwright CI is not a Mac.
+  // Enhance Image / eraser have a local lane only in the Mac fork
+  // (`localLaneMacOnly`). This spec runs as Windows (tauri-mock default), so
+  // they render locked: aria-label gains ", runs on LU Cloud" and a click
+  // opens the teaser instead of switching the lane.
   // R5-67 renamed the upscale label to "Enhance Image".
-  await expect(page.getByRole('radio', { name: 'Enhance Image', exact: true })).toBeVisible()
-  await expect(page.getByRole('radio', { name: 'Erase Object', exact: true })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Enhance Image, runs on LU Cloud' })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Erase Object, runs on LU Cloud' })).toBeVisible()
 
-  await page.getByRole('radio', { name: 'Enhance Image', exact: true }).click()
-  await expect(page.getByRole('radio', { name: 'Enhance Image', exact: true })).toBeChecked()
+  await page.getByRole('radio', { name: 'Enhance Image, runs on LU Cloud' }).click()
+  await expect(page.getByRole('radio', { name: 'Image', exact: true })).toBeChecked()
 })
 
 test('media_live=false: generate shows the honest coming-soon message', async ({ page }) => {

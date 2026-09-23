@@ -23,6 +23,11 @@ export interface IntentMeta {
    *  (mirrors createStore's LOCAL_LANE_OPS). The IntentBar unlocks these in
    *  local mode; the cloud glyph becomes a "Try cloud" affordance. */
   hasLocalLane?: true
+  /** The local lane exists only in the Mac fork (a ComfyUI the user already
+   *  runs, connected on :8080). Windows/Linux keep the LU Cloud teaser: their
+   *  local version is a plain resize / checkpoint inpaint, weaker than the
+   *  hosted tool, so it must not replace it there. */
+  localLaneMacOnly?: true
   /** Local model files this intent needs (gates the Download & install card). */
   requiresModels?: 'image' | 'video' | 'audio' | 'lipsync' | 'motion'
   examples: string[]
@@ -72,14 +77,14 @@ export const INTENTS: IntentMeta[] = [
     id: 'upscale', label: 'Enhance Image', short: 'Enhance', icon: Maximize2,
     placeholder: '',
     needsSource: true, needsPrompt: false, allowsMask: false, isVideo: false,
-    cloudOnly: true, hasLocalLane: true,
+    cloudOnly: true, hasLocalLane: true, localLaneMacOnly: true,
     examples: [],
   },
   {
     id: 'eraser', label: 'Erase Object', short: 'Erase', icon: Eraser,
     placeholder: '',
     needsSource: true, needsPrompt: false, allowsMask: true, isVideo: false,
-    cloudOnly: true, hasLocalLane: true, requiresModels: 'image',
+    cloudOnly: true, hasLocalLane: true, localLaneMacOnly: true, requiresModels: 'image',
     examples: [],
   },
   {
@@ -222,9 +227,15 @@ export function visibleIntents(backend: CreateBackend, mlxHost: boolean): Intent
  * — those lanes' "local" implementation is a ComfyUI graph this host does not
  * have, so the honest state is the cloud teaser, not a working-looking pill.
  */
-export function isIntentLocked(meta: IntentMeta, backend: CreateBackend, mlxHost: boolean): boolean {
+export function isIntentLocked(
+  meta: IntentMeta,
+  backend: CreateBackend,
+  mlxHost: boolean,
+  macHost = false,
+): boolean {
   if (backend === 'cloud') return false
   if (mlxHost) return !MLX_LOCAL_INTENTS.has(meta.id)
+  if (meta.localLaneMacOnly && !macHost) return meta.cloudOnly === true
   return meta.cloudOnly === true && !meta.hasLocalLane
 }
 
@@ -234,7 +245,12 @@ export function isIntentLocked(meta: IntentMeta, backend: CreateBackend, mlxHost
  * result actions that FORCE-switch to an intent — "Edit with mask" on a
  * finished image used to set 'edit' even where that lane cannot run.
  */
-export function isIntentAvailable(id: CreateIntent, backend: CreateBackend, mlxHost: boolean): boolean {
+export function isIntentAvailable(
+  id: CreateIntent,
+  backend: CreateBackend,
+  mlxHost: boolean,
+  macHost = false,
+): boolean {
   const meta = INTENT_MAP[id]
-  return visibleIntents(backend, mlxHost).includes(meta) && !isIntentLocked(meta, backend, mlxHost)
+  return visibleIntents(backend, mlxHost).includes(meta) && !isIntentLocked(meta, backend, mlxHost, macHost)
 }

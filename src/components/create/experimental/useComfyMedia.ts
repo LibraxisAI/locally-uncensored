@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { galleryItemUrl, isComfyViewUrl, proxiedComfyBlobUrl, recoverGalleryUrl, markGalleryItemAvailable } from './galleryUrl'
-import { isComfyLocal, isTauri } from '../../../api/backend'
+import { isComfyLocal, isMacOS, isTauri } from '../../../api/backend'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
 
 /**
@@ -8,16 +8,24 @@ import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
  *
  * ComfyUI 0.19+ answers the webview's cross-origin `<img src="…/view">` with
  * 403 (Sec-Fetch-Site), and the webview logs that before onError can run.
- * In Tauri we never assign that URL: bytes come through the Rust proxy (no
- * Origin header) as a blob. If ComfyUI is not running, we do not request
- * `/view` at all. Dev mode keeps the same-origin Vite proxy path.
+ * On macOS ComfyUI is always the user's own instance (LU never spawns it
+ * there) and usually runs without CORS headers, so in the Mac app we never
+ * assign that URL: bytes come through the Rust proxy (no Origin header) as a
+ * blob, and nothing is requested while ComfyUI is down.
+ *
+ * Windows/Linux keep the direct /view: LU starts its own ComfyUI with
+ * `--enable-cors-header "*"`, and the direct load keeps Range requests, so a
+ * long video still seeks and is not held whole in memory. A ComfyUI 0.19+ that
+ * still refuses it falls back through `onError` to the same proxy (#75), which
+ * also raises the --enable-cors-header hint for a local host.
+ * Dev mode keeps the same-origin Vite proxy path.
  */
 export function useComfyMedia(item: GalleryItem | null) {
   const base = item ? galleryItemUrl(item) : ''
   const comfyRunning = useCreateStore((s) => s.comfyRunning)
   const directView = isComfyViewUrl(base)
   // Cross-origin /view is the 403. Same-origin `/comfyui/view` (dev) is fine.
-  const blockDirectView = isTauri() && directView
+  const blockDirectView = isTauri() && isMacOS() && directView
   const [proxied, setProxied] = useState<{ base: string; url: string } | null>(null)
   const src = proxied && proxied.base === base ? proxied.url : (blockDirectView ? '' : base)
   const blobRef = useRef<string | null>(null)

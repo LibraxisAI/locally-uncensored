@@ -605,8 +605,15 @@ export async function buildDynamicWorkflow(
     // builds. A name that is not in a real list must not be sent as
     // ckpt_name — ComfyUI answers "Value not in list" and we do not
     // substitute another file.
-    if (models.checkpoints.length > 0 && !models.checkpoints.includes(params.model)) {
-      const inUnet = models.unets.includes(params.model)
+    // The node info above is cached for 5 minutes, while the model picker
+    // reads ComfyUI live. A checkpoint downloaded inside that window is in
+    // the picker but not in the cached list, so a miss asks ComfyUI once
+    // more before it becomes a refusal.
+    const freshModels = models.checkpoints.length > 0 && !models.checkpoints.includes(params.model)
+      ? detectAvailableModels(await getAllNodeInfo(true))
+      : models
+    if (freshModels.checkpoints.length > 0 && !freshModels.checkpoints.includes(params.model)) {
+      const inUnet = freshModels.unets.includes(params.model)
       throw new WorkflowUnavailableError(
         inUnet
           ? `"${params.model}" is a diffusion model (UNETLoader), not a ComfyUI checkpoint. It lives in diffusion_models, and this build has no graph for that family.`

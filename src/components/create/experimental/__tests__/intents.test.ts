@@ -23,10 +23,18 @@ const teasers = (backend: 'local' | 'cloud', mlxHost: boolean) =>
   visibleIntents(backend, mlxHost).filter((m) => isIntentLocked(m, backend, mlxHost)).map((m) => m.id)
 
 describe('intent cloud gating', () => {
-  it('upscale and eraser have a local ComfyUI lane', () => {
+  it('upscale and eraser have a local ComfyUI lane in the Mac fork only', () => {
     for (const id of ['upscale', 'eraser'] as const) {
       expect(INTENT_MAP[id].cloudOnly, id).toBe(true)
       expect(INTENT_MAP[id].hasLocalLane, id).toBe(true)
+      expect(INTENT_MAP[id].localLaneMacOnly, id).toBe(true)
+      // Windows/Linux: still the LU Cloud teaser (the local version is a
+      // plain resize / checkpoint inpaint, weaker than the hosted tool).
+      expect(isIntentLocked(INTENT_MAP[id], 'local', false), id).toBe(true)
+      // Mac with its own ComfyUI connected (not MLX-only): a real local tab.
+      expect(isIntentLocked(INTENT_MAP[id], 'local', false, true), id).toBe(false)
+      expect(isIntentAvailable(id, 'local', false, true), id).toBe(true)
+      expect(isIntentAvailable(id, 'local', false), id).toBe(false)
     }
   })
 
@@ -48,10 +56,14 @@ describe('intent cloud gating', () => {
     expect(fromMeta).toEqual([...LOCAL_LANE_OPS, ...LOCAL_UTILITY_OPS].sort())
   })
 
-  it('the local IntentBar filter keeps the classic tabs plus lanes and utilities selectable', () => {
-    const selectable = INTENTS.filter((m) => !m.cloudOnly || m.hasLocalLane).map((m) => m.id)
-    expect(selectable).toEqual(['image', 'edit', 'removebg', 'upscale', 'eraser', 'video', 'animate', 'character', 'lipsync', 'music', 'extend', 'motion'])
-    expect(unlocked('local', false)).toEqual(selectable)
+  it('the local IntentBar filter keeps the classic tabs plus lanes selectable, utilities only on a Mac', () => {
+    const everywhere = INTENTS.filter((m) => !m.cloudOnly || (m.hasLocalLane && !m.localLaneMacOnly)).map((m) => m.id)
+    expect(everywhere).toEqual(['image', 'edit', 'removebg', 'video', 'animate', 'character', 'lipsync', 'music', 'extend', 'motion'])
+    // Windows/Linux ComfyUI host
+    expect(unlocked('local', false)).toEqual(everywhere)
+    // Mac with ComfyUI connected also runs upscale / eraser locally
+    const macComfy = INTENTS.filter((m) => !isIntentLocked(m, 'local', false, true)).map((m) => m.id)
+    expect(macComfy).toEqual(['image', 'edit', 'removebg', 'upscale', 'eraser', 'video', 'animate', 'character', 'lipsync', 'music', 'extend', 'motion'])
   })
 
   it('local edit gates on the inpaint capability + image models', () => {

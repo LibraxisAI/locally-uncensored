@@ -94,7 +94,7 @@ export function IntentBar() {
       className="flex flex-wrap items-center justify-center gap-x-[3px] gap-y-[3px] px-3 pt-1.5 pb-[1.5px] [--text-control:9px]"
     >
       {intents.map((meta) => {
-        const locked = isIntentLocked(meta, backend, mlxHost)
+        const locked = isIntentLocked(meta, backend, mlxHost, isMlxImageHost())
         const selected = !locked && intent === meta.id
         const Icon = meta.icon
         return (
