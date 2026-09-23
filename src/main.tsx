@@ -5,6 +5,7 @@ import { LucideProvider } from 'lucide-react'
 import { ICON_STROKE_PX } from './components/ui/icon-size'
 import { mountFatalError } from './lib/fatal-error'
 import { installMcpShutdown } from './api/mcp/shutdown'
+import { installBackgroundShutdown } from './lib/background-shutdown'
 
 const rootEl = document.getElementById('root')!
 
@@ -16,6 +17,12 @@ const rootEl = document.getElementById('root')!
 // imports the shell plugin lazily inside connect(), so this adds two listeners
 // and no Tauri runtime to the boot chunk.
 installMcpShutdown()
+
+// B1 Nachbesserung 1 (3.0.1): "Stop heisst Stop" gilt auch fuer App beenden,
+// Fenster schliessen und Netzabbruch, nicht nur fuer den Stop-Knopf. Wired
+// here for the same reason installMcpShutdown is: the listeners belong to
+// the page's whole lifetime, not to a component mount.
+installBackgroundShutdown()
 
 // Bug D (surfingbird1010): a throw while a persisted store hydrates from corrupt
 // data (D1 corrupt chat-settings / D2 migrate throw / D5 locked IndexedDB) fires

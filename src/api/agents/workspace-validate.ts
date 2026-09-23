@@ -4,13 +4,14 @@
  *
  * Fehler D hat den DIALOG ehrlich gemacht: ein Ordner, den die Rust-Seite
  * nicht annimmt, kommt seitdem als Fehler zurueck und wird gar nicht erst
- * gesetzt. Zwei Wege setzen einen Ordner aber ohne jeden Dialog: der Knopf
- * "Use last folder" und der Vorgabeordner aus den Einstellungen, der ueber den
- * Speicher des Browsers einen Neustart ueberlebt. Kennt die Erlaubnisliste den
- * Pfad nicht (frische Installation, geleerte Daten, ein Ordner direkt unter
- * `$HOME`), stand er danach in der Kopfzeile, und jede Dateioperation
- * antwortete mit "pick it again to allow it", ohne dass je ein Dialog
- * aufgegangen waere, in dem man das haette tun koennen.
+ * gesetzt. Drei Wege setzen einen Ordner aber ohne jeden Dialog: der Knopf
+ * "Use last folder", der Vorgabeordner aus den Einstellungen, und
+ * `codexStore.workingDirectory` (der Code-Reiter-Ordner selbst); alle drei
+ * ueberleben einen Neustart im Speicher des Browsers. Kennt die
+ * Erlaubnisliste den Pfad nicht (frische Installation, geleerte Daten, ein
+ * Ordner direkt unter `$HOME`), stand er danach in der Kopfzeile, und jede
+ * Dateioperation antwortete mit "pick it again to allow it", ohne dass je ein
+ * Dialog aufgegangen waere, in dem man das haette tun koennen.
  *
  * `validate_workspace_folder` faellt dasselbe Urteil wie der Dialogweg und
  * merkt sich NICHTS dabei. Ein alter Pfad wird also nicht still in die

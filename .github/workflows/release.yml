@@ -29,6 +29,25 @@ env:
   # keeps old versions up.
   VULKAN_SDK_VERSION: '1.4.313.2'
 
+  # BLOCKER A1 (review-integ.md, Teil (a)): the boot-smoke steps below used to
+  # pull this file from `resolve/main`, a moving pointer, with no hash check,
+  # no size check and no timeout on the curl call, precisely the shape that
+  # hung a step for six hours on 2026-08-15 (see the Linux-deps step's own
+  # comment further down) and, unlike that step, against a THIRD PARTY host
+  # rather than apt. Pinned here to one commit of ggml-org/models and its
+  # file's sha256, both read from the same huggingface.co page, not typed
+  # from memory:
+  #   https://huggingface.co/ggml-org/models/tree/main/tinyllamas (revision)
+  #   https://huggingface.co/ggml-org/models/blob/main/tinyllamas/stories260K.gguf (sha256, shown as its LFS OID)
+  # Size: 1,185,376 bytes (~1.2 MB). License: MIT, this exact checkpoint
+  # traces to karpathy/tinyllamas on Hugging Face, whose model card states
+  # "License: mit"; ggml-org/models' own README states these files are
+  # "Various models to be used in llama.cpp CI workflow. Do not use it in
+  # production.", exactly this use and never a shipped/bundled asset. Bump
+  # both values together, from that same page, when the pin needs to move.
+  STORIES260K_REVISION: '499bc8821c6b12b4e53c5bffcb21ec206f212d81'
+  STORIES260K_SHA256: '270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d'
+
 jobs:
   # The Latest flag comes off FIRST, before anything is gated or built.
   #
@@ -87,6 +106,16 @@ jobs:
 
   build-tauri:
     needs: gate
+    # BLOCKER A1 (review-integ.md): this job had no ceiling of its own, so it
+    # ran up to GitHub's 360-minute default. ci.yml's own tauri-build job
+    # (comment right above its identical timeout) already carries this exact
+    # fix for this exact incident: "A hung bundler must fail loudly rather
+    # than burn the 6-hour job ceiling, the way the Linux lane did on
+    # 2026-08-15" (see this job's boot-smoke steps below). This job additionally
+    # signs the bundle and builds every installer target (NSIS, MSI, deb,
+    # AppImage) that ci.yml's own tauri-build does not, so its ceiling is
+    # wider than that job's 60 minutes rather than equal to it.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -219,6 +248,252 @@ jobs:
           esac
           ls -la src-tauri/bin/
 
+      # review-k1-avx.md R1-R6: dumpbin.exe (the Windows half of the guard
+      # below) is not on PATH on a plain runner shell. Same reasoning as
+      # sidecar-windows.yml's identical step; keep the two in sync.
+      - name: Set up MSVC dev tools (dumpbin, for the K1 ISA guard)
+        if: matrix.platform == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      # AUFLAGE a (review-isalinux.md Runde 2): prove the Linux half's pure
+      # decision logic (scripts/lib/isa-guard-linux-rules.sh) against
+      # checked-in text fixtures before trusting it against a real build on
+      # this runner. Needs no ELF file or objdump, runs identically on every
+      # matrix platform (ci.yml already runs it on every commit too; kept
+      # here as well so a release build is never gated on a real run alone).
+      - name: K1 ISA guard selftest (Linux decision logic)
+        shell: bash
+        run: bash scripts/verify-sidecar-isa.selftest.sh
+
+      # K1 (3.0.1): the guard against shipping a fixed x86-64-v3 binary again.
+      # Runs on the real build this lane just produced, on the real runner
+      # architecture (not emulated), so a regression here is the same failure
+      # a customer's older CPU would hit.
+      - name: Verify sidecar ISA layout (K1)
+        shell: bash
+        # Release night 3.0.1: the guard reads the linker .map files out of
+        # the sidecar build cache; on Windows that cache lives at D:/lb (see
+        # the build step), and without this env the guard looked under
+        # .llama-build, found no map, and died before a single module was
+        # checked. Same expression as the build step, keep the two in sync.
+        env:
+          LLAMA_BUILD_CACHE: ${{ matrix.platform == 'windows-latest' && 'D:/lb' || '' }}
+        run: bash scripts/verify-sidecar-isa.sh ${{ matrix.sidecar_triple }}
+
+      # BLOCKER B3 (review-sidecar.md, Beweisliste Punkt 3): a boot-smoke run
+      # from the ORIGINAL build directory proves nothing about the RPATH fix,
+      # because that directory still exists on this very runner and a
+      # leftover absolute build-tree RPATH would "work" by accident. Copy the
+      # staged companions and the exe into a directory with a DIFFERENT name
+      # (not merely a different path under the same tree) before booting, so
+      # a passing run here is evidence the $ORIGIN-relative RPATH (and, for
+      # the exe, LD_LIBRARY_PATH) actually carries the layout, not that the
+      # build directory happened to still be around.
+      #
+      # BLOCKER B6 (review-sidecar.md, Runde 2): this used to run
+      # `--version`. At the pin (common/arg.cpp:1215-1222) the --version
+      # handler prints two lines and calls exit(0) BEFORE
+      # ggml_backend_load_all() ever runs, so that call proved only that the
+      # dynamic loader could resolve the exe's own DT_NEEDED entries (via
+      # the LD_LIBRARY_PATH this very step sets by hand); it could never go
+      # red no matter how many ggml-cpu-*/ggml-vulkan companions were
+      # missing or broken, which was the entire point of this step. Fixed by
+      # actually starting the server with a tiny model and polling /health,
+      # which only comes up after ggml_backend_load_all() has found and
+      # loaded a CPU backend (same proof shape sidecar-windows.yml already
+      # uses for the Windows lane). A run with every ggml-cpu-*.so removed
+      # from $moved/llama would now correctly fail here.
+      - name: Boot-smoke from a moved directory (K1, BLOCKER B3/B6)
+        if: matrix.sidecar_triple == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        # BLOCKER A1: bounds the whole step, not only the curl call below, so
+        # a hang anywhere in it (the model-load poll included) fails within
+        # minutes instead of riding the job's own 90-minute ceiling out.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          moved="$RUNNER_TEMP/moved-away-from-build-tree"
+          rm -rf "$moved"
+          mkdir -p "$moved"
+          cp "src-tauri/bin/lu-llama-server-${{ matrix.sidecar_triple }}" "$moved/"
+          cp -r "src-tauri/resources/llama/${{ matrix.sidecar_triple }}" "$moved/llama"
+          chmod +x "$moved/lu-llama-server-${{ matrix.sidecar_triple }}"
+          export LD_LIBRARY_PATH="$moved/llama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          bin="$moved/lu-llama-server-${{ matrix.sidecar_triple }}"
+          # --list-devices also calls ggml_backend_load_all(), so run it
+          # first: cheap, and its own log line names every backend that
+          # loaded (useful when the model-load step below fails and the
+          # reason is "which backend" rather than "did anything load").
+          #
+          # F-a2 (review-integ.md): the printed device LIST itself is not
+          # proof, because llama.cpp's --list-devices handler (common/arg.cpp)
+          # deliberately EXCLUDES CPU devices from what it prints
+          # (`if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU)`),
+          # so a CPU module could fail to load and this list would look
+          # identical. What DOES prove it, even in a release (NDEBUG) build
+          # where ggml_backend_load_all() passes silent=true, is the loader's
+          # own success line: ggml-backend-reg.cpp's load_backend() logs
+          # "loaded %s backend from %s" unconditionally, outside the
+          # `if (!silent)` guard that only gates the FAILURE/skip messages.
+          # Capture stderr (GGML_LOG goes there) and require that line, named
+          # for CPU specifically.
+          #
+          # BLOCKER A2 (review-integ.md, Nachpruefung): that success line is
+          # GGML_LOG_INFO, which common/log.cpp maps to LOG_LEVEL_TRACE (4),
+          # while the default verbosity threshold is LOG_LEVEL_INFO (3); at
+          # the default threshold llama-server never prints it at all, on a
+          # perfectly healthy build. -lv 4 is what actually enables it, and
+          # --list-devices calls exit(0) itself, so the flag has to sit
+          # BEFORE it or it is parsed too late to matter.
+          ( cd "$moved/llama" && "$bin" -lv 4 --list-devices ) >/tmp/list-devices.log 2>&1 || {
+            cat /tmp/list-devices.log
+            echo "FAIL: --list-devices exited non-zero" >&2
+            exit 1
+          }
+          cat /tmp/list-devices.log
+          # Release night 3.0.1: llama.cpp 049326a no longer prints the
+          # load_backend line even at -lv 4 (measured on the Windows lane of
+          # sidecar-windows.yml), so the grep is informational only. The proof
+          # that carries is the same one the Linux round r14 used: the LIVE
+          # server process must have a libggml-cpu-*.so from $moved/llama
+          # mapped (/proc/<pid>/maps), checked below before it is killed.
+          grep -qi "loaded CPU backend from" /tmp/list-devices.log \
+            && echo "log: load_backend line present" \
+            || echo "log: no load_backend line at -lv 4 (informational only)"
+          # Tiny (~1.2 MB) public GGUF so /health proves a real model load
+          # (and therefore a real CPU-backend load), not just the HTTP
+          # layer or the exe's own DT_NEEDED resolution. Pinned, hashed and
+          # bounded: see BLOCKER A1 above the env: block at the top of this
+          # file for the full sourcing and the license.
+          model="$RUNNER_TEMP/stories260K.gguf"
+          if [ ! -f "$model" ]; then
+            curl -fsSL --retry 3 --max-time 60 -o "$model" \
+              "https://huggingface.co/ggml-org/models/resolve/${STORIES260K_REVISION}/tinyllamas/stories260K.gguf"
+          fi
+          echo "${STORIES260K_SHA256}  $model" | sha256sum -c - \
+            || { echo "FAIL: stories260K.gguf did not match the pinned sha256" >&2; exit 1; }
+          # exec, so $! is the server itself and not a wrapper subshell (the
+          # /proc/<pid>/maps read below must see the server's own mappings).
+          ( cd "$moved/llama" && exec "$bin" -lv 4 --host 127.0.0.1 --port 8129 -m "$model" >/tmp/boot-smoke.log 2>&1 ) &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -fsS "http://127.0.0.1:8129/health" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 0.3
+          done
+          cpu_maps=""
+          if [ -n "$ok" ]; then
+            cpu_maps="$(grep -o '[^ ]*libggml-cpu-[^ ]*\.so' "/proc/$pid/maps" 2>/dev/null | sort -u || true)"
+          fi
+          kill "$pid" 2>/dev/null || true
+          trap - EXIT
+          if [ -z "$ok" ]; then
+            echo "---- llama-server output ----"
+            cat /tmp/boot-smoke.log || true
+            echo "------------------------------"
+            echo "FAIL: llama-server /health never came up from $moved (nowhere near the build directory it was compiled in)" >&2
+            exit 1
+          fi
+          if [ -z "$cpu_maps" ]; then
+            # Second witness, same fact: the server's own load_backend line
+            # names the module it loaded (printed on this lane at -lv 4).
+            cpu_maps="$(grep -o 'loaded CPU backend from [^ ]*libggml-cpu-[^ ]*\.so' /tmp/boot-smoke.log 2>/dev/null | sed 's/^loaded CPU backend from //' | sort -u || true)"
+          fi
+          if [ -z "$cpu_maps" ]; then
+            cat /tmp/boot-smoke.log || true
+            echo "FAIL: the running llama-server had no libggml-cpu-*.so mapped and logged none; ggml_backend_load_all() found no CPU module in $moved/llama" >&2
+            exit 1
+          fi
+          echo "$cpu_maps" | sed 's/^/loaded CPU module: /'
+          case "$cpu_maps" in
+            *"$moved/llama"*) ;;
+            *) echo "FAIL: a libggml-cpu-*.so was loaded from outside $moved/llama: $cpu_maps" >&2; exit 1;;
+          esac
+          echo "OK: sidecar boots from $moved, loads a real model, /health answers, and has a libggml-cpu-*.so from $moved/llama mapped, nowhere near the build directory it was compiled in"
+
+      # Nachbesserung N5 (review-sidecar.md, Runde 2): before this step,
+      # release.yml had no real model-load proof for EITHER platform (the
+      # only place that existed was sidecar-windows.yml, a different
+      # workflow, not part of a release build). Windows has no RPATH
+      # concept, so it does not need the "moved directory" framing B3/B6
+      # are about, but it deserves the same real-model-plus-/health proof
+      # the Linux lane above now has, in the SAME workflow that ships the
+      # release artifact.
+      - name: "Boot-smoke: real model load plus /health (K1, Nachbesserung N5)"
+        if: matrix.sidecar_triple == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        # BLOCKER A1: see the Linux step above for why this step needs its
+        # own ceiling, not only the download's --max-time.
+        timeout-minutes: 5
+        run: |
+          $bin = (Resolve-Path "src-tauri\bin\lu-llama-server-${{ matrix.sidecar_triple }}.exe").Path
+          $runDir = (Resolve-Path "src-tauri\resources\llama\${{ matrix.sidecar_triple }}").Path
+          Push-Location $runDir
+          $listLog = "$env:RUNNER_TEMP\list-devices.log"
+          # BLOCKER A2 (review-integ.md, Nachpruefung): the success line
+          # below is GGML_LOG_INFO, mapped to LOG_LEVEL_TRACE (4) while the
+          # default verbosity threshold is LOG_LEVEL_INFO (3), so a healthy
+          # build never prints it without -lv 4. --list-devices calls
+          # exit(0) itself, so the flag has to come first or it is parsed
+          # too late.
+          & $bin -lv 4 --list-devices *> $listLog
+          $listExit = $LASTEXITCODE
+          Get-Content $listLog
+          if ($listExit -ne 0) { throw "llama-server --list-devices exited $listExit (run from $runDir)" }
+          # F-a2 (review-integ.md): the printed device list itself excludes
+          # CPU on purpose (llama.cpp common/arg.cpp's --list-devices handler
+          # skips GGML_BACKEND_DEVICE_TYPE_CPU), so it cannot prove a CPU
+          # module loaded. ggml-backend-reg.cpp's load_backend() logs
+          # "loaded %s backend from %s" on every success unconditionally
+          # (the `if (!silent)` guard only gates the failure/skip messages,
+          # even in a release/NDEBUG build), so that line is the real proof.
+          # Release night 3.0.1: llama.cpp 049326a no longer prints that
+          # line even at -lv 4 (measured in sidecar-windows.yml), so it is
+          # informational here; the proof that carries is the module list of
+          # the LIVE server process below, read before it is stopped.
+          if (Select-String -Path $listLog -Pattern "loaded CPU backend from" -Quiet) { Write-Host "log: load_backend line present" } else { Write-Host "log: no load_backend line at -lv 4 (informational only)" }
+          Pop-Location
+          # Pinned, hashed and bounded: see BLOCKER A1 above the env: block
+          # at the top of this file for the full sourcing and the license.
+          $model = "$env:RUNNER_TEMP\stories260K.gguf"
+          if (-not (Test-Path $model)) {
+            curl.exe -fsSL --retry 3 --max-time 60 -o $model `
+              "https://huggingface.co/ggml-org/models/resolve/$env:STORIES260K_REVISION/tinyllamas/stories260K.gguf"
+            if ($LASTEXITCODE -ne 0) { throw "smoke model download failed" }
+          }
+          $actualHash = (Get-FileHash -Path $model -Algorithm SHA256).Hash
+          if ($actualHash.ToLower() -ne $env:STORIES260K_SHA256.ToLower()) {
+            throw "stories260K.gguf did not match the pinned sha256 (expected $env:STORIES260K_SHA256, got $actualHash)"
+          }
+          $proc = Start-Process -FilePath $bin -ArgumentList "--host","127.0.0.1","--port","8129","-m",$model -WorkingDirectory $runDir -PassThru -NoNewWindow
+          $ok = $false
+          foreach ($i in 1..40) {
+            Start-Sleep -Milliseconds 400
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8129/health" -TimeoutSec 2 | Out-Null
+              $ok = $true; break
+            } catch { }
+          }
+          $cpuModules = @()
+          if ($ok) {
+            try {
+              $cpuModules = @((Get-Process -Id $proc.Id -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -like 'ggml-cpu-*.dll' } | ForEach-Object { $_.FileName })
+            } catch { Write-Host "module list unavailable: $_" }
+          }
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "llama-server /health never came up" }
+          if ($cpuModules.Count -eq 0) {
+            throw "the running llama-server had no ggml-cpu-*.dll mapped; ggml_backend_load_all() found no CPU module in $runDir"
+          }
+          $cpuModules | ForEach-Object { Write-Host "loaded CPU module: $_" }
+          if ($cpuModules -notmatch [regex]::Escape($runDir)) {
+            throw "a ggml-cpu-*.dll was loaded from outside the resource layout: $($cpuModules -join ', ')"
+          }
+          Write-Host "OK - sidecar boots from the resource layout, loads a model, answers /health, and has a ggml-cpu-*.dll from $runDir mapped"
+
       # ── App build ────────────────────────────────────────────────────────
       - name: Install npm dependencies
         run: npm ci
@@ -229,6 +504,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # K1-18 (lu-301/e2e/linux/BERICHT.md, section "K1-18"): measured on a
+          # real Ubuntu 24.04 box, `tauri build --bundles appimage` on this
+          # project's Linux config makes linuxdeploy resolve
+          # lu-llama-server's NEEDED entries (libllama-server-impl.so etc.)
+          # through the standard ld search path, NOT through the actual
+          # staged location (usr/lib/Locally Uncensored/llama/), and it fails
+          # hard: "ERROR: Could not find dependency: libllama-server-impl.so".
+          # With LD_LIBRARY_PATH pointed at the staged companions directory,
+          # the identical linuxdeploy invocation succeeds and bundles every
+          # ggml-* companion. tauri-action's own `tauri build` invocation does
+          # not set this by itself, so this step (which is where linuxdeploy
+          # actually runs, on GitHub's real release lane) needs it set
+          # explicitly. Empty on windows-latest: LD_LIBRARY_PATH has no
+          # meaning there and an empty env var is harmless.
+          LD_LIBRARY_PATH: ${{ matrix.platform == 'ubuntu-22.04' && format('{0}/src-tauri/resources/llama/{1}', github.workspace, matrix.sidecar_triple) || '' }}
         with:
           tagName: ${{ github.event.release.tag_name || github.event.inputs.tag || 'v1.3.0' }}
           releaseName: 'LU ${{ github.event.release.tag_name || github.event.inputs.tag }}'
@@ -267,6 +557,89 @@ jobs:
           # (a0030ad2, the exit-1-after-bundling defect of v2.6.7). The overlay
           # is merged on top of the checked-in config by `tauri build`.
           args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
+
+      # K1-18 (lu-301/e2e/linux/BERICHT.md): the LD_LIBRARY_PATH fix above
+      # only proves linuxdeploy did not hard-fail; K1-18 itself measured that
+      # linuxdeploy's SECOND error ("Failed to deploy dependencies for
+      # existing files") is NOT fatal, it still exits 0, which is the
+      # suspected reason the real 3.0.0 AppImage shipped once with no
+      # CPU-dispatch companions at all despite a green build. Nothing in
+      # this workflow inspected the BUILT artifact before this step existed:
+      # the boot-smoke step above only checks the pre-bundle staging
+      # directory, never what linuxdeploy actually packed. If linuxdeploy
+      # ever silently drops a companion again, this is what turns that red:
+      # extract the real .AppImage this run just produced and diff its
+      # bundled companions against what build-llama.sh staged.
+      - name: Verify built AppImage carries every sidecar companion (K1-18)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          appimage_rel="$(find src-tauri/target -type f -iname '*.AppImage' -print -quit)"
+          [ -n "$appimage_rel" ] || { echo "FAIL: no .AppImage found under src-tauri/target after the build (K1-18)" >&2; exit 1; }
+          appimage="$(realpath "$appimage_rel")"
+          chmod +x "$appimage"
+          workdir="$RUNNER_TEMP/appimage-extract"
+          rm -rf "$workdir"
+          mkdir -p "$workdir"
+          # --appimage-extract needs no FUSE (unlike running the AppImage
+          # normally), which a bare Actions runner does not reliably have.
+          ( cd "$workdir" && "$appimage" --appimage-extract >/dev/null )
+          extracted_llama_dir="$(find "$workdir/squashfs-root/usr/lib" -mindepth 1 -maxdepth 3 -type d -iname 'llama' -print -quit)"
+          if [ -z "$extracted_llama_dir" ]; then
+            echo "FAIL: no .../usr/lib/.../llama directory inside the extracted AppImage at all; linuxdeploy dropped the whole sidecar companions directory (K1-18, lu-301/e2e/linux/BERICHT.md)" >&2
+            exit 1
+          fi
+          missing=0
+          for f in "src-tauri/resources/llama/${{ matrix.sidecar_triple }}"/*; do
+            base="$(basename "$f")"
+            if [ ! -e "$extracted_llama_dir/$base" ]; then
+              echo "FAIL: $base is staged in src-tauri/resources/llama/${{ matrix.sidecar_triple }} but MISSING from the built AppImage ($extracted_llama_dir); linuxdeploy can drop a companion silently and still exit 0 (K1-18)" >&2
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "OK: every staged sidecar companion is present inside the built AppImage ($extracted_llama_dir)"
+
+      # SKEPTIKER-LINUX-WEB-K1.md: the AppImage check above proves nothing
+      # about the .deb, a completely different bundler (dpkg-deb, not
+      # linuxdeploy) with its own independent failure mode for the exact
+      # same reason K1-18 exists -- a bundler that packages the exe but
+      # silently drops (or never even looks at) the resources directory.
+      # bundle.targets is "all" (src-tauri/tauri.conf.json), so this
+      # workflow already builds and publishes a .deb every release; nothing
+      # before this step ever inspected what actually landed inside it.
+      - name: Verify built .deb carries every sidecar companion (K1-18)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          deb_rel="$(find src-tauri/target -type f -iname '*.deb' -print -quit)"
+          [ -n "$deb_rel" ] || { echo "FAIL: no .deb found under src-tauri/target after the build (K1-18)" >&2; exit 1; }
+          deb="$(realpath "$deb_rel")"
+          workdir="$RUNNER_TEMP/deb-extract"
+          rm -rf "$workdir"
+          mkdir -p "$workdir"
+          # dpkg-deb -x extracts only the data archive (no root needed, no
+          # install), ships on every Ubuntu image including bare runners.
+          dpkg-deb -x "$deb" "$workdir"
+          extracted_llama_dir="$(find "$workdir/usr/lib" -mindepth 1 -maxdepth 3 -type d -iname 'llama' -print -quit)"
+          if [ -z "$extracted_llama_dir" ]; then
+            echo "FAIL: no .../usr/lib/.../llama directory inside the extracted .deb at all; the deb bundler dropped the whole sidecar companions directory (K1-18)" >&2
+            exit 1
+          fi
+          missing=0
+          for f in "src-tauri/resources/llama/${{ matrix.sidecar_triple }}"/*; do
+            base="$(basename "$f")"
+            if [ ! -e "$extracted_llama_dir/$base" ]; then
+              echo "FAIL: $base is staged in src-tauri/resources/llama/${{ matrix.sidecar_triple }} but MISSING from the built .deb ($extracted_llama_dir); a bundler can drop a companion silently and still exit 0 (K1-18)" >&2
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "OK: every staged sidecar companion is present inside the built .deb ($extracted_llama_dir)"
 
   # The promise above, made real for every trigger. Runs after the binaries are
   # attached, so a release published as a full release is put back before

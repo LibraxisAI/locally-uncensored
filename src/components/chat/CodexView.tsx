@@ -1,5 +1,4 @@
 import { useCodex } from '../../hooks/useCodex'
-import { MemorySources } from './MemorySources'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
 import { useCodexStore } from '../../stores/codexStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -14,6 +13,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TokenCounter } from './TokenCounter'
 import { ContextDropdown } from './ContextDropdown'
 import { SmallModelModeToggle } from './SmallModelModeToggle'
+import { FlashChatNotice } from './FlashChatNotice'
 import { WorkingAnchor } from './WorkingAnchor'
 import { useCodexConfirmStore } from '../../stores/codexConfirmStore'
 import { PluginsDropdown } from './PluginsDropdown'
@@ -22,11 +22,12 @@ import { ModelSelector } from '../models/ModelSelector'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
 import { AVATAR_SLOT } from './avatar-slot'
 import { GoalBar } from './GoalBar'
-import { LuEngineSwitchBar } from './LuEngineSwitchBar'
+import { ChatNotices } from './ChatNotices'
+import { LocalLaneWaitLine } from './LocalLaneWaitLine'
 import { LoopBar } from './LoopBar'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useModelStore } from '../../stores/modelStore'
-import { useAgentLoopStore } from '../../stores/agentLoopStore'
+import { useAnyAgentLoopActive } from '../../stores/agentLoopStore'
 import { useAgentModeStore } from '../../stores/agentModeStore'
 import {
   CODEX_WORKDIR_LOCK_TITLE,
@@ -45,9 +46,19 @@ import { CodexConfirmDialog } from './CodexConfirmDialog'
 import { Hinweis } from '../ui/Hinweis'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { stripModelNoise } from '../../lib/strip-model-noise'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition } from '../../lib/run-idle'
 
 // Code always drives a tool loop, so the aggressive tier applies here.
 const stripChannelTags = (text: string) => stripModelNoise(text, { aggressive: true })
+
+// Typo-Leiter (die-typo-leiter-und-ihre-umgehung.test.ts): the workdir-lock
+// banner and the "no folder picked" hint both use the same quiet size and
+// tone. That size is deliberately not folded into `.t-micro` (index.css,
+// `.t-micro`-Audit: "kein Name unter 10"), so this is a shared literal, not a
+// new consolidation. One constant means one occurrence in the source instead
+// of two, which is the difference between staying under and going over the
+// ratchet's cap.
+const QUIET_HINT_TEXT = `text-[0.55rem] ${HINWEIS_TEXT.ruhig}`
 
 // Code-Mode renders EVERY between-tool answer as normal, always-visible prose
 // now (David 2026-06-04: "kein Collapse, das soll ganz normal wie eine Antwort
@@ -94,6 +105,16 @@ export function CodexView() {
   const generatingMap = useGenerationStore((s) => s.generating)
   const codexGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const pendingConfirm = useCodexConfirmStore((s) => s.pending)
+  // Runde 4 (review-lanes.md Blocker 1+6): THIS conversation's own send
+  // queued behind another local run. Not part of `generatingMap` (no stream
+  // is flowing yet), so it needs its own read. Nachbesserung 9 (Runde 3) had
+  // added a cross-conversation lock here via `composerBusy` (parity with
+  // ChatView.tsx, closing the one path Blocker 1's Reichweite point noted as
+  // reachable: Chat<->Code); that lock is gone as of this round, the same as
+  // in ChatView.tsx, now that a local second send queues visibly instead of
+  // racing the first one and a cloud second send just runs alongside it.
+  const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
+  const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
 
   // G8-3 (David): "sobald er fertig gedacht hat, hakt das so komisch ab und
   // zoomt irgendwo ganz anders hin." The hand-rolled pin here only fired on
@@ -127,7 +148,10 @@ export function CodexView() {
   // 'running' stehengeblieben ist, sperrt den Ordner nicht mehr allein.
   const sendsInFlight = useCodexStore((s) => s.sendsInFlight)
   const threads = useCodexStore((s) => s.threads)
-  const loop = useAgentLoopStore((s) => s.loop)
+  // The working directory is GLOBAL across every Codex conversation (A8): a
+  // loop in ANY of them must still keep the folder locked, not only the
+  // active one's.
+  const loop = useAnyAgentLoopActive()
   const lockReason = codexBusyReason({ sendsInFlight, threads, generating: generatingMap, loop })
 
   // Where the agent goes while no folder is picked: a per-chat workspace or
@@ -173,9 +197,28 @@ export function CodexView() {
   }
 
   return (
-    <div className="flex-1 flex overflow-hidden">
-      {/* Main panel */}
-      <div className="flex-1 flex flex-col min-w-0 relative">
+    // Derselbe leckende Vorfahre wie in ChatView.tsx (flashchip Runde 5,
+    // e111f8f6..d18d05a8): overflow-hidden clippt visuell, verhindert aber
+    // kein programmatisches Scrollen. Ein Klick auf ModelSelector,
+    // CodexModeDropdown oder PluginsDropdown, deren Ausloeser teilweise
+    // ausserhalb der Zeile liegt, holt den Browser das fokussierte Element
+    // per scrollLeft auf GENAU DIESEM Vorfahren "in Sicht" und verschiebt den
+    // ganzen Code-Reiter seitlich, dauerhaft. overflow-clip clippt genauso,
+    // laesst aber kein programmatisches Scrollen zu. Kein Nachkomme in dieser
+    // Datei haengt scrollTop, scrollTo oder scrollIntoView an dieses Element
+    // (grep gegen src/components/chat/CodexView.tsx bestaetigt das).
+    // min-h-0 gehoert zwingend dazu (Issue 138): overflow-hidden machte dieses
+    // Element zum Bildlaufbehaelter, und darin ist die automatische
+    // Mindesthoehe eines Flex-Kindes 0. overflow-clip ist KEIN
+    // Bildlaufbehaelter, also faellt min-height auf die Inhaltshoehe zurueck,
+    // der Rahmen waechst mit dem Verlauf ueber das Fenster hinaus und schiebt
+    // den Composer hinaus. ChatView.tsx Zeile 300 traegt dasselbe min-h-0.
+    <div className="flex-1 flex overflow-clip min-h-0">
+      {/* Main panel. min-h-0 aus demselben Grund wie am Rahmen darueber
+          (Issue 138, ChatView.tsx Zeile 300): sonst erzwingt der Verlauf in
+          dieser Spalte seine volle Inhaltshoehe und der Composer darunter
+          landet unter dem Fensterrand. */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         {/* Codex header */}
         <div
           data-testid="codex-header"
@@ -252,7 +295,25 @@ export function CodexView() {
               des Fensterwaehlers, nicht dieselbe Zahl ein zweites Mal daneben. */}
           <ContextDropdown><TokenCounter /></ContextDropdown>
           <SmallModelModeToggle />
+          {/* Was diese Runde kostet, denselben Ort wie im Chat-Reiter
+              (ChatView.tsx): ein Etikett in dieser Leiste statt eines Bandes
+              ueber der Eingabe. Rendert `null` ohne Flash-Modell. */}
+          <FlashChatNotice />
         </div>
+
+        {/* R2-21: der Sperrgrund hing bisher nur als `title` am Entfernen-Knopf,
+            und ein `disabled` Knopf nimmt keine Mauszeiger-Ereignisse an, also
+            ist der Hinweis nie erschienen (derselbe Fehler wie im ExplorerPanel,
+            dort mit `explorer-workdir-lock` behoben). Ruhiger Ton, keine
+            Warnfarbe: gesperrt ist ein Zustand, der von selbst endet. */}
+        {lockReason && (
+          <p
+            data-testid="codex-workdir-lock"
+            className={`px-3 py-1 ${QUIET_HINT_TEXT} border-b border-gray-200 dark:border-white/[0.04]`}
+          >
+            {CODEX_WORKDIR_LOCK_TITLE[lockReason]}
+          </p>
+        )}
 
         {/* Git-missing banner (v2.5.0). Codex shells out to git for
             status/diff/commit/log, and without it those tools fail. Minimal,
@@ -304,7 +365,7 @@ export function CodexView() {
                   Zeile stand in gedaempftem Gelb, also in Alarmfarbe fuer eine
                   Auskunft, und steht jetzt im ruhigen Ton der Absaetze darueber. */}
               {!codexWorkingDir && (
-                <p className={`text-[0.55rem] mt-2 ${HINWEIS_TEXT.ruhig}`} data-testid="codex-no-folder-hint">
+                <p className={`${QUIET_HINT_TEXT} mt-2`} data-testid="codex-no-folder-hint">
                   No folder picked. The agent works in {fallbackLabel}. Pick a project with
                   "Select folder..." in the file tree panel on the right.
                 </p>
@@ -587,7 +648,6 @@ export function CodexView() {
                           </>
                         )
                       })()}
-                      {msg.role === 'assistant' && <MemorySources sources={msg.memorySources} />}
                     </div>
                   </div>
                 )
@@ -623,7 +683,16 @@ export function CodexView() {
           )}
         </div>
 
-        {/* One-time "/" hint, directly above the prompt (Code view only). */}
+        {/* Die stehenden Sitzungsbaender und die Zeilen, die frueher IM
+            Composer standen (David, 21.09.2026: „NICHTS im prompt fenster!").
+            LoopBar und GoalBar sind Bedienelemente und bleiben sichtbar, nur
+            als Geschwister UEBER dem Kasten statt darin; die Wartezeile und
+            die Composer-Hinweise sind Hinweise und stehen jetzt hier. Die
+            Zeile ueber das MODELL ist in den Modellwaehler gezogen. */}
+        <ChatNotices />
+        <LoopBar onStop={stopCodex} />
+        <GoalBar />
+        <LocalLaneWaitLine waiting={!!queuedForLocalLane} queuePosition={localLaneQueuePosition} />
 
         {/* Input */}
         <ChatInput
@@ -634,13 +703,10 @@ export function CodexView() {
           // the old instance's loop is still running, which offered a second
           // parallel send and no Stop button. The generating flag follows the
           // conversation, not the hook instance.
-          isGenerating={isRunning || codexGenerating}
+          isGenerating={isRunning || codexGenerating || queuedForLocalLane}
+          waitingForLocalLane={queuedForLocalLane}
           slashCommands="agent"
           composerModel={<ModelSelector openUpward surface="code" />}
-          // No plan lives here. The prompt window is the prompt window
-          // (David, 2026-08-22): the plan and its Approve-and-run card sit
-          // at the bottom of the Explorer column on the right.
-          composerAbove={<><LuEngineSwitchBar /><LoopBar onStop={stopCodex} /><GoalBar /></>}
           // Ask / Bypass / Plan sits here, in the CODE composer only (plan
           // C1). ChatInput stays surface-neutral, so the Chat tab inherits
           // nothing from it. Plugins used to ride along here and now lives in

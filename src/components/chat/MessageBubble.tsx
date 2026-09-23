@@ -2,7 +2,6 @@ import { motion } from 'framer-motion'
 import { User, Copy, Check, Pencil, RefreshCw, X, Wrench, Trash2, Scissors, Unlink } from 'lucide-react'
 import { useState, useRef, useEffect, useMemo, memo } from 'react'
 import { MarkdownRenderer } from './MarkdownRenderer'
-import { MemorySources } from './MemorySources'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBand } from './ToolCallBand'
 import { ReflectionBlock } from './ReflectionBlock'
@@ -430,7 +429,7 @@ function MessageBubbleImpl({ message, onRegenerate, onEdit, pendingApprovalId, o
           className={
             'relative ' +
             (isUser
-              ? 'rounded-lg px-2.5 py-1.5 bg-gray-100 dark:bg-white/[0.06] border border-gray-200 dark:border-white/[0.08]'
+              ? 'rounded-lg px-2.5 py-1.5 bg-gray-100 dark:bg-white/[0.06] border border-gray-200 dark:border-white/[0.08] focus-within:border-gray-400 dark:focus-within:border-white/20 transition-colors'
               : 'px-1 py-0.5')
           }
         >
@@ -613,7 +612,6 @@ function MessageBubbleImpl({ message, onRegenerate, onEdit, pendingApprovalId, o
         )}
 
         {/* RAG sources */}
-        {!isUser && <MemorySources sources={message.memorySources} />}
         {!isUser && message.sources && message.sources.length > 0 && (
           <div className="pt-1 border-t border-white/[0.04]">
             <p className="text-[0.5rem] text-gray-500 mb-0.5">Sources:</p>

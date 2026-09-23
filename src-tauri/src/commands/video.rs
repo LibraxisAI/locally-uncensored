@@ -198,6 +198,18 @@ fn model_dir(id: &str) -> PathBuf {
     models_root().join(id)
 }
 
+/// K5: `huggingface_hub`'s Xet chunk cache ignores `local_dir`: it only
+/// follows `HF_HOME` (and, since `hf_xet` split out of the main package,
+/// `HF_XET_CACHE`). Without either set, it falls back to
+/// `~/.cache/huggingface[/xet]`, on the SYSTEM drive, regardless of which
+/// drive `models_root()` was pointed at. `commands::mlx.rs` already gets
+/// this right (`.env("HF_HOME", mlx_root().join("cache"))` at every
+/// `snapshot_download`/`hf_hub_download` call); this is the same fix for the
+/// one call site in this file that was missing it.
+fn hf_home_dir() -> PathBuf {
+    models_root().join(".hf-cache")
+}
+
 /// Directory the generate CLI actually points at: the converted MLX weights
 /// for wan_2 (`<id>/mlx`), the pre-converted download itself for ltx_2.
 fn weights_dir(entry: &CatalogEntry) -> PathBuf {
@@ -237,7 +249,7 @@ fn python_for(state: &AppState) -> Option<String> {
 }
 
 fn mlx_video_installed(python: &str) -> bool {
-    Command::new(python)
+    crate::python::python_command(python)
         .args(["-c", "import mlx_video"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -247,7 +259,7 @@ fn mlx_video_installed(python: &str) -> bool {
 }
 
 fn python_has_module(python: &str, module: &str) -> bool {
-    Command::new(python)
+    crate::python::python_command(python)
         .args(["-c", &format!("import {module}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -284,7 +296,7 @@ pub(crate) fn ensure_python_module(
 }
 
 fn mlx_video_version(python: &str) -> Option<String> {
-    let out = Command::new(python)
+    let out = crate::python::python_command(python)
         .args([
             "-c",
             "import importlib.metadata as m; print(m.version('mlx-video'))",
@@ -463,8 +475,8 @@ pub fn video_install_model(state: &AppState, args: &Value) -> CmdResult {
     // Kein geteilter Zwischenspeicher: dieser Weg laedt mit `local_dir`, und
     // huggingface_hub legt den Zwischenstand dann unter `<local_dir>/.cache`
     // ab, also INNERHALB des Ordners, der hier gemessen wird. Der Xet-Cache
-    // liegt fuer diesen Weg trotzdem daneben (HF_HOME wird hier nicht gesetzt,
-    // also im Standardordner des Nutzers); siehe Bericht bauer-t, Fund 3.
+    // liegt seit K5 ebenfalls darunter (`hf_home_dir()` unter `models_root()`),
+    // nicht mehr im Standardordner des Nutzers auf dem Systemlaufwerk.
     crate::install_state::watch_dir_size(
         slot.clone(),
         model_dir(entry.id),
@@ -519,8 +531,10 @@ fn install_model_steps(
         r = entry.repo,
         t = download_to.to_string_lossy(),
     );
-    let mut cmd = Command::new(python);
-    cmd.args(["-c", &script]);
+    let mut cmd = crate::python::python_command(python);
+    cmd.args(["-c", &script])
+        .env("HF_HOME", hf_home_dir())
+        .env("HF_XET_CACHE", hf_home_dir().join("xet"));
     crate::commands::mlx::apply_hf_token(&mut cmd);
     run_streamed(slot, &mut cmd)?;
 
@@ -533,7 +547,7 @@ fn install_model_steps(
 
     let out_dir = weights_dir(entry);
     slot.log(format!("converting {} to MLX (one-time)", entry.name));
-    let mut convert = Command::new(python);
+    let mut convert = crate::python::python_command(python);
     convert
         .arg("-m")
         .arg("mlx_video.models.wan_2.convert")
@@ -644,7 +658,7 @@ pub fn video_generate(state: &AppState, args: &Value) -> CmdResult {
     // Blaizzy/mlx-video):
     //   ltx_2 → --model-repo <dir> --pipeline <p> -o <out> -n <frames>
     //   wan_2 → --model-dir <dir> --num-frames (4n+1) --output-path <out>
-    let mut cmd = Command::new(&python);
+    let mut cmd = crate::python::python_command(&python);
     cmd.arg("-m")
         .arg(format!("mlx_video.models.{}.generate", entry.family))
         .arg("--prompt")
@@ -885,6 +899,46 @@ fn exit_reason(status: &std::process::ExitStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hf_home_dir_lives_under_models_root_not_the_user_cache() {
+        // K5: the Xet chunk cache must follow whichever drive
+        // `models_root()` resolves to, not fall back to the OS-default
+        // `~/.cache/huggingface` on the system drive.
+        assert!(hf_home_dir().starts_with(models_root()), "{:?}", hf_home_dir());
+        assert_eq!(hf_home_dir().file_name().unwrap(), ".hf-cache");
+    }
+
+    #[test]
+    fn the_snapshot_download_call_sets_hf_home_and_xet_cache() {
+        // K5 (Discord x_guestieco_x, 13.09.: "everytime I try to force the
+        // app to go to my E drive it always takes up space on my C
+        // drive"). huggingface_hub's Xet chunk cache ignores `local_dir`
+        // and only follows HF_HOME/HF_XET_CACHE, without them it fills the
+        // SYSTEM drive's default cache regardless of where models_root()
+        // points. `commands::mlx.rs` already sets both on every
+        // snapshot_download/hf_hub_download call; this proves this file's
+        // one call site does too.
+        let src = include_str!("video.rs");
+        let start = src.find("fn install_model_steps(").expect("install_model_steps is gone");
+        let end = src[start..]
+            .find("\npub fn video_install_model_status")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        assert!(
+            body.contains("from huggingface_hub import snapshot_download"),
+            "the download call itself moved"
+        );
+        assert!(
+            body.contains(".env(\"HF_HOME\", hf_home_dir())"),
+            "HF_HOME is no longer set on the snapshot_download command"
+        );
+        assert!(
+            body.contains(".env(\"HF_XET_CACHE\", hf_home_dir().join(\"xet\"))"),
+            "HF_XET_CACHE is no longer set on the snapshot_download command"
+        );
+    }
 
     /// "command exited None" war die Meldung nach einem abgebrochenen
     /// MLX-Download (bauer-m N4). Siehe den Kopf von `exit_reason`.

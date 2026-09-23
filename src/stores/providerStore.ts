@@ -1,5 +1,5 @@
 /**
- * Provider Store — manages provider configurations.
+ * Provider Store, manages provider configurations.
  *
  * Stores endpoint URLs, API keys (encrypted), and enabled state.
  * Ollama is always enabled by default.
@@ -38,7 +38,12 @@ function obfuscate(key: string): string {
   }
 }
 
-function deobfuscate(encoded: string): string {
+// Exported for ProviderConfig.tsx's handback/removal paths (Opus-Review
+// Nachbesserung 6): `displaced.apiKey` carries the same obfuscated form this
+// function decodes for every other read of a provider's key, and restoring
+// it into the active slot has to go through `setProviderApiKey` (store AND
+// keychain), which takes the PLAIN key.
+export function deobfuscate(encoded: string): string {
   if (!encoded) return ''
   try {
     return atob(encoded).split('').reverse().join('')
@@ -59,10 +64,10 @@ const _keychainFailed = new Set<ProviderId>()
 
 // ── Default provider configs ───────────────────────────────────
 
-// 2.5.7 — the default backend is now the app's built-in engine (bundled
+// 2.5.7, the default backend is now the app's built-in engine (bundled
 // llama-server, managed lifecycle) so a fresh install can chat without
 // installing Ollama/LM Studio. It occupies the `openai` slot (OpenAI-compatible)
-// with `managed: true`. Ollama/LM Studio stay available as "Advanced" — the user
+// with `managed: true`. Ollama/LM Studio stay available as "Advanced", the user
 // can re-enable them from Settings → Providers. This default only applies to a
 // FRESH store; existing `lu-providers` persistence is untouched.
 const DEFAULT_PROVIDERS: Record<ProviderId, ProviderConfig> = {
@@ -91,7 +96,7 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderConfig> = {
     apiKey: '',
     isLocal: false,
   },
-  // LU Cloud chat (lu-labs.ai inference proxy). apiKey stays empty forever —
+  // LU Cloud chat (lu-labs.ai inference proxy). apiKey stays empty forever,
   // auth is the user's Supabase session token, injected per request by
   // LuCloudProvider. useCloudAuth flips `enabled` with the account state.
   'lu-cloud': {
@@ -160,6 +165,22 @@ interface ProviderState {
    * AppShell never re-shows the modal on startup even if multiple backends are
    * running. User can still add / remove providers via Settings → Providers. */
   hideBackendSelector: boolean
+  /**
+   * Persisted: the customer picked a different local backend for the `openai`
+   * slot ON PURPOSE, through one of the dedicated pick UIs (onboarding's
+   * backend step, the startup backend selector, "Start LM Studio Server" in
+   * the model picker), not through Add Provider taking the slot from LU
+   * Engine. Opus review, R13D Nebenfund 1 follow-up (2026-09-21): the missing
+   *-engine notice (lib/builtin-engine-presence.ts) must not fire for a
+   * customer who never had, or never wanted, LU Engine in the first place.
+   * Those pick UIs write `managed: false` with no `displaced` record, the
+   * exact same shape the silent-eviction bug leaves behind, so the provider
+   * config alone cannot tell the two apart; this flag is the difference.
+   * Reset to false automatically the moment `managed: true` is written back
+   * onto the `openai` slot (Built-in chosen again, Restore, or a full Reset),
+   * so a LATER real eviction is still caught.
+   */
+  engineOptedOut: boolean
 
   setProviderConfig: (id: ProviderId, updates: Partial<ProviderConfig>) => void
   setProviderApiKey: (id: ProviderId, key: string) => void
@@ -173,6 +194,10 @@ interface ProviderState {
    * cloud-enabled is account state owned by useCloudAuth, not backend config. */
   resetProvidersToDefaults: () => void
   setHideBackendSelector: (hide: boolean) => void
+  /** Marks (or clears) the deliberate opt-out above. The five pick UIs call
+   *  this with `true`; nothing else needs to call it with `false`, since
+   *  `setProviderConfig` clears it on its own the moment LU Engine is back. */
+  setEngineOptedOut: (optedOut: boolean) => void
   /** H5: load provider keys from the OS keychain (Win/macOS), migrating any
    * existing localStorage key into the vault. No-op / fallback elsewhere.
    * Call once at app startup, before the first provider client is built. */
@@ -186,8 +211,10 @@ export const useProviderStore = create<ProviderState>()(
     (set, get) => ({
       providers: DEFAULT_PROVIDERS,
       hideBackendSelector: false,
+      engineOptedOut: false,
 
       setHideBackendSelector: (hide) => set({ hideBackendSelector: hide }),
+      setEngineOptedOut: (optedOut) => set({ engineOptedOut: optedOut }),
 
       setProviderConfig: (id, updates) => {
         const before = get().providers[id]
@@ -199,6 +226,17 @@ export const useProviderStore = create<ProviderState>()(
         }))
         clearProviderCache() // invalidate cached clients
         dropPicksForDarkenedSlots({ [id]: before }, { [id]: get().providers[id] })
+        // LU Engine is back on the slot on purpose (Built-in chosen again,
+        // Restore, a full Reset): whatever opt-out was recorded no longer
+        // describes the customer's current choice, so a LATER real eviction
+        // is not silently swallowed by a stale flag. Ordered before the
+        // onLocalSlotChanged call below on purpose (the two do not depend on
+        // each other), so that call stays the LAST statement this function
+        // makes, the shape displaced-engine-frees-its-memory.test.ts pins for
+        // every write path that touches the shared slot.
+        if (id === 'openai' && updates.managed === true && get().engineOptedOut) {
+          set({ engineOptedOut: false })
+        }
         // Every route that moves the shared local slot comes through here (Add
         // Provider, Enable on the standby card, Remove, Disable, onboarding), so
         // the memory question is asked here, once. R12/R13 measured the answer
@@ -217,7 +255,7 @@ export const useProviderStore = create<ProviderState>()(
         // When the OS vault is active, store the real key there; partialize then
         // keeps it out of localStorage. If the vault WRITE fails (locked / policy
         // / full), mark this id so partialize RETAINS the obfuscated key in
-        // localStorage — otherwise it would vanish on the next restart with no
+        // localStorage, otherwise it would vanish on the next restart with no
         // trace (the in-memory value only serves this session).
         if (keychainReady) {
           _keychainFailed.delete(id)
@@ -251,6 +289,14 @@ export const useProviderStore = create<ProviderState>()(
             [id]: DEFAULT_PROVIDERS[id],
           },
         }))
+        // Opus review, round 2, Blocker 7: DEFAULT_PROVIDERS.openai carries
+        // managed: true, so a reset of THIS slot really is "LU Engine chosen
+        // again" in every sense but the literal one setProviderConfig checks
+        // for (it writes `providers` directly, not through setProviderConfig,
+        // so that auto-clear never runs). Without this the field's own
+        // comment ("Built-in chosen again, Restore, or a full Reset") would
+        // be a claim the code does not keep.
+        if (id === 'openai') set({ engineOptedOut: false })
         if (id === 'openai') onLocalSlotChanged(before, get().providers.openai)
         if (keychainReady) {
           void secretDelete(id).catch(() => { /* vault delete best-effort */ })
@@ -274,6 +320,11 @@ export const useProviderStore = create<ProviderState>()(
           }
           return { providers: next }
         })
+        // Opus review, round 2, Blocker 7: same reasoning as resetProvider
+        // above, DEFAULT_PROVIDERS.openai is managed: true, so this hands the
+        // slot back to LU Engine too, and the field's own comment promises
+        // the mark clears on "a full Reset".
+        set({ engineOptedOut: false })
         clearProviderCache()
         // Reset hands the slot back to the app's own engine, which voids a
         // pending unload rather than causing one.
@@ -299,7 +350,7 @@ export const useProviderStore = create<ProviderState>()(
             } else {
               // Nothing in the vault yet. Migrate an existing localStorage key
               // (an upgrading user) into the vault, once. Read the CURRENT
-              // store value — a key set while an earlier secret_get awaited
+              // store value, a key set while an earlier secret_get awaited
               // must not be missed.
               const existing = deobfuscate(get().providers[id]?.apiKey || '')
               if (existing) {
@@ -310,7 +361,7 @@ export const useProviderStore = create<ProviderState>()(
             }
           } catch {
             if (usable === null) { usable = false; break } // no keychain here
-            // otherwise a transient per-key error — keep the others
+            // otherwise a transient per-key error, keep the others
           }
         }
         if (!usable) return
@@ -342,7 +393,7 @@ export const useProviderStore = create<ProviderState>()(
       // throws every configured backend away. Harmless today (no blob carries a
       // numeric version yet), fatal the day this store goes to 2.
       migrate: keepPersistedState,
-      // Blobs persisted before the lu-cloud provider existed lack its entry —
+      // Blobs persisted before the lu-cloud provider existed lack its entry,
       // backfill every missing provider from defaults so getProvider() can't
       // hit an undefined config after an update.
       merge: (persisted: unknown, current: ProviderState): ProviderState => {
@@ -383,26 +434,51 @@ export const useProviderStore = create<ProviderState>()(
             merged[id] = displaced ? { ...cfg, displaced } : cfg
           }
         }
+        // Opus review, round 2, Blocker 6: `engineOptedOut` is new in 3.0.1.
+        // A blob written before it exists has no such key at all, so `...p`
+        // below leaves the fresh-install default `false` standing, and that
+        // reads as "LU Engine was evicted" for EVERY pre-3.0.1 customer whose
+        // `openai` slot already carried `managed: false` from one of the five
+        // deliberate pick UIs, the false positive Blocker 1 was fixed against,
+        // now moved from the new customer to the existing one who actually
+        // gets the update. Backfill: an old blob with no `openai.managed` and
+        // no `displaced.managed` reads as "this installation opted out before
+        // the flag existed", same one-sentence rule the rest of this file
+        // uses, better a missed notice on old data than a false one.
+        const openaiSlot = merged.openai
+        const backfillOptedOut = !!openaiSlot && !openaiSlot.managed && !openaiSlot.displaced?.managed
+        const engineOptedOut = p.engineOptedOut === undefined ? backfillOptedOut : p.engineOptedOut
         return {
           ...current,
           ...p,
           providers: merged,
+          engineOptedOut,
         }
       },
       // Don't persist transient state, only configs + user's "don't show again" preference.
       // When the OS keychain is active (H5), strip apiKey so the secret never
       // touches localStorage; otherwise keep the obfuscated key as before.
       partialize: (state) => ({
-        providers: keychainReady
-          ? (Object.fromEntries(
-              Object.entries(state.providers).map(([id, p]) =>
-                // Strip the key (it lives in the vault) UNLESS the vault write
-                // failed for this id — then keep the obfuscated fallback.
-                _keychainFailed.has(id as ProviderId) ? [id, p] : [id, { ...p, apiKey: '' }]
-              )
-            ) as Record<ProviderId, ProviderConfig>)
-          : state.providers,
+        providers: Object.fromEntries(
+          Object.entries(state.providers).map(([id, p]) => {
+            // Strip the ACTIVE key (it lives in the vault) UNLESS the vault
+            // write failed for this id, then keep the obfuscated fallback.
+            const stripActive = keychainReady && !_keychainFailed.has(id as ProviderId)
+            const withActive = stripActive ? { ...p, apiKey: '' } : p
+            // Opus-Review Nachbesserung 6: a PARKED key on the `displaced`
+            // memory has no vault entry of its own, the OS keychain holds
+            // exactly one credential per ProviderId, already spoken for by
+            // whichever backend is active. Persisting it in the clear would
+            // put a secret into localStorage with none of the protection
+            // `apiKey` itself gets, so it never survives a persist, on any
+            // platform. It still restores correctly within the same running
+            // session (ProviderConfig.tsx reads it before this ever runs).
+            if (!withActive.displaced?.apiKey) return [id, withActive]
+            return [id, { ...withActive, displaced: { ...withActive.displaced, apiKey: undefined } }]
+          })
+        ) as Record<ProviderId, ProviderConfig>,
         hideBackendSelector: state.hideBackendSelector,
+        engineOptedOut: state.engineOptedOut,
       }),
     }
   )

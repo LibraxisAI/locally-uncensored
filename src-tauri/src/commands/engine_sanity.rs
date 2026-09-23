@@ -503,6 +503,17 @@ pub(crate) struct ProbeOutcome {
     /// The answer, trimmed for the log line.
     pub sample: String,
     pub took: Duration,
+    /// D3: true when `verdict` is `Unjudgeable` AND the engine reported a
+    /// non-empty `reasoning_content` alongside the (empty or near-empty)
+    /// visible `content`. A thinking model (GLM-5.3, ...) spends the probe's
+    /// small `PROBE_TOKENS` budget on the `<think>` block, so the VISIBLE
+    /// answer this probe judges is genuinely short or empty while the model
+    /// is not broken at all, the chat answers fine once the user's own,
+    /// much larger, budget lets the thinking finish. `judge()` alone cannot
+    /// tell this apart from any other short answer, because it only ever
+    /// sees `content`; this is decided one level up, in `probe_engine`,
+    /// which still has the whole response body.
+    pub still_thinking: bool,
 }
 
 /// Ask the engine on `port` the fixed question and judge the answer.
@@ -523,7 +534,7 @@ pub(crate) fn probe_engine(port: u16, timeout: Duration) -> Option<ProbeOutcome>
         "max_tokens": PROBE_TOKENS,
         "stream": false,
     });
-    let text = reqwest::blocking::Client::builder()
+    let response = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()
         .ok()?
@@ -533,12 +544,14 @@ pub(crate) fn probe_engine(port: u16, timeout: Duration) -> Option<ProbeOutcome>
         .ok()
         .filter(|r| r.status().is_success())?
         .json::<serde_json::Value>()
-        .ok()
-        .and_then(|v| answer_text(&v))?;
+        .ok()?;
+    let text = answer_text(&response)?;
+    let verdict = judge(&text);
     Some(ProbeOutcome {
-        verdict: judge(&text),
+        verdict,
         sample: sample_for_log(&text, 120),
         took: started.elapsed(),
+        still_thinking: verdict == Sanity::Unjudgeable && reasoning_text(&response).is_some(),
     })
 }
 
@@ -550,6 +563,32 @@ pub(crate) fn answer_text(body: &serde_json::Value) -> Option<String> {
         .get("content")?
         .as_str()
         .map(str::to_string)
+}
+
+/// Pull the assistant's REASONING out of an OpenAI-shaped completion body,
+/// when the engine reports one separately from `content` (llama-server with
+/// a chat template that supports native reasoning parsing, e.g. GLM-5.3).
+/// `reasoning` is the older field name some backends still use;
+/// `reasoning_content` is tried first. `None` when neither is present or
+/// both are empty, the ordinary case for a model that does not think.
+pub(crate) fn reasoning_text(body: &serde_json::Value) -> Option<String> {
+    let message = body.get("choices")?.get(0)?.get("message")?;
+    let raw = message
+        .get("reasoning_content")
+        .or_else(|| message.get("reasoning"))?
+        .as_str()?;
+    (!raw.trim().is_empty()).then(|| raw.to_string())
+}
+
+/// D3: the word for the log line, refined for the one case `Sanity::label()`
+/// alone cannot tell apart, see [`ProbeOutcome::still_thinking`]. Every
+/// other verdict reads exactly as it did before.
+pub(crate) fn verdict_label(verdict: Sanity, still_thinking: bool) -> &'static str {
+    if still_thinking && verdict == Sanity::Unjudgeable {
+        "too short to judge (still inside a <think> block)"
+    } else {
+        verdict.label()
+    }
 }
 
 #[cfg(test)]
@@ -917,6 +956,57 @@ mod tests {
         assert_eq!(answer_text(&serde_json::json!({ "choices": [] })), None);
     }
 
+    // ── D3: telling a thinking model apart from a genuinely short answer ────
+
+    #[test]
+    fn reasoning_content_is_read_when_the_engine_reports_it_separately() {
+        let body = serde_json::json!({
+            "choices": [{ "message": { "role": "assistant", "content": "", "reasoning_content": "Okay, let me think about this passage..." } }]
+        });
+        assert_eq!(
+            reasoning_text(&body).as_deref(),
+            Some("Okay, let me think about this passage...")
+        );
+    }
+
+    #[test]
+    fn the_older_reasoning_field_name_is_read_too() {
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": "", "reasoning": "hmm" } }]
+        });
+        assert_eq!(reasoning_text(&body).as_deref(), Some("hmm"));
+    }
+
+    #[test]
+    fn an_ordinary_model_with_no_reasoning_field_yields_none() {
+        // Negative control: most models, most of the time.
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": "The sea is loud today." } }]
+        });
+        assert_eq!(reasoning_text(&body), None);
+        // And an empty or whitespace-only reasoning field counts as none too.
+        let blank = serde_json::json!({
+            "choices": [{ "message": { "content": "", "reasoning_content": "   " } }]
+        });
+        assert_eq!(reasoning_text(&blank), None);
+    }
+
+    #[test]
+    fn verdict_label_names_the_think_block_only_when_both_conditions_hold() {
+        assert_eq!(
+            verdict_label(Sanity::Unjudgeable, true),
+            "too short to judge (still inside a <think> block)"
+        );
+        // Negative controls: either condition missing falls back to the
+        // ordinary label, unchanged from before D3.
+        assert_eq!(verdict_label(Sanity::Unjudgeable, false), "too short to judge");
+        assert_eq!(verdict_label(Sanity::Readable, true), "readable");
+        assert_eq!(
+            verdict_label(Sanity::Garbled(Garble::OneWord), true),
+            "garbled: one word repeated"
+        );
+    }
+
     // ── The probe against a real socket ─────────────────────────────────────
     //
     // The pure half above proves the rules. These prove the other half: that
@@ -966,6 +1056,43 @@ mod tests {
         let out = probe_engine(port, Duration::from_secs(5)).expect("the stub answered");
         assert_eq!(out.verdict, Sanity::Garbled(Garble::QuestionMarks));
         assert_eq!(decide(out.verdict, &a_modern_card()), AfterProbe::RestartOnCpu);
+    }
+
+    #[test]
+    fn a_thinking_model_that_used_up_its_budget_reasoning_is_marked_still_thinking() {
+        // D3: the visible answer is empty (the probe's small PROBE_TOKENS
+        // budget went entirely into the <think> block), so judge() correctly
+        // calls it Unjudgeable, but `still_thinking` is what turns the log
+        // line from a generic "too short to judge" into a sentence that
+        // names the actual, harmless reason.
+        let port = stub_engine(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"Okay, the passage describes a fishing harbour"}}]}"#,
+        );
+        let out = probe_engine(port, Duration::from_secs(5)).expect("the stub answered");
+        assert_eq!(out.verdict, Sanity::Unjudgeable);
+        assert!(out.still_thinking, "a non-empty reasoning_content next to empty content should be recognised");
+        assert_eq!(
+            verdict_label(out.verdict, out.still_thinking),
+            "too short to judge (still inside a <think> block)"
+        );
+        // And decide() still serves it, D3 requires this stays true no
+        // matter how the log line is worded.
+        assert_eq!(decide(out.verdict, &a_modern_card()), AfterProbe::Serve);
+    }
+
+    #[test]
+    fn a_short_answer_with_no_reasoning_field_is_not_marked_still_thinking() {
+        // Negative control: an ordinary short/odd answer (no reasoning_content
+        // at all) must not be mislabelled as a thinking model.
+        let port = stub_engine(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hi."}}]}"#,
+        );
+        let out = probe_engine(port, Duration::from_secs(5)).expect("the stub answered");
+        assert_eq!(out.verdict, Sanity::Unjudgeable);
+        assert!(!out.still_thinking);
+        assert_eq!(verdict_label(out.verdict, out.still_thinking), "too short to judge");
     }
 
     #[test]

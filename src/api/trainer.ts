@@ -17,6 +17,16 @@ export interface TrainerStatus {
   textEncoder: string | null
   vae: string | null
   root: string
+  /** Whether `root` is a customer-set override, not the built-in default.
+   *  K5 Nachbesserung (Opus review of `4fda5a0a`): the frontend used to
+   *  assume the default and say so unconditionally; this lets the setup
+   *  gate tell the truth instead. */
+  customized: boolean
+  /** A folder to offer as the install-path placeholder when the customer
+   *  already moved ComfyUI off the system drive but has not set a trainer
+   *  folder yet (K5 architecture point 5). A suggestion only: it never
+   *  fills the field's value. */
+  suggestedRoot: string | null
   install: TrainerInstallState
 }
 

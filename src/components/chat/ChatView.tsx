@@ -12,9 +12,11 @@ import { COMPOSER_MAX_W } from './composer-width'
 import { RAGPanel } from './RAGPanel'
 import { DocsButton } from './DocsButton'
 import { RetrievalErrorBar } from './RetrievalErrorBar'
-import { LuEngineSwitchBar } from './LuEngineSwitchBar'
+import { ChatNotices } from './ChatNotices'
+import { LocalLaneWaitLine } from './LocalLaneWaitLine'
 import { useDocsAvailability } from '../../hooks/useDocsAvailability'
 import { AgentModeToggle } from './AgentModeToggle'
+import { FlashChatNotice } from './FlashChatNotice'
 import { AgentWorkspaceBadge } from './AgentWorkspaceBadge'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
 import { CHAT_BASE_SYSTEM_PROMPT } from '../../lib/system-prompt'
@@ -37,11 +39,13 @@ import { RecentChats } from './RecentChats'
 import { useUIStore } from '../../stores/uiStore'
 import { useCompareStore } from '../../stores/compareStore'
 import { exportConversation } from '../../lib/chat-export'
+import { conversationMode } from '../../lib/conversation-mode'
 import { PermissionOverrideBar } from './PermissionOverrideBar'
 import { CodexView } from './CodexView'
 import { useCodexStore } from '../../stores/codexStore'
 import { useGenerationStore } from '../../stores/generationStore'
 import { composerBusy } from '../../lib/composer-busy'
+import { useIsQueuedForLocalLane, useLocalLaneQueuePosition, useLocalLaneHolderWaitsForApproval, useLocalLaneHolderId } from '../../lib/run-idle'
 import { useRemoteStore } from '../../stores/remoteStore'
 import { displayModelName } from '../../api/providers'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
@@ -82,7 +86,16 @@ export function ChatView() {
   // one frame where it actually flips.
   const activeConvIsEmpty = useChatStore((s) => {
     const conv = s.conversations.find((c) => c.id === s.activeConversationId)
-    if (!conv || (conv.mode ?? 'lu') !== 'lu') return false
+    if (!conv) return false
+    // Auflage A3 (review-leer2-offload.md): 'remote' zaehlt jetzt mit. Ein
+    // dispatchter Remote-Chat ist bis zur ersten Mobil-Nachricht genauso
+    // leer wie ein frischer lokaler Chat, und lief vorher auf denselben
+    // leeren Hauptbereich wie das F1-Symptom oben, nur dass hier kein
+    // Reiterwechsel den Zustand zuruecksetzt. 'codex' bleibt aussen vor
+    // (eigene Ansicht, CodexView, siehe chatMode-Weiche oben); 'openclaw' hat
+    // keinen aktiven Einstiegspunkt in der UI und bleibt deshalb unberuehrt.
+    const mode = conversationMode(conv)
+    if (mode !== 'lu' && mode !== 'remote') return false
     return conv.messages.filter((m) => m.role !== 'system' && !m.hidden).length === 0
   })
   const activeModel = useModelStore((s) => s.activeModel)
@@ -118,11 +131,31 @@ export function ChatView() {
   //
   // Since T1 point 4 the COMPOSER reads it too. It used to read the hook's
   // app-wide `isGenerating`, so every other conversation lost its Send button
-  // and got a Stop button that aborted the foreign run. `composerBusy` splits
-  // the one flag into the two questions the composer actually has.
+  // and got a Stop button that aborted the foreign run. `composerBusy` still
+  // resolves what THIS conversation's own slot should show (own run, or an
+  // orphaned run the maps have not caught up with yet); as of Runde 4
+  // (review-lanes.md Blocker 1+6) it no longer feeds a lock on any OTHER
+  // conversation into the composer at all, because there is nothing left to
+  // lock: a second local send now queues visibly instead of racing the first
+  // one for the built-in engine's one slot, and a second cloud send just runs
+  // alongside it.
   const generatingMap = useGenerationStore((s) => s.generating)
   const activeGenerating = !!activeConversationId && !!generatingMap[activeConversationId]
   const busy = composerBusy(isGenerating, generatingMap, activeConversationId)
+  // THIS conversation's own send queued behind another local run. Not part of
+  // `generatingMap` (no stream is flowing yet), so `composerBusy` cannot see
+  // it. Folded into `isGenerating` below so the composer shows Stop instead
+  // of Send while it waits.
+  const queuedForLocalLane = useIsQueuedForLocalLane(activeConversationId)
+  const localLaneQueuePosition = useLocalLaneQueuePosition(activeConversationId)
+  // Runde 5 (review-lanes.md, Runde 2 Antwort zu Punkt 1): the waiting line
+  // must not claim a model is thinking when the holder is really stuck on a
+  // person's tool approval.
+  const waitingOnApproval = useLocalLaneHolderWaitsForApproval(activeConversationId)
+  const localLaneHolderId = useLocalLaneHolderId(activeConversationId)
+  const localLaneHolderTitle = useChatStore((s) =>
+    localLaneHolderId ? s.conversations.find((c) => c.id === localLaneHolderId)?.title : undefined
+  )
 
   const docCount = useRAGStore((s) =>
     activeConversationId ? (s.documents[activeConversationId] || []).length : 0
@@ -153,9 +186,6 @@ export function ChatView() {
   const connectedDevices = useRemoteStore((s) => s.connectedDevices)
   const refreshDevices = useRemoteStore((s) => s.refreshDevices)
   const isRemoteChat = activeConvMode === 'remote'
-  // While the panel is collapsed and the open chat is still empty, the recent
-  // list belongs above the composer instead of nowhere at all.
-  const showRecentsAboveComposer = !sidebarOpen && activeConvIsEmpty
   const isThisRemoteActive = isRemoteChat && remoteEnabled && dispatchedConversationId === activeConversationId
   const isThisRemoteStopped = isRemoteChat && !isThisRemoteActive
   const mobileConnectedCount = connectedDevices.length
@@ -255,7 +285,19 @@ export function ChatView() {
           the AnimatePresence as ONE instance: a second copy per branch would
           drop the draft the moment the first message creates the conversation,
           which is worse than having no input field at all. */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
+      {/* Runde 5 (19.09.2026): `overflow-hidden` clippt visuell, verhindert aber
+          KEIN programmatisches Scrollen. Klickt man einen Ausloeser, der
+          teilweise ausserhalb der 360px-Zeile liegt (Modellwaehler, Sampling,
+          Plugins), holt der Browser das fokussierte Element per `scrollLeft`
+          auf GENAU DIESEM Vorfahren "in Sicht", und das verschiebt den ganzen
+          Chat seitlich, dauerhaft. `overflow-clip` clippt genauso, laesst aber
+          kein programmatisches Scrollen zu (CSS Overflow Module Level 3):
+          `scrollLeft`-Zuweisungen darauf bleiben wirkungslos. Beide Achsen
+          duerfen hier `clip` sein, kein Nachkomme haengt `scrollTop`,
+          `scrollTo` oder `scrollIntoView` an DIESES Element (grep gegen
+          `src/components/chat/`, siehe `flashchip.md` Runde 5); der Verlauf
+          traegt seinen eigenen `overflow-y-auto` weiter unten. */}
+      <div className="flex-1 flex overflow-clip min-h-0">
         <div className="flex-1 flex flex-col min-w-0 relative">
           {chatMode === 'codex' && activeConversationId ? (
             <CodexView />
@@ -296,27 +338,32 @@ export function ChatView() {
               // Knopf, und er fuehrt an die einzige Stelle, die das aendert.
               //
               // Zur toten Flaeche: kein Layout entfernt Leere, nur Inhalt tut
-              // das. Der Block ist deshalb (a) inhaltlich gefuellt, (b) auf die
-              // Spaltenbreite `--lu-measure` gelegt und (c) im Chat UNTEN
-              // verankert, damit er mit dem Composer als ein Element liest
-              // statt als Fleck in einem Feld. Erfundene Beispiel-Prompts als
-              // Fuellmaterial habe ich bewusst nicht gebaut: sie waeren Inhalt,
-              // den niemand bestellt hat, und der Audit verlangt sie nicht.
+              // das. Der Block ist deshalb (a) inhaltlich gefuellt und (b) auf
+              // die Spaltenbreite `--lu-measure` gelegt. Erfundene
+              // Beispiel-Prompts als Fuellmaterial habe ich bewusst nicht
+              // gebaut: sie waeren Inhalt, den niemand bestellt hat, und der
+              // Audit verlangt sie nicht.
               //
-              // Im Code-Bereich steht er MITTIG, und das ist kein Widerspruch,
-              // sondern dieselbe Regel unter anderer Voraussetzung: dort
-              // rendert dieser Zweig ohne Composer (der Code-Composer haengt an
-              // CodexView und damit an einer offenen Unterhaltung, siehe
-              // `chatMode !== 'codex'` weiter unten). Der Block klebte deshalb
-              // am unteren Fensterrand, ohne dass etwas darunter stand, an das
-              // er sich haette anlehnen koennen. Gemessen am Windows-Bau
-              // (1296x808): Blockmitte y=699,9 gegen Bereichsmitte y=445,4,
-              // also 254,5 px zu tief. David, 05.09.2026: „genau mittig".
+              // David, 19.09.2026, AUFTRAG: der Block sitzt in beiden Lagen
+              // (Chat und Code) MITTIG, nicht mehr unten. Am 05.09.2026 stand
+              // hier noch die Regel „unten verankert im Chat, mittig im
+              // Code" (`justify-end` fuer Chat, `justify-center` fuer Code):
+              // das sollte den Block wie ein Element MIT dem Composer lesen
+              // lassen statt als Fleck in der Flaeche darueber. Gemessen am
+              // 19.09.2026 (Playwright, headless, Chromium, lokaler
+              // Vite-Server) zeigt genau diese Regel den eigentlichen Fehler:
+              // im lokalen wie im Cloud-Chat lag die Blockmitte 26 bis 38
+              // Prozent der sichtbaren Flaeche zu tief (1100x700 bis
+              // 1440x1080, mit und ohne Seitenleiste; die Zahl waechst mit der
+              // Fensterhoehe, weil `justify-end` den Block am Composer
+              // festnagelt statt an der Mitte). Der Code-Bereich stand mit
+              // `justify-center` schon richtig (-0,9 bis -1,5 Prozent, leicht
+              // ueber der Mitte). David: „er soll mittig sitzen." Die
+              // Bedingung faellt deshalb weg, beide Lagen bekommen dieselbe
+              // Regel.
               <motion.div
                 key="home"
-                className={`flex-1 flex flex-col items-center min-h-0 px-3 pb-4 ${
-                  chatMode === 'codex' ? 'justify-center' : 'justify-end'
-                }`}
+                className="flex-1 flex flex-col items-center justify-center min-h-0 px-3 pb-4"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0, y: -20 }}
@@ -380,7 +427,17 @@ export function ChatView() {
                       diese Reihenfolge festnagelt.) */}
                   <PlanBar />
 
-                  {!showRecentsAboveComposer && (
+                  {/* Der Platz, an den die Zeilen aus dem Composer gezogen
+                      sind (David, 21.09.2026: „NICHTS im prompt fenster!").
+                      Oben im Verlauf, ruhig, mit x, und ausdruecklich NICHT am
+                      Eingabefeld. `ChatNotices` traegt die beiden Zeilen, die
+                      im Composer entstehen (Anhang ist kein Bild, Modell sieht
+                      keine Bilder), `RetrievalErrorBar` den Fehler, dass die
+                      Dokumente zu einer Antwort nicht durchsucht wurden. */}
+                  <ChatNotices onAttachDocs={() => setRagPanelOpen(true)} />
+                  <RetrievalErrorBar />
+
+                  {!activeConvIsEmpty && (
                     <MessageList
                       isGenerating={isGenerating}
                       isThisChatGenerating={activeGenerating}
@@ -394,11 +451,36 @@ export function ChatView() {
                   )}
 
                   {/* Ein offener, aber noch leerer Chat bekommt an dieser
-                      Stelle die Liste der letzten Chats statt eines leeren
-                      Transkripts (David, 2026-09-02: nach „New Chat" stand der
-                      Hauptbereich blank da). Es ist DERSELBE Flex-Platz, den
-                      das Transkript sonst nimmt, also bleibt der Composer, wo
-                      er ist.
+                      Stelle DENSELBEN Leerzustand wie die Eingangsseite
+                      (Zeichen, Ueberschrift, Modellname), statt eines leeren
+                      Transkripts. Es ist DERSELBE Flex-Platz, den das
+                      Transkript sonst nimmt, also bleibt der Composer, wo er
+                      ist.
+
+                      FUND (David, 19.09.2026, N9-Nachtest Windows-Box,
+                      box-gruen/n2/BERICHT.md Teil A): die Bedingung war
+                      vorher NICHT `activeConvIsEmpty`, sondern
+                      `!sidebarOpen && activeConvIsEmpty`
+                      (`showRecentsAboveComposer`). Bei aufgeklappter
+                      Seitenleiste (dem Normalzustand) rendert dieser
+                      Zweig deshalb NIE, `!activeConvIsEmpty` oben aber sehr
+                      wohl (activeConversationId ist nach `+ New Chat`
+                      sofort gesetzt, `createConversation` in chatStore.ts
+                      setzt es synchron). Ergebnis: `<MessageList>` MIT
+                      null Nachrichten, die selbst keinen eigenen
+                      Leerzustand zeichnet (kein Platzhalter im Baum),
+                      ein vollstaendig leerer Hauptbereich, reproduzierbar
+                      auch nach vollem Neuladen, bis ein Wechsel auf einen
+                      anderen Reiter und zurueck `activeConversationId`
+                      ueber `Sidebar.tsx` (Klick auf „Chat") auf `null`
+                      zuruecksetzt und damit den ECHTEN Leerzustand weiter
+                      oben (`key="home"`) zeigt. Zwei verschiedene Zustaende
+                      sahen zufaellig gleich aus, was den Fehler wie ein
+                      Flackern wirken liess. Fix: dieselbe Bedingung wie fuer
+                      das Transkript, nur umgekehrt, kein `sidebarOpen`
+                      mehr davor. Die Liste der letzten Chats bleibt darin
+                      NUR bei zugeklappter Seitenleiste (Doppelung sonst,
+                      D-S06-Grund unveraendert).
 
                       Warum zwei bewachte Bloecke statt eines Ternaers, obwohl
                       genau eines von beiden rendert: `zwei-baender-sind-eine-
@@ -408,21 +490,65 @@ export function ChatView() {
                       zaehlte als drittes Band, obwohl er auf dem Bildschirm
                       an der Stelle des Transkripts sitzt.
 
-                      Unten verankert und mit dem Zeichen aus `brand.ts`, aus
-                      demselben Grund wie die Eingangsseite selbst (D-S05): ein
-                      Block, der in der Mitte einer leeren Flaeche schwebt,
-                      liest als Fleck; unten am Composer liest er als ein
-                      Element mit ihm. */}
-                  {showRecentsAboveComposer && (
-                    <div className="flex-1 min-h-0 flex flex-col items-center justify-end overflow-y-auto scrollbar-thin py-4">
-                      <img
-                        src={MONOGRAM}
-                        alt=""
-                        width={56}
-                        height={56}
-                        className={`${MONOGRAM_INVERT} opacity-90 mb-5`}
-                      />
-                      <RecentChats />
+                      Mittig, mit dem Zeichen aus `brand.ts`, aus demselben
+                      Grund wie die Eingangsseite selbst (D-S05, David
+                      19.09.2026): am 05.09.2026 stand hier noch „unten
+                      verankert ... wie am Composer". Gemessen am 19.09.2026
+                      (Playwright, headless): dieselbe Regel gab hier eine
+                      Blockmitte 35 bis 42 Prozent der sichtbaren Flaeche zu
+                      tief, exakt der Fehler der Eingangsseite, nur an einem
+                      zweiten Ort mit demselben Rezept. */}
+                  {activeConvIsEmpty && (
+                    // Runde 2 (David, Auflage A1, review-leer2-offload.md):
+                    // `chat-landing` stand vorher auf DIESEM flex-1-Container
+                    // selbst, also der sichtbaren Flaeche selbst, nicht auf
+                    // dem Inhalt darin. `measureLanding` in
+                    // leerzustand-sitzt-mittig.spec.ts nimmt `block.parentElement`
+                    // als Flaeche, hier also den AEUSSEREN `motion.div key="chat"`
+                    // (PlanBar + dieser Block + Sitzungsleiste + Remote-Baender
+                    // zusammen), nicht die eigentliche Restflaeche zwischen
+                    // PlanBar und Composer. Fix: `chat-landing` auf den
+                    // INNEREN Inhalt (Zeichen, Ueberschrift, Modellname,
+                    // Recents), der aeussere `flex-1 justify-center`-Container
+                    // bleibt namenlos und ist jetzt die Flaeche, gegen die
+                    // gemessen wird, genau wie beim Block der Eingangsseite
+                    // oben (Zeile 355-362, dasselbe Rezept).
+                    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto scrollbar-thin py-4 px-3">
+                      <div
+                        data-testid="chat-landing"
+                        className="w-full max-w-[var(--lu-measure)] flex flex-col items-center text-center gap-2"
+                      >
+                        <img
+                          src={MONOGRAM}
+                          alt=""
+                          width={56}
+                          height={56}
+                          className={`${MONOGRAM_INVERT} opacity-90`}
+                        />
+                        <h1 className="t-display text-gray-900 dark:text-gray-100">Ask LU anything</h1>
+                        <p className="t-body text-gray-500 max-w-[40ch]">{landing.subline}</p>
+                        {landing.note && (
+                          <p className="t-mono w-full truncate px-4 text-gray-400 dark:text-gray-500" title={landing.note}>
+                            {landing.note}
+                          </p>
+                        )}
+                        {/* home-recent-chats.test.ts, "COUNTER-TEST: a remote
+                            session keeps its own screen": Remote traegt schon
+                            eigene Baender und einen eigenen Zustand unter dem
+                            Transkript, eine Liste letzter Chats darueber waere
+                            dort Rauschen, kein Sprungbrett. Deshalb hier
+                            zusaetzlich zu `!sidebarOpen` auch `mode !== 'remote'`
+                            (Auflage A3, review-leer2-offload.md): der Landing-
+                            Block selbst (Zeichen, Ueberschrift, Modellname)
+                            gilt fuer Remote genauso, nur die Recents-Liste
+                            bleibt seine Ausnahme, unveraendert zum bisherigen
+                            Verhalten vor A3. */}
+                        {!sidebarOpen && activeConvMode !== 'remote' && (
+                          <div className="w-full pt-3 flex flex-col items-center text-left">
+                            <RecentChats />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -483,6 +609,12 @@ export function ChatView() {
                   <div className={`w-full ${COMPOSER_MAX_W} mx-auto px-3`}>
                     <div data-testid="chat-session-strip" className="flex items-center gap-1.5 px-2 py-0.5">
                       <AgentModeToggle />
+                      {/* Was diese Runde kostet, direkt neben dem Agent-Schalter
+                          (David, 19.09.2026): kein Band mehr ueber der Eingabe,
+                          das diese Leiste nach oben schob, sondern ein Etikett
+                          in genau dieser Leiste. Rendert `null` ohne
+                          Flash-Modell, verschiebt also nichts, wenn es fehlt. */}
+                      <FlashChatNotice />
                       <AgentWorkspaceBadge />
 
                       {/* Spacer */}
@@ -625,20 +757,38 @@ export function ChatView() {
             )}
           </AnimatePresence>
 
+          {/* Die stehenden Sitzungsbaender: UEBER dem Kasten, nicht darin.
+              `composerAbove` rendert INNERHALB der Promptbox, und dort darf
+              seit dem 21.09.2026 nichts mehr stehen, was der Nutzer nur liest.
+              LoopBar und GoalBar sind Bedienelemente (Bremse, Loeschen) und
+              bleiben sichtbar, nur eine Etage hoeher; die Wartezeile der
+              lokalen Spur ist ein Hinweis und war vorher im Kasten. */}
+          {chatMode !== 'codex' && (
+            <>
+              <LoopBar onStop={stopGeneration} />
+              <GoalBar />
+              <LocalLaneWaitLine
+                waiting={!!queuedForLocalLane}
+                queuePosition={localLaneQueuePosition}
+                onApproval={waitingOnApproval}
+                onApprovalIn={localLaneHolderTitle}
+              />
+            </>
+          )}
+
           {/* Code mode brings its own composer, so it stays out of this one. */}
           {chatMode !== 'codex' && (
             <ChatInput
               onSend={sendMessage}
               onStop={stopGeneration}
-              isGenerating={busy.thisChat}
-              busyElsewhere={busy.otherChat}
+              isGenerating={busy.thisChat || queuedForLocalLane}
+              waitingForLocalLane={queuedForLocalLane}
               pendingApproval={pendingApproval}
               onApprove={approveToolCall}
               onReject={rejectToolCall}
               // Commands need the tool catalog to drive, which only Agent
               // mode has here. Plain chat leaves "/cmd" as ordinary text.
               slashCommands={isAgentActive ? 'agent' : 'chat'}
-              onAttachDocs={() => setRagPanelOpen(true)}
               composerModel={
                 /* What this chat's answers were written by rides on the
                    picker itself now, as a dot plus a tooltip, instead of a
@@ -649,7 +799,13 @@ export function ChatView() {
               // No plan lives here. The prompt window is the prompt window
               // (David, 2026-08-22): the plan band sits in the session strip
               // above, next to the other standing status controls.
-              composerAbove={<><LuEngineSwitchBar /><RetrievalErrorBar /><LoopBar onStop={stopGeneration} /><GoalBar /><GroupCostHint /></>}
+              // Was HIER noch steht, ist genau eine Zeile, und sie steht
+              // unter Vorbehalt: `GroupCostHint` sagt, was der naechste Enter
+              // kostet („1 round = 3 answers = 3x the cost"). Geld wird nicht
+              // stumm geschaltet, ohne dass der Eigner es entschieden hat, und
+              // die Zeile gibt es ueberhaupt nur in einem Gruppenchat. Alles
+              // andere, was hier stand, ist ausgezogen (siehe oben).
+              composerAbove={<GroupCostHint />}
               composerActions={
                 <>
                   {/* Documents (RAG), shown in both modes since A9. In

@@ -57,16 +57,23 @@ describe('a counter never states a number it has not counted', () => {
 
 describe('the Models page routes both counters through the one rule', () => {
   it('the rail badge asks counterView', () => {
-    expect(manager).toMatch(/const badge = counterView\(models\.filter\(\(m\) => m\.type === key\)\.length, inventoryState\)/)
+    // Since the LoRAs rail the badge counts one of two things (the category's
+    // models, or the LoRAs), and both of them go through the same rule: the
+    // call wraps the whole choice instead of one of its arms.
+    expect(manager).toMatch(/const badge = counterView\(\s*key === 'lora'\s*\?\s*loraRows\.length\s*:\s*models\.filter\(\(m\) => m\.type === key && !isLoraRow\(m\)\)\.length,\s*inventoryState,\s*\)/)
   })
 
   it('the Installed badge asks counterView', () => {
-    expect(manager).toMatch(/counterView\(filteredModels\.length, inventoryState\)/)
+    expect(manager).toMatch(/counterView\(installedCount, inventoryState\)/)
+    // And that one number is the lane's own count, not a second reading.
+    expect(manager).toMatch(/const installedCount = rail === 'lora' \? loraRows\.length : filteredModels\.length/)
   })
 
   it('NEGATIVE CONTROL: neither counter prints a bare list length any more', () => {
     // This is the shape that put "Installed 0" on the screen.
     expect(manager).not.toMatch(/tabular-nums">\{filteredModels\.length\}</)
+    expect(manager).not.toMatch(/tabular-nums">\{loraRows\.length\}</)
+    expect(manager).not.toMatch(/tabular-nums">\{installedCount\}</)
     expect(manager).not.toMatch(/\{count > 0 && \(/)
   })
 

@@ -1,5 +1,6 @@
 import { backendCall, fetchExternal } from "./backend"
 import { readComfyFolderLists, filterPartialFiles, refreshComfyModels } from "./comfyui"
+import { COMPONENT_REGISTRY, type ComponentSpec, type ComponentRequirements } from './component-registry'
 import { clearNodeCache } from "./comfyui-nodes"
 import { restartComfyForNewNodes } from "./comfy-restart"
 import type { ProviderId } from "./providers/types"
@@ -774,8 +775,10 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
     return left.length === 0
   }
 
-  // Which folders this engine can be asked about at all. Read once for the
-  // whole bundle, and lazily: a bundle whose files are all fresh never needs it.
+  // Which folders this engine can be asked about at all. Started once for the
+  // whole bundle; the call itself always fires here, only the AWAIT of its
+  // result is deferred to the per-file check below (R2-34: this used to claim
+  // it ran "lazily", which was not true, the request always goes out).
   const judgeable = judgeableFolders()
 
   // ONE space check for the whole bundle, before the first byte moves.
@@ -854,113 +857,16 @@ export async function installBundleComplete(bundle: ModelBundle): Promise<void> 
 }
 
 // ─── Component Registry: What each model type needs to work ───
-
-
-export interface ComponentSpec {
-  patterns: string[]
-  downloadName: string
-  downloadUrl: string
-  subfolder: string
-}
-
-export interface ComponentRequirements {
-  // SVD loads through ComfyUI's ImageOnlyCheckpointLoader — the registry
-  // below has always said so, only this union (a stale copy of the one in
-  // comfyui.ts, which lists all three) had not caught up.
-  loader: 'UNETLoader' | 'CheckpointLoaderSimple' | 'ImageOnlyCheckpointLoader'
-  vae?: ComponentSpec
-  clip?: ComponentSpec
-  clipSecondary?: ComponentSpec
-  needsSeparateVAE: boolean
-  needsSeparateCLIP: boolean
-}
-
-export const COMPONENT_REGISTRY: Record<string, ComponentRequirements> = {
-  sd15: { loader: 'CheckpointLoaderSimple', needsSeparateVAE: false, needsSeparateCLIP: false },
-  sdxl: { loader: 'CheckpointLoaderSimple', needsSeparateVAE: false, needsSeparateCLIP: false },
-  flux: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['ae', 'flux'], downloadName: 'ae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['t5xxl', 't5-xxl', 't5_xxl'], downloadName: 't5xxl_fp8_e4m3fn.safetensors', downloadUrl: 'https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors', subfolder: 'text_encoders' },
-    clipSecondary: { patterns: ['clip_l'], downloadName: 'clip_l.safetensors', downloadUrl: 'https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  flux2: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['flux2', 'flux'], downloadName: 'flux2-vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/vae/flux2-vae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['qwen', 'mistral'], downloadName: 'qwen_3_4b_fp4_flux2.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  zimage: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['ae', 'flux'], downloadName: 'ae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['qwen_3_4b', 'qwen3'], downloadName: 'qwen_3_4b.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  ernie_image: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['flux2-vae', 'flux2', 'flux'], downloadName: 'flux2-vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image/resolve/main/vae/flux2-vae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['ministral-3-3b', 'ministral', 'ernie-image-prompt-enhancer'], downloadName: 'ministral-3-3b.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image/resolve/main/text_encoders/ministral-3-3b.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  wan: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['wan'], downloadName: 'wan_2.1_vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['umt5', 'wan'], downloadName: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  wan22: {
-    loader: 'UNETLoader',
-    // Wan 2.2 5B uses its OWN VAE (higher compression than 2.1). Prefer the 2.2 file;
-    // 'wan' fallback covers a 2.1 VAE only as a last resort. CLIP is the shared UMT5.
-    vae: { patterns: ['wan2.2', 'wan2_2'], downloadName: 'wan2.2_vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['umt5', 'wan'], downloadName: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  hunyuan: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['hunyuanvideo', 'hunyuan'], downloadName: 'hunyuanvideo15_vae_fp16.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/HunyuanVideo_1.5_repackaged/resolve/main/split_files/vae/hunyuanvideo15_vae_fp16.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['qwen', 'llava'], downloadName: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/HunyuanVideo_1.5_repackaged/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  ltx: {
-    loader: 'UNETLoader',
-    clip: { patterns: ['gemma'], downloadName: 'gemma_3_12B_it_fp8_scaled.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp8_scaled.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: false, needsSeparateCLIP: true,
-  },
-  mochi: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['mochi'], downloadName: 'mochi_vae.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/mochi_preview_repackaged/resolve/main/split_files/vae/mochi_vae.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['t5'], downloadName: 't5xxl_fp16.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/mochi_preview_repackaged/resolve/main/split_files/text_encoders/t5xxl_fp16.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  cosmos: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['cosmos'], downloadName: 'cosmos_cv8x8x8_1.0.safetensors', downloadUrl: 'https://huggingface.co/comfyanonymous/cosmos_1.0_text_encoder_and_VAE_ComfyUI/resolve/main/vae/cosmos_cv8x8x8_1.0.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['oldt5'], downloadName: 'oldt5_xxl_fp8_e4m3fn_scaled.safetensors', downloadUrl: 'https://huggingface.co/comfyanonymous/cosmos_1.0_text_encoder_and_VAE_ComfyUI/resolve/main/text_encoders/oldt5_xxl_fp8_e4m3fn_scaled.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  cogvideo: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['cogvideox', 'cogvideo'], downloadName: 'cogvideox_vae_bf16.safetensors', downloadUrl: 'https://huggingface.co/Kijai/CogVideoX-comfy/resolve/main/cogvideox_vae_bf16.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['t5'], downloadName: 't5xxl_fp16.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/mochi_preview_repackaged/resolve/main/split_files/text_encoders/t5xxl_fp16.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  svd: { loader: 'ImageOnlyCheckpointLoader', needsSeparateVAE: false, needsSeparateCLIP: false },
-  framepack: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['hunyuan_video_vae', 'hunyuan'], downloadName: 'hunyuan_video_vae_bf16.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/HunyuanVideo_repackaged/resolve/main/split_files/vae/hunyuan_video_vae_bf16.safetensors', subfolder: 'vae' },
-    clip: { patterns: ['llava', 'qwen'], downloadName: 'llava_llama3_fp8_scaled.safetensors', downloadUrl: 'https://huggingface.co/Comfy-Org/HunyuanVideo_repackaged/resolve/main/split_files/text_encoders/llava_llama3_fp8_scaled.safetensors', subfolder: 'text_encoders' },
-    needsSeparateVAE: true, needsSeparateCLIP: true,
-  },
-  pyramidflow: {
-    loader: 'UNETLoader',
-    vae: { patterns: ['pyramid'], downloadName: 'pyramid_flow_vae_bf16.safetensors', downloadUrl: 'https://huggingface.co/Kijai/pyramid-flow-comfy/resolve/main/pyramid_flow_vae_bf16.safetensors', subfolder: 'vae' },
-    needsSeparateVAE: true, needsSeparateCLIP: false,
-  },
-  allegro: { loader: 'UNETLoader', needsSeparateVAE: false, needsSeparateCLIP: false },
-  unknown: { loader: 'CheckpointLoaderSimple', needsSeparateVAE: false, needsSeparateCLIP: false },
-}
+//
+// K9 (GH #136): this table used to be declared here a second time, with a
+// different field naming (patterns/downloadName vs comfyui.ts's
+// matchPatterns/downloadFilename) but the same per-model-type content, a
+// duplicate that both had to be remembered on every new architecture. Canonical
+// data now lives in component-registry.ts; re-exported here so existing
+// imports of `COMPONENT_REGISTRY` / `ComponentSpec` / `ComponentRequirements`
+// from './discover' keep working unchanged.
+export type { ComponentSpec, ComponentRequirements }
+export { COMPONENT_REGISTRY }
 
 // ─── Text Models (HuggingFace GGUF · unified source for all providers) ───
 
@@ -1902,6 +1808,34 @@ export function civitaiHostSwap(url: string | undefined, host: string): string |
   return url.replace(/^(https?:\/\/)civitai\.com/i, `$1${host}`)
 }
 
+/**
+ * Eine CivitAI-Beschreibung als Text, nicht als Markup.
+ *
+ * Befund am echten Windows-Bau (21.09.2026, C4-search-pixel-results.png): in
+ * der Trefferliste stand woertlich „High quality in promt &amp; negative low
+ * quality". Das Feld ist HTML, und abgeschnitten wurden bisher nur die Tags;
+ * die Entitaeten blieben stehen und wurden als Zeichen gezeigt.
+ *
+ * Gerendert wird das Ergebnis als gewoehnlicher React-Textknoten
+ * (CivitaiSearchPanel.tsx), also NICHT ueber `dangerouslySetInnerHTML`. Genau
+ * deshalb darf hier dekodiert werden: ein `<script>` aus einer fremden
+ * Beschreibung ist nach dem Tag-Schnitt kein Tag mehr, und was React
+ * ausgibt, ist in jedem Fall Text. `&amp;` kommt ZULETZT dran, sonst wuerde
+ * aus dem doppelt kodierten `&amp;lt;` am Ende ein `<`.
+ */
+export function civitaiDescriptionToText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .trim()
+}
+
 export async function searchCivitaiModels(
   query: string,
   type: 'Checkpoint' | 'LORA' | 'VAE' | 'TextualInversion' = 'Checkpoint',
@@ -1951,9 +1885,14 @@ export async function searchCivitaiModels(
       if (type === 'LORA') subfolder = 'loras'
       else if (type === 'VAE') subfolder = 'vae'
       else if (type === 'TextualInversion') subfolder = 'embeddings'
-      // Check if it's a diffusion model (FLUX, Wan, etc.)
+      // Check if it's a diffusion model (FLUX, Wan, etc.). Only for a
+      // checkpoint search: the name of a LORA, a VAE or an embedding says
+      // which base model it was trained against, not what kind of file it is,
+      // so "Flux Realism LoRA" used to be written into diffusion_models, where
+      // the LoRA loader does not look and the LoRA stack in Create could never
+      // offer it.
       const name = (itemName ?? '').toLowerCase()
-      if (name.includes('flux') || name.includes('wan') || name.includes('hunyuan')) {
+      if (type === 'Checkpoint' && (name.includes('flux') || name.includes('wan') || name.includes('hunyuan'))) {
         subfolder = 'diffusion_models'
       }
 
@@ -1961,7 +1900,7 @@ export async function searchCivitaiModels(
         || `${(itemName ?? '').replace(/[^a-zA-Z0-9._-]/g, '_')}.safetensors`
 
       const descParts: string[] = []
-      const rawDesc = (asString(prop(item, 'description')) ?? '').replace(/<[^>]*>/g, '').trim()
+      const rawDesc = civitaiDescriptionToText(asString(prop(item, 'description')) ?? '')
       if (rawDesc) descParts.push(rawDesc.slice(0, 120))
       if (downloadCount) descParts.push(`${formatCount(downloadCount)} downloads`)
       if (creator) descParts.push(`by ${creator}`)

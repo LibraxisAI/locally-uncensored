@@ -21,8 +21,12 @@ import {
 import { startModelDownload, getDownloadProgress } from '../../../api/discover'
 import { useDownloadStore } from '../../../stores/downloadStore'
 import { getLoraModels } from '../../../api/comfyui'
+import { isWindows, isMacOS } from '../../../api/backend'
 import { musicTakesLyrics, musicHowtoLines } from '../../../lib/render/music-ui'
+import { galleryLabelShort } from '../../../lib/render/gallery-label'
 import { TRAIN_PRESETS, trainStepsNote } from '../../../lib/trainer-presets'
+import { trainerPathPlaceholder } from '../../../lib/trainer-path-placeholder'
+import { trainerRootHint } from '../../../lib/trainer-root-hint'
 import { useCreateExp } from './CreateContext'
 import { loadImageRef } from './loadImage'
 import { mediaRefFrom } from './mediaRef'
@@ -32,6 +36,7 @@ import { Segmented } from '../ui/Segmented'
 import { Slider } from '../ui/Slider'
 import { cn } from '../ui/cn'
 import { useClickAway } from '../ui/useClickAway'
+import { Modal } from '../../ui/Modal'
 
 export function SpecialControls({ intent }: { intent: CreateIntent }) {
   switch (intent) {
@@ -254,6 +259,99 @@ function CharacterPanel() {
   )
 }
 
+// Das Trainer-Installationspfad-Feld des Erstsetup-Gates. `status` speist nur
+// `trainerRootHint`; Wert und Aenderungs-Handler gehoeren dem Aufrufer.
+//
+// A1-Korrektur (Final Review, 19.09.2026): dieses Feld war bis eben auch im
+// Reinstall-Dialog, mit demselben Ordner vorbelegt. Das war der Blocker: ein
+// Kunde, der bloss bestaetigt, schickte seinen bestehenden Standardordner als
+// nicht-leeren Pfad an install_character_trainer, und trainer_root_is_customized()
+// kippte auf true, obwohl sich nichts geaendert hatte -- die Cache-Migration
+// (apply_trainer_cache_env, trainer.rs:363) griff dann fuer einen Kunden, der
+// sie nie ausgeloest hatte, und liess pip/Torch mehrere GB neu laden, die
+// schon auf der Platte lagen. Der Reinstall-Dialog zeigt den Ordner jetzt nur
+// noch als Text (siehe TrainerReinstallModal) und schickt denselben leeren
+// bzw. vorbelegten Pfad wie vor dem Z5-Umbau.
+function TrainerPathField({
+  value,
+  onChange,
+  status,
+}: {
+  value: string
+  onChange: (v: string) => void
+  status: Pick<TrainerStatus, 'root' | 'customized' | 'suggestedRoot'>
+}) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={`e.g. ${trainerPathPlaceholder(isWindows(), isMacOS())}`}
+        className="t-control w-64 px-2.5 h-[var(--control-h-sm)] rounded-md bg-white/[0.03] border border-white/[0.06] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-white/15"
+      />
+      <span className="t-label text-gray-600">{trainerRootHint(status, value, status.suggestedRoot)}</span>
+    </div>
+  )
+}
+
+// Z5 (box-gruen/b, e2e Windows, 18.09.2026): "Reinstall trainer" hat bisher
+// install_character_trainer im selben Moment ausgeloest, in dem der Knopf
+// geklickt wurde, ohne Bestaetigung, ohne Chance, vorher zu sehen, was
+// passiert. Die Rust-Seite loescht `<root>` dabei NICHT (siehe Doc-Kommentar
+// von provision_trainer_env: `<root>/train` und `<root>/models` werden nie
+// angefasst), ersetzt aber die venv (Rebuild oder Torch/musubi neu
+// installieren, siehe `venv_action`), und genau das hat den Tester auf
+// box-gruen mitten im Klick ueberrascht. Dieser Dialog sagt das ehrlich und
+// ruft den Install-Befehl erst auf, wenn der Kunde "Reinstall" drueckt.
+//
+// A1/Blocker-Korrektur (Final Review, 19.09.2026): der Ordner ist hier nur
+// noch Text, nicht editierbar. Ein editierbares Feld, vorbelegt mit dem
+// bestehenden Ordner, hat jeden gewoehnlichen Reinstall (Kunde bestaetigt
+// ohne etwas zu aendern) zu einem "customized" Pfad gemacht und damit den
+// Cache-Migrationsschutz ausgeloest, den es hier nicht geben soll. Einen
+// anderen Ordner fuer den Trainer waehlen geht weiterhin nur ueber das
+// Erstsetup-Gate (TrainerPathField oben, bevor envReady zum ersten Mal wahr
+// wird); ein Weg, das nach der Erstinstallation zu aendern, existiert in der
+// App bisher nicht.
+function TrainerReinstallModal({
+  open,
+  onClose,
+  status,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  status: TrainerStatus
+  onConfirm: () => void
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title="Reinstall the trainer?">
+      <div className="space-y-4 text-sm text-gray-200">
+        <p className="t-body leading-relaxed text-gray-300">
+          This sets up the trainer's Python environment again: PyTorch and musubi-tuner get reinstalled. Your training photos and downloaded base models are not touched. Setup needs about 3 GB of downloads, same as the first install.
+        </p>
+        <p className="t-label text-gray-500 text-center">Trainer folder: {status.root}</p>
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            onClick={onConfirm}
+            data-destructive
+            className="w-full px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-200 text-sm font-medium transition-colors"
+          >
+            Reinstall
+          </button>
+          <button
+            onClick={onClose}
+            data-autofocus
+            className="w-full px-4 py-1.5 rounded-lg hover:bg-white/5 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // Local training readiness + inputs (2.5.8 A5). Three gates render in order:
 // trainer env (one-time musubi setup) -> Z-Image base files -> the actual
 // trigger/steps inputs. The Rust side is the source of truth for readiness.
@@ -267,11 +365,54 @@ function LocalTrainControls() {
   const [status, setStatus] = useState<TrainerStatus | null>(null)
   const [busy, setBusy] = useState<'install' | 'bases' | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // K5 (DIE-301-LISTE, Discord "Storage", x_guestieco_x): the trainer's
+  // venv, torch and its pip/HF/torch caches all follow `trainer_root`
+  // (see apply_trainer_cache_env in commands/trainer.rs), but nothing ever
+  // let a customer set `trainer_root` in the first place, so the redirect
+  // never fired for anyone. This is the smallest honest fix: the same
+  // "type a path, it becomes the install target" control Settings > ComfyUI
+  // already uses for install_comfyui, reused here for the one other local
+  // installer that downloads multiple GB. Left empty, install_character_trainer
+  // keeps its existing default (the app data folder), so this changes
+  // nothing for a customer who never touches it.
+  //
+  // `typedPath` holds only what the customer actually typed. Lint-Fix
+  // (react-hooks/set-state-in-effect, 19.09.2026): this used to be a second
+  // piece of state (`installPath`) kept in sync with `status` through a
+  // `useEffect` that called `setInstallPath` on every status/pathTouched
+  // change. That is exactly the anti-pattern the rule flags -- state derived
+  // from other state belongs in render, not in an effect that races the
+  // render it is meant to feed. `installPath` below is now computed directly
+  // from `typedPath`, `pathTouched` and `status` on every render; see
+  // bau/lintfix.md for the truth table proving this is not a behavior change.
+  const [typedPath, setTypedPath] = useState('')
+  // K5 Nachbesserung, point 3: once the customer has typed anything (or the
+  // field was pre-filled and they clear it on purpose), stop overwriting
+  // their edit with the backend's current root on every poll.
+  const [pathTouched, setPathTouched] = useState(false)
+  // Z5 (box-gruen/b): der Bestaetigungsdialog vor "Reinstall trainer".
+  const [reinstallOpen, setReinstallOpen] = useState(false)
 
   const refresh = useCallback(() => {
     characterTrainerStatus().then(setStatus).catch(() => setStatus(null))
   }, [])
   useEffect(() => { refresh() }, [refresh])
+
+  // K5 Nachbesserung, point 3: the field must always show the actually
+  // valid path, not stay blank while a customized root is already active
+  // (the old bug behind Blocker 2 -- a broken customized install re-showed
+  // this gate with an empty field and a caption that still claimed the app
+  // data default).
+  //
+  // Teil 10, point 3 (Opus review of `3ef38668`): a customer who never opens
+  // this gate never learns that `suggestedRoot` exists at all -- it used to
+  // sit only in the grayed-out placeholder, invisible the moment the field
+  // has focus and gone the instant anything is typed. Nothing here moves an
+  // EXISTING install: this only pre-fills the field, with a real, editable,
+  // clearable value, and only while there is no trainer yet (this whole
+  // gate only renders before `envReady`) and no customized root of the
+  // customer's own to preserve.
+  const installPath = pathTouched ? typedPath : status?.customized ? status.root : (status?.suggestedRoot ?? '')
 
   // A base-file download outlives this panel. Leave the tab and come back and
   // the button read "Download base files" again with no note, while the 19 GB
@@ -321,13 +462,33 @@ function LocalTrainControls() {
     return () => clearInterval(t)
   }, [busy])
 
-  const startInstall = async () => {
+  const runInstall = async (path: string) => {
     setBusy('install')
     setNote('Setting up the trainer...')
-    try { await installCharacterTrainer() } catch (e) {
+    try { await installCharacterTrainer(path.trim() || undefined) } catch (e) {
       setNote(e instanceof Error ? e.message : 'Install could not start.')
       setBusy(null)
     }
+  }
+  // The setup-gate button keeps using whatever the customer typed there
+  // (or the pre-filled suggestion, or their own customized root).
+  const startInstall = () => runInstall(installPath)
+  // B1-Korrektur (Final Review Teil 17, review-teil17-lintfix.md): a
+  // reinstall must NEVER move the trainer folder. `installPath` above also
+  // carries `suggestedRoot` once no customized root exists (so the
+  // erstsetup gate can show it), but that suggestion is for the FIRST
+  // installation only. Sending it here on a bare "confirm the reinstall"
+  // click wrote it into `trainer_root`, flipped
+  // `trainer_root_is_customized()` to true for a customer who never
+  // touched this setting, and moved the pip/HF/torch caches away from an
+  // existing installation -- exactly the migration this dialog's text
+  // ("training photos and downloaded base models are not touched")
+  // promises will not happen. A reinstall therefore sends the customer's
+  // own root only if the trainer is already customized, and `undefined`
+  // (the default, i.e. today's location) in every other case.
+  const confirmReinstall = async () => {
+    setReinstallOpen(false)
+    await runInstall(status?.customized ? status.root : '')
   }
   const startBases = async () => {
     if (!status) return
@@ -357,12 +518,19 @@ function LocalTrainControls() {
   if (!status.envReady || (busy === 'install' && status.install.status === 'installing')) {
     return (
       <div className="flex flex-col items-center gap-1.5">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-center">
           <span className="t-label text-gray-500">Trains fully on your GPU. One time setup, about 3 GB.</span>
           <Button size="sm" variant="secondary" icon={Download} loading={busy === 'install'} disabled={busy === 'install'} onClick={startInstall}>
             {busy === 'install' ? 'Setting up…' : 'Set up trainer'}
           </Button>
         </div>
+        {busy !== 'install' && (
+          <TrainerPathField
+            value={installPath}
+            onChange={(v) => { setTypedPath(v); setPathTouched(true) }}
+            status={status}
+          />
+        )}
         {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
@@ -376,6 +544,12 @@ function LocalTrainControls() {
             {busy === 'bases' ? 'Downloading…' : 'Download base files'}
           </Button>
         </div>
+        {/* K5 Blocker 3 (Opus review of `4fda5a0a`): these bytes go through
+            download_model, which follows your configured model folder
+            (Settings, ComfyUI), not the trainer folder set on the previous
+            screen. Said here so the setup does not read as one place for
+            everything the trainer downloads. */}
+        <span className="t-label text-gray-600">Goes to your configured model folder (Settings, ComfyUI).</span>
         {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
       </div>
     )
@@ -414,7 +588,7 @@ function LocalTrainControls() {
               build could not reach it (bob80817, D#102). */}
           <button
             type="button"
-            onClick={startInstall}
+            onClick={() => setReinstallOpen(true)}
             disabled={busy === 'install'}
             className="underline underline-offset-2 text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors"
           >
@@ -423,6 +597,12 @@ function LocalTrainControls() {
         </div>
       )}
       {note && <div role="status" tabIndex={0} className="text-xs leading-relaxed text-gray-600 max-w-[520px] max-h-40 overflow-y-auto select-text whitespace-pre-wrap text-center break-words">{note}</div>}
+      <TrainerReinstallModal
+        open={reinstallOpen}
+        onClose={() => setReinstallOpen(false)}
+        status={status}
+        onConfirm={confirmReinstall}
+      />
     </div>
   )
 }
@@ -1025,14 +1205,22 @@ function CloudExtendControls() {
                     setExtendSource({
                       jobId: g.jobId as string,
                       url: g.remoteUrl ?? '',
-                      label: g.prompt.slice(0, 40) || 'Cloud video',
+                      // P9: 'Cloud video' was the old blanket notname
+                      // gallery-label.ts's own header comment names as the
+                      // problem it fixes (David, 19.09.2026: "everything
+                      // after that is just Cloud videos"). A prompt-less
+                      // entry here is routinely a Studio step (sharpen,
+                      // extend, a preset step), galleryLabelShort names
+                      // those from their model/label instead of a blank
+                      // notname.
+                      label: galleryLabelShort(g, 40),
                     })
                     setOpen(false)
                   }}
                   className="w-full flex items-center gap-2 t-control text-gray-300 px-2.5 py-1.5 rounded-md hover:bg-white/[0.06]"
                 >
                   <Film size={12} />
-                  <span className="truncate">{g.prompt || 'Cloud video'}</span>
+                  <span className="truncate">{galleryLabelShort(g, 60)}</span>
                 </button>
               ))}
             </motion.div>

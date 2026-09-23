@@ -161,13 +161,25 @@ describe('D-S18: das dritte Band bleibt unter dem Transkript', () => {
   })
 
   it('und ChatView legt vor dem Transkript nichts Neues davor', () => {
-    // Was oberhalb von <MessageList> im Chat-Zweig steht, ist genau ein
-    // Element: <PlanBar />. Es rendert `null`, solange es keinen Plan gibt,
-    // kostet im Normalfall also kein Band. Jedes weitere Element hier waere
-    // ein drittes Band durch die Hintertuer.
+    // Was oberhalb von <MessageList> im Chat-Zweig steht, sind genau drei
+    // Elemente, und alle drei rendern `null`, solange sie nichts zu sagen
+    // haben: <PlanBar /> ohne Plan, <ChatNotices /> ohne Zeile,
+    // <RetrievalErrorBar /> ohne Fehler. Im Normalfall kostet also keines von
+    // ihnen ein Band. Jedes WEITERE Element hier waere ein drittes Band durch
+    // die Hintertuer.
+    //
+    // Die beiden Neuen sind am 21.09.2026 dazugekommen, und zwar von unten:
+    // sie standen im Composer-Kasten, und David will dort nichts lesen
+    // muessen („NICHTS im prompt fenster!"). Sie sind damit nicht „neu vor
+    // dem Transkript", sondern umgezogen, und sie sind ausdruecklich leer,
+    // solange nichts passiert ist.
     const zweig = VIEW.slice(VIEW.indexOf('key="chat"'), VIEW.indexOf('<MessageList'))
     const elemente = [...zweig.matchAll(/<([A-Z][A-Za-z]*)\b/g)].map((m) => m[1])
-    expect(elemente).toEqual(['PlanBar'])
+    expect(elemente).toEqual(['PlanBar', 'ChatNotices', 'RetrievalErrorBar'])
+    // Und die Bedingung, unter der das zulaessig ist: beide Neuen sind im
+    // Ruhezustand wirklich nichts.
+    expect(codeOnly(read('chat/ChatNotices.tsx'))).toMatch(/notices\.length === 0\) return null/)
+    expect(codeOnly(read('chat/RetrievalErrorBar.tsx'))).toMatch(/!message\) return null/)
     expect(codeOnly(read('chat/PlanBar.tsx'))).toMatch(/todos\.length === 0\) return null/)
   })
 })

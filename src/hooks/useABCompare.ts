@@ -16,6 +16,29 @@ import type { Message } from '../types/chat'
 import { createThinkStreamSplitter } from '../lib/hermes-stream'
 import { settleThinking } from '../lib/thinking-stripper'
 import { isThinkingCompatible } from '../lib/model-compatibility'
+import { buildSamplingRequest } from '../lib/sampling'
+import { runInLane } from '../lib/run-slot'
+import { laneOf, currentLaneFacts } from '../lib/run-lane-of-model'
+import { useGenerationStore } from '../stores/generationStore'
+
+/**
+ * Booking identity for the local lane, standing in for a `conversationId`.
+ *
+ * Runde 5 (review-lanes.md Runde 2, Nachtrag nach dem Grep-Audit dieser
+ * Runde): A/B Compare fires two genuine `provider.chatStream` calls per
+ * round, one per model, entirely outside `run-lanes.ts`. If both sides
+ * resolve to the local lane (the same shared, one-slot built-in engine),
+ * `Promise.all([streamA(), streamB()])` sent both at once against that one
+ * slot, the exact VRAM-swap this module exists to prevent, just triggered
+ * from the Compare pane instead of the composer. Even with only ONE local
+ * side, the round needs to book the lane so it does not race a separate,
+ * unrelated local conversation running elsewhere in the app. A fixed,
+ * single id is enough, the same reasoning as `useBenchmark.ts`'s
+ * `BENCHMARK_LANE_ID`: the Compare pane disables its own Send button while
+ * a round is in flight (`isStreaming`), so this id is never held by two
+ * Compare rounds at once.
+ */
+export const COMPARE_LANE_ID = 'lib:ab-compare'
 
 export function useABCompare() {
   const store = useCompareStore()
@@ -85,11 +108,12 @@ export function useABCompare() {
     )
     const sendMessages = applySendBudget(chatMessages, budget).messages
 
+    // R5-10/R5-11: Compare has no conversation of its own (compareStore, not
+    // chatStore), so there is no per-chat override to read; only the "omit a
+    // field still at the app default" half of the rule applies here.
     const opts = {
-      temperature: settings.temperature,
-      topP: settings.topP,
+      ...buildSamplingRequest(settings),
       topK: settings.topK,
-      maxTokens: settings.maxTokens || undefined,
       // Bug AA v2.5.0: forward num_ctx override to both A/B sides.
       contextWindow: settings.contextWindowOverride || undefined,
     }
@@ -177,13 +201,46 @@ export function useABCompare() {
       })
     }
 
-    // Run both in parallel
-    await Promise.all([streamA(), streamB()])
+    // Runde 5: the round holds the local lane whenever either side touches
+    // it. Two models that BOTH resolve to local would otherwise fire at the
+    // one-slot built-in engine at the same time; those two run one after the
+    // other, still under the SAME held booking (not queued behind each
+    // other, which would just lock the round out against itself). A mixed
+    // or all-cloud pairing keeps the original parallel behaviour, since at
+    // most one side ever touches the shared engine.
+    const facts = currentLaneFacts()
+    const laneA = laneOf(modelA, facts)
+    const laneB = laneOf(modelB, facts)
+    const bothLocal = laneA === 'local' && laneB === 'local'
+    const lane = laneA === 'local' || laneB === 'local' ? 'local' : 'cloud'
+
+    await runInLane(
+      {
+        conversationId: COMPARE_LANE_ID,
+        lane,
+        abort: () => { abortA.current?.abort(); abortB.current?.abort() },
+      },
+      async () => {
+        if (bothLocal) {
+          await streamA()
+          await streamB()
+        } else {
+          await Promise.all([streamA(), streamB()])
+        }
+      },
+    )
   }, [settings, store])
 
   const stopCompare = useCallback(() => {
     abortA.current?.abort()
     abortB.current?.abort()
+    // Reaches a round still queued on the local lane behind a running
+    // conversation: at that point neither stream has started, so the two
+    // lines above alone do nothing. `abortConversation` calls the abort
+    // callback `runInLane` registered at admission time, which for a
+    // queued run dequeues it instead of aborting streams that do not exist
+    // yet (see run-slot.ts).
+    useGenerationStore.getState().abortConversation(COMPARE_LANE_ID)
     store.setStreamingA(false)
     store.setStreamingB(false)
   }, [store])

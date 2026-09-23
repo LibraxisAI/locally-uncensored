@@ -64,6 +64,23 @@ export function cloudModelsFor(kind: RenderKind): CloudModel[] {
   return useCloudCatalogStore.getState().models.filter((m) => m.kind === kind && !m.ops)
 }
 
+/** Review B1 (Runde 2, 20.09.2026): the ONLY signal that the connected
+ *  server knows the Studio endpoints at all (Portplan Abschnitt 4, "nie
+ *  eine Serverversion fest verdrahten"): absence, not a version number, is
+ *  what an older catalog payload looks like. The default seed
+ *  (CLOUD_MODEL_SEED) carries `quote_required` on no entry, so a fresh
+ *  install reads false here until the first successful catalog fetch, same
+ *  as an old server that never gained Studio. Every caller that would
+ *  otherwise pick a Studio model as a role intent's DEFAULT (create-
+ *  studio.ts's `intentPickerModels`, which `resolveIntentPick` and five
+ *  downstream components all read) must gate on this, or a Create-tab run
+ *  on an old server picks an endpoint that server has never heard of
+ *  (review-studio-B.md B1: Extend/Motion broke on today's server). Already
+ *  used the same way by PresetShelf.tsx to hide the shelf entirely. */
+export function catalogHasStudio(): boolean {
+  return useCloudCatalogStore.getState().models.some((m) => m.quote_required === true)
+}
+
 // Does this catalog entry serve this op? Classic models (no `ops`) keep their
 // flag contract: generate always, edit per flag, animate = video i2v.
 export function cloudModelSupportsOp(m: CloudModel, op: RenderOp): boolean {
@@ -116,14 +133,24 @@ export function cloudModelById(id: string): CloudModel | undefined {
   return useCloudCatalogStore.getState().models.find((m) => m.id === id)
 }
 
+// R5-58: a model serves 'edit' either the classic way (`edit: true`, e.g.
+// flux-dev) or the 2.5.8 op-specialized way (`ops: ['edit']`, e.g.
+// qwen-image-edit). `cloudModelSupportsOp` already branches on `m.ops` first
+// so it got this right; `isEditCapable` and `defaultEditModel` below checked
+// only `m.edit` and silently could not see an ops-based edit model at all.
+export function isEditModel(m: CloudModel): boolean {
+  return m.edit === true || m.ops?.includes('edit') === true
+}
+
 export function isEditCapable(id: string): boolean {
-  return cloudModelById(id)?.edit === true
+  const m = cloudModelById(id)
+  return m !== undefined && isEditModel(m)
 }
 
 /** First edit-capable image model in the catalog (flux-dev today) — the
  *  submit-time fallback when the picker holds a t2i-only model for an edit. */
 export function defaultEditModel(): CloudModel | undefined {
-  return useCloudCatalogStore.getState().models.find((m) => m.kind === 'image' && m.edit)
+  return useCloudCatalogStore.getState().models.find((m) => m.kind === 'image' && isEditModel(m))
 }
 
 // Video models that render text-to-video (the "Video" intent) / image-to-video
@@ -192,8 +219,42 @@ export function runCredits(
     return rate ?? fallback
   }
   const model = modelForOp(kind, op, pickedModel)
-  const credits = cloudModelById(model)?.credits
+  const entry = cloudModelById(model)
+  // P3, Studio-Zweig (P9 rescoped): a Studio model (`quote_required` on the
+  // catalog entry) prices its OWN generation run live from POST
+  // /api/jobs/studio-quote, see studio.ts and studio-contract.ts's own
+  // `studioCredits()` formula, which is a PREVIEW, not this function's job.
+  // Computing this generic base/long/by_duration figure for a Studio
+  // generation would drift from the provider's real price the moment it
+  // changes there, and a run must never book a different number than what
+  // got shown (Portplan Abschnitt 7, Risiko 1); no UI path does this today
+  // (Composer/CreditsMeter route a Studio pick around runCredits entirely,
+  // preset-models.ts/create-presets.ts only call runCredits for non-studio
+  // steps), this guard is the safety net for the day one of them slips.
+  //
+  // The guard sits HERE, not before the op branches above, on purpose: a
+  // Studio-originated video can still reach the generic video-upscale
+  // 'enhance' action from the gallery Lightbox, a wholly separate WaveSpeed
+  // utility endpoint, priced from the flat per-second `ops` rate table, not
+  // from this model's own Studio price. Blocking that call too (the
+  // original, wider guard did) forced the enhance-credits gate onto the
+  // quota's generic per-kind fallback for every Studio-originated clip,
+  // silently hiding the real per-second rate. Scoping the guard to only the
+  // generic-model-credits branch below fixes that and is what actually makes
+  // Lightbox's `runCredits('video', 'upscale', item.model, ...)` call
+  // correct for a Studio clip.
+  if (entry?.quote_required) return fallback
+  const credits = entry?.credits
   if (!credits) return fallback
+  // P3, by_duration: dd29f359 lets a video model book any advertised length,
+  // not just the short/long pair; an exact catalog price for the requested
+  // length beats rounding it onto one of the two buckets below. Falls
+  // through to the base/long split when the catalog carries no per-duration
+  // table yet (older payload) or no entry for this exact length.
+  if (kind === 'video' && seconds !== undefined && credits.by_duration) {
+    const exact = credits.by_duration[String(seconds)]
+    if (exact !== undefined) return exact
+  }
   return kind === 'video' && seconds !== undefined && seconds >= 6.5
     ? (credits.long ?? credits.base)
     : credits.base
@@ -211,8 +272,17 @@ export function shortCount(n: number): string {
  *  hint said 1,800 cr while a 3:10 run really billed 5,700, which read as a
  *  hidden price hike (sockenmonster, bug-reports 2026-08-08). Video quotes the
  *  short clip; the meter refines it to the exact run. Undefined when the entry
- *  carries no price (seed/offline). */
+ *  carries no price (seed/offline).
+ *
+ *  Review B7 (Runde 2): the same `quote_required` guard `runCredits()` has
+ *  twenty lines up: a Studio entry must never print a self-computed hint,
+ *  its real price lives in `studio-contract.ts`/`studioQuote()`, not in this
+ *  model's `credits` field. Harmless today (a Studio entry carries `pricing`,
+ *  not `credits`, so `c` is already undefined below), but a future catalog
+ *  payload that sends both must not silently start printing a wrong number
+ *  here just because the other guard was three lines away. */
 export function modelCostHint(m: CloudModel, op: RenderOp, seconds?: number): string | undefined {
+  if (m.quote_required) return undefined
   const c = m.credits
   if (!c) return undefined
   const cr =

@@ -217,7 +217,23 @@ const MIB: u64 = 1024 * 1024;
 /// driver's own context plus llama.cpp's compute buffers. A CUDA context alone
 /// runs to a few hundred MiB and the compute buffer adds a few hundred more at
 /// the default batch sizes, so 512 MiB is the round number above both.
+///
+/// This is the reserve for a MEASURED-free reading (`nvidia-smi`'s
+/// `memory.free`, `VramReading.free == true`): the number already excludes
+/// whatever else is running, so only the driver and the compute buffers are
+/// left to hold back.
 const VRAM_OVERHEAD_BYTES: u64 = 512 * MIB;
+
+/// R1-3: the reserve for a reading that is NOT known to be free, the
+/// `detect_gpus` fallback (`VramReading.free == false`) reports the card's
+/// TOTAL size, not what is currently unused. A desktop compositor, a browser
+/// and whatever Create last rendered can all be sitting in that total already,
+/// same as the free-memory case this file's own header comment describes for
+/// `engine_vram_reading`. 512 MiB on top of a total-capacity number plans as
+/// if the card were otherwise empty; this takes a bigger, still round, bite
+/// out of it instead, so a start on this weaker signal fails toward "fewer
+/// layers than would have fit" rather than toward a start that dies.
+const VRAM_OVERHEAD_BYTES_UNMEASURED: u64 = 2048 * MIB;
 
 /// KV cache per offloaded layer per 1024 tokens of context.
 ///
@@ -262,6 +278,14 @@ pub(crate) struct OffloadInputs {
     /// The context this start will ask for, which is what the KV cache is
     /// sized from.
     pub ctx: u32,
+    /// R1-3: whether `vram_bytes` is a measured-free reading (`nvidia-smi`)
+    /// or a card's total capacity (`detect_gpus`, `VramReading.free`).
+    /// Meaningless when `vram_bytes` is `None`. Drives both the reserve
+    /// (`VRAM_OVERHEAD_BYTES` vs `VRAM_OVERHEAD_BYTES_UNMEASURED`) and the
+    /// wording of `why`: "are free" is simply false of a total-capacity
+    /// number, and the log line that started every start read that way
+    /// regardless of which kind of number backed it.
+    pub free: bool,
 }
 
 /// What the start should send as `-ngl`, and the sentence that explains it.
@@ -308,18 +332,26 @@ pub(crate) fn plan_offload(input: &OffloadInputs) -> OffloadPlan {
     // six, because the error has to point at reserving too much.
     let ctx_k = (input.ctx.max(1) as u64).div_ceil(1024);
     let kv_per_layer = KV_BYTES_PER_LAYER_PER_1K_CTX * ctx_k;
-    let whole = input.model_bytes + kv_per_layer * blocks as u64 + VRAM_OVERHEAD_BYTES;
+    // R1-3: a total-capacity reading is not a free-memory reading, and the
+    // reserve taken out of it has to be bigger for the same reason the
+    // sentence below has to say something different.
+    let overhead = if input.free { VRAM_OVERHEAD_BYTES } else { VRAM_OVERHEAD_BYTES_UNMEASURED };
+    let vram_clause = if input.free {
+        format!("{} MiB are free", mib(vram))
+    } else {
+        format!("the card holds {} MiB in total (actual free memory was not measured)", mib(vram))
+    };
+    let whole = input.model_bytes + kv_per_layer * blocks as u64 + overhead;
     if whole <= vram {
         return OffloadPlan {
             layers: None,
             why: format!(
-                "the model and its cache need about {} MiB and {} MiB are free, so every layer is requested",
-                mib(whole),
-                mib(vram)
+                "the model and its cache need about {} MiB and {vram_clause}, so every layer is requested",
+                mib(whole)
             ),
         };
     }
-    let usable = vram.saturating_sub(VRAM_OVERHEAD_BYTES);
+    let usable = vram.saturating_sub(overhead);
     let per_layer = input.model_bytes / blocks as u64 + kv_per_layer;
     // A layer that costs nothing cannot be divided into the budget, so that
     // case answers 0 layers instead of dividing by zero.
@@ -333,11 +365,10 @@ pub(crate) fn plan_offload(input: &OffloadInputs) -> OffloadPlan {
     OffloadPlan {
         layers: Some(layers),
         why: format!(
-            "the model and its cache need about {} MiB but only {} MiB are free, so {layers} of {counted} go on the card, at about {} MiB per layer and {} MiB held back for the driver and the compute buffers",
+            "the model and its cache need about {} MiB but {vram_clause}, so {layers} of {counted} go on the card, at about {} MiB per layer and {} MiB held back for the driver and the compute buffers",
             mib(whole),
-            mib(vram),
             mib(per_layer),
-            mib(VRAM_OVERHEAD_BYTES)
+            mib(overhead)
         ),
     }
 }
@@ -889,6 +920,553 @@ fn resolve_engine_binary(app: &AppHandle) -> Option<PathBuf> {
     dev_candidates.into_iter().find(|p| p.exists())
 }
 
+/// K1 (3.0.1): directory holding the dynamic-ISA sidecar's companion
+/// ggml-cpu-*/ggml-vulkan libraries (Windows, Linux; see
+/// scripts/build-llama.sh). `None` on mac, which keeps the old static Metal
+/// binary and has nothing to find, and `None` when nothing was built yet (a
+/// start then runs exactly as it did before this change, and a genuine
+/// failure still surfaces through the ordinary StartFailure path instead of
+/// a made-up error here).
+///
+/// The one file every candidate backend_dir MUST contain to be real: ggml-base
+/// is the shared runtime every CPU variant (and the exe itself) links
+/// against (see verify-sidecar-isa.sh), so checking for it, not merely for
+/// the directory's existence, is what tells a real build apart from an
+/// unrelated directory that happens to be there. "lib" prefix only on
+/// non-Windows: ggml/CMakeLists.txt strips it `if (WIN32)` only.
+fn backend_marker_filename() -> &'static str {
+    if cfg!(target_os = "windows") { "ggml-base.dll" } else { "libggml-base.so" }
+}
+
+/// Pure core of `resolve_engine_backend_dir`: given an ordered list of
+/// candidate directories and a predicate for "does this directory really
+/// hold the marker file", return the first candidate that passes. Split out
+/// and made generic over the predicate (BLOCKER B2) specifically so both the
+/// Windows and the Linux/mac logic branches can be unit tested on any host
+/// OS with an injected filesystem, not only for real on the platform being
+/// tested: `resource_dir()` is unconditionally the running exe's own
+/// directory on Windows (tauri-utils 2.8.3, platform.rs:297-302), which is
+/// ALWAYS an existing directory whether or not it holds any ggml DLLs, so a
+/// `.is_dir()` check (what this used to be) always accepted it and made the
+/// dev-mode fallback candidate unreachable there. Checking for a specific
+/// file closes that gap on every platform, not just Windows.
+fn pick_backend_dir(candidates: &[PathBuf], has_marker: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    candidates.iter().find(|c| has_marker(c)).cloned()
+}
+
+/// Mirrors `resolve_engine_binary`'s tiers: the bundled resource location
+/// first, then the dev-time path the build script writes straight to.
+fn resolve_engine_backend_dir(app: &AppHandle) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    let triple = host_target_triple();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 1. Bundled. Windows: tauri.windows.conf.json flattens the companion
+    //    DLLs into the ROOT of the resource dir, which on Windows IS the same
+    //    directory as the running executable (tauri's own resource_dir()
+    //    docs), so this is also where lu-llama-server.exe itself sits. Linux:
+    //    tauri.linux.conf.json nests them under a "llama/" subdirectory
+    //    instead, because deb/AppImage keep externalBin (the exe, in
+    //    usr/bin) and `resources` (usr/lib/<exe_name>) apart (see GitHub
+    //    #120 in sidecar_binary_name's comment above for the externalBin
+    //    placement, and tauri::path::resource_dir's own platform doc for the
+    //    resource placement).
+    if let Ok(res) = app.path().resource_dir() {
+        candidates.push(if cfg!(target_os = "windows") { res } else { res.join("llama") });
+    }
+
+    // 2. Dev: scripts/build-llama.sh writes straight to
+    //    src-tauri/resources/llama/<triple>/, the same source path
+    //    tauri.windows.conf.json / tauri.linux.conf.json bundle from.
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        candidates.push(PathBuf::from(&manifest).join("resources").join("llama").join(&triple));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join("resources").join("llama").join(&triple));
+        candidates.push(cwd.join("resources").join("llama").join(&triple));
+    }
+
+    let marker = backend_marker_filename();
+    pick_backend_dir(&candidates, |dir| dir.join(marker).is_file())
+}
+
+// ── K1-14 (3.0.1): long install paths on Windows ───────────────────────────
+//
+// See klaerung-63.md and BERICHT.md #63: on Windows, `Command::current_dir`
+// can itself fail on a long backend_dir before the child process ever
+// starts. The decision below (which path to hand to `current_dir`, if any)
+// is kept free of any real Windows API call so it can be unit tested on
+// every host OS; only `windows_current_dir_for_backend` (cfg(windows)) wires
+// it up to the real `GetShortPathNameW` call and real UTF-16 lengths.
+//
+// review-longpath.md Runde 1, Auflage 5: `Command::current_dir` does NOT
+// call `SetCurrentDirectoryW` in this (the parent) process. Rust hands the
+// path straight through as `CreateProcessW`'s `lpCurrentDirectory` argument
+// (`library/std/src/sys/process/windows.rs`, `make_dirp`/the `si.lpCurrentDirectory`
+// wiring); no `SetCurrentDirectoryW` call happens here at all. The classic
+// length ceiling still applies to `lpCurrentDirectory` regardless: Microsoft's
+// own `SetCurrentDirectory` reference page states it as a general rule about
+// process creation, not about that one function's own parameter: "Important:
+// Setting a current directory longer than MAX_PATH causes CreateProcessW to
+// fail." Unlike `GetShortPathNameW`'s `lpszLongPath` (Auflage 1 below) or the
+// handful of directory functions Microsoft explicitly re-lists under
+// "Functions without MAX_PATH restrictions" (`SetCurrentDirectoryW` among
+// them, opt-in via a `longPathAware` manifest plus the `LongPathsEnabled`
+// registry value), Microsoft documents no `\\?\` or opt-in escape for
+// `lpCurrentDirectory` itself. There is nothing to opt into here: the
+// short-name fallback below is the only lever this code has.
+
+/// Classic Win32 `MAX_PATH` is 260 wide chars including the terminating NUL.
+/// review-longpath.md Runde 1, Auflage 2 (BLOCKER): `backend_dir` never ends
+/// in a trailing backslash (it comes from `resource_dir()`, a plain
+/// `PathBuf`), and Microsoft's own `SetCurrentDirectory` reference is
+/// explicit about what that costs: "the final character before the null
+/// character must be a backslash... specify >MAX_PATH-2 characters for the
+/// path unless you include the trailing backslash". Without one, the last
+/// SAFE length is therefore `MAX_PATH - 2` = 258, not 259: at 259, Windows'
+/// own appended backslash plus the terminator pushes the real total to
+/// exactly `MAX_PATH`, which the same page calls out by name ("Setting a
+/// current directory longer than MAX_PATH causes CreateProcessW to fail").
+/// 248 (`MAX_PATH - 12`) is a DIFFERENT limit, `CreateDirectory`'s own room
+/// for an 8.3 name, and does not apply here (confirmed against Rust's own
+/// `sys/path/windows.rs`, which only cites 248 for `CreateDirectory`).
+///
+/// This app ships no `longPathAware` manifest (checked: no `.manifest`, no
+/// `longPathAware` anywhere under `src-tauri/`), and in any case Microsoft
+/// documents no such opt-in for `lpCurrentDirectory` (see the module doc
+/// above), so 258 is the ceiling regardless of that manifest.
+///
+/// This constant and the pure functions below it are real production code
+/// only on Windows, but are also compiled under `cfg(test)` on every host OS
+/// (BLOCKER B2 style, see `pick_backend_dir`'s own comment) so the DECISION
+/// logic (is this path too long, which fallback to pick) has a direct,
+/// platform-independent unit test, not only a Windows-only integration test
+/// that can only run on the box.
+#[cfg(any(windows, test))]
+const CLASSIC_MAX_PATH_CHARS: usize = 258;
+
+/// Pure predicate: does this many UTF-16 code units exceed the classic
+/// Windows current-directory limit? Split out from the actual length
+/// measurement (`encode_wide().count()`, Windows-only) so the threshold
+/// itself is testable with plain numbers on any host OS.
+#[cfg(any(windows, test))]
+fn exceeds_classic_current_dir_limit(utf16_len: usize) -> bool {
+    utf16_len > CLASSIC_MAX_PATH_CHARS
+}
+
+/// What to hand `Command::current_dir` for a backend dir that might be too
+/// long. Kept separate from the actual `GetShortPathNameW` call so the
+/// decision itself is unit-testable on any host OS with a fake resolver.
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+enum LongPathDecision {
+    /// Short enough already: pass `dir` through unchanged.
+    UseAsIs,
+    /// Too long, but an 8.3 short name for it fits inside the limit.
+    UseShortName(PathBuf),
+    /// Too long, and no usable short name (8dot3 name creation disabled on
+    /// the volume, the short name is itself still too long, or the lookup
+    /// failed outright): leave `current_dir` unset rather than fail the
+    /// whole spawn.
+    SkipCurrentDir,
+}
+
+/// Pure decision core. `dir_utf16_len` is the real directory's own UTF-16
+/// length; `resolve_short_name` is called at most once, only when the
+/// directory is over the limit, and returns the short name together with
+/// ITS UTF-16 length so this function never has to measure a path itself
+/// (that stays in the Windows-only caller). Tests exercise this directly
+/// with canned lengths and closures, no real path or Windows API involved.
+#[cfg(any(windows, test))]
+fn decide_long_path_current_dir(
+    dir_utf16_len: usize,
+    resolve_short_name: impl FnOnce() -> Option<(PathBuf, usize)>,
+) -> LongPathDecision {
+    if !exceeds_classic_current_dir_limit(dir_utf16_len) {
+        return LongPathDecision::UseAsIs;
+    }
+    match resolve_short_name() {
+        Some((short, short_utf16_len)) if !exceeds_classic_current_dir_limit(short_utf16_len) => {
+            LongPathDecision::UseShortName(short)
+        }
+        _ => LongPathDecision::SkipCurrentDir,
+    }
+}
+
+/// Windows-only: a path's length the same way Win32 measures it (UTF-16 code
+/// units), not `str::len()` (UTF-8 bytes, which undercounts for non-ASCII).
+#[cfg(windows)]
+fn utf16_len(path: &Path) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().count()
+}
+
+// review-longpath.md Runde 1, Auflage 1 (BLOCKER): `GetShortPathNameW`'s OWN
+// `lpszLongPath` input is capped at classic MAX_PATH unless it carries a
+// `\\?\` (or, for a UNC path, `\\?\UNC\`) prefix (Microsoft,
+// GetShortPathNameW docs, `lpszLongPath`: "By default, the name is limited
+// to MAX_PATH characters. To extend this limit to 32,767 wide characters,
+// prepend \\?\ to the path."). `backend_dir` is exactly the un-prefixed,
+// over-the-limit path this whole fallback exists for, so without adding the
+// prefix here, the call fails on the very input it was meant to rescue and
+// `decide_long_path_current_dir` can only ever reach `SkipCurrentDir`. The
+// two functions below add and remove that prefix; they work on raw UTF-16
+// code units (not `Path`) so they are plain, allocation-cheap, and directly
+// unit-testable on every host OS, same as the decision logic above.
+
+/// `\\?\` (backslash, backslash, question mark, backslash: FOUR characters),
+/// as UTF-16 code units (every character here is ASCII, so the `u16` and
+/// `u8` values are the same).
+#[cfg(any(windows, test))]
+const VERBATIM_PREFIX: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+
+/// `\\?\UNC\` (eight characters), the verbatim form Microsoft's own "Naming
+/// Files, Paths, and Namespaces" page documents for a UNC path
+/// (`\\server\share\...` becomes `\\?\UNC\server\share\...`, dropping the
+/// path's own leading `\\`).
+#[cfg(any(windows, test))]
+const VERBATIM_UNC_PREFIX: [u16; 8] = [
+    b'\\' as u16,
+    b'\\' as u16,
+    b'?' as u16,
+    b'\\' as u16,
+    b'U' as u16,
+    b'N' as u16,
+    b'C' as u16,
+    b'\\' as u16,
+];
+
+/// A plain backslash, as a UTF-16 code unit.
+#[cfg(any(windows, test))]
+const BACKSLASH: u16 = b'\\' as u16;
+
+/// A plain forward slash, as a UTF-16 code unit.
+#[cfg(any(windows, test))]
+const FORWARD_SLASH: u16 = b'/' as u16;
+
+/// review-longpath.md Runde 2, Auflage 11 (small): fold ASCII `A-Z` to
+/// lowercase, leaving every other code unit (backslashes, `?`, non-ASCII)
+/// untouched. Used only to compare the fixed "UNC" letters of the verbatim
+/// prefix case-insensitively; nothing here does general Unicode casing.
+#[cfg(any(windows, test))]
+fn ascii_lower(c: u16) -> u16 {
+    if (b'A' as u16..=b'Z' as u16).contains(&c) { c + 32 } else { c }
+}
+
+/// Does `path` start with `\\?\UNC\`, comparing the "UNC" letters without
+/// regard to case (review-longpath.md Runde 2, Auflage 11)? A plain
+/// `[u16]::starts_with` would miss a `\\?\unc\...` input and leave
+/// `strip_verbatim_prefix` stripping only the plain `\\?\` part of it,
+/// handing back a broken relative path (`unc\server\share` instead of
+/// `\\server\share`). `resource_dir()` never produces this in practice, but
+/// `GetShortPathNameW` is free to hand back whatever casing it wants, and a
+/// silent wrong answer is worse than one extra comparison.
+#[cfg(any(windows, test))]
+fn starts_with_verbatim_unc_prefix_ci(path: &[u16]) -> bool {
+    path.len() >= VERBATIM_UNC_PREFIX.len()
+        && path[..VERBATIM_UNC_PREFIX.len()]
+            .iter()
+            .zip(VERBATIM_UNC_PREFIX.iter())
+            .all(|(&a, &b)| ascii_lower(a) == ascii_lower(b))
+}
+
+/// Add the verbatim prefix `GetShortPathNameW` needs to accept an
+/// over-MAX_PATH input. A path that already carries `\\?\` is returned
+/// unchanged (never doubled); a UNC path (`\\server\share\...`) becomes
+/// `\\?\UNC\server\share\...`; anything else (a drive-letter path) is simply
+/// prefixed with `\\?\`.
+///
+/// review-longpath.md Runde 2, Auflage 11 (small), two edge cases hardened:
+/// - Forward slashes are normalized to backslashes FIRST. The verbatim
+///   prefix "disables all string parsing" (Microsoft, "Naming Files, Paths,
+///   and Namespaces"), forward-slash-as-separator included, so a
+///   `C:/long/path` handed to `GetShortPathNameW` verbatim would not resolve
+///   as a path at all; `resource_dir()` never produces one in practice
+///   (`PathBuf` renders with the platform separator), but the call must not
+///   quietly mis-parse one if it ever did.
+/// - A device path (`\\.\...`) is not mistaken for a UNC share: both start
+///   with two backslashes, but the third character tells them apart (`.`
+///   for a device, anything else for a UNC server name). Prefixing a device
+///   path as if it were UNC would silently point `GetShortPathNameW` at a
+///   nonexistent `\\?\UNC\.\...` path instead of failing loudly; `SkipCurrentDir`
+///   is still the safe outcome either way (klaerung-63.md), this just keeps
+///   the failure honest rather than a wrong guess.
+#[cfg(any(windows, test))]
+fn verbatim_prefixed(long_path: &[u16]) -> Vec<u16> {
+    if long_path.starts_with(&VERBATIM_PREFIX) {
+        return long_path.to_vec();
+    }
+    let normalized: Vec<u16> =
+        long_path.iter().map(|&c| if c == FORWARD_SLASH { BACKSLASH } else { c }).collect();
+    let is_unc = normalized.len() >= 3
+        && normalized[0] == BACKSLASH
+        && normalized[1] == BACKSLASH
+        && normalized[2] != b'.' as u16; // "\\.\..." is a device path, not UNC
+    let mut out = Vec::with_capacity(normalized.len() + VERBATIM_UNC_PREFIX.len());
+    if is_unc {
+        out.extend_from_slice(&VERBATIM_UNC_PREFIX);
+        out.extend_from_slice(&normalized[2..]); // drop the UNC path's own leading "\\"
+    } else {
+        out.extend_from_slice(&VERBATIM_PREFIX);
+        out.extend_from_slice(&normalized);
+    }
+    out
+}
+
+/// Undo `verbatim_prefixed`. Needed for two reasons (review-longpath.md
+/// Auflage 1): `lpCurrentDirectory` does not accept a verbatim path at all
+/// (Rust's own std strips one right back off for this exact parameter,
+/// `library/std/src/sys/process/windows.rs`, comment there: "the current
+/// directory does not support verbatim paths"; this code must not rely on
+/// that silently, both because it should not assume undocumented std
+/// internals and because the LENGTH check below would still be wrong
+/// otherwise), and counting the `\\?\`/`\\?\UNC\` characters themselves would
+/// make `exceeds_classic_current_dir_limit` lie about how long the resolved
+/// short path "really" is once handed to `current_dir`. A value carrying
+/// neither prefix is returned unchanged. The UNC form is checked FIRST and
+/// case-insensitively (`starts_with_verbatim_unc_prefix_ci`, Auflage 11):
+/// checking the plain `\\?\` form first would match a `\\?\UNC\...` input
+/// too (it starts with the same four characters) and strip only that much.
+#[cfg(any(windows, test))]
+fn strip_verbatim_prefix(path: &[u16]) -> Vec<u16> {
+    if starts_with_verbatim_unc_prefix_ci(path) {
+        // "\\?\UNC\server\share" -> "\\server\share"
+        let rest = &path[VERBATIM_UNC_PREFIX.len()..];
+        let mut out = Vec::with_capacity(rest.len() + 2);
+        out.push(BACKSLASH);
+        out.push(BACKSLASH);
+        out.extend_from_slice(rest);
+        return out;
+    }
+    if let Some(rest) = path.strip_prefix(VERBATIM_PREFIX.as_slice()) {
+        return rest.to_vec();
+    }
+    path.to_vec()
+}
+
+/// Windows-only: resolve `dir`'s 8.3 short name via `GetShortPathNameW`.
+/// `None` if the lookup fails outright (8dot3 name creation disabled on the
+/// volume, the path does not exist, or any other API failure): callers must
+/// treat that exactly like "no shorter path available", not panic or retry.
+#[cfg(windows)]
+fn get_short_path_name(dir: &Path) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let raw: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    let mut wide = verbatim_prefixed(&raw);
+    wide.push(0); // GetShortPathNameW needs a NUL-terminated wide string.
+
+    // SAFETY: passing a null output buffer with cchBuffer 0 is the documented
+    // way to ask GetShortPathNameW for the required buffer length (Microsoft,
+    // GetShortPathNameW docs); it never writes through a null pointer for
+    // that call shape. `wide` is NUL-terminated above, per the same docs'
+    // requirement for lpszLongPath.
+    let needed = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+    if needed == 0 {
+        // review-longpath.md Auflage 6 (nit): name the real error instead of
+        // logging nothing. This is exactly the number that tells "8dot3 name
+        // creation disabled on this volume" (ERROR_PATH_NOT_FOUND or
+        // ERROR_FILENAME_EXCED_RANGE at an ENABLED volume would instead point
+        // back at a missing verbatim prefix, i.e. a regression of Auflage 1)
+        // apart from every other failure reason.
+        // SAFETY: GetLastError only reads thread-local state kernel32 itself
+        // set on the GetShortPathNameW call just above; no pointers involved.
+        let code = unsafe { GetLastError() };
+        tracing::warn!(target: "engine", dir = %dir.display(), error_code = code, "GetShortPathNameW could not size a short name for this directory");
+        return None;
+    }
+
+    let mut buf: Vec<u16> = vec![0u16; needed as usize];
+    // SAFETY: `buf` has exactly `needed` elements (the length the previous
+    // call reported, including room for the terminating NUL per the docs'
+    // "size of the buffer... required to hold the path and the terminating
+    // null character"), and `buf.len()` is passed back as cchBuffer, so the
+    // call can only ever write within `buf`.
+    let written = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    if written == 0 {
+        // SAFETY: see the identical call above.
+        let code = unsafe { GetLastError() };
+        tracing::warn!(target: "engine", dir = %dir.display(), error_code = code, "GetShortPathNameW could not resolve a short name for this directory");
+        return None;
+    }
+    // A value >= buf.len() means the buffer was too small after all (docs:
+    // this happens when the path changes between the two calls). Treat it
+    // like any other failure rather than trust a possibly-truncated buffer.
+    if written as usize >= buf.len() {
+        return None;
+    }
+    buf.truncate(written as usize); // return value excludes the terminator
+    let unprefixed = strip_verbatim_prefix(&buf);
+    Some(PathBuf::from(OsString::from_wide(&unprefixed)))
+}
+
+/// Windows-only glue: measure `dir` for real and, if needed, resolve a real
+/// short name, then let the pure `decide_long_path_current_dir` make the
+/// call.
+#[cfg(windows)]
+fn windows_current_dir_for_backend(dir: &Path) -> LongPathDecision {
+    decide_long_path_current_dir(utf16_len(dir), || {
+        get_short_path_name(dir).map(|short| {
+            let len = utf16_len(&short);
+            (short, len)
+        })
+    })
+}
+
+/// Windows-only real check: is `dir` itself over the classic
+/// current-directory length limit? Split from `apply_engine_backend_dir`'s
+/// own decision so `start_failure_message` (compiled on every platform, see
+/// review-longpath.md Auflage 3) can ask the same question without needing
+/// `encode_wide()` itself (a Windows-only `OsStrExt` method). Always `false`
+/// off Windows: nothing there shares this ceiling.
+#[cfg(windows)]
+fn windows_backend_dir_too_long(dir: &Path) -> bool {
+    exceeds_classic_current_dir_limit(utf16_len(dir))
+}
+#[cfg(not(windows))]
+fn windows_backend_dir_too_long(_dir: &Path) -> bool {
+    false
+}
+
+/// The one sentence both failure paths (the immediate `cmd.spawn()` error and
+/// `start_failure_message`'s generic "the engine died" case) use once the
+/// backend dir itself is over Windows' classic current-directory length
+/// limit (review-longpath.md Runde 1, Auflage 3): names the real, fixable
+/// cause instead of a bare OS error number, and instead of the generic
+/// "Reinstall Locally Uncensored" sentence, which would send the user right
+/// back into the same too-long path.
+fn long_install_path_hint() -> &'static str {
+    "This installation's own folder path is longer than Windows allows for \
+     starting its bundled engine. Install Locally Uncensored to a shorter \
+     path (for example directly under C:\\) and try again."
+}
+
+/// K1 (3.0.1): point a bundled llama-server child at its companion
+/// ggml-cpu-*/ggml-vulkan libraries. No-op when `backend_dir` is `None`
+/// (mac, or nothing built yet).
+///
+/// This IS our own bundled sidecar, not a foreign program: `Command::new` is
+/// the right call here and `foreign_system_command`/`strip_appimage_env`
+/// (process_util.rs) would be wrong. On an AppImage this process WANTS the
+/// AppImage-mounted `LD_LIBRARY_PATH` it inherits (its own libvulkan.so.1
+/// etc, see the comment at ILLEGAL_INSTRUCTION_EXIT_CODE below); stripping
+/// it would undo the very thing K11 fixed for foreign programs one file
+/// over. This function only ever ADDS our own resources directory in front
+/// of whatever LD_LIBRARY_PATH the process already inherited.
+///
+/// Measured against the pinned llama.cpp source, not assumed:
+/// `ggml_backend_load_best` (ggml/src/ggml-backend-reg.cpp:479-486) scans
+/// only two places when no explicit path is given, the executable's OWN
+/// directory and the process's CURRENT directory. There is no search-LIST
+/// environment variable: `GGML_BACKEND_PATH` (same file, line 582) loads
+/// exactly one named file, so it cannot stand in for a directory holding
+/// nine-plus CPU variants. The current directory is the one lever that
+/// works the same way on every platform, so this sets it instead of
+/// reaching for an env var that does not do what the name suggests.
+///
+/// On Windows the companions are bundled flattened into the exe's own
+/// directory (see `resolve_engine_backend_dir`), which Windows' own DLL
+/// search order normally covers with no help from this function. But
+/// `current_dir` here is NOT redundant (review-sidecar.md, Runde 2,
+/// Abschnitt 4): `get_executable_path()` (ggml-backend-reg.cpp:438-455)
+/// calls `GetModuleFileNameW` into a FIXED `MAX_PATH` (260 wchar_t) buffer
+/// with no retry on `ERROR_INSUFFICIENT_BUFFER`, so an install path longer
+/// than 259 characters comes back silently truncated and ggml's own
+/// "executable directory" search root stops existing. `current_dir` is the
+/// only search root `ggml_backend_load_best` falls back to
+/// (ggml-backend-reg.cpp:479-486, "the process's CURRENT directory") in
+/// that case, so this line is the recovery path for a long installation
+/// path, not a belt-and-suspenders extra: do not remove it as
+/// "unnecessary".
+///
+/// On Linux the companions sit in a separate resources directory (deb/
+/// AppImage keep externalBin and `resources` apart). `current_dir` alone
+/// gets ggml's own variant SCAN right (the pinned llama.cpp build now sets
+/// an `$ORIGIN`-relative RPATH on every staged companion, K1 BLOCKER B3/B4,
+/// scripts/build-llama.sh's `-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON` plus a
+/// `patchelf` second line of defense, so a found companion's OWN dependency
+/// on libggml-base.so.N resolves via $ORIGIN without any help from this
+/// function). What $ORIGIN does NOT cover is the EXE itself: it lives in a
+/// different directory from its companions on deb/AppImage, and $ORIGIN is
+/// relative to the file that carries it, not to some shared root. `LD_LIBRARY_PATH`
+/// closes exactly that remaining gap, for the exe's own DT_NEEDED entries.
+///
+/// K1-14 (3.0.1, klaerung-63.md): on Windows, `dir` can itself be too long
+/// for `Command::current_dir` to hand to `CreateProcessW`'s
+/// `lpCurrentDirectory` parameter. No `SetCurrentDirectoryW` call happens
+/// here (review-longpath.md Runde 1, Auflage 5 corrected an earlier, wrong
+/// claim that it does); the classic ~258 character ceiling on
+/// `lpCurrentDirectory` is documented directly against `CreateProcessW`
+/// instead (see the `CLASSIC_MAX_PATH_CHARS` doc comment above for the exact
+/// citations and the 258-not-259-not-248 arithmetic). Measured on the box
+/// (BERICHT.md #63): a 295 character install path made `cmd.spawn()` itself
+/// fail with os error 267 (`ERROR_DIRECTORY`) before the child process, and
+/// thus ggml's own fallback search, ever ran. In that SAME measured run the
+/// exe path and the model path argument were not the cause (a
+/// `FileName`/argv problem surfaces as a different Windows error, not 267,
+/// and `CreateProcessW`'s own MAX_PATH note for `lpCommandLine` only applies
+/// when `lpApplicationName` is NULL, which Rust does not do): this is
+/// disproved for the measured case, not proven safe in general, and does not
+/// cover a model file the user themselves buried in an equally deep folder.
+///
+/// `windows_current_dir_for_backend` tries the 8.3 short name first
+/// (`GetShortPathNameW`, through the verbatim-prefix dance
+/// `get_short_path_name` does internally: required, or the lookup fails on
+/// exactly the over-the-limit input this fallback exists for). If that is
+/// unavailable (8dot3 name creation can be disabled per volume) or still too
+/// long, `current_dir` is left unset instead of letting the whole spawn
+/// fail. The app then starts, but ggml then has NEITHER of its two search
+/// roots (its own truncated `GetModuleFileNameW` reading, or a usable
+/// current directory) and the sidecar will not find its backend either way;
+/// `start_failure_message` names the real cause for that case instead of the
+/// generic "Reinstall..." sentence (review-longpath.md Auflage 3).
+fn apply_engine_backend_dir(cmd: &mut Command, backend_dir: Option<&Path>) {
+    let Some(dir) = backend_dir else { return };
+    #[cfg(windows)]
+    {
+        match windows_current_dir_for_backend(dir) {
+            LongPathDecision::UseAsIs => {
+                cmd.current_dir(dir);
+            }
+            LongPathDecision::UseShortName(short) => {
+                tracing::info!(
+                    target: "engine",
+                    backend_dir = %dir.display(),
+                    "backend dir is over the classic Windows current-directory length limit, using its 8.3 short name for current_dir"
+                );
+                cmd.current_dir(short);
+            }
+            LongPathDecision::SkipCurrentDir => {
+                tracing::warn!(
+                    target: "engine",
+                    backend_dir = %dir.display(),
+                    "backend dir is over the classic Windows current-directory length limit and no usable 8.3 short name was found; starting the engine without current_dir set"
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.current_dir(dir);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut value = std::ffi::OsString::from(dir);
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            if !existing.is_empty() {
+                value.push(":");
+                value.push(existing);
+            }
+        }
+        cmd.env("LD_LIBRARY_PATH", value);
+    }
+}
+
 // ── Health probe ─────────────────────────────────────────────────────────────
 
 /// The slot that actually holds the conversation. llama-server distributes
@@ -1099,10 +1677,13 @@ fn wait_for_health(port: u16, timeout: Duration) -> Result<(), String> {
 enum HealthWait {
     Ready,
     /// The child we spawned is gone. Nothing more will happen on that port.
-    /// Carries the process exit code, which is the single most useful number
-    /// in a support log for this failure and used to be thrown away: `None`
-    /// when a signal killed it, or when the status carried no code.
-    ChildExited(Option<i32>),
+    /// Carries the process exit code, the single most useful number in a
+    /// support log for this failure, plus the POSIX signal that killed it
+    /// when there was one (K1 Runde 2, Punkt D: on Linux/macOS a SIGILL has
+    /// no exit code at all, `code()` reads `None` either way, and the two
+    /// causes ["the process asked to exit with no code" vs "a signal killed
+    /// it"] used to be indistinguishable from here on).
+    ChildExited { code: Option<i32>, signal: Option<i32> },
     TimedOut,
 }
 
@@ -1123,20 +1704,203 @@ fn wait_for_health_or_exit(state: &AppState, port: u16, timeout: Duration) -> He
         let gone = {
             let mut guard = state.bundled_engine.lock().unwrap();
             match guard.as_mut() {
-                Some(e) => e.child.try_wait().ok().flatten().map(|s| s.code()),
+                Some(e) => e.child.try_wait().ok().flatten().map(|s| (s.code(), unix_exit_signal(&s))),
                 // The slot was cleared under us, so there is no child left to
-                // wait on and no exit code to report.
-                None => Some(None),
+                // wait on and no exit code or signal to report.
+                None => Some((None, None)),
             }
         };
-        if let Some(code) = gone {
+        if let Some((code, signal)) = gone {
             // One last look: a server can bind, answer, and the process can
             // still be reaped between the two checks on a fast load.
-            return if engine_healthy(port) { HealthWait::Ready } else { HealthWait::ChildExited(code) };
+            return if engine_healthy(port) {
+                HealthWait::Ready
+            } else {
+                HealthWait::ChildExited { code, signal }
+            };
         }
         std::thread::sleep(Duration::from_millis(300));
     }
     HealthWait::TimedOut
+}
+
+/// Windows raises `STATUS_ILLEGAL_INSTRUCTION` (`0xC000001D`) when a process
+/// executes an opcode the CPU does not support. `ExitStatus::code()` hands
+/// that NTSTATUS back reinterpreted as a signed 32-bit number, which is this
+/// constant (K1, GH thread "LU Engine not running?", 2026-09-15: Win10, RTX
+/// 3050, exit -1073741795 on both the GPU and the CPU-only retry).
+///
+/// `scripts/build-llama.sh` pins `-DGGML_NATIVE=OFF`, but ggml's own
+/// CMakeLists still turns AVX/AVX2/FMA/F16C ON by default whenever
+/// `GGML_NATIVE` is off and the build is not cross-compiling (measured
+/// against the pinned llama.cpp checkout, `ggml/CMakeLists.txt` around
+/// `INS_ENB`). So every bundled Windows/Linux sidecar today requires AVX2 at
+/// the first opcode it runs, GPU or CPU path alike, and a CPU without it
+/// cannot even reach `main()` to print a reason. Retrying with the identical
+/// binary cannot change that outcome, which is why this exit code short-
+/// circuits the second attempt instead of spending it on a repeat crash.
+pub(crate) const ILLEGAL_INSTRUCTION_EXIT_CODE: i32 = -1073741795;
+
+/// True when a child's exit code is the Windows illegal-instruction fault.
+/// Unix has no exit-code equivalent (the same fault there is the `SIGILL`
+/// signal, which `ExitStatus::code()` cannot see at all, only `.signal()`),
+/// so this only ever matches on Windows, which matches every report K1 has.
+pub(crate) fn is_illegal_instruction_exit(code: Option<i32>) -> bool {
+    code == Some(ILLEGAL_INSTRUCTION_EXIT_CODE)
+}
+
+/// `SIGILL`, the POSIX number every Unix (Linux, macOS, BSD) agrees on.
+/// `libc::SIGILL` would pull in a whole crate for one constant this codebase
+/// otherwise avoids (see `process_util.rs`'s own minimal `libc` binding).
+pub(crate) const SIGILL: i32 = 4;
+
+/// True when a child was killed by `SIGILL` on Unix. K1 Runde 2, Punkt D: the
+/// Windows crash (`is_illegal_instruction_exit`) was the only side of this
+/// bug LU could see; on Linux the identical AVX2-on-a-CPU-without-it fault
+/// raises `SIGILL` instead, which has NO exit code at all
+/// (`ExitStatus::code()` reads `None` for a signal death same as it would
+/// for "no code", so the Linux case was silently indistinguishable from
+/// "died with an empty exit code and no stderr" before this).
+pub(crate) fn is_sigill(signal: Option<i32>) -> bool {
+    signal == Some(SIGILL)
+}
+
+/// [`std::os::unix::process::ExitStatusExt::signal`], cross-platform: `None`
+/// on Windows, where a `Command`'s `ExitStatus` has no such notion (a
+/// process there either exits with a code or does not exit).
+#[cfg(unix)]
+fn unix_exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn unix_exit_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// Logs the x86 instruction sets this machine's CPU offers, once per process.
+/// K1: without this line, a crash on the very first opcode left nothing in
+/// the log that named the cause, so a support conversation had to ask the
+/// user to run `wmic cpu get Name` by hand before anyone could even guess.
+/// AVX/AVX2/FMA/F16C are exactly the four flags `scripts/build-llama.sh`
+/// bakes into every bundled sidecar (see `ILLEGAL_INSTRUCTION_EXIT_CODE`
+/// above), so this line is what turns that crash into a diagnosis: whichever
+/// of the four reads `false` here is the one the CPU cannot run.
+fn log_cpu_features_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(target_arch = "x86_64")]
+        tracing::info!(
+            target: "engine",
+            avx = is_x86_feature_detected!("avx"),
+            avx2 = is_x86_feature_detected!("avx2"),
+            fma = is_x86_feature_detected!("fma"),
+            f16c = is_x86_feature_detected!("f16c"),
+            "CPU instruction sets the LU Engine sidecar was built to require"
+        );
+        #[cfg(not(target_arch = "x86_64"))]
+        tracing::info!(
+            target: "engine",
+            arch = std::env::consts::ARCH,
+            "CPU instruction-set log skipped: not x86_64, AVX/AVX2/FMA/F16C do not apply"
+        );
+    });
+}
+
+/// Counts the CPU-variant modules actually sitting in the sidecar's backend
+/// folder (the same folder `resolve_engine_backend_dir` points at and
+/// `ggml_backend_load_all()` dlopens from at runtime), by the same
+/// loader-exact naming `backend_marker_filename` and `verify-sidecar-isa.sh`
+/// use ("[lib]ggml-cpu-<variant>.[dll|so]").
+///
+/// K1 (3.0.1, BLOCKER C1): after the sidecar rebuild the bundled build ships
+/// one variant per instruction-set floor instead of one AVX2-only binary, so
+/// a CPU that still faults on its first opcode is no longer explained by "the
+/// build requires AVX2" (Runde 3 disproved that: `verify-sidecar-isa.sh`
+/// disassembles the baseline variant and the exe itself and fails the build
+/// if either contains an AVX-or-above instruction). The far more likely cause
+/// is that this installation's copy of the folder counted here is short one
+/// or more files: a partial install, or an antivirus scanner that quarantined
+/// an unsigned `ggml-cpu-*` module (the exact pattern generic packer
+/// heuristics flag, review-integ.md Teil (a), Punkt 6). Counting the folder
+/// is what tells those two cases apart in the message instead of guessing.
+fn count_cpu_backend_modules(dir: &Path) -> usize {
+    let prefix = if cfg!(target_os = "windows") { "ggml-cpu-" } else { "libggml-cpu-" };
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+        .count()
+}
+
+/// The MEASURED names of the instruction sets this CPU is missing, out of
+/// the six the bundled sidecar's build actually requires (AVX, AVX2, BMI2,
+/// FMA, F16C, SSE4.2): pure, so `start_failure_message` can name exactly
+/// what was found lacking instead of a generic "for example AVX2" that may
+/// not even be the one this machine is missing. Runde 2 review, Punkt D:
+/// the review specifically rejected the old wording for guessing rather
+/// than reading the same data `log_cpu_features_once` already gathers.
+///
+/// Runde 3, Nachbesserung 4: the review measured the build's OWN
+/// requirement directly (`scripts/build-llama.sh` passes `-DGGML_NATIVE=OFF`
+/// and nothing else CPU-specific, and ggml's own CMakeLists.txt turns
+/// `GGML_SSE42`, `GGML_AVX`, `GGML_AVX2`, `GGML_BMI2`, `GGML_FMA` and
+/// `GGML_F16C` all ON by default whenever `GGML_NATIVE` is OFF) and found
+/// BMI2 and SSE4.2 missing from the four this used to probe: a CPU missing
+/// only one of those two got the generic sentence instead of the measured
+/// one, exactly the imprecision Punkt 3 of the review existed to remove.
+///
+/// Empty on a non-x86_64 build (nothing here applies) or when every flag the
+/// probe can see is present; the caller falls back to a plainer sentence in
+/// that case rather than naming zero features as the reason.
+pub(crate) fn missing_cpu_features() -> Vec<&'static str> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        missing_cpu_features_from(
+            is_x86_feature_detected!("avx"),
+            is_x86_feature_detected!("avx2"),
+            is_x86_feature_detected!("bmi2"),
+            is_x86_feature_detected!("fma"),
+            is_x86_feature_detected!("f16c"),
+            is_x86_feature_detected!("sse4.2"),
+        )
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Pure half of [`missing_cpu_features`], split out so the "which flags
+/// are missing" computation is unit-testable against synthetic readings
+/// instead of whatever the test machine's own CPU happens to have (a CI
+/// runner has AVX2, so a test asserting on the real probe could never
+/// exercise the branch that names it missing).
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+fn missing_cpu_features_from(avx: bool, avx2: bool, bmi2: bool, fma: bool, f16c: bool, sse42: bool) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !avx {
+        missing.push("AVX");
+    }
+    if !avx2 {
+        missing.push("AVX2");
+    }
+    if !bmi2 {
+        missing.push("BMI2");
+    }
+    if !fma {
+        missing.push("FMA");
+    }
+    if !f16c {
+        missing.push("F16C");
+    }
+    if !sse42 {
+        missing.push("SSE4.2");
+    }
+    missing
 }
 
 /// The shared object the dynamic loader could not find, if that is why the
@@ -1306,6 +2070,15 @@ pub(crate) fn stderr_blames_the_port(stderr: &str) -> bool {
 /// this is a substring test on a log, not a regular expression, and no line
 /// ever carries the two characters `.*`. That case arrives through
 /// `failed to load model` like every other load error.
+///
+/// `failed to load model` IS included here, unlike in the stricter
+/// `stderr_blames_the_model_file` right below: llama.cpp also prints that
+/// line on load failures that have nothing to do with the file (a CUDA
+/// out-of-memory, no backend loaded at all), so `died_failure_hint` only
+/// reaches this looser check once it has already ruled out a too-long
+/// install path as the cause (review-longpath.md Runde 2, Blocker 9): this
+/// function stays the right answer for every OTHER "the child died and said
+/// something model-shaped" case, short-path included.
 fn stderr_blames_the_model(stderr: &str) -> bool {
     const MARKERS: &[&str] = &[
         "unknown model architecture",
@@ -1469,6 +2242,100 @@ pub(crate) enum SecondAttempt {
 const LOG_FILE_NOTE: &str =
     " The log file under Settings, Troubleshoot carries the full command line of both attempts and the engine's own output.";
 
+/// The second sentence of the SIGILL/0xC000001D message: what to actually do
+/// about it. Pure and takes the platform as a plain flag instead of reading
+/// `cfg!()` inline, so both branches are testable on any host OS
+/// (BLOCKER C2, review-integ.md Nachpruefung).
+///
+/// `resolve_engine_backend_dir` returns `None` UNCONDITIONALLY on macOS (its
+/// very first line), because the Mac sidecar is a single static build with
+/// Metal embedded and no dynamic ISA variants at all (`is_dynamic_isa_triple`
+/// is false for both Darwin triples, `stage_dynamic_isa_companions` is a
+/// documented no-op there with its own test) and never will be. Before this
+/// split, that `None` fell into the exact same arm as a genuinely broken
+/// Windows/Linux install (`module_count` also `None` there when
+/// `resolve_engine_backend_dir` cannot find ANY candidate with the marker
+/// file), so a Mac customer whose CPU is simply too old for the one Metal
+/// build LU ships was told to reinstall or check antivirus quarantine for
+/// files that this platform never has and never will. This path is real on
+/// Mac: `is_sigill` is not Linux-only, it is every Unix, and
+/// `cmake_flags_for`'s `x86_64-apple-darwin` branch carries no CPU-specific
+/// flag either, so ggml's own `GGML_NATIVE=OFF` default turns on SSE4.2,
+/// AVX, AVX2, BMI2, FMA and F16C there exactly like it used to on Windows.
+///
+/// `module_count` still distinguishes an empty Windows/Linux backend folder
+/// from a partially populated one; the mac branch ignores it on purpose,
+/// since the concept does not apply there regardless of what it reads.
+fn illegal_instruction_repair_sentence(module_count: Option<usize>, is_macos: bool) -> String {
+    if is_macos {
+        return " The LU Engine on Mac is one single build for every Mac, and this processor does \
+                 not have the instruction sets that build needs. Reinstalling would not change \
+                 that."
+            .to_string();
+    }
+    match module_count {
+        // No backend folder at all, or the folder is empty of CPU
+        // modules: the installation is missing files outright.
+        Some(0) | None => " The engine's own folder has none of the separate CPU builds it ships for older \
+             processors, which usually means an incomplete install or a security scanner \
+             quarantining an unsigned file it does not recognise. Reinstall Locally \
+             Uncensored, or check your antivirus software's quarantine for a file named \
+             ggml-cpu, then try again."
+            .to_string(),
+        // Some modules are present, so the install is not simply empty:
+        // the one this CPU needs is missing or was skipped, which points
+        // more at antivirus removal of a single file than a wholesale
+        // failed install.
+        Some(n) => format!(
+            " The engine's own folder holds {n} of the separate CPU builds it ships for older \
+             processors, but not the one this CPU can run, which points at a security scanner \
+             having quarantined that one file rather than a failed install. Reinstall Locally \
+             Uncensored, or check your antivirus software's quarantine for a file named \
+             ggml-cpu, then try again."
+        ),
+    }
+}
+
+/// The priority logic behind `start_failure_message`'s generic "the engine
+/// died" sentence (review-longpath.md Runde 2, Blocker 9 and 10). Pulled out
+/// as a pure function of `stderr` and a plain `backend_dir_too_long: bool`
+/// (rather than a `Path` and a real Windows API call) specifically so it is
+/// directly unit-testable on every host OS: `windows_backend_dir_too_long`
+/// stays the one place that turns a real `backend_dir` into that bool.
+///
+/// Order, most specific (something the CHILD process itself proved) first:
+/// 1. A named missing system library (`stderr_names_a_missing_system_library`),
+///    read straight off the loader's own error line.
+/// 2. `backend_dir_too_long`: a too-long install path is checked BEFORE the
+///    general model-blame step, not after. Blocker 9: `stderr_blames_the_model`
+///    (step 3) matches `failed to load model`, which llama.cpp prints on load
+///    failures that have NOTHING to do with the file (its own doc comment
+///    names a CUDA out-of-memory as one such case). With no backend loaded at
+///    all (a too-long install path with no usable short name), the model load
+///    aborts and prints exactly that line, and reading it in step 3 first
+///    would have told a user with a perfectly good model file to download it
+///    again while never mentioning the real, fixable cause. Checking the path
+///    first REPLACES (not appends to) the generic "Reinstall..." catch-all,
+///    which would send the user right back into the same too-long path
+///    (review-longpath.md Runde 1, Auflage 3).
+/// 3. The general model-blame markers (`stderr_blames_the_model`, which does
+///    include `failed to load model`): once a too-long path is ruled out,
+///    this is exactly right for a short-path model failure, CUDA
+///    out-of-memory included as a case GPU Layers 0 already handles above
+///    this function.
+/// 4. The generic catch-all.
+fn died_failure_hint(stderr: &str, backend_dir_too_long: bool, on_linux: bool) -> String {
+    if let Some(lib) = stderr_names_a_missing_system_library(stderr) {
+        missing_library_hint(&lib, on_linux)
+    } else if backend_dir_too_long {
+        format!(" {}", long_install_path_hint())
+    } else if stderr_blames_the_model(stderr) {
+        " The engine could not read the model file. It may be damaged, cut short, or of a type this engine cannot run. Open Models, Get new and download it again, or pick another model.".to_string()
+    } else {
+        " Reinstall Locally Uncensored if this keeps happening, or pick a different backend in Settings, AI Backends.".to_string()
+    }
+}
+
 /// One English sentence a user can act on, plus llama-server's own last words
 /// so a bug report still carries them.
 ///
@@ -1483,8 +2350,53 @@ pub(crate) fn start_failure_message(
     port: u16,
     budget: Duration,
     second: SecondAttempt,
+    backend_dir: Option<&Path>,
 ) -> String {
-    let head = if failure.port_taken {
+    let head = if is_illegal_instruction_exit(failure.exit_code) || is_sigill(failure.signal) {
+        // K1 Runde 2, Punkt D: both the GPU and the CPU-only path run the
+        // SAME binary, so a retry cannot change the outcome and is not
+        // attempted (see start_after_stop). The cause and the next step both
+        // go in this one sentence, since the log line stderr would otherwise
+        // add is empty: the child never gets far enough to print anything.
+        //
+        // BLOCKER C1 (review-integ.md, Teil (c)): this used to say "the
+        // bundled engine's build requires" the named instruction set and told
+        // the user to wait for "a build with broader CPU support". Both
+        // sentences were true against the pre-sidecar-rebuild engine and are
+        // false against this one: K1 ships one CPU-code-path variant per
+        // instruction-set floor, chosen at startup, and
+        // `verify-sidecar-isa.sh` disassembles the baseline variant on every
+        // build to prove it contains no AVX-or-above opcode. A crash here
+        // therefore does not mean no build exists for this CPU; it means
+        // something about THIS installation is broken. Counting the backend
+        // folder (`count_cpu_backend_modules`) tells the two likely breakages
+        // apart instead of guessing between them.
+        let missing = missing_cpu_features();
+        let missing_sentence = if missing.is_empty() {
+            // The probe itself found nothing missing (or is not applicable,
+            // non-x86_64): still true that the binary faulted on its first
+            // opcode, just without a named cause to add.
+            "This CPU is missing an instruction set the loaded CPU module needs.".to_string()
+        } else {
+            format!(
+                "This CPU is missing {} the loaded CPU module needs.",
+                if missing.len() == 1 {
+                    format!("the {} instruction set", missing[0])
+                } else {
+                    format!("these instruction sets: {}", missing.join(", "))
+                }
+            )
+        };
+        let module_count = backend_dir.map(count_cpu_backend_modules);
+        let repair_sentence =
+            illegal_instruction_repair_sentence(module_count, cfg!(target_os = "macos"));
+        format!(
+            "The LU Engine exited immediately with an illegal-instruction fault. {missing_sentence} \
+             The app did not retry, since the same binary would fail the same way again.{repair_sentence} \
+             LU Cloud or a custom endpoint (Settings, AI Backends) stay available in the meantime. \
+             Check Settings, Troubleshoot for the CPU features line in the log."
+        )
+    } else if failure.port_taken {
         format!(
             "Port {port} answers health checks, but the engine this app just started exited immediately. Another llama-server (likely left over from a previous session or crash) is occupying the port. Quit that process or reboot, then try again."
         )
@@ -1494,6 +2406,7 @@ pub(crate) fn start_failure_message(
         && stderr_blames_the_gpu(&failure.stderr)
         && !stderr_blames_the_port(&failure.stderr)
         && !stderr_blames_the_model_file(&failure.stderr)
+        && !backend_dir.is_some_and(windows_backend_dir_too_long)
     {
         // A missing system library is asked before the card: the loader line
         // "error while loading shared libraries: libvulkan.so.1" carries the
@@ -1511,6 +2424,16 @@ pub(crate) fn start_failure_message(
         // GGUF with a header it cannot parse used to arrive here and be sent
         // away as a graphics-card problem. No setting repairs a broken file.
         //
+        // review-longpath.md Runde 2, Blocker 9 named this branch as one that
+        // could ALSO swallow the honest long-install-path message (it is not
+        // decidable at a desk whether `stderr_blames_the_gpu`'s loose word
+        // match ever fires in that scenario, since the sidecar most likely
+        // dies before reaching any GPU-init logging with no backend loaded at
+        // all; box measurement, Runde 2 Messvorschrift Punkt 3, settles that
+        // empirically). Guarded here regardless, the same way the model-file
+        // check already is: "set GPU Layers to 0" cannot fix a too-long
+        // installation path any more than it fixes a broken GGUF.
+        //
         // And the whole branch is asked only of a retry that ran the SAME
         // offload. Once the second attempt has run on the processor by itself,
         // "set GPU Layers to 0" is advice the app has already taken, and
@@ -1521,13 +2444,11 @@ pub(crate) fn start_failure_message(
             "The LU Engine could not open port {port}. Another program holds it, or the port sits in a range this system has reserved. The app already tried the next free ports and got the same answer. Close that program or reboot, then try again."
         )
     } else if failure.died {
-        let hint = if let Some(lib) = stderr_names_a_missing_system_library(&failure.stderr) {
-            missing_library_hint(&lib, cfg!(target_os = "linux"))
-        } else if stderr_blames_the_model(&failure.stderr) {
-            " The engine could not read the model file. It may be damaged, cut short, or of a type this engine cannot run. Open Models, Get new and download it again, or pick another model.".to_string()
-        } else {
-            " Reinstall Locally Uncensored if this keeps happening, or pick a different backend in Settings, AI Backends.".to_string()
-        };
+        let hint = died_failure_hint(
+            &failure.stderr,
+            backend_dir.is_some_and(windows_backend_dir_too_long),
+            cfg!(target_os = "linux"),
+        );
         match second {
             SecondAttempt::SameOffload => format!(
                 "The LU Engine started and exited again before it could serve on port {port}. It was tried twice.{hint}"
@@ -1708,7 +2629,7 @@ fn start_bundled_engine_blocking(
     {
         Ok(v) => Ok(v),
         Err(msg) => Err(match (vorher, resolve_engine_binary(app)) {
-            (Some(p), Some(bin)) if restore_engine(&bin, state, &p) => {
+            (Some(p), Some(bin)) if restore_engine(&bin, state, &p, resolve_engine_backend_dir(app).as_deref()) => {
                 with_note_on_top(&msg, RESTORED_NOTE)
             }
             _ => msg,
@@ -1744,7 +2665,7 @@ const RESTORED_NOTE: &str = "The model that was serving before is running again.
 /// Wiederholung: er bediente vor Sekunden noch, und ein zweiter Fehlschlag
 /// hier waere nichts, woran ein Nutzer etwas aendern koennte. Er wuerde nur
 /// die Fehlermeldung des eigentlichen Problems um Minuten verzoegern.
-fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> bool {
+fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine, backend_dir: Option<&Path>) -> bool {
     tracing::warn!(target: "engine", model = %vorher.model_path, port = vorher.port, "the model switch failed, bringing the previous model back");
     let ok = spawn_engine_attempt(
         state,
@@ -1754,6 +2675,7 @@ fn restore_engine(binary: &Path, state: &AppState, vorher: &PreviousEngine) -> b
         vorher.port,
         vorher.ctx,
         AttemptFlags { auto_layers: vorher.auto_layers, cpu_fallback: vorher.cpu_fallback },
+        backend_dir,
     )
     .is_ok();
     if !ok {
@@ -1841,6 +2763,10 @@ fn start_after_stop(
             sidecar_binary_name()
         )
     })?;
+    // K1 (3.0.1): where the dynamic-ISA sidecar's companion libraries are,
+    // None on mac / a static build. Resolved once here and carried through
+    // both attempts and the sanity-probe restarts below, same as `binary`.
+    let backend_dir = resolve_engine_backend_dir(app);
 
     // Attempt 1, then exactly one clean retry.
     //
@@ -1893,6 +2819,7 @@ fn start_after_stop(
             block_count: header.block_count,
             vram_bytes: card.as_ref().map(|c| c.bytes),
             ctx: ctx_size,
+            free: card.as_ref().map(|c| c.free).unwrap_or(false),
         });
         tracing::info!(
             target: "engine",
@@ -1922,6 +2849,7 @@ fn start_after_stop(
         port,
         ctx,
         AttemptFlags { auto_layers, cpu_fallback: false },
+        backend_dir.as_deref(),
     );
     let failure = match first {
         Ok(startup) => {
@@ -1938,6 +2866,7 @@ fn start_after_stop(
                 ctx,
                 auto_layers,
                 &startup,
+                backend_dir.as_deref(),
             ));
         }
         Err(f) => f,
@@ -1946,7 +2875,26 @@ fn start_after_stop(
     if !failure.died {
         // The budget ran out with the child still alive: it is loading slowly,
         // not failing. Retrying would just spend the budget twice.
-        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload));
+        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload, backend_dir.as_deref()));
+    }
+
+    if is_illegal_instruction_exit(failure.exit_code) || is_sigill(failure.signal) {
+        // K1 Runde 2, Punkt D: the GPU-offload attempt and the CPU-only
+        // retry run the exact same binary, so a CPU that crashes on an
+        // opcode the first time crashes on it the second time too, whether
+        // that crash reads back as Windows' 0xC000001D exit code or Linux's
+        // SIGILL. The old code ran the retry anyway ("attempt=1/2" in the
+        // log, both dying identically) and cost the user the full
+        // settle-and-relaunch wait for a foregone conclusion; this
+        // short-circuits straight to the message instead.
+        tracing::error!(
+            target: "engine",
+            port,
+            exit_code = failure.exit_code.unwrap_or_default(),
+            signal = failure.signal.unwrap_or_default(),
+            "the LU Engine crashed with an illegal-instruction fault, skipping the pointless second attempt"
+        );
+        return Err(start_failure_message(&failure, port, deadline, SecondAttempt::SameOffload, backend_dir.as_deref()));
     }
 
     tracing::warn!(target: "engine", port, "the first start attempt exited before it served, retrying once");
@@ -1982,16 +2930,20 @@ fn start_after_stop(
     } else {
         SecondAttempt::SameOffload
     };
+    // R1-10: bound once so both the argv AND the sanity-probe restart ladder
+    // below build against the SAME tuning the retry actually ran with, a
+    // CPU-only retry must not have serve_or_heal_garbled think it still has
+    // a card to give up.
+    let retry_tuning = if offload_was_tried { on_the_processor(tuning) } else { tuning.clone() };
     let retry_args = if offload_was_tried {
         tracing::warn!(
             target: "engine",
             port = retry_port,
             "the retry drops GPU offload and runs the LU Engine on the processor"
         );
-        let on_the_cpu = EngineTuning { gpu_layers: 0, ..tuning.clone() };
-        build_server_args(model_path, &on_the_cpu, retry_port, slot_dir, mmproj, None)
+        build_server_args(model_path, &retry_tuning, retry_port, slot_dir, mmproj, None)
     } else if retry_port != port {
-        build_server_args(model_path, tuning, retry_port, slot_dir, mmproj, auto_ngl)
+        build_server_args(model_path, &retry_tuning, retry_port, slot_dir, mmproj, auto_ngl)
     } else {
         desired_args.clone()
     };
@@ -2008,8 +2960,9 @@ fn start_after_stop(
         retry_port,
         ctx,
         AttemptFlags { auto_layers: retry_auto, cpu_fallback: offload_was_tried },
+        backend_dir.as_deref(),
     ) {
-        Ok(_) => {
+        Ok(startup) => {
             if offload_was_tried {
                 tracing::warn!(
                     target: "engine",
@@ -2019,16 +2972,31 @@ fn start_after_stop(
             } else {
                 tracing::info!(target: "engine", port = retry_port, attempt = 2, "the LU Engine is serving");
             }
-            Ok(serde_json::json!({
-                "status": "started",
-                "port": retry_port,
-                "model_path": model_path,
-                "ctx": ctx,
-                "retried": true,
-                "cpuOnly": offload_was_tried,
-            }))
+            // R1-10: the first attempt's success path already runs the
+            // sanity probe (bug a) through serve_or_heal_garbled; the retry
+            // path used to skip it entirely and hand back a bare "started"
+            // object, so a garbled answer on the SECOND attempt was never
+            // caught or healed. `retried`/`cpuOnly` are added on top so
+            // every existing caller keeps reading exactly those two keys.
+            let mut answer = serve_or_heal_garbled(
+                state,
+                &binary,
+                model_path,
+                &retry_tuning,
+                retry_port,
+                slot_dir,
+                mmproj,
+                &retry_args,
+                ctx,
+                retry_auto,
+                &startup,
+                backend_dir.as_deref(),
+            );
+            answer["retried"] = serde_json::json!(true);
+            answer["cpuOnly"] = serde_json::json!(offload_was_tried);
+            Ok(answer)
         }
-        Err(second) => Err(start_failure_message(&second, retry_port, deadline, second_attempt)),
+        Err(second) => Err(start_failure_message(&second, retry_port, deadline, second_attempt, backend_dir.as_deref())),
     }
 }
 
@@ -2086,6 +3054,7 @@ fn serve_or_heal_garbled(
     ctx: Option<u32>,
     auto_layers: bool,
     startup: &str,
+    backend_dir: Option<&Path>,
 ) -> serde_json::Value {
     let mut answer = started_answer(port, model_path, ctx);
     // Measured once, from what llama-server itself printed on its way up. A
@@ -2100,10 +3069,23 @@ fn serve_or_heal_garbled(
     // ends in seconds instead of restarting for ever.
     for _ in 0..3 {
         let Some(probe) = engine_sanity::probe_engine(port, engine_sanity::PROBE_TIMEOUT) else {
+            // D3: `None` here means the probe itself never got an answer to
+            // judge (timed out, refused, or an unexpected body), not that
+            // the engine answered badly. On a run with no GPU layers this is
+            // routine: a cold CPU-only load of `PROBE_TOKENS` can outrun the
+            // probe's short budget on its own, with nothing wrong at all, and
+            // the wording says so instead of reading like a fault.
+            let cpu_only = gpu_layers_in(&serving_args).unwrap_or_default() == 0;
+            let msg = format!(
+                "the sanity probe did not get an answer to judge within its budget{}, the LU Engine is left as it is",
+                if cpu_only { " (a cold CPU-only load can be slower than that on its own)" } else { "" }
+            );
             tracing::info!(
                 target: "engine",
                 port,
-                "the sanity probe got no usable answer, the LU Engine is left as it is"
+                cpu_only,
+                budget_s = engine_sanity::PROBE_TIMEOUT.as_secs(),
+                "{}", msg
             );
             return answer;
         };
@@ -2115,7 +3097,7 @@ fn serve_or_heal_garbled(
         tracing::info!(
             target: "engine",
             port,
-            verdict = probe.verdict.label(),
+            verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
             ms = probe.took.as_millis() as u64,
             ngl = facts.gpu_layers.map(|n| n.to_string()).unwrap_or_else(|| "none".into()),
             flash_attention = facts.flash_attention_on,
@@ -2132,7 +3114,7 @@ fn serve_or_heal_garbled(
                 tracing::error!(
                     target: "engine",
                     port,
-                    verdict = probe.verdict.label(),
+                    verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
                     "the LU Engine answers unreadably without the graphics card, so the card is not the cause"
                 );
                 answer["garbled"] = serde_json::json!(true);
@@ -2144,7 +3126,7 @@ fn serve_or_heal_garbled(
                 tracing::warn!(
                     target: "engine",
                     port,
-                    verdict = probe.verdict.label(),
+                    verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
                     "this card reports no matrix cores, restarting the LU Engine with Flash Attention off"
                 );
                 (without_flash_attention(&serving), false)
@@ -2153,7 +3135,7 @@ fn serve_or_heal_garbled(
                 tracing::warn!(
                     target: "engine",
                     port,
-                    verdict = probe.verdict.label(),
+                    verdict = engine_sanity::verdict_label(probe.verdict, probe.still_thinking),
                     "the graphics card produced unreadable output, restarting the LU Engine on the processor"
                 );
                 (on_the_processor(&serving), true)
@@ -2190,6 +3172,7 @@ fn serve_or_heal_garbled(
             port,
             ctx,
             AttemptFlags { auto_layers: false, cpu_fallback: cpu_rung },
+            backend_dir,
         ).is_err() {
             // The restart did not come up, and an engine that at least served
             // has just been torn down for it. Put the first one back rather
@@ -2208,6 +3191,7 @@ fn serve_or_heal_garbled(
                 port,
                 ctx,
                 AttemptFlags { auto_layers, cpu_fallback: false },
+                backend_dir,
             );
             answer["garbled"] = serde_json::json!(true);
             // Not the CPU sentence. Nothing ran on the processor here and
@@ -2260,6 +3244,18 @@ pub(crate) struct StartFailure {
     pub port_taken: bool,
     /// llama-server's own last words. Empty when it said nothing.
     pub stderr: String,
+    /// The child's raw process exit code, when the OS reported one. `None`
+    /// covers both "not this kind of failure" (timed out, port taken) and "a
+    /// signal killed it". K1: this is what lets `is_illegal_instruction_exit`
+    /// name the Windows 0xC000001D crash instead of it hiding in `stderr` as
+    /// an empty string, since llama-server never gets to print anything.
+    pub exit_code: Option<i32>,
+    /// The POSIX signal that killed the child, on Unix, when there was one.
+    /// Always `None` on Windows and on every non-signal death. K1 Runde 2,
+    /// Punkt D: this is the Linux/macOS twin of `exit_code` for the SAME
+    /// illegal-instruction crash: `exit_code` alone cannot see it, a signal
+    /// death carries no exit code at all.
+    pub signal: Option<i32>,
 }
 
 /// The two marks an attempt leaves in `BundledEngine`: the restart paths and
@@ -2282,6 +3278,7 @@ struct AttemptFlags {
 /// naming fp16, the warp size and whether the card has matrix cores, and the
 /// flash-attention rung of the sanity probe is decided on it. It used to be
 /// read on the failure paths only and thrown away whenever the engine came up.
+#[allow(clippy::too_many_arguments)]
 fn spawn_engine_attempt(
     state: &AppState,
     binary: &Path,
@@ -2290,7 +3287,9 @@ fn spawn_engine_attempt(
     port: u16,
     ctx: Option<u32>,
     flags: AttemptFlags,
+    backend_dir: Option<&Path>,
 ) -> Result<String, StartFailure> {
+    log_cpu_features_once();
     // The one line a support log has to carry. Everything the start depends on
     // is in the argv: model path, context size, layer count, cache types,
     // thread count, mlock/mmap flags, the vision file and the port.
@@ -2314,9 +3313,20 @@ fn spawn_engine_attempt(
         .stderr(Stdio::piped());
     // Forward the user's GPU pick (CUDA/HIP/OneAPI) exactly like start_ollama;
     // no-op in the default "auto" mode. On mac this is inert (Metal).
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
+    // K1 (3.0.1): point a dynamic-ISA sidecar (Windows/Linux) at its
+    // ggml-cpu-*/ggml-vulkan companion libraries. No-op on mac / a static
+    // build, see apply_engine_backend_dir.
+    apply_engine_backend_dir(&mut cmd, backend_dir);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -2325,10 +3335,28 @@ fn spawn_engine_attempt(
         Err(e) => {
             let why = os_error::english(&e);
             tracing::error!(target: "engine", port, reason = %why, "the LU Engine program could not be started at all");
+            // K1-14 (3.0.1, review-longpath.md Auflage 3): a spawn failure
+            // while the backend dir is STILL over the classic Windows
+            // current-directory length limit despite apply_engine_backend_dir
+            // having already tried the short-name fallback is, on the
+            // evidence in BERICHT.md #63, almost always this same
+            // install-path problem wearing a generic OS error number
+            // (267/ERROR_DIRECTORY there). Name the likely cause in plain
+            // English alongside the opaque OS wording rather than replacing
+            // it; `why` still carries the actual code to search for. This
+            // branch should rarely fire for THIS reason any more now that
+            // apply_engine_backend_dir itself avoids handing a too-long path
+            // to current_dir, but it costs nothing to keep as a second line
+            // of defense (e.g. `UseAsIs` failing for an unrelated reason
+            // while the dir happens to be long).
+            let long_path_hint =
+                if backend_dir.is_some_and(windows_backend_dir_too_long) { format!(" {}", long_install_path_hint()) } else { String::new() };
             return Err(StartFailure {
                 died: true,
                 port_taken: false,
-                stderr: format!("Failed to spawn bundled engine: {why}"),
+                stderr: format!("Failed to spawn bundled engine: {why}{long_path_hint}"),
+                exit_code: None,
+                signal: None,
             })
         }
     };
@@ -2359,10 +3387,11 @@ fn spawn_engine_attempt(
         HealthWait::Ready => {
             tracing::info!(target: "engine", port, "the health probe answered")
         }
-        HealthWait::ChildExited(code) => tracing::warn!(
+        HealthWait::ChildExited { code, signal } => tracing::warn!(
             target: "engine",
             port,
-            exit_code = code.map(|c| c.to_string()).unwrap_or_else(|| "none (killed by a signal)".into()),
+            exit_code = code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
+            signal = signal.map(|s| s.to_string()).unwrap_or_else(|| "none".into()),
             "the LU Engine exited before it served"
         ),
         HealthWait::TimedOut => tracing::warn!(
@@ -2397,18 +3426,18 @@ fn spawn_engine_attempt(
             .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
             .unwrap_or_default();
         stop_engine_locked(state);
-        return Err(StartFailure { died: true, port_taken: true, stderr: why });
+        return Err(StartFailure { died: true, port_taken: true, stderr: why, exit_code: None, signal: None });
     }
 
     let why = diagnostics
         .map(|(buf, _)| tail_lines(&super::shell::captured_text(&buf), 12))
         .unwrap_or_default();
+    let (died, exit_code, signal) = match outcome {
+        HealthWait::ChildExited { code, signal } => (true, code, signal),
+        _ => (false, None, None),
+    };
     stop_engine_locked(state);
-    Err(StartFailure {
-        died: matches!(outcome, HealthWait::ChildExited(_)),
-        port_taken: false,
-        stderr: why,
-    })
+    Err(StartFailure { died, port_taken: false, stderr: why, exit_code, signal })
 }
 
 /// Stop the managed engine, killing the child. Idempotent.
@@ -3211,9 +4240,20 @@ fn start_bundled_embed_blocking(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
+    // K1 (3.0.1): this is the same dynamic-ISA binary the chat engine spawns
+    // (`spawn_engine_attempt`), so it needs the same companion-library
+    // directory; see apply_engine_backend_dir.
+    apply_engine_backend_dir(&mut cmd, resolve_engine_backend_dir(app).as_deref());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -3668,11 +4708,17 @@ mod tests {
     const CARD_12_GB: u64 = 12288 * 1024 * 1024;
 
     fn plan(model: u64, blocks: Option<u32>, vram: Option<u64>, ctx: u32) -> OffloadPlan {
+        plan_free(model, blocks, vram, ctx, true)
+    }
+
+    /// R1-3: same as `plan`, with the free-vs-total flag exposed.
+    fn plan_free(model: u64, blocks: Option<u32>, vram: Option<u64>, ctx: u32, free: bool) -> OffloadPlan {
         plan_offload(&OffloadInputs {
             model_bytes: model,
             block_count: blocks,
             vram_bytes: vram,
             ctx,
+            free,
         })
     }
 
@@ -3684,6 +4730,44 @@ mod tests {
         let p = plan(THREE_B_Q4, Some(THREE_B_BLOCKS), Some(CARD_12_GB), 8192);
         assert_eq!(p.layers, None, "{}", p.why);
         assert!(p.why.contains("every layer is requested"), "{}", p.why);
+    }
+
+    /// R1-3 table test: the SAME numbers, once with `free: true` (a measured
+    /// `nvidia-smi` reading) and once with `free: false` (`detect_gpus`'
+    /// total-capacity fallback). The sentence must differ and the total-
+    /// capacity run must never ask for MORE layers than the measured-free run
+    ///, a card that has not been shown to be empty is the case where asking
+    /// for too much costs the start.
+    #[test]
+    fn r1_3_a_total_capacity_reading_never_outbids_a_measured_free_one() {
+        let cases: &[(u64, Option<u32>, u64, u32)] = &[
+            (THREE_B_Q4, Some(THREE_B_BLOCKS), CARD_12_GB, 8192),
+            (TWELVE_B_IQ4, Some(TWELVE_B_BLOCKS), CARD_8_GB, 8192),
+            (THREE_B_Q4, Some(THREE_B_BLOCKS), CARD_2_GB, 8192),
+        ];
+        for &(model, blocks, vram, ctx) in cases {
+            let free = plan_free(model, blocks, Some(vram), ctx, true);
+            let total = plan_free(model, blocks, Some(vram), ctx, false);
+
+            assert_ne!(free.why, total.why, "the two readings must not read the same on screen");
+            assert!(free.why.contains("are free"), "{}", free.why);
+            assert!(
+                total.why.contains("in total (actual free memory was not measured)"),
+                "{}",
+                total.why
+            );
+
+            let free_layers = free.layers.unwrap_or(ALL_LAYERS);
+            let total_layers = total.layers.unwrap_or(ALL_LAYERS);
+            assert!(
+                total_layers <= free_layers,
+                "an unmeasured total-capacity reading asked for MORE layers ({total_layers}) than \
+                 the measured-free reading ({free_layers}) on the same {vram} bytes, \
+                 free: {}\ntotal: {}",
+                free.why,
+                total.why
+            );
+        }
     }
 
     #[test]
@@ -3842,12 +4926,12 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory".into(),
-        };
-        let same = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let same = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(same.contains("It was tried twice"), "{same}");
         assert!(same.contains("set GPU Layers to 0"), "{same}");
 
-        let cpu = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::CpuOnly);
+        let cpu = start_failure_message(&out_of_memory, 8127, Duration::from_secs(60), SecondAttempt::CpuOnly, None);
         assert!(cpu.contains("The LU Engine exited before serving on port 8127."), "{cpu}");
         assert!(cpu.contains("Tried with GPU offload and again on CPU."), "{cpu}");
         assert!(!cpu.contains("GPU Layers"), "the way out was already taken:\n{cpu}");
@@ -4224,6 +5308,17 @@ mod tests {
     }
 
     #[test]
+    fn cpu_features_are_logged_once_and_never_panic() {
+        // K1: the log line that names AVX/AVX2/FMA/F16C is what turns an
+        // illegal-instruction crash into a diagnosis instead of a guess, so
+        // it must run without panicking on every architecture this app
+        // ships for, and calling it twice (every engine start does) must
+        // stay a no-op the second time round (`std::sync::Once`).
+        log_cpu_features_once();
+        log_cpu_features_once();
+    }
+
+    #[test]
     fn host_triple_is_platform_shaped() {
         let t = host_target_triple();
         if cfg!(target_os = "macos") {
@@ -4235,6 +5330,68 @@ mod tests {
         }
     }
 
+    // ── K1 (3.0.1): pick_backend_dir (BLOCKER B2) ─────────────────────────
+
+    #[test]
+    fn pick_backend_dir_returns_the_first_candidate_that_has_the_marker() {
+        let candidates = vec![PathBuf::from("/bundled"), PathBuf::from("/dev-fallback")];
+        let picked = pick_backend_dir(&candidates, |dir| dir == Path::new("/bundled"));
+        assert_eq!(picked, Some(PathBuf::from("/bundled")));
+    }
+
+    #[test]
+    fn pick_backend_dir_falls_through_to_a_later_candidate() {
+        let candidates = vec![PathBuf::from("/bundled"), PathBuf::from("/dev-fallback")];
+        let picked = pick_backend_dir(&candidates, |dir| dir == Path::new("/dev-fallback"));
+        assert_eq!(picked, Some(PathBuf::from("/dev-fallback")));
+    }
+
+    #[test]
+    fn pick_backend_dir_returns_none_when_no_candidate_has_the_marker() {
+        // Negative control: every candidate directory "exists" in the sense
+        // that it is a path, but none of them has the marker file, so this
+        // must come back empty rather than picking a directory that holds
+        // no ggml libraries at all.
+        let candidates = vec![PathBuf::from("/bundled"), PathBuf::from("/dev-fallback")];
+        let picked = pick_backend_dir(&candidates, |_| false);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn pick_backend_dir_does_not_accept_a_directory_that_merely_exists() {
+        // This is BLOCKER B2 itself, reproduced platform-independently: on
+        // Windows, resource_dir() is unconditionally the running exe's own
+        // directory, so it ALWAYS exists, whether or not any ggml DLLs are
+        // inside it. The bug was checking `.is_dir()` (which such a
+        // candidate always passes) instead of checking for the marker file.
+        // Here the "exists" predicate for the first (bundled) candidate is
+        // always true, exactly mirroring that always-existing Windows exe
+        // directory, while `has_marker` (what pick_backend_dir actually
+        // uses) is false for it, true only for the dev fallback. A
+        // directory-existence check would incorrectly stop at the first
+        // candidate and never reach the dev fallback; pick_backend_dir must
+        // fall through to it instead.
+        let candidates = vec![PathBuf::from("/always-exists-but-empty"), PathBuf::from("/dev-fallback-with-dlls")];
+        let dir_exists = |_: &Path| true; // simulates Windows resource_dir() always existing
+        let has_marker = |dir: &Path| dir == Path::new("/dev-fallback-with-dlls");
+        // The old, buggy check (directory existence only) would have picked
+        // the first candidate:
+        assert_eq!(candidates.iter().find(|c| dir_exists(c)).cloned(), Some(PathBuf::from("/always-exists-but-empty")));
+        // pick_backend_dir, using the marker predicate, correctly falls
+        // through to the one that actually has the companion libraries:
+        assert_eq!(pick_backend_dir(&candidates, has_marker), Some(PathBuf::from("/dev-fallback-with-dlls")));
+    }
+
+    #[test]
+    fn backend_marker_filename_has_lib_prefix_only_off_windows() {
+        let marker = backend_marker_filename();
+        if cfg!(target_os = "windows") {
+            assert_eq!(marker, "ggml-base.dll");
+        } else {
+            assert_eq!(marker, "libggml-base.so");
+        }
+    }
+
     #[test]
     fn sidecar_name_has_exe_only_on_windows() {
         let name = sidecar_binary_name();
@@ -4243,6 +5400,476 @@ mod tests {
         } else {
             assert_eq!(name, "lu-llama-server");
         }
+    }
+
+    // ── K1 (3.0.1): apply_engine_backend_dir ──────────────────────────────
+
+    #[test]
+    fn apply_engine_backend_dir_is_a_noop_without_a_directory() {
+        // mac (static build) and "nothing built yet" both pass None here, and
+        // the spawned Command must come out exactly as `Command::new` left
+        // it: no current_dir, no LD_LIBRARY_PATH this function did not put
+        // there itself.
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, None);
+        assert!(cmd.get_current_dir().is_none());
+        assert!(!cmd.get_envs().any(|(k, _)| k == "LD_LIBRARY_PATH"));
+    }
+
+    #[test]
+    fn apply_engine_backend_dir_sets_current_dir_when_given_one() {
+        // The one lever ggml_backend_load_best actually reads when no
+        // explicit search path is passed (ggml-backend-reg.cpp:479-486): the
+        // executable's own directory, and the process's CURRENT directory.
+        // Without this, a dynamic-ISA sidecar spawned from an arbitrary cwd
+        // would silently fail to find ggml-cpu-*/ggml-vulkan.
+        let dir = std::env::temp_dir();
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(&dir));
+        assert_eq!(cmd.get_current_dir(), Some(dir.as_path()));
+    }
+
+    // ── K1-14 (3.0.1): long install paths on Windows ────────────────────────
+    //
+    // Pure decision logic, platform independent by construction: plain
+    // numbers and canned closures stand in for real paths and the real
+    // GetShortPathNameW call, so these run (and matter) on every host OS,
+    // this Mac included, not only on the Windows box.
+
+    #[test]
+    fn exceeds_classic_current_dir_limit_is_false_at_and_below_258() {
+        // Negative control: 258 itself, and anything under it, must NOT be
+        // flagged as too long. review-longpath.md Runde 1, Auflage 2:
+        // `backend_dir` never carries a trailing backslash, and without one
+        // MAX_PATH-2 = 258 is the last length Windows appends its own
+        // backslash to without crossing MAX_PATH (260, including the NUL).
+        assert!(!exceeds_classic_current_dir_limit(0));
+        assert!(!exceeds_classic_current_dir_limit(258));
+    }
+
+    #[test]
+    fn exceeds_classic_current_dir_limit_is_true_above_258() {
+        // 259 is the exact off-by-one Auflage 2 corrected: it looks like it
+        // should fit under MAX_PATH (260), but Windows' own appended
+        // backslash plus the terminator pushes it to exactly MAX_PATH, which
+        // Microsoft's own SetCurrentDirectory page says makes CreateProcessW
+        // fail. This is the one assertion that would have caught Runde 1's
+        // bug had it existed then.
+        assert!(exceeds_classic_current_dir_limit(259));
+        assert!(exceeds_classic_current_dir_limit(295)); // BERICHT.md #63's own measured length
+    }
+
+    // ── verbatim_prefixed / strip_verbatim_prefix (Auflage 1) ────────────────
+    //
+    // Pure UTF-16-code-unit logic, no Windows API involved: testable, and
+    // tested, on every host OS.
+
+    fn utf16(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn verbatim_prefixed_adds_the_prefix_to_a_drive_path() {
+        assert_eq!(verbatim_prefixed(&utf16(r"C:\LU\long\path")), utf16(r"\\?\C:\LU\long\path"));
+    }
+
+    #[test]
+    fn verbatim_prefixed_does_not_double_an_existing_prefix() {
+        let already = utf16(r"\\?\C:\LU\long\path");
+        assert_eq!(verbatim_prefixed(&already), already);
+    }
+
+    #[test]
+    fn verbatim_prefixed_turns_a_unc_path_into_the_unc_verbatim_form() {
+        // "\\server\share\x" -> "\\?\UNC\server\share\x", per Microsoft's own
+        // "Naming Files, Paths, and Namespaces" (the leading "\\" is dropped,
+        // not kept alongside "UNC\").
+        assert_eq!(verbatim_prefixed(&utf16(r"\\server\share\x")), utf16(r"\\?\UNC\server\share\x"));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_undoes_a_plain_verbatim_prefix() {
+        assert_eq!(strip_verbatim_prefix(&utf16(r"\\?\C:\LU~1")), utf16(r"C:\LU~1"));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_undoes_the_unc_verbatim_form() {
+        assert_eq!(strip_verbatim_prefix(&utf16(r"\\?\UNC\server\share\x")), utf16(r"\\server\share\x"));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_leaves_an_unprefixed_path_alone() {
+        // Negative control: nothing to strip must not eat real characters.
+        assert_eq!(strip_verbatim_prefix(&utf16(r"C:\LU~1")), utf16(r"C:\LU~1"));
+    }
+
+    #[test]
+    fn verbatim_prefix_and_strip_round_trip_a_drive_path() {
+        let original = utf16(r"C:\Program Files\Locally Uncensored\resources\llama\x86_64-pc-windows-msvc");
+        assert_eq!(strip_verbatim_prefix(&verbatim_prefixed(&original)), original);
+    }
+
+    #[test]
+    fn verbatim_prefix_and_strip_round_trip_a_unc_path() {
+        let original = utf16(r"\\fileserver\share\LU\resources\llama\x86_64-pc-windows-msvc");
+        assert_eq!(strip_verbatim_prefix(&verbatim_prefixed(&original)), original);
+    }
+
+    // ── Prefix edge cases (review-longpath.md Runde 2, Auflage 11) ──────────
+
+    #[test]
+    fn strip_verbatim_prefix_strips_a_lowercase_unc_marker_too() {
+        // GetShortPathNameW is free to hand back any casing; a case-sensitive
+        // compare here would strip only "\\?\" and leave the broken relative
+        // path "unc\server\share\x" behind.
+        assert_eq!(strip_verbatim_prefix(&utf16(r"\\?\unc\server\share\x")), utf16(r"\\server\share\x"));
+        // Negative control: this must still be the ONLY thing that changes;
+        // an unrelated path is not touched by the case-insensitive compare.
+        assert_eq!(strip_verbatim_prefix(&utf16(r"C:\LU~1")), utf16(r"C:\LU~1"));
+    }
+
+    #[test]
+    fn verbatim_prefixed_does_not_mistake_a_device_path_for_unc() {
+        // "\\.\C:" and similar device paths also start with two backslashes,
+        // but the third character (".") marks them as a device path, not a
+        // UNC share. Getting this wrong would silently build a nonexistent
+        // "\\?\UNC\.\..." path instead of just prefixing the device path
+        // unchanged, "\\?\" followed by the original "\\.\C:\long\path".
+        let expected: Vec<u16> = utf16(r"\\?\").into_iter().chain(utf16(r"\\.\C:\long\path")).collect();
+        assert_eq!(verbatim_prefixed(&utf16(r"\\.\C:\long\path")), expected);
+    }
+
+    #[test]
+    fn verbatim_prefixed_normalizes_forward_slashes_before_prefixing() {
+        // The verbatim prefix disables all string parsing, forward slashes
+        // included, so a mixed-separator input must be normalized to
+        // backslashes FIRST or the result would not resolve as a path at all.
+        assert_eq!(verbatim_prefixed(&utf16("C:/LU/long/path")), utf16(r"\\?\C:\LU\long\path"));
+        // A UNC path with forward slashes must still be recognized as UNC
+        // AFTER normalization, not missed because the check ran too early.
+        assert_eq!(verbatim_prefixed(&utf16("//server/share/x")), utf16(r"\\?\UNC\server\share\x"));
+    }
+
+    #[test]
+    fn decide_long_path_current_dir_uses_the_short_dir_as_is() {
+        // Short enough already: the short-name resolver must never even run.
+        let decision = decide_long_path_current_dir(120, || {
+            panic!("resolve_short_name must not run for a short directory")
+        });
+        assert_eq!(decision, LongPathDecision::UseAsIs);
+    }
+
+    #[test]
+    fn decide_long_path_current_dir_falls_back_to_a_short_name_that_fits() {
+        let short = PathBuf::from(r"C:\LU~1");
+        let decision = decide_long_path_current_dir(295, || Some((short.clone(), 7)));
+        assert_eq!(decision, LongPathDecision::UseShortName(short));
+    }
+
+    #[test]
+    fn decide_long_path_current_dir_skips_current_dir_when_the_short_name_is_still_too_long() {
+        // An 8.3 short name is not guaranteed to be short: a deeply nested
+        // long path still has one short component per level.
+        let still_long = PathBuf::from("C:\\".to_string() + &"LU~1\\".repeat(60));
+        let long_len = still_long.to_string_lossy().chars().count();
+        assert!(exceeds_classic_current_dir_limit(long_len));
+        let decision = decide_long_path_current_dir(295, || Some((still_long, long_len)));
+        assert_eq!(decision, LongPathDecision::SkipCurrentDir);
+    }
+
+    #[test]
+    fn decide_long_path_current_dir_skips_current_dir_when_the_short_name_lookup_fails() {
+        // 8dot3 name creation can be disabled per volume (Microsoft,
+        // GetShortPathNameW remarks): the lookup then fails outright rather
+        // than returning a usable name.
+        let decision = decide_long_path_current_dir(295, || None);
+        assert_eq!(decision, LongPathDecision::SkipCurrentDir);
+    }
+
+    // ── died_failure_hint (review-longpath.md Runde 2, Blocker 9 and 10) ────
+    //
+    // Pure function of `stderr` and a plain `bool`, no Windows API or `Path`
+    // involved: testable, and tested, on every host OS, closing the gap
+    // Blocker 10 named (the real call site is only reachable through
+    // `windows_backend_dir_too_long`, which is a hard `false` off Windows, so
+    // nothing here was ever exercised on the Mac before this).
+
+    #[test]
+    fn died_failure_hint_names_a_missing_library_before_anything_else() {
+        // Step 1 outranks even a long path: a library the loader itself named
+        // is more certain than an inferred path-length cause.
+        let hint = died_failure_hint(
+            "lu-llama-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file",
+            true,
+            true,
+        );
+        assert!(hint.contains("libvulkan.so.1"), "{hint}");
+        assert!(!hint.contains("installation's own folder path"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_blames_the_long_path_even_when_stderr_looks_like_a_model_failure() {
+        // THE guard against Blocker 9: with no backend loaded at all (a long
+        // path with no usable short name), llama.cpp's model loader aborts
+        // and prints exactly this line, which has nothing to do with the
+        // file's own bytes. A long path must win here, not "download it
+        // again" for a perfectly good model.
+        let hint = died_failure_hint("llama_model_load_from_file_impl: failed to load model", true, false);
+        assert!(hint.contains("installation's own folder path"), "{hint}");
+        assert!(!hint.contains("download it again"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_still_blames_the_model_on_a_short_path() {
+        // The exact opposite of the test above, same stderr line: with a
+        // SHORT path, `backend_dir_too_long` is false, so this is genuinely
+        // the ordinary "the child died over a bad model" case and the model
+        // hint is still correct. Negative control for the guard test: this
+        // is what proves the guard checks the PATH, not just the stderr text.
+        let hint = died_failure_hint("llama_model_load_from_file_impl: failed to load model", false, false);
+        assert!(hint.contains("download it again"), "{hint}");
+        assert!(!hint.contains("installation's own folder path"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_falls_back_to_reinstall_advice_with_nothing_else_to_go_on() {
+        let hint = died_failure_hint("some unrelated crash text", false, false);
+        assert!(hint.contains("Reinstall Locally Uncensored"), "{hint}");
+    }
+
+    #[test]
+    fn died_failure_hint_names_the_long_path_with_an_empty_stderr_too() {
+        // The plain case BERICHT.md #63's 8dot3-disabled scenario actually
+        // produces: no specific stderr line at all, just a too-long path.
+        let hint = died_failure_hint("", true, false);
+        assert!(hint.contains("installation's own folder path"), "{hint}");
+    }
+
+    // Serializes the two tests below: both read and mutate the process-wide
+    // LD_LIBRARY_PATH, and cargo test runs in threads by default. Same
+    // pattern as process_util.rs's own env_guard, kept local here since that
+    // one is private to its own test module.
+    #[cfg(target_os = "linux")]
+    fn ld_library_path_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn apply_engine_backend_dir_prepends_ld_library_path_on_linux() {
+        // Linux-only: nothing in the pinned llama.cpp build sets an $ORIGIN
+        // rpath (measured against the checkout, not assumed), so a
+        // ggml-cpu-*.so's own dependency on libggml-base.so needs
+        // LD_LIBRARY_PATH, current_dir alone is not enough there. This test
+        // is red without the fix: before apply_engine_backend_dir touched
+        // LD_LIBRARY_PATH at all, get_envs() never carried the key.
+        let _guard = ld_library_path_env_guard();
+        std::env::set_var("LD_LIBRARY_PATH", "/tmp/.mount_LocallieGkad/usr/lib");
+        let dir = std::path::Path::new("/opt/lu/resources/llama/x86_64-unknown-linux-gnu");
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(dir));
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LD_LIBRARY_PATH")
+            .and_then(|(_, v)| v)
+            .expect("LD_LIBRARY_PATH must be set")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(value, "/opt/lu/resources/llama/x86_64-unknown-linux-gnu:/tmp/.mount_LocallieGkad/usr/lib");
+        // The process's OWN inherited value (the AppImage's own
+        // LD_LIBRARY_PATH, per K11/K14) survives behind it, not overwritten:
+        // this process's own sidecar WANTS the AppImage-mounted libraries too
+        // (Vulkan), unlike a foreign program.
+        assert!(value.ends_with("/tmp/.mount_LocallieGkad/usr/lib"), "{value}");
+        std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn apply_engine_backend_dir_does_not_drop_an_empty_inherited_value() {
+        // Negative control: an empty (but SET) inherited LD_LIBRARY_PATH must
+        // not turn into a trailing ":" with nothing after it.
+        let _guard = ld_library_path_env_guard();
+        std::env::set_var("LD_LIBRARY_PATH", "");
+        let dir = std::path::Path::new("/opt/lu/resources/llama/x86_64-unknown-linux-gnu");
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(dir));
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LD_LIBRARY_PATH")
+            .and_then(|(_, v)| v)
+            .expect("LD_LIBRARY_PATH must be set")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(value, dir.to_str().unwrap());
+        std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn apply_engine_backend_dir_sets_ld_library_path_with_none_inherited() {
+        // The base case: no LD_LIBRARY_PATH in the environment at all (a
+        // plain deb/rpm install, not an AppImage). Must still be set to
+        // exactly the backend dir, nothing appended.
+        let _guard = ld_library_path_env_guard();
+        std::env::remove_var("LD_LIBRARY_PATH");
+        let dir = std::path::Path::new("/opt/lu/resources/llama/x86_64-unknown-linux-gnu");
+        let mut cmd = Command::new("echo");
+        apply_engine_backend_dir(&mut cmd, Some(dir));
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LD_LIBRARY_PATH")
+            .and_then(|(_, v)| v)
+            .expect("LD_LIBRARY_PATH must be set")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(value, dir.to_str().unwrap());
+    }
+
+    // ── K1-14 (3.0.1): real GetShortPathNameW + a real child spawn ──────────
+    //
+    // These run only on the Windows box (klaerung-63.md, BERICHT.md #63): a
+    // genuinely long directory, a real Windows API call, and a real
+    // Command::spawn, not a fake. The pure decision logic above already has
+    // its own platform-independent tests; this section proves that the real
+    // wiring (utf16_len, GetShortPathNameW, current_dir) actually lets a
+    // child process start, which the plain decision tests cannot show.
+    //
+    // review-longpath.md Runde 1, Auflage 4 (BLOCKER) shaped this section:
+    // the PRODUCTION input to `windows_current_dir_for_backend` never carries
+    // a `\\?\` prefix (that only exists inside `get_short_path_name`'s own
+    // call to `GetShortPathNameW`), so the fixture below builds the long
+    // directory in BOTH forms: a verbatim path used only for the filesystem
+    // operations that need to survive being over MAX_PATH without
+    // LongPathsEnabled (`create_dir_all`, `remove_dir_all`), and a plain,
+    // unprefixed path, otherwise identical, that is what actually gets
+    // passed to the function under test, matching what `resource_dir()`
+    // would hand `apply_engine_backend_dir` for real.
+
+    #[cfg(windows)]
+    struct LongDirFixture {
+        /// The verbatim form of the TOP-level directory this fixture itself
+        /// created (the first of the repeated `component` levels, directly
+        /// under `std::env::temp_dir()`). `Drop` removes THIS, not the
+        /// bottom (leaf) directory: review-longpath.md Runde 2, Auflage 12
+        /// found that removing only the deepest level (what `verbatim` used
+        /// to point at) left every level above it behind on the box, run
+        /// after run, because a leaf directory has nothing under it for
+        /// `remove_dir_all` to recurse into.
+        top_level_verbatim: PathBuf,
+        /// The plain, unprefixed form of the deepest directory: what the
+        /// code under test actually sees, same as it would from
+        /// `resource_dir()`.
+        plain: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl LongDirFixture {
+        /// Builds and creates a directory over the classic 258 character
+        /// ceiling, and returns both spellings of its path.
+        ///
+        /// review-longpath.md Runde 2, Auflage 12: the sanity assertion used
+        /// to run BEFORE constructing the returned `Self`, so a failing
+        /// assertion (this fixture proving out over the limit is itself
+        /// meant to be true, but a fixture bug should not compound into a
+        /// leaked directory) skipped `Drop` entirely and left the directory
+        /// on disk. The assertion now runs AFTER `fixture` is bound to a
+        /// local of type `LongDirFixture`, so unwinding drops it and cleans
+        /// up regardless of which assertion (here, or in the caller) fails.
+        fn create() -> Self {
+            use std::os::windows::ffi::OsStrExt;
+            let base = std::env::temp_dir();
+            let component = "a".repeat(50);
+            let top_level_plain = base.join(&component);
+            let top_level_verbatim = PathBuf::from(format!(r"\\?\{}", top_level_plain.display()));
+            let mut plain = top_level_plain.clone();
+            // One 50-character component per iteration, comfortably past 260
+            // total once joined with the temp dir and a few levels.
+            while plain.as_os_str().encode_wide().count() < 280 {
+                plain.push(&component);
+            }
+            // Only needed to create the leaf directory below: `Drop` cleans
+            // up through `top_level_verbatim` instead (see its field doc),
+            // so this verbatim form of the leaf is not kept on the struct.
+            let verbatim = PathBuf::from(format!(r"\\?\{}", plain.display()));
+            std::fs::create_dir_all(&verbatim).expect("create a long verbatim test directory");
+            let fixture = LongDirFixture { top_level_verbatim, plain };
+            // Sanity check on the fixture itself: this must actually be over
+            // the limit, or the test below would pass for the wrong reason.
+            assert!(exceeds_classic_current_dir_limit(utf16_len(&fixture.plain)));
+            fixture
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for LongDirFixture {
+        fn drop(&mut self) {
+            // Best effort: a failed cleanup must not mask a real test
+            // failure (and Drop cannot propagate one anyway). Removes the
+            // TOP-level directory (verbatim form: ordinary, non-verbatim
+            // removal is itself subject to the classic length limit without
+            // LongPathsEnabled), which recursively takes every level
+            // underneath it, including the leaf directory `create()` built.
+            let _ = std::fs::remove_dir_all(&self.top_level_verbatim);
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_current_dir_for_backend_uses_the_short_name_and_lets_a_child_spawn() {
+        // Expects an 8dot3-enabled volume, the ordinary case and the one
+        // BERICHT.md #63 measured on the box (Auflage 4: a test must say
+        // which branch it expects, not accept either silently). The
+        // dedicated, #[ignore]d test below covers the disabled-volume branch.
+        let fixture = LongDirFixture::create();
+
+        let decision = windows_current_dir_for_backend(&fixture.plain);
+        let LongPathDecision::UseShortName(short) = decision else {
+            panic!(
+                "expected UseShortName on an 8dot3-enabled volume, got {decision:?}; if 8dot3 name \
+                 creation is disabled on this test volume, run the ignored \
+                 windows_current_dir_for_backend_skips_current_dir_when_short_names_are_unavailable test instead"
+            );
+        };
+        // The short name itself must actually be short, or this proves
+        // nothing: a no-op GetShortPathNameW that just echoes the long name
+        // back (Microsoft's own documented "no short name on-disk" case)
+        // would otherwise slip through as a false UseShortName.
+        assert!(!exceeds_classic_current_dir_limit(utf16_len(&short)));
+
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "exit", "0"]).current_dir(&short);
+        let status = cmd.status().expect("cmd.exe must spawn with the resolved short name as current_dir");
+        assert!(status.success());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "needs 8dot3 name creation disabled on the test volume \
+                (admin PowerShell: fsutil 8dot3name set 1 <drive>, then create a NEW long \
+                directory - fsutil 8dot3name query <drive> confirms the setting first). \
+                Not safe to toggle from an automated run, so this stays manual/box-only \
+                (review-longpath.md Runde 1, Auflage 4)."]
+    fn windows_current_dir_for_backend_skips_current_dir_when_short_names_are_unavailable() {
+        let fixture = LongDirFixture::create();
+
+        let decision = windows_current_dir_for_backend(&fixture.plain);
+        assert_eq!(
+            decision,
+            LongPathDecision::SkipCurrentDir,
+            "expected SkipCurrentDir with 8dot3 name creation disabled, got {decision:?}"
+        );
+
+        // The documented fallback itself must still work: a child with NO
+        // current_dir set inherits this test process's own working
+        // directory and must spawn without error (it does NOT prove ggml
+        // would find its backend from there; review-longpath.md Auflage 3
+        // covers the honest user-facing message for that separately).
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "exit", "0"]);
+        let status = cmd.status().expect("cmd.exe must spawn even with current_dir left unset");
+        assert!(status.success());
     }
 
     #[test]
@@ -4714,6 +6341,27 @@ mod tests {
     /// "refused" immediately instead of talking to a real engine.
     const DEAD_PORT: u16 = 49871;
 
+    /// A `(binary, args)` pair that runs for `secs` seconds without going
+    /// through a shell, the shape `restore_engine`'s callers hand it after a
+    /// real launch (a binary path plus its own argv), so a shell cannot be
+    /// substituted in like `test_support::sleeper` does for a bare `Command`.
+    ///
+    /// Windows: `ping`, same binary and reasoning as `test_support::sleeper`:
+    /// `<shell> -c "sleep N"` gets exec-optimised by the MSYS runtime into a
+    /// BRAND NEW Windows process while the shell that was supposed to hold the
+    /// pid exits, so the `Child` this test tracks would already show as dead.
+    /// Unix: `sleep` directly; no shell needed there either.
+    fn long_lived_argv(secs: u32) -> (PathBuf, Vec<String>) {
+        if cfg!(windows) {
+            (
+                PathBuf::from("ping"),
+                vec!["-n".to_string(), (secs + 1).to_string(), "127.0.0.1".to_string()],
+            )
+        } else {
+            (PathBuf::from("sleep"), vec![secs.to_string()])
+        }
+    }
+
     fn park_child(state: &AppState, child: std::process::Child) {
         *state.bundled_engine.lock().unwrap() = Some(BundledEngine {
             child,
@@ -4757,7 +6405,7 @@ mod tests {
         // used to be thrown away at the `is_some()` above, and a support log
         // that says "it exited" without saying how is a log that cannot tell a
         // refused GGUF from a card that ran out of memory.
-        assert_eq!(out, HealthWait::ChildExited(Some(3)));
+        assert_eq!(out, HealthWait::ChildExited { code: Some(3), signal: None });
         assert!(took < Duration::from_secs(5), "waited {took:?}, which is the old dead wait");
     }
 
@@ -4798,24 +6446,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_failed_switch_puts_the_previous_model_back_on_its_own_port() {
         let (port, stop, handle) = gesunder_port();
         let state = AppState::new();
+        let (binary, args) = long_lived_argv(30);
         let vorher = PreviousEngine {
             model_path: "/tmp/hermes.gguf".into(),
-            args: vec!["-c".into(), "sleep 30".into()],
+            args,
             auto_layers: false,
             cpu_fallback: false,
             port,
             ctx: Some(8192),
         };
 
-        let zurueck = restore_engine(
-            Path::new(&crate::test_support::posix_shell()),
-            &state,
-            &vorher,
-        );
+        let zurueck = restore_engine(&binary, &state, &vorher, None);
 
         assert!(zurueck, "the previous engine did not come back");
         {
@@ -4839,7 +6483,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_restore_that_fails_says_so_instead_of_claiming_success() {
         // Negativkontrolle. Ohne sie ginge der Fall oben auch auf einer
         // Funktion durch, die einfach immer `true` zurueckgibt, und die
@@ -4857,7 +6500,8 @@ mod tests {
         assert!(!restore_engine(
             Path::new(&crate::test_support::posix_shell()),
             &state,
-            &vorher
+            &vorher,
+            None,
         ));
         assert!(
             state.bundled_engine.lock().unwrap().is_none(),
@@ -4903,14 +6547,34 @@ mod tests {
     }
 
     #[test]
+    fn the_retry_in_start_after_stop_runs_the_sanity_probe_too() {
+        // R1-10: `start_after_stop`'s FIRST attempt success path always ran
+        // the sanity probe (bug a) through `serve_or_heal_garbled`, but the
+        // SECOND attempt (the one clean retry) used to hand back a bare
+        // "started" object instead, a garbled answer on the retry was
+        // never caught or healed. `serve_or_heal_garbled(` must now appear
+        // twice in this function's body: once per attempt.
+        let src = include_str!("engine.rs");
+        let body = src
+            .split("fn start_after_stop(")
+            .nth(1)
+            .expect("start_after_stop is gone")
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        let count = body.matches("serve_or_heal_garbled(").count();
+        assert_eq!(count, 2, "expected the sanity probe on both attempts, found it {count} time(s)");
+    }
+
+    #[test]
     fn die_gute_nachricht_steht_ueber_dem_protokoll_und_nicht_darunter() {
         let f = StartFailure {
             died: true,
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
-        };
+            exit_code: None, signal: None };
         let msg = with_note_on_top(
-            &start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload),
+            &start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None),
             RESTORED_NOTE,
         );
         let notiz = msg.find(RESTORED_NOTE).expect("the note is gone");
@@ -4938,7 +6602,7 @@ mod tests {
         // No child, so there is no exit code to report either.
         assert_eq!(
             wait_for_health_or_exit(&state, DEAD_PORT, Duration::from_secs(30)),
-            HealthWait::ChildExited(None)
+            HealthWait::ChildExited { code: None, signal: None }
         );
         assert!(began.elapsed() < Duration::from_secs(5));
     }
@@ -4960,13 +6624,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_says_that_the_engine_ended_up_on_the_processor() {
         // The fallback was answered ONCE, in the return value of the start
         // call, and then forgotten. A status read a minute later described an
         // engine that ran at a tenth of its speed as an ordinary one.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -4996,13 +6658,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_carries_what_the_sanity_probe_worked_around() {
         // Bug a: the ladder answered its sentence ONCE, in the return value of
         // the start call, and nobody reads that object past `.port`. The
         // status is what every surface polls, so the sentence lives there.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5022,13 +6682,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_typed_cpu_setting_is_not_reported_as_a_failed_start() {
         // The counter-check to the test above. Someone who wrote 0 into GPU
         // Layers got what he asked for, and telling him the graphics card
         // failed would be an invention.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5054,11 +6712,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn an_engine_killed_from_outside_stops_counting_as_running() {
         // The box: `Stop-Process` on lu-llama-server, and the line kept saying
         // "Engine running / Port: 8127" for as long as anyone watched.
-        let mut child = std::process::Command::new("sh")
+        let mut child = std::process::Command::new(crate::test_support::posix_shell())
             .args(["-c", "exit 0"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -5076,12 +6733,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_living_engine_is_left_exactly_where_it_is() {
         // Negative control. Without it the test above would pass on a function
         // that simply cleared the slot every time.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5099,13 +6754,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_reports_nothing_for_a_sidecar_whose_process_is_gone() {
         // The embeddings server had no reaping at all, so a killed sidecar kept
         // answering "running" on 8128 the way the chat engine used to on 8127.
         // Both status commands go through live_sidecar now, so this covers the
         // pair (A15 review).
-        let mut child = std::process::Command::new("sh")
+        let mut child = std::process::Command::new(crate::test_support::posix_shell())
             .args(["-c", "exit 0"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -5120,12 +6774,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn a_status_read_reports_a_sidecar_that_is_really_there() {
         // Negative control for the test above: live_sidecar must not simply
         // answer None.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5145,12 +6797,11 @@ mod tests {
     // ── A16: the watch that says a sidecar died without being asked ─────────
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn the_watch_names_the_port_of_a_sidecar_that_died() {
         // What the loop does once per tick. The port has to come out of the
         // slot before the reap clears it, which is the whole reason this is a
         // function and not two lines inside the thread.
-        let mut child = std::process::Command::new("sh")
+        let mut child = std::process::Command::new(crate::test_support::posix_shell())
             .args(["-c", "exit 0"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -5172,13 +6823,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "windows", ignore = "uses sh")]
     fn the_watch_stays_quiet_about_a_sidecar_that_is_still_running() {
         // Negative control. Without it the test above would pass on a watch
         // that announced a death on every tick and cleared the slot with it,
         // which would take the running engine off the screen.
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let child = crate::test_support::sleeper(30)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5304,8 +6953,8 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "bind: Address already in use".into(),
-        };
-        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(
             !msg.contains("Reinstall"),
@@ -5316,8 +6965,8 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "something went wrong".into(),
-        };
-        assert!(start_failure_message(&other, 8127, Duration::from_secs(60), SecondAttempt::SameOffload).contains("Reinstall"));
+            exit_code: None, signal: None };
+        assert!(start_failure_message(&other, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None).contains("Reinstall"));
     }
 
     #[test]
@@ -5329,8 +6978,8 @@ mod tests {
         let oom = "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 10048.00 MiB on device 0 failed\nCUDA error: out of memory";
         assert!(!stderr_blames_the_port(oom));
         assert!(stderr_blames_the_gpu(oom));
-        let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() };
-        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let failure = StartFailure { died: true, port_taken: false, stderr: oom.into() , exit_code: None, signal: None };
+        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("GPU Layers to 0"), "the way out has to survive: {msg}");
         assert!(!msg.contains("could not open port"), "{msg}");
     }
@@ -5364,8 +7013,8 @@ mod tests {
         // enough, and the branch order was the only thing keeping this case
         // out of the graphics-card answer.
         assert!(!stderr_blames_the_gpu(stderr), "a banner is not a defect");
-        let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() };
-        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let failure = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None, signal: None };
+        let msg = start_failure_message(&failure, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not open port 8127"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "a busy port is not freed by CPU mode: {msg}");
     }
@@ -5406,8 +7055,8 @@ mod tests {
         // repeat a start that DIED. Repeating a start that merely ran out of
         // its budget spends the same budget again (up to 10 minutes on a big
         // GGUF) and re-runs the ComfyUI and Ollama evictions each time.
-        let slow = StartFailure { died: false, port_taken: false, stderr: String::new() };
-        let msg = start_failure_message(&slow, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let slow = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None, signal: None };
+        let msg = start_failure_message(&slow, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(
             msg.contains("did not become healthy"),
             "the frontend matches on this phrase: {msg}"
@@ -5420,8 +7069,8 @@ mod tests {
             "failed to load model",
             "something went wrong",
         ] {
-            let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() };
-            let m = start_failure_message(&died, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            let died = StartFailure { died: true, port_taken: false, stderr: stderr.into() , exit_code: None, signal: None };
+            let m = start_failure_message(&died, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
             assert!(!m.contains("did not become healthy"), "{m}");
         }
     }
@@ -5472,13 +7121,307 @@ mod tests {
     }
 
     #[test]
+    fn an_illegal_instruction_exit_code_is_recognised_and_nothing_else_is() {
+        // K1: -1073741795 is 0xC000001D (STATUS_ILLEGAL_INSTRUCTION)
+        // reinterpreted as a signed i32, which is exactly what
+        // `ExitStatus::code()` hands back on Windows.
+        assert!(is_illegal_instruction_exit(Some(-1073741795)));
+        assert_eq!(ILLEGAL_INSTRUCTION_EXIT_CODE, -1073741795);
+        // Negative control: neither "no code at all" (killed by a signal) nor
+        // an ordinary crash code reads as the CPU fault.
+        assert!(!is_illegal_instruction_exit(None));
+        assert!(!is_illegal_instruction_exit(Some(1)));
+        assert!(!is_illegal_instruction_exit(Some(-1073741819))); // 0xC0000005, access violation
+    }
+
+    #[test]
+    fn an_illegal_instruction_exit_names_the_cpu_and_skips_the_second_try() {
+        // K1: both the GPU attempt and the CPU-only retry run the identical
+        // binary, so the message must not promise a retry that never
+        // happens, and it must name the cause (an unsupported instruction
+        // set) instead of the generic "reinstall" advice.
+        //
+        // Runde 2, Punkt D rewrote the wording: no OS-specific status code
+        // (the same sentence now has to fit Windows' 0xC000001D AND Linux's
+        // SIGILL, see the SIGILL test below), no competing product name, and
+        // no hardcoded "for example AVX2": the real missing features depend
+        // on the machine running this test, which a CI runner's modern CPU
+        // will not actually be missing any of, so this only checks the
+        // structural properties every branch must have, not a specific
+        // feature name. `missing_cpu_features_from`'s own tests cover the
+        // per-feature wording directly, against synthetic readings.
+        let f = StartFailure {
+            died: true,
+            port_taken: false,
+            stderr: String::new(),
+            exit_code: Some(ILLEGAL_INSTRUCTION_EXIT_CODE),
+            signal: None,
+        };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
+        assert!(!msg.contains("0xC000001D"), "no OS-specific status code: {msg}");
+        assert!(!msg.contains("STATUS_ILLEGAL_INSTRUCTION"), "{msg}");
+        assert!(!msg.contains("for example AVX2"), "the guess is gone: {msg}");
+        assert!(!msg.contains("Ollama"), "no competing product named: {msg}");
+        // BLOCKER C1 (review-integ.md): after the sidecar rebuild, "the
+        // bundled engine's build requires X" and "until a build with broader
+        // CPU support is available" are both false, K1 shipped exactly that
+        // broader build. The message must not claim the build itself lacks
+        // support for this CPU any more.
+        assert!(!msg.contains("build requires"), "the build-lacks-support claim is gone: {msg}");
+        assert!(!msg.contains("broader CPU support"), "{msg}");
+        assert!(msg.contains("LU Cloud"), "the cloud stays available, but not as the only answer: {msg}");
+        assert!(msg.contains("did not retry"), "{msg}");
+        assert!(!msg.contains("tried twice"), "no second try ran: {msg}");
+        assert!(
+            !regex::Regex::new(r"\d+\.\d+\.\d+").unwrap().is_match(&msg),
+            "no version number in an update promise: {msg}"
+        );
+
+        // Negative control: an ordinary death (no illegal-instruction exit
+        // code, no signal) is unaffected and keeps its own wording.
+        let ordinary = StartFailure { exit_code: None, signal: None, ..f };
+        let ordinary_msg = start_failure_message(
+            &ordinary,
+            8127,
+            Duration::from_secs(60),
+            SecondAttempt::SameOffload,
+            None,
+        );
+        assert!(!ordinary_msg.contains("illegal-instruction"), "{ordinary_msg}");
+    }
+
+    /// BLOCKER C1 (review-integ.md, Teil (c)): with no backend folder to
+    /// count at all (`None`, mirroring a fresh or broken Windows/Linux
+    /// install where `resolve_engine_backend_dir` found nothing), the
+    /// message must point at an incomplete installation or antivirus
+    /// quarantine and offer a reinstall, not repeat the old "wait for a
+    /// broader build" claim.
+    ///
+    /// BLOCKER C2 (review-integ.md, Nachpruefung): tests the PURE
+    /// `illegal_instruction_repair_sentence` with `is_macos` injected
+    /// explicitly, not `start_failure_message` with `cfg!(target_os = ...)`
+    /// baked in, precisely so this test's verdict does not depend on which
+    /// OS happens to run `cargo test`. On this repo's own dev machine
+    /// (macOS) `cfg!(target_os = "macos")` is always true at compile time,
+    /// so going through `start_failure_message` here would silently test the
+    /// mac branch instead of the Windows/Linux one it claims to cover.
+    #[test]
+    fn illegal_instruction_with_no_backend_dir_blames_the_installation() {
+        let msg = illegal_instruction_repair_sentence(None, false);
+        assert!(msg.contains("Reinstall Locally Uncensored"), "{msg}");
+        assert!(msg.to_lowercase().contains("antivirus"), "{msg}");
+        assert!(msg.contains("none of the separate CPU builds"), "{msg}");
+    }
+
+    /// Negative control for the two cases `count_cpu_backend_modules` tells
+    /// apart: a folder that holds every expected CPU variant still crashed,
+    /// so the wording must not claim the folder is empty (that would send a
+    /// user with a genuinely complete install looking for files that are
+    /// already there), while still pointing at antivirus/reinstall rather
+    /// than at "no build exists for this CPU". Same C2 note as the test
+    /// above: `is_macos` is passed explicitly as `false`.
+    #[test]
+    fn illegal_instruction_with_a_full_backend_dir_does_not_claim_it_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: &[&str] = if cfg!(target_os = "windows") {
+            &["ggml-cpu-x64.dll", "ggml-cpu-sse42.dll", "ggml-cpu-haswell.dll"]
+        } else {
+            &["libggml-cpu-x64.so", "libggml-cpu-sse42.so", "libggml-cpu-haswell.so"]
+        };
+        for name in names {
+            std::fs::write(dir.path().join(name), b"stub").unwrap();
+        }
+        let count = count_cpu_backend_modules(dir.path());
+        assert_eq!(count, 3);
+        let msg = illegal_instruction_repair_sentence(Some(count), false);
+        assert!(msg.contains("Reinstall Locally Uncensored"), "{msg}");
+        assert!(msg.to_lowercase().contains("antivirus"), "{msg}");
+        assert!(msg.contains("holds 3 of the separate CPU builds"), "{msg}");
+        assert!(!msg.contains("none of the separate CPU builds"), "a full folder is not an empty one: {msg}");
+
+        // Negative control: an EMPTY folder (created but never populated) is
+        // reported as empty, not as "3 of the separate CPU builds".
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty_count = count_cpu_backend_modules(empty_dir.path());
+        let empty_msg = illegal_instruction_repair_sentence(Some(empty_count), false);
+        assert!(empty_msg.contains("none of the separate CPU builds"), "{empty_msg}");
+        assert!(!empty_msg.contains("holds 3"), "{empty_msg}");
+    }
+
+    /// BLOCKER C2 (review-integ.md, Nachpruefung): on macOS,
+    /// `resolve_engine_backend_dir` returns `None` unconditionally (the Mac
+    /// sidecar is one static build with Metal embedded, no dynamic ISA
+    /// variants, and `is_dynamic_isa_triple` is false for both Darwin
+    /// triples). The mac branch must say the true thing (this processor
+    /// lacks what the one Mac build needs) and must NEVER promise a
+    /// reinstall or mention antivirus, since neither can produce a file that
+    /// this platform does not ship in the first place.
+    #[test]
+    fn illegal_instruction_on_macos_never_blames_the_installation() {
+        let msg = illegal_instruction_repair_sentence(None, true);
+        // Reinstalling is mentioned, but only to rule it out as a fix (a
+        // true statement); it must not be OFFERED as the way out the way
+        // "Reinstall Locally Uncensored" is on Windows/Linux.
+        assert!(!msg.contains("Reinstall Locally Uncensored"), "{msg}");
+        assert!(!msg.to_lowercase().contains("antivirus"), "{msg}");
+        assert!(!msg.contains("separate CPU builds"), "{msg}");
+        assert!(msg.contains("single build for every Mac"), "{msg}");
+
+        // Negative control: this is NOT a quirk of `None` specifically. A
+        // real backend_dir with some or all modules present would be
+        // impossible on a real Mac (resolve_engine_backend_dir never
+        // returns Some there), but the pure function must still ignore
+        // module_count on the mac branch rather than reading it, so an
+        // injected Some(0) and Some(9) read exactly the same as None here.
+        let same_as_zero = illegal_instruction_repair_sentence(Some(0), true);
+        let same_as_nine = illegal_instruction_repair_sentence(Some(9), true);
+        assert_eq!(msg, same_as_zero, "the mac branch must not read module_count at all");
+        assert_eq!(msg, same_as_nine, "the mac branch must not read module_count at all");
+
+        // Negative control across the platform flag itself: the SAME
+        // module_count reads as two different, non-overlapping sentences
+        // depending only on is_macos.
+        let windows_or_linux_msg = illegal_instruction_repair_sentence(None, false);
+        assert_ne!(msg, windows_or_linux_msg);
+        assert!(windows_or_linux_msg.contains("Reinstall"), "{windows_or_linux_msg}");
+    }
+
+    /// `count_cpu_backend_modules` itself, isolated from the message
+    /// wording: loader-exact prefix, not a bare substring match, and unaware
+    /// of `ggml-base`/`ggml-vulkan`/the exe sitting in the same folder.
+    #[test]
+    fn count_cpu_backend_modules_counts_only_the_cpu_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = if cfg!(target_os = "windows") { "ggml-cpu-" } else { "libggml-cpu-" };
+        let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
+        for variant in ["x64", "sse42", "haswell"] {
+            std::fs::write(dir.path().join(format!("{prefix}{variant}.{ext}")), b"stub").unwrap();
+        }
+        // Siblings that must NOT be counted: the shared runtime, the GPU
+        // backend, and the exe itself.
+        let base = if cfg!(target_os = "windows") { "ggml-base.dll" } else { "libggml-base.so" };
+        let vulkan = if cfg!(target_os = "windows") { "ggml-vulkan.dll" } else { "libggml-vulkan.so" };
+        std::fs::write(dir.path().join(base), b"stub").unwrap();
+        std::fs::write(dir.path().join(vulkan), b"stub").unwrap();
+        assert_eq!(count_cpu_backend_modules(dir.path()), 3);
+
+        // Negative control: a directory holding only the non-CPU siblings
+        // counts as zero, not as "found something".
+        let siblings_only = tempfile::tempdir().unwrap();
+        std::fs::write(siblings_only.path().join(base), b"stub").unwrap();
+        std::fs::write(siblings_only.path().join(vulkan), b"stub").unwrap();
+        assert_eq!(count_cpu_backend_modules(siblings_only.path()), 0);
+
+        // A directory that does not exist at all behaves like an empty one
+        // instead of panicking (a stale or unresolved backend_dir).
+        assert_eq!(count_cpu_backend_modules(&dir.path().join("does-not-exist")), 0);
+    }
+
+    #[test]
+    fn a_linux_sigill_is_recognised_the_same_way_the_windows_exit_code_is() {
+        // K1 Runde 2, Punkt D: `ExitStatus::code()` reads `None` for BOTH "no
+        // code at all" and "a signal killed it", so before `StartFailure`
+        // carried its own `signal` field this case was silently
+        // indistinguishable from an ordinary, causeless death. is_sigill is
+        // the Unix twin of is_illegal_instruction_exit.
+        assert!(is_sigill(Some(SIGILL)));
+        assert_eq!(SIGILL, 4);
+        assert!(!is_sigill(None));
+        assert!(!is_sigill(Some(6))); // SIGABRT, a different crash entirely
+
+        let f = StartFailure {
+            died: true,
+            port_taken: false,
+            stderr: String::new(),
+            exit_code: None,
+            signal: Some(SIGILL),
+        };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
+        assert!(msg.contains("illegal-instruction"), "SIGILL reads as the same crash: {msg}");
+        assert!(msg.contains("did not retry"), "{msg}");
+        assert!(!msg.contains("0xC000001D"), "{msg}");
+    }
+
+    #[test]
+    fn missing_cpu_features_from_names_exactly_the_flags_that_are_false() {
+        // Argument order: avx, avx2, bmi2, fma, f16c, sse42.
+        assert_eq!(missing_cpu_features_from(true, true, true, true, true, true), Vec::<&str>::new());
+        assert_eq!(missing_cpu_features_from(true, false, true, true, true, true), vec!["AVX2"]);
+        assert_eq!(
+            missing_cpu_features_from(false, false, false, false, false, false),
+            vec!["AVX", "AVX2", "BMI2", "FMA", "F16C", "SSE4.2"]
+        );
+        // Negative control: a single true flag among the rest false ones
+        // must not appear in the list; a function that just returned every
+        // name unconditionally would pass every assertion above except
+        // this one.
+        assert!(!missing_cpu_features_from(true, false, false, false, false, false).contains(&"AVX"));
+    }
+
+    /// Runde 3, Nachbesserung 4: the whole point of measuring BMI2 and
+    /// SSE4.2 too is that a CPU missing ONLY one of those two must not fall
+    /// back to the generic sentence, the exact imprecision the review named
+    /// for AVX2 in Runde 2 (Punkt 3/6). Both checked on their own, plus a
+    /// negative control that neither shows up when everything is present.
+    #[test]
+    fn a_cpu_missing_only_bmi2_or_only_sse42_is_named_precisely() {
+        assert_eq!(missing_cpu_features_from(true, true, false, true, true, true), vec!["BMI2"]);
+        assert_eq!(missing_cpu_features_from(true, true, true, true, true, false), vec!["SSE4.2"]);
+        let all_present = missing_cpu_features_from(true, true, true, true, true, true);
+        assert!(!all_present.contains(&"BMI2"));
+        assert!(!all_present.contains(&"SSE4.2"));
+    }
+
+    #[test]
+    fn the_illegal_instruction_message_names_the_measured_missing_feature() {
+        // Wires missing_cpu_features_from's output into the actual sentence,
+        // without depending on this test machine's real CPU: this checks
+        // the STRING-BUILDING half (start_failure_message would call
+        // missing_cpu_features(), the real probe, in production; this test
+        // exercises the same wording logic by constructing the sentence the
+        // same way missing_cpu_features_from's result feeds it).
+        let missing = missing_cpu_features_from(true, false, true, true, true, true);
+        assert_eq!(missing, vec!["AVX2"]);
+        let sentence = if missing.len() == 1 {
+            format!("This CPU is missing the {} instruction set", missing[0])
+        } else {
+            format!("This CPU is missing these instruction sets: {}", missing.join(", "))
+        };
+        assert_eq!(sentence, "This CPU is missing the AVX2 instruction set");
+    }
+
+    #[test]
+    fn the_retry_is_skipped_before_it_would_run_for_an_illegal_instruction_exit() {
+        // Structural guard, mirroring `every_failed_switch_runs_through_the_
+        // fallback` above: `start_after_stop` must ask
+        // `is_illegal_instruction_exit` and return BEFORE the line that logs
+        // and starts the second attempt, so a CPU that cannot run the
+        // sidecar is never asked to try the exact same binary twice.
+        let src = include_str!("engine.rs");
+        let body = src
+            .split("fn start_after_stop(")
+            .nth(1)
+            .expect("start_after_stop is gone")
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        let guard = body
+            .find("is_illegal_instruction_exit(failure.exit_code)")
+            .expect("the illegal-instruction short-circuit is gone from start_after_stop");
+        let retry = body
+            .find("retrying once")
+            .expect("the retry log line is gone from start_after_stop");
+        assert!(guard < retry, "the illegal-instruction check no longer runs before the retry");
+    }
+
+    #[test]
     fn a_dead_start_names_the_graphics_card_when_the_engine_blamed_it() {
         let f = StartFailure {
             died: true,
             port_taken: false,
             stderr: "ggml_cuda_init: failed to initialize CUDA: no kernel image is available for execution on the device".into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("exited again"), "{msg}");
         assert!(msg.contains("tried twice"), "{msg}");
         assert!(msg.contains("GPU Layers to 0"), "{msg}");
@@ -5492,8 +7435,8 @@ mod tests {
             died: true,
             port_taken: false,
             stderr: "llama_model_load: error loading model: unknown model architecture 'wanx'".into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
     }
@@ -5521,8 +7464,8 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: KAPUTTE_GGUF_STDERR.into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("graphics-card"), "{msg}");
@@ -5739,8 +7682,8 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: KAPUTTE_VERSION_STDERR.into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("could not read the model file"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("graphics-card"), "{msg}");
@@ -5756,24 +7699,24 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9216.00 MiB on device 0: cudaMalloc failed: out of memory\nllama_model_load: error loading model: unable to allocate CUDA0 buffer\nllama_model_load_from_file_impl: failed to load model".into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("GPU Layers"), "{msg}");
         assert!(!msg.contains("could not read the model file"), "{msg}");
     }
 
     #[test]
     fn a_stranger_on_the_port_keeps_its_own_message() {
-        let f = StartFailure { died: true, port_taken: true, stderr: String::new() };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+        let f = StartFailure { died: true, port_taken: true, stderr: String::new() , exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("occupying the port"), "{msg}");
         assert!(!msg.contains("tried twice"), "{msg}");
     }
 
     #[test]
     fn a_slow_load_still_reports_the_budget_and_never_claims_a_crash() {
-        let f = StartFailure { died: false, port_taken: false, stderr: String::new() };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(220), SecondAttempt::SameOffload);
+        let f = StartFailure { died: false, port_taken: false, stderr: String::new() , exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(220), SecondAttempt::SameOffload, None);
         assert!(msg.contains("did not become healthy on port 8127 within 220s"), "{msg}");
         assert!(!msg.contains("exited"), "{msg}");
     }
@@ -5790,8 +7733,8 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "lu-llama-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file: No such file or directory".into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("libvulkan.so.1"), "{msg}");
         assert!(!msg.contains("GPU Layers"), "{msg}");
         // The engine's own last words still ride along for a bug report.
@@ -5876,8 +7819,8 @@ srv    llama_server: exiting due to model loading error";
             died: true,
             port_taken: false,
             stderr: "ggml_vulkan: no devices found".into(),
-        };
-        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload);
+            exit_code: None, signal: None };
+        let msg = start_failure_message(&f, 8127, Duration::from_secs(60), SecondAttempt::SameOffload, None);
         assert!(msg.contains("GPU Layers to 0"), "{msg}");
         assert!(!msg.contains("apt install"), "{msg}");
         // And an empty stderr names no library at all.
@@ -5901,7 +7844,7 @@ srv    llama_server: exiting due to model loading error";
         // Negative control: a plain port collision is not a GPU problem, and
         // sending that user into the GPU Layers setting would waste their time.
         assert!(!stderr_blames_the_gpu("error: bind(): Address already in use"));
-        assert!(!stderr_blames_the_model("error: bind(): Address already in use"));
+        assert!(!stderr_blames_the_model_file("error: bind(): Address already in use"));
     }
 
     #[test]

@@ -27,7 +27,7 @@ describe('the Agent loop emits per-round thinking blocks', () => {
     const emit = agent.indexOf('// G21-2 (David 2026-08-07)')
     expect(emit).toBeGreaterThan(-1)
     const after = agent.slice(emit, emit + 1400)
-    expect(after).toContain("thinkingRef.current = ''")
+    expect(after).toContain("runState.thinking = ''")
     expect(after).toContain("updateMessageThinking(convId!, assistantMessage.id, '')")
   })
 
@@ -38,7 +38,7 @@ describe('the Agent loop emits per-round thinking blocks', () => {
   it('NEGATIVE CONTROL: a run with no tool activity keeps the classic bubble', () => {
     // The final turn falls back to the top-of-bubble field, which the
     // tool-intent hint in MessageBubble reads.
-    expect(agent).toContain('thinkingRef.current = turnThinking')
+    expect(agent).toContain('runState.thinking = turnThinking')
   })
 
   it('NEGATIVE CONTROL: thoughts are only emitted when thinking is enabled', () => {

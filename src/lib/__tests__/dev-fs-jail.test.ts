@@ -26,6 +26,7 @@ import {
   effectiveByteCap,
   DEV_READ_BYTES_CAP,
   JailEscapeError,
+  pathKey,
 } from '../dev-fs-jail'
 // Der Ordnername kommt aus app-identity (dieser Branch hängt einen Suffix an),
 // damit die Zusicherungen den Namen nicht gegen sich selbst ausspielen.
@@ -128,6 +129,14 @@ describe('path primitives', () => {
     expect(lexicalNormalize('/a/b/../c/./d')).toBe('/a/c/d')
     expect(lexicalNormalize('a/../../b')).toBe('b')
     expect(lexicalNormalize('C:\\a\\b\\..\\c')).toBe('C:/a/c')
+  })
+
+  it('R2-41: pathKey treats case/slash/trailing-slash variants of the same path as equal', () => {
+    expect(pathKey('D:\\code')).toBe(pathKey('d:/CODE/'))
+    expect(pathKey('D:\\code')).toBe(pathKey('D:\\code\\'))
+    // Negative control: a genuinely different path is NOT the same key.
+    expect(pathKey('D:\\code')).not.toBe(pathKey('D:\\other'))
+    expect(pathKey('/a/b')).not.toBe(pathKey('/a/bc'))
   })
 
   it('knows an absolute path on both platforms', () => {

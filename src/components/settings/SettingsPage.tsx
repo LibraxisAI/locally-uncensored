@@ -24,6 +24,7 @@ import { downloadSuffix } from '../../lib/formatters'
 // Augenblick braucht, in dem ein Start gescheitert ist: eine Meldung darf
 // nicht erst darauf warten, dass ein Stueck Programm nachgeladen wird.
 import { comfyStartupError, comfyCrashAdvice, comfyStartThrowText, COMFY_START_FAILED } from '../create/experimental/comfyError'
+import { Modal } from '../ui/Modal'
 
 // AS-09: PIPER_VOICES und CLOUD_TTS_VOICES sind mit dem Abschnitt, der sie
 // benutzt, nach ./SpeechSettings.tsx gezogen.
@@ -69,6 +70,7 @@ import { ModelsRootSetting } from './ModelsRootSetting'
 import { defaultComfyPort } from '../../lib/comfy-default-port'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
 import { ContentPolicySettings } from './ContentPolicySettings'
+import { isLmStudioProvider } from '../../lib/hf-to-provider'
 
 // ── User profile picture (Appearance) ───────────────────────────
 // Self-contained like HfDownloadPathSetting. Stores the picture as a
@@ -163,7 +165,7 @@ function Section({ title, children, defaultOpen = false }: { title: string; chil
         className="w-full flex items-center justify-between py-2.5 group"
       >
         {/* D-S28: zwoelfmal 11,96px/600 uppercase gray-500 war kein Rang,
-            sondern zwoelfmal dieselbe Betonung — und im Dunkelmodus mit
+            sondern zwoelfmal dieselbe Betonung, und im Dunkelmodus mit
             3.37:1 (gray-500 #6b7280 auf #202020) unter WCAG AA. Der Kopf ist
             jetzt eine echte Ueberschrift auf der Stufe darunter: 0.82rem =
             15,1px bei 18,4px Wurzelmass, Satzstellung statt Versalien,
@@ -247,7 +249,6 @@ function WorkflowSection() {
 
   return (
     <WorkflowList
-      onRun={() => {}}
       onEdit={(id) => { setEditingId(id); setWfView('builder') }}
       onCreate={() => { setEditingId(undefined); setWfView('builder') }}
     />
@@ -651,7 +652,7 @@ export function ImportLocalModels() {
       </button>
       {errors.scan && <div className="text-[0.6rem] text-red-400">{errors.scan}</div>}
       {/* Welle 3, Listen-Ladezustand 4 von 4: waehrend des Scans stand hier
-          nichts — der Knopf sagte „Scanning…" und darunter blieb es leer, bis
+          nichts, der Knopf sagte „Scanning…" und darunter blieb es leer, bis
           die Liste da war und den Rest der Sektion nach unten schob. Das
           Skelett haelt den Platz, den die Kandidatenzeilen einnehmen. */}
       {scanning && <ImportScanSkeleton />}
@@ -693,18 +694,18 @@ export function ImportLocalModels() {
 /**
  * Antwort von `comfyui_status` (`src-tauri/src/commands/process.rs:1989`).
  *
- * Der Typ stand als Ganzes schon da — als der inline notierte Zustandstyp von
+ * Der Typ stand als Ganzes schon da, als der inline notierte Zustandstyp von
  * `useState` eine Zeile weiter unten. Nur der Weg dorthin trug `any`, und der
  * hat zwei Abweichungen zugedeckt, die beide nachgemessen sind:
  *
  *  1. `path` ist auf der Rust-Seite `Option<String>`, kommt also als `null`
- *     an — nicht als `undefined`. Der Zustandstyp sagte `path?: string`; ein
+ *     an, nicht als `undefined`. Der Zustandstyp sagte `path?: string`; ein
  *     `null` haette dort nie hineingedurft, und `any` hat es hineingelassen.
  *     Beide Lesestellen (`status?.path || ''`) vertragen `null` ohnehin.
  *  2. Der Dev-Server, den der Browser-Modus statt Tauri anspricht, sendet von
  *     den zehn Schluesseln nur sechs (`dev-server/comfy.ts:461`): `stalled`,
  *     `complete`, `port`, `host` und `isLocal` fehlen dort. Deshalb sind sie
- *     hier optional — im Browser sind sie wirklich nicht da.
+ *     hier optional, im Browser sind sie wirklich nicht da.
  */
 interface ComfyStatusResponse {
   running: boolean
@@ -713,11 +714,25 @@ interface ComfyStatusResponse {
   starting?: boolean
   stalled?: boolean
   complete?: boolean
-  /** `null`, solange kein Pfad gespeichert ist — auch bei `found: true`. */
+  /** `null`, solange kein Pfad gespeichert ist, auch bei `found: true`. */
   path?: string | null
   port?: number
   host?: string
   isLocal?: boolean
+  /** Final review 19.09.2026 (B2): whether THIS app may treat the ComfyUI on
+   *  the configured port as its own, per the one shared decision
+   *  (`classify_comfyui_ownership` in `process.rs`) the status panel and
+   *  Update's confirm dialog both read. `running` alone cannot tell an
+   *  instance LU started from one merely answering on the port, and a plain
+   *  "is there a live child handle from THIS run" is not enough either: a
+   *  ComfyUI LU started in an earlier session and never lost track of
+   *  (T-68's orphan, exactly what a live ComfyUI looks like after every app
+   *  restart) still counts as ours. box-gruen/n9 punkt 87 found real damage
+   *  in the first gap (a foreign ComfyUI read as plain "Running") and the
+   *  final review found the second one (an own, orphaned ComfyUI wrongly
+   *  read as foreign after a restart, blocking Update on the customer's own
+   *  process). */
+  ownedByApp?: boolean
 }
 
 /** Antwort von `comfyui_last_output` (`process.rs`). Alle vier Schluessel
@@ -731,6 +746,52 @@ interface ComfyLastOutput {
    *  hat (Ticket 007). Er sticht den allgemeinen Reparatursatz, siehe
    *  `comfyCrashAdvice`. */
   hint: string
+}
+
+/** box-gruen/n9 Punkt 87 (ENG-18): "Update ComfyUI" used to start
+ *  "Installing ComfyUI…" the moment it was clicked, no question asked, even
+ *  with a live ComfyUI on the port -- the same shape as the Trainer's
+ *  reinstall dialog (`SpecialIntentControls.tsx`'s `TrainerReinstallModal`)
+ *  fixes for that button: a real Modal (X and Escape both close it, per the
+ *  house rule), plain English about what happens and what does not, the
+ *  folder named as read-only text, and the backend command is only ever
+ *  called from `onConfirm`. */
+function ComfyUpdateConfirmModal({
+  open,
+  onClose,
+  path,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  path: string
+  onConfirm: () => void
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title="Update ComfyUI?">
+      <div className="space-y-4 text-sm text-gray-200">
+        <p className="t-body leading-relaxed text-gray-300">
+          This pulls the latest ComfyUI and reinstalls its Python packages. It can take a few minutes. If ComfyUI is running and this app started it, it will be stopped first; a ComfyUI this app did not start blocks the update instead.
+        </p>
+        {path && <p className="t-label text-gray-500 text-center">ComfyUI folder: {path}</p>}
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            onClick={onConfirm}
+            className="w-full px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-200 text-sm font-medium transition-colors"
+          >
+            Update
+          </button>
+          <button
+            onClick={onClose}
+            data-autofocus
+            className="w-full px-4 py-1.5 rounded-lg hover:bg-white/5 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 export function ComfyUISettings() {
@@ -753,6 +814,18 @@ export function ComfyUISettings() {
   const [customHost, setCustomHost] = useState('')
   const [hostError, setHostError] = useState('')
   const [hostSuccess, setHostSuccess] = useState(false)
+  // box-gruen/n9 Punkt 87 (ENG-18): the confirmation dialog for "Update
+  // ComfyUI". Closed by default; opened only by the button below, and the
+  // backend call itself only ever runs from the dialog's own Update button.
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false)
+  // K2 (final review 19.09.2026): two fast clicks on the dialog's own Update
+  // button, before React re-renders it away, could otherwise fire
+  // `runUpdate()` twice. `COMFY_JOB`'s lock in Rust would answer the second
+  // one with "already_installing" and cause no real harm, but a ref that
+  // reset only when the dialog re-opens is one line cheaper than relying on
+  // that. A ref, not state: the guard must take effect on the very first
+  // click, before any re-render.
+  const updateConfirmedRef = useRef(false)
   // A13 (Windows counter-check 2026-09-02): install, update and repair used to
   // keep their phase, their log lines and their byte counters in this
   // component. Switching to another settings section threw all of it away
@@ -924,6 +997,38 @@ export function ComfyUISettings() {
     void useComfyInstallStore.getState().cancel()
   }
 
+  // box-gruen/n9 Punkt 87 (ENG-18): the button used to call runUpdate()
+  // directly and unconditionally. A ComfyUI this app never started answering
+  // on the port is caught here, before the dialog even opens, so the click
+  // reads as a plain message instead of a start-then-cancel round trip; the
+  // backend (`update_comfyui`) checks the same thing again and is the real
+  // gate (defense in depth), since the status here is only ever a mirror of
+  // the last 5 s poll.
+  //
+  // Final review 19.09.2026 (B2): this used to ask `processAlive === false`,
+  // which only answers for a live handle from THIS run. A ComfyUI LU started
+  // in an earlier session (T-68's orphan, exactly what a live ComfyUI looks
+  // like after every app restart) then read as foreign, blocking Update on
+  // the customer's own process with an untrue message. `ownedByApp` asks the
+  // one question that actually matters: would the backend's own guard
+  // (`ensure_comfyui_stopped_for_update`) stop this, or refuse it.
+  const handleUpdateClick = () => {
+    if (status?.running && status?.ownedByApp === false) {
+      setStartError('A ComfyUI this app did not start is using this folder. Close that ComfyUI first, then try Update ComfyUI again.')
+      return
+    }
+    updateConfirmedRef.current = false
+    setUpdateConfirmOpen(true)
+  }
+
+  const handleConfirmUpdate = () => {
+    if (updateConfirmedRef.current) return
+    updateConfirmedRef.current = true
+    setUpdateConfirmOpen(false)
+    setStartError('')
+    void useComfyInstallStore.getState().runUpdate()
+  }
+
   const handleStop = async () => {
     setStartError('')
     // Ohne diese Zeile erfindet der Restart-Knopf einen Absturz: nach einem
@@ -938,9 +1043,9 @@ export function ComfyUISettings() {
       setStatus(prev => prev ? { ...prev, running: false } : null)
     } catch (e) {
       // Level (c): a stop that failed leaves the panel showing "running", which
-      // is the truth — but without this line the button reads as a dud. Same
+      // is the truth, but without this line the button reads as a dud. Same
       // channel as the start failure, right under the same pair of buttons.
-      setStartError(withDetail('ComfyUI did not stop. It may still be running — try again, or close it in its own window.', e))
+      setStartError(withDetail('ComfyUI did not stop. It may still be running, try again, or close it in its own window.', e))
     }
   }
 
@@ -979,7 +1084,20 @@ export function ComfyUISettings() {
               Zwischenfall aussehen lassen. */}
           <div className={`w-1.5 h-1.5 rounded-full ${status?.running ? PUNKT_FARBE.an : status?.stalled ? PUNKT_FARBE.kaputt : PUNKT_FARBE.aus}`} />
           <span className="text-[0.65rem] text-gray-500">
-            {status?.running ? 'Running'
+            {/* box-gruen/n9 Punkt 87 (ENG-18): "Running" alone does not say
+                WHOSE ComfyUI is on the port. `ownedByApp === false` while
+                `running` is true means a copy started outside LU, exactly
+                the shape a foreign "Update ComfyUI" click damaged for real
+                on a Windows box. Kept to the strict `=== false` check so a
+                path that simply never sends the field (undefined) still
+                reads as plain "Running", not a false alarm.
+
+                Final review 19.09.2026 (B2): this used to key off
+                `processAlive`, which only answers for a live handle from
+                THIS run and reads LU's own orphaned ComfyUI from an earlier
+                session as foreign after every app restart.
+                `ownedByApp` is the backend's one shared answer instead. */}
+            {status?.running ? (status?.ownedByApp === false ? 'Running (started outside LU)' : 'Running')
               : status?.stalled ? 'Not responding'
               : status?.starting ? 'Starting'
               : status?.found ? 'Stopped' : 'Not Installed'}
@@ -1142,7 +1260,7 @@ export function ComfyUISettings() {
           </button>
         )}
         {/* GH #98: a from-source install whose Python env broke (shared system
-            Python, dead torch) needs a rebuild, not a re-install — pip reports
+            Python, dead torch) needs a rebuild, not a re-install, pip reports
             broken packages as already satisfied. Rebuilds ComfyUI/venv.
 
             Blau, weil es in dieser Knopfreihe noch frei war: Gruen gehoert
@@ -1171,11 +1289,11 @@ export function ComfyUISettings() {
         )}
         {status?.found && status?.complete !== false && installIdle && (
           // 2.5.8: the specialized local lanes (music / talking character /
-          // motion) need node families that ship with current cores — this is
+          // motion) need node families that ship with current cores, this is
           // the one-click git pull + dependency refresh the lane errors point
           // to. Reuses the installer's status channel and log panel.
           <button
-            onClick={() => { void useComfyInstallStore.getState().runUpdate() }}
+            onClick={handleUpdateClick}
             className="px-2 py-1 rounded text-[0.6rem] bg-white/5 text-gray-400 hover:text-gray-200 hover:bg-white/10 transition-colors"
           >
             Update ComfyUI
@@ -1269,6 +1387,12 @@ export function ComfyUISettings() {
         )}
       </div>
       )}
+      <ComfyUpdateConfirmModal
+        open={updateConfirmOpen}
+        onClose={() => setUpdateConfirmOpen(false)}
+        path={status?.path || ''}
+        onConfirm={handleConfirmUpdate}
+      />
     </div>
   )
 }
@@ -1334,7 +1458,7 @@ function CodexAgentSettings() {
         />
       </div>
 
-      {/* /loop — unlimited by default. The stop button and the loop bar above
+      {/* /loop, unlimited by default. The stop button and the loop bar above
           the composer are the brake; a number here is only for people who want
           a hard stop after N passes. */}
       <div className="pt-1.5 border-t border-white/[0.04]" />
@@ -1415,7 +1539,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: ReactNode }[] = [
   { id: 'voice-remote', label: 'Voice & Remote', icon: <Phone size={11} /> },
 ]
 
-// GitHub #59 — the old single "Reset to Defaults" button fired silently with
+// GitHub #59, the old single "Reset to Defaults" button fired silently with
 // no confirm and no feedback, so users reported it as "does nothing". Now:
 // arm-then-confirm (second click within 4s), per-tab scope, and an explicit
 // success line after the reset.
@@ -1435,7 +1559,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
   const resetPermissions = usePermissionStore((s) => s.resetToDefaults)
   // The arm records the tab it was made on, so "still armed?" is a question
   // that can be answered while rendering. Switching tabs while armed must
-  // disarm — otherwise a click armed on General would confirm-fire on Agent —
+  // disarm, otherwise a click armed on General would confirm-fire on Agent,
   // and armedScopeFor() is that rule (src/lib/reset-arming.ts). It replaces a
   // `useEffect(..., [tab])` that disarmed one render too late.
   const [arm, setArm] = useState<ResetArm<SettingsTab>>(null)
@@ -1484,11 +1608,11 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
 
   return (
     <div className="pt-3 pb-6 space-y-2.5">
-      {/* D-S29: die beiden Reset-Aktionen sahen gleich aus — zwei graue
+      {/* D-S29: die beiden Reset-Aktionen sahen gleich aus, zwei graue
           Textlinks nebeneinander, von denen einer sehr viel mehr loescht.
           Die gefaehrlichere traegt jetzt eine eigene Form (umrandete
           Gefahrfarbe statt Textlink), eine eigene Zeile und einen Satz, der
-          den Unterschied benennt — Text UND Kante durch WCAG, also auch
+          den Unterschied benennt, Text UND Kante durch WCAG, also auch
           1.4.11 (3:1) fuer die Umrandung. Vorher stand "Reset all settings"
           im Dunkelmodus auf gray-600, war also ausgerechnet die unlesbarere
           der beiden.
@@ -1496,7 +1620,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
           ZWEITER DURCHGANG (01.09.2026), und er hat den Rest des Befundes
           umgedreht. Die Matrix fuehrte hier eine offene Luecke: „der
           tab-weite Reset-Link steht im Dunkelmodus weiter auf 3.37:1". Diese
-          Zahl war aus KLASSENNAMEN gerechnet — gray-500 #6b7280 auf einem
+          Zahl war aus KLASSENNAMEN gerechnet, gray-500 #6b7280 auf einem
           angenommenen #202020. Im laufenden Fenster (Chromium, Farben aus
           getComputedStyle, oklch ueber eine 1x1-Canvas aufgeloest) steht
           nichts davon:
@@ -1506,7 +1630,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
             Ruhe hell    gray-500 -> #374151   10.31:1   ✓ AA
 
           Der Rescue-Layer (index.css:867/873) hebt `.dark .text-gray-500`
-          auf gray-400 und `.light .text-gray-500` auf gray-700 — die Luecke
+          auf gray-400 und `.light .text-gray-500` auf gray-700, die Luecke
           war zu, bevor dieser Durchgang begann.
 
           Was NICHT zu war und in keiner Zeile stand: der SCHARFE Zustand
@@ -1525,7 +1649,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
 
           Die Klassen dieses Knopfs sind woertlich gepinnt, und zwar in einer
           FREMDEN Datei: src/lib/__tests__/reset-arming-is-visible.test.ts.
-          Deren Farbzeile ist mitgezogen worden — bewusst, im Bericht
+          Deren Farbzeile ist mitgezogen worden, bewusst, im Bericht
           benannt, und mit demselben Biss wie vorher (voller Literalvergleich
           beider Zweige). */}
       <button
@@ -1567,7 +1691,7 @@ function ResetSection({ tab }: { tab: SettingsTab }) {
 
 export function SettingsPage() {
   const { settings, updateSettings } = useSettingsStore()
-  // ENG-2 — the expert panel only exists when the openai slot IS the
+  // ENG-2, the expert panel only exists when the openai slot IS the
   // app-managed built-in engine (same gate as the send-path self-heal).
   const builtinManaged = useProviderStore((s) => !!s.providers.openai?.enabled && s.providers.openai?.managed === true)
   const { setView } = useUIStore()
@@ -1589,7 +1713,7 @@ export function SettingsPage() {
     if (typeof window !== 'undefined') {
       // Level (a): silent on purpose. This only remembers which tab was open
       // for the next visit. If storage is full or blocked (private window),
-      // Settings opens on General next time — a convenience lost, not an
+      // Settings opens on General next time, a convenience lost, not an
       // action failed, and nothing the user could act on.
       try { window.localStorage.setItem(SETTINGS_TAB_KEY, tab) } catch { /* see above */ }
     }
@@ -1597,7 +1721,7 @@ export function SettingsPage() {
 
 
   // D-S27: die Bedingungen, unter denen einzelne Sektionen ueberhaupt
-  // erscheinen, stehen ab hier EINMAL — die Rail liest sie ueber
+  // erscheinen, stehen ab hier EINMAL, die Rail liest sie ueber
   // sectionsFor(), das JSX weiter unten benutzt dieselben Ausdruecke.
   const sectionFlags: SettingsSectionFlags = {
     gpuPicker: !isMlxImageHost(),
@@ -1611,18 +1735,18 @@ export function SettingsPage() {
 
   return (
     <div className="h-full overflow-y-auto scrollbar-thin">
-      {/* D-S27 / D-S48: vorher `max-w-lg mx-auto` — eine 552px-Spalte, die in
+      {/* D-S27 / D-S48: vorher `max-w-lg mx-auto`, eine 552px-Spalte, die in
           der Fenstermitte schwebte und bei 1600px links und rechts je ~524px
           Leere stehen liess. Die Zeilenlaenge war richtig, die Aufhaengung
           nicht. Jetzt: 200px-Rail links, Inhalt linksbuendig daneben, gedeckelt
           auf 640px (Soll des Audits). Die Rail erscheint ab `lg` (1024px
           Fensterbreite); darunter bleibt die waagerechte Tab-Leiste, weil
           200 + 640 in einem 900px-Fenster mit Sidebar nicht nebeneinander
-          passen — und bei 900px sah der Screen laut Audit ohnehin besser aus
+          passen, und bei 900px sah der Screen laut Audit ohnehin besser aus
           als bei 1600px.
 
           D-S48, zweiter Durchgang: `justify-center`. Die Spaltenbreite bleibt
-          unangetastet — die Zeilenlaenge war laut Audit richtig, und ein
+          unangetastet, die Zeilenlaenge war laut Audit richtig, und ein
           Inhalt, der mit dem Fenster mitwaechst, waere ein anderer, nicht
           behobener Befund. Falsch war nur die VERTEILUNG des Rests: er stand
           vollstaendig rechts. Gemessen im laufenden Fenster (Chromium,
@@ -1635,11 +1759,11 @@ export function SettingsPage() {
              1920 px      36,8 / 871,2            454,0 / 454,0
 
           Zentriert wird das PAAR aus Rail und Inhalt, nicht der Inhalt
-          allein — sonst haenge die Spalte wieder frei in der Mitte, und
+          allein, sonst haenge die Spalte wieder frei in der Mitte, und
           genau das war D-S27. Sie haengt weiterhin an der Rail, das Paar
           steht jetzt nur mittig im verfuegbaren Raum. Ueberlaufsicher: unter
           `lg` faellt die Rail auf `display:none` und der Inhalt hat
-          `min-w-0` — es bleibt kein freier Raum uebrig, den `justify-center`
+          `min-w-0`, es bleibt kein freier Raum uebrig, den `justify-center`
           verteilen koennte, und die Zeile bricht nicht nach links aus. */}
       <div className="flex justify-center gap-6 px-4 py-4 lg:px-8">
         <nav
@@ -1651,7 +1775,7 @@ export function SettingsPage() {
               <ArrowLeft size={16} />
             </button>
             {/* D-S28: die Spitze der Leiter. 1.15rem = 21,2px bei 18,4px
-                Wurzelmass — eine Stufe der 12/13/15/17/21/28-Skala des
+                Wurzelmass, eine Stufe der 12/13/15/17/21/28-Skala des
                 Audits, und endlich groesser als ein Sektionskopf. */}
             <h1 className="text-[1.15rem] font-semibold leading-tight text-gray-900 dark:text-gray-100">Settings</h1>
           </div>
@@ -1664,8 +1788,7 @@ export function SettingsPage() {
                     Der ausgewaehlte Tab spricht jetzt die Zustandssprache:
                     Akzentflaeche + Akzentkante links. Aktionen behalten die
                     neutrale graue Flaeche. Gerechnet: die Kante
-                    #8b7cf0 auf Weiss 3.37:1 und #a094f8 auf #202020 6.27:1 —
-                    beide ueber den 3:1 aus WCAG 1.4.11 fuer Nicht-Text. */}
+                    #8b7cf0 auf Weiss 3.37:1 und #a094f8 auf #202020 6.27:1,                     beide ueber den 3:1 aus WCAG 1.4.11 fuer Nicht-Text. */}
                 <button
                   onClick={() => setTab(t.id)}
                   aria-current={tab === t.id ? 'page' : undefined}
@@ -1698,7 +1821,7 @@ export function SettingsPage() {
         </nav>
 
         <div className="min-w-0 w-full max-w-[640px]">
-        {/* Header — nur unterhalb von `lg`; ab da traegt die Rail Titel und
+        {/* Header, nur unterhalb von `lg`; ab da traegt die Rail Titel und
             Zurueck-Knopf. */}
         <div className="lg:hidden flex items-center gap-2 mb-4">
           <button onClick={() => setView('chat')} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-white/5 text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors">
@@ -1709,7 +1832,7 @@ export function SettingsPage() {
 
         {/* P5: top-level tabs. Sticky so the user can switch tabs from
             anywhere in a long Section without scrolling back up. Ab `lg`
-            uebernimmt die Rail diese Aufgabe — zwei gleichzeitig sichtbare
+            uebernimmt die Rail diese Aufgabe, zwei gleichzeitig sichtbare
             Navigationen fuer dieselbe Sache waeren genau der Befund, den
             D-S27 beschreibt. */}
         <div className="lg:hidden sticky top-0 z-10 -mx-4 px-4 pb-2 mb-2 bg-white/80 dark:bg-[#202020]/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:supports-[backdrop-filter]:bg-[#202020]/60 border-b border-gray-100 dark:border-white/[0.06]">
@@ -1787,8 +1910,8 @@ export function SettingsPage() {
             {/* D-S30, zweite Haelfte des Befundes: „Dark" (ein ZUSTAND) und
                 „Upload" in AvatarSetting (eine AKTION) trugen beide
                 `bg-gray-200 dark:bg-white/10`. Zustand spricht ab hier
-                ueberall dieselbe Sprache wie der aktive Tab — Akzentflaeche
-                mit Akzentkante — und die neutrale graue Flaeche bleibt den
+                ueberall dieselbe Sprache wie der aktive Tab, Akzentflaeche
+                mit Akzentkante, und die neutrale graue Flaeche bleibt den
                 Aktionen. */}
             <div className="flex items-center justify-between">
               <span className="text-[0.7rem] text-gray-700 dark:text-gray-400">Theme</span>
@@ -1820,7 +1943,7 @@ export function SettingsPage() {
             <SliderControl label="Top K" value={settings.topK} min={1} max={100} step={1} onChange={(v) => updateSettings({ topK: v })} />
             {/* Die drei Zahlenzeilen dieser Sektion stehen auf der Leiter statt
                 in eckigen Klammern (D-T04). Sie taten es nicht, und als 2.6.8
-                eine vierte dazukam, hat die Sperrklinke das gefangen — der
+                eine vierte dazukam, hat die Sperrklinke das gefangen, der
                 Ausweg war nicht, den Deckel zu heben, sondern die Zeilen zu
                 stellen. `.t-micro` ist der schlichte Kleintext der Leiter,
                 `.t-mono` ihr Rezept fuer eine Zahl (Ziffernbreite fest, damit
@@ -1837,7 +1960,7 @@ export function SettingsPage() {
                 className="w-20 px-1.5 py-0.5 rounded bg-transparent border border-white/8 t-mono text-right text-gray-300 focus:outline-none focus:border-white/20"
               />
             </div>
-            {/* Bug AA v2.5.0 — Ollama num_ctx override. 0 = use the provider
+            {/* Bug AA v2.5.0, Ollama num_ctx override. 0 = use the provider
                 default (Ollama default = 2048 on most builds, which silently
                 clips RAG / long chats). Bump up to use the model's full
                 context window. Ignored by Anthropic / OpenAI providers. */}
@@ -1858,8 +1981,8 @@ export function SettingsPage() {
             </div>
             {/* 2.6.8 auto-compact. Shown as a percentage and stored as a
                 fraction, because the threshold is compared against a ratio
-                (compact-trigger.ts). Same shape as the row above — a number
-                input whose 0 is the off state — rather than a slider, because
+                (compact-trigger.ts). Same shape as the row above, a number
+                input whose 0 is the off state, rather than a slider, because
                 a slider has no way to express "off" at all. */}
             <div className="flex items-center justify-between">
               <span
@@ -1890,12 +2013,12 @@ export function SettingsPage() {
 
           </Section>
 
-          {/* Bug BB v2.5.0 — BobbyT GPU picker. Lazy-loads the GPU list when
+          {/* Bug BB v2.5.0, BobbyT GPU picker. Lazy-loads the GPU list when
               the section opens via detect_gpus probe (nvidia-smi + rocm-smi +
               lspci/wmic). */}
           {/* Not on macOS: every knob in there is a no-op on Apple Silicon.
               The vendor picker forwards CUDA_VISIBLE_DEVICES / HIP_* /
-              ONEAPI_* to Ollama and ComfyUI — none of which exist here (Metal,
+              ONEAPI_* to Ollama and ComfyUI, none of which exist here (Metal,
               unified memory, and ComfyUI never launches). Showing a dead
               NVIDIA/AMD/Intel selector is worse than showing nothing. */}
           {!isMlxImageHost() && (
@@ -1904,7 +2027,7 @@ export function SettingsPage() {
             </Section>
           )}
 
-          {/* Feature CC v2.5.0 — MikeS++ chatbot export importer. Parses
+          {/* Feature CC v2.5.0, MikeS++ chatbot export importer. Parses
               ChatGPT / Claude / Gemini export JSON (or .zip), pre-selects
               every conversation, feeds the chosen ones into the active
               chat's RAG store. */}
@@ -1954,7 +2077,7 @@ export function SettingsPage() {
 
           <Section title="Privacy">
             {settings.appMode === 'cloud' ? (
-              /* Cloud mode: the 100%-local pledge doesn't hold — say so
+              /* Cloud mode: the 100%-local pledge doesn't hold, say so
                  honestly, mirroring the Speech section's cloud copy. */
               <div className="space-y-2 py-1 text-[0.65rem] text-gray-500 dark:text-gray-400 leading-relaxed">
                 <div className="flex items-start gap-2">
@@ -2005,7 +2128,7 @@ export function SettingsPage() {
                   // The line above is what actually re-runs the wizard: AppShell
                   // gates it on settings.onboardingDone, and that store is
                   // persisted, so it survives the reload below. The backend call
-                  // only clears the marker FILE, which is read in one place —
+                  // only clears the marker FILE, which is read in one place,
                   // the NSIS-update recovery in AppShell, and only when the
                   // store itself was lost.
                   //
@@ -2120,8 +2243,7 @@ export function SettingsPage() {
                 dort nicht. Der Gegenstand ist auch ein anderer: beim Hauptlauf
                 sitzt der Nutzer davor und kann Stop druecken, ein Sub-Agent
                 laeuft ohne Zuschauer. Darum sind diese Zahlen klein und darum
-                heisst 0 hier "Vorgabe" und nicht "unbegrenzt" —
-                Unbegrenztheit soll man an einer unbeaufsichtigten Schleife
+                heisst 0 hier "Vorgabe" und nicht "unbegrenzt",                 Unbegrenztheit soll man an einer unbeaufsichtigten Schleife
                 nicht aus Versehen einstellen. */}
             <div className="flex items-center justify-between">
               <span
@@ -2158,7 +2280,7 @@ export function SettingsPage() {
               />
             </div>
             <div className="t-micro text-gray-500 dark:text-gray-500 leading-relaxed pt-0.5">
-              0 = use the defaults (10 calls, 5 steps). A sub-agent runs unattended, so these stay deliberately tight — raise them only for a task you know is long.
+              0 = use the defaults (10 calls, 5 steps). A sub-agent runs unattended, so these stay deliberately tight, raise them only for a task you know is long.
             </div>
             </Section>
           )}
@@ -2237,7 +2359,7 @@ export function SettingsPage() {
 
           <Section title="Remote Access">
             <RemoteAccessSettings />
-            {/* §16 — real step-by-step docs (F5/X2 shipped only a 1-line
+            {/* §16, real step-by-step docs (F5/X2 shipped only a 1-line
                 blurb). Collapsed by default so the settings stay compact. */}
             <Disclosure label="How it works">
               <RemoteAccessDocs />
@@ -2290,7 +2412,7 @@ export function UpdateSection() {
           <span className="text-[0.65rem] text-gray-300 font-mono">v{currentVersion}</span>
         </div>
 
-        {/* Latest version — only show if it's actually newer than current */}
+        {/* Latest version, only show if it's actually newer than current */}
         {displayLatestVersion && (
           <div className="flex items-center justify-between">
             <span className="text-[0.65rem] text-gray-500">Latest Version</span>
@@ -2424,7 +2546,7 @@ export function UpdateSection() {
           </div>
         )}
 
-        {/* Auto-download. Downloads only — installing always stays a click, so
+        {/* Auto-download. Downloads only, installing always stays a click, so
             the app never restarts under the user's hands. */}
         <label className="flex items-start justify-between gap-3 cursor-pointer">
           <span>
@@ -2454,10 +2576,18 @@ export function UpdateSection() {
   )
 }
 
-// ── B7 Troubleshoot section — one-shot diagnostic probe ───────
+// ── B7 Troubleshoot section, one-shot diagnostic probe ───────
 
-interface BackendProbe {
-  status: 'ok' | 'unreachable' | 'not_installed' | 'error'
+// Exported so a test can render the real component instead of parsing its
+// source text (review 2026-09-18: a source-text test breaks on an unrelated
+// rename even when the rendered behaviour is unchanged).
+export interface BackendProbe {
+  // 'timeout': the connection went through but nothing answered within the
+  // probe window, a cold-starting or busy server, not a dead one (R8/T5,
+  // 2026-09-18). Rust's probe_http now tells these apart instead of folding
+  // a slow-but-alive backend into the same "not running" verdict as one that
+  // was never started.
+  status: 'ok' | 'unreachable' | 'timeout' | 'not_installed' | 'error'
   detail: string
   endpoint: string
 }
@@ -2472,7 +2602,7 @@ interface SystemHealthReport {
     ram_gb: number
     disk_free_gb: number
     // §17: VRAM of the biggest NVIDIA GPU. null on non-NVIDIA boxes / when
-    // the nvidia-smi probe fails — rendered as "—".
+    // the nvidia-smi probe fails, rendered as ", ".
     vram_total_gb: number | null
     vram_free_gb: number | null
   }
@@ -2481,7 +2611,13 @@ interface SystemHealthReport {
   lm_studio: BackendProbe
 }
 
-function ProbeBadge({ probe }: { probe: BackendProbe }) {
+// Exported for D1's regression test (3.0.1) and so a test can render the
+// real component instead of parsing its source text: SettingsPage.tsx is
+// hook/store-heavy with no render harness of its own, so the small,
+// self-contained pieces that carry real decisions get tested directly
+// instead of through the whole page, the same pattern ModelSelector.tsx uses
+// for its LM Studio helpers.
+export function ProbeBadge({ probe, switchedOff }: { probe: BackendProbe; switchedOff?: boolean }) {
   // "Not running" und "Not installed" sind beide nur ein Nein und tragen
   // deshalb dasselbe Grau; der Unterschied steht im Wort, nicht in der Farbe.
   // Das Gelb, das "Not running" frueher trug, hat einen ausgeschalteten
@@ -2490,35 +2626,84 @@ function ProbeBadge({ probe }: { probe: BackendProbe }) {
   const colors: Record<BackendProbe['status'], string> = {
     ok: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30',
     unreachable: RUHIG,
+    // Same calm gray as unreachable/not_installed, not a third "in-between"
+    // tone (lib/hinweis.ts HARTE REGEL, 04.09.2026: exactly two tones exist,
+    // ruhig and fehler -- a timeout is neither an error nor urgent, so it
+    // gets ruhig too; the label below is what carries the distinction).
+    timeout: RUHIG,
     not_installed: RUHIG,
     error: 'bg-red-500/15 text-red-500 border-red-500/30',
   }
   const labels: Record<BackendProbe['status'], string> = {
     ok: 'Reachable',
     unreachable: 'Not running',
+    // Was folded into "Not running" before, which told the owner of a live
+    // but cold-starting/busy backend to go restart something that was fine
+    // (review T5, 2026-09-18: the umgekehrte T5-Fehler).
+    timeout: 'Reachable, slow to answer',
     not_installed: 'Not installed',
     error: 'Error',
   }
+  // D1 (3.0.1): the probe itself only asks the fixed default address whether
+  // something answers there, it does not know, and cannot say, whether LU
+  // has this backend switched OFF in Settings. Reachable-but-off used to read
+  // as plain "Reachable", telling a customer with Ollama installed but turned
+  // off that it is in use when it plainly is not. This is the half of the fix
+  // this file can make on its own: the word changes to name both facts at
+  // once. The other half, asking the CONFIGURED address instead of the
+  // hard-coded default, is Rust (health.rs) and stays open (see report).
+  const label = probe.status === 'ok' && switchedOff ? `${labels.ok}, switched off` : labels[probe.status]
+  // Emerald reads as "in use", which is exactly the wrong colour once the
+  // sentence itself says the opposite, the quiet grey used for the other
+  // off states says so at a glance too.
+  const color = probe.status === 'ok' && switchedOff ? RUHIG : colors[probe.status]
   return (
     <span
-      className={`text-[0.55rem] px-1.5 py-0.5 rounded border font-medium ${colors[probe.status]}`}
+      className={`text-[0.55rem] px-1.5 py-0.5 rounded border font-medium ${color}`}
       title={probe.detail || probe.endpoint}
     >
-      {labels[probe.status]}
+      {label}
     </span>
   )
+}
+
+/**
+ * R8-Nachzug (LM-Studio-Adresse, 2026-09-18): Rust besitzt keinen eigenen
+ * Speicherplatz fuer die LM-Studio-Basis (anders als Ollama/ComfyUI, die es
+ * selbst startet), also liest der Aufrufer seinen eigenen Provider-Store und
+ * reicht die konfigurierte Adresse als Befehlsargument durch, statt ein
+ * zweites AppState-Feld nur fuer einen Wert zu pflegen, den Rust ohnehin nie
+ * selbst setzt. Als eigene, exportierte Funktion, damit der Argumentname
+ * `lmStudioBase` (Tauri wandelt ihn nach camelCase fuer `lm_studio_base`,
+ * siehe health.rs) und die Erkennung beider Schreibweisen ("LM Studio",
+ * "LMStudio") direkt getestet werden koennen, ohne die ganze Komponente zu
+ * rendern (B3/F5-Nachbesserung, review-w2rust.md).
+ *
+ * Nutzt den kanonischen Helfer `isLmStudioProvider` (statt eines eigenen
+ * `includes('lm studio')`), der auch einen Slot-Namen wie "LMStudio" erkennt,
+ * genau wie modelStore.ts und ModelSelector.tsx es bereits tun. Eine zweite,
+ * engere Wahrheit fuer denselben Begriff haette denselben Bug fuer diese
+ * Schreibweise offen gelassen.
+ */
+export function lmStudioBaseArg(
+  openaiSlot: { name?: string; baseUrl?: string } | undefined,
+): { lmStudioBase: string | undefined } {
+  return { lmStudioBase: isLmStudioProvider(openaiSlot?.name) ? openaiSlot?.baseUrl : undefined }
 }
 
 function TroubleshootSection() {
   const [report, setReport] = useState<SystemHealthReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [hinweis, setHinweis] = useState<TroubleshootHinweis | null>(null)
+  // D1 (3.0.1): the one fact the probe itself cannot know, see ProbeBadge.
+  const ollamaEnabled = useProviderStore((s) => s.providers.ollama.enabled)
 
   const run = async () => {
     setLoading(true)
     setHinweis(null)
     try {
-      const r = await backendCall<SystemHealthReport>('system_health', {})
+      const openaiSlot = useProviderStore.getState().providers.openai
+      const r = await backendCall<SystemHealthReport>('system_health', lmStudioBaseArg(openaiSlot))
       setReport(r)
     } catch (e) {
       setHinweis(troubleshootHinweis(e, isTauri()))
@@ -2554,7 +2739,7 @@ function TroubleshootSection() {
         </div>
       )}
 
-      {/* Audit #01 — where the log file is. Above the probe result because
+      {/* Audit #01, where the log file is. Above the probe result because
           "send us the log" is the most common outcome of opening this panel. */}
       <LogFileSettings />
 
@@ -2565,7 +2750,7 @@ function TroubleshootSection() {
             <div className="text-[0.55rem] uppercase tracking-widest text-gray-500">Backends</div>
             <div className="flex items-center justify-between">
               <span className="text-[0.65rem] text-gray-300">Ollama</span>
-              <ProbeBadge probe={report.ollama} />
+              <ProbeBadge probe={report.ollama} switchedOff={!ollamaEnabled} />
             </div>
             {!isMlxImageHost() && (
               <div className="flex items-center justify-between">

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>How to Run Qwen 3.8 Max: Every Option That Actually Works</title>
-<meta name="description" content="Practical guide to using Qwen 3.8 Max today: the DashScope API with working code, OpenAI and Anthropic compatible endpoints, pricing, and the honest local answer.">
+<meta name="description" content="Practical guide to using Qwen 3.8 Max today: the DashScope API with working code, OpenAI compatible endpoints, pricing, and the honest local answer.">
 <meta name="keywords" content="how to run qwen 3.8, qwen 3.8 api, qwen 3.8 max api, qwen 3.8 dashscope, qwen 3.8 openrouter, use qwen 3.8, qwen 3.8 api pricing, qwen 3.8 tutorial">
 <meta property="og:title" content="How to Run Qwen 3.8 Max: Every Option That Actually Works">
 <meta property="og:description" content="The DashScope API with working code, OpenAI and Anthropic compatible endpoints, pricing and rate limits, and the honest math on running it yourself.">
@@ -76,6 +76,11 @@
 
     <p><a href="qwen-3-8-max-explained.html">Qwen 3.8 Max</a> went generally available on August 3, 2026. This is the practical guide: every way to actually use it today, with working code, real prices, and no pretending. If you want the specs and benchmark story instead, start with the <a href="qwen-3-8-max-explained.html">explainer</a>.</p>
 
+    <aside class="lu-cloud-box">
+      <span class="lu-cloud-kicker">No GPU? Run it online</span>
+      <p>There is one more option than the ones below: our <a href="/uncensored-ai-api/">OpenAI-compatible API</a> at https://lu-labs.ai/api/inference/v1, where you create a key starting with lu_, keep up to five active at once, and pay per call in credits.</p>
+    </aside>
+
     <h2>Option 1: The DashScope API (OpenAI Compatible)</h2>
 
     <p>The primary route is Alibaba's DashScope platform. Create an API key in the DashScope console, then point any OpenAI SDK at the compatible endpoint:</p>
@@ -116,7 +121,7 @@ print(resp.choices[0].message.content)</code></pre>
     <table>
       <thead><tr><th>You want</th><th>Use</th><th>Why</th></tr></thead>
       <tbody>
-        <tr><td>Max quality, production API</td><td>DashScope, OpenAI compatible</td><td>First party, full tool support, cheapest cache pricing</td></tr>
+        <tr><td>Max quality, production API</td><td>DashScope, OpenAI compatible</td><td>First party, full tool support, cache pricing on repeat input</td></tr>
         <tr><td>Claude shaped agent stack</td><td>Anthropic compatible endpoint</td><td>No request rewriting</td></tr>
         <tr><td>Quick comparison against other models</td><td>OpenRouter</td><td>One line model switch</td></tr>
         <tr><td>Privacy, zero refusals, free</td><td>Local models via LU</td><td>Qwen 3.6 today, Qwen 3.8 27B after the drop</td></tr>

@@ -69,6 +69,11 @@ const OHNE_STECKPLATZ = new Set([
   'settings/MlxMediaSettings.tsx',
   // Der Katalog: CivitAI- und HuggingFace-Eintraege, noch nichts Installiertes.
   'models/DiscoverModels.tsx',
+  // Die CivitAI-Suche selbst, aus DiscoverModels herausgeloest, damit der
+  // LoRA-Reiter dieselbe Karte benutzen kann statt einer Kopie. Dieselbe
+  // Begruendung wie eine Zeile hoeher: ein CivitAI-Treffer ist ein Dateiname
+  // auf civitai.com, kein Chat-Modell mit Steckplatz davor.
+  'models/CivitaiSearchPanel.tsx',
 ])
 
 const portableComponentPath = (path: string) => path.replace(/\\/g, '/')

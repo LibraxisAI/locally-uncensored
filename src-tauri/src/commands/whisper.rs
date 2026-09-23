@@ -1,20 +1,14 @@
 use crate::os_error;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::path::PathBuf;
-
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 use base64::Engine;
 use tauri::{AppHandle, Manager, State};
 use tracing::{error, info};
 
 use crate::state::AppState;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct WhisperServer {
     process: Option<Child>,
@@ -90,13 +84,11 @@ impl WhisperServer {
 
         println!("[Whisper] Starting persistent server: {} {}", python_bin, script_path);
 
-        let mut cmd = Command::new(python_bin);
+        let mut cmd = crate::python::python_command(python_bin);
         cmd.arg(script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
         let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to start whisper server: {}", os_error::english(&e)))?;
         // Long lived Python server: it must not outlive the app on a hard kill.
@@ -295,7 +287,7 @@ fn whisper_package_installed(state: &AppState) -> bool {
     if python.is_empty() {
         return false;
     }
-    let mut cmd = Command::new(&python);
+    let mut cmd = crate::python::python_command(&python);
     // Probe INSTALLABILITY with importlib.find_spec, NOT a full
     // `import faster_whisper`. The real import pulls in ctranslate2 / onnxruntime
     // / av and takes ~8 s warm (longer with a cold OS file cache), which on the
@@ -310,8 +302,6 @@ fn whisper_package_installed(state: &AppState) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return false,
@@ -522,10 +512,8 @@ pub fn auto_start_whisper_sync(
     whisper: &Arc<Mutex<WhisperServer>>,
 ) -> Result<(), String> {
     // Check if faster-whisper is installed
-    let mut cmd = Command::new(python_bin);
+    let mut cmd = crate::python::python_command(python_bin);
     cmd.args(["-c", "import faster_whisper"]);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
     let check = cmd.output();
 
     match check {
@@ -636,6 +624,7 @@ mod response_channel_tests {
 mod dead_server_tests {
     use super::*;
     use serde_json::json;
+    use std::process::Command;
 
     /// A child that is gone almost at once.
     fn spawn_quick() -> Child {

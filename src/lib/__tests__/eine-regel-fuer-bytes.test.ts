@@ -96,6 +96,17 @@ describe('die GGUF-Seite', () => {
     expect(starter?.size).toBe('4.4 GiB')
     expect(formatBytes(starter!.expectedBytes!)).toBe('4.4 GB')
   })
+
+  // Dieselbe Bindung fuer den zweiten Onboarding-Eintrag (Opus-Runde 3,
+  // review-onboard9b.md): "5.3 GiB" stand von Hand geschrieben neben
+  // expectedBytes, ohne dass ein Test die beiden zusammenhaelt. Jetzt
+  // gepinnt wie beim Starter oben.
+  it('und fuer den zweiten Eintrag (Qwen 3.5 9B) ebenso', () => {
+    const nineB = ONBOARDING_MODELS.find((m) => m.name === 'qwen3.5-9b')
+    expect(nineB?.expectedBytes).toBe(5_680_522_464)
+    expect(nineB?.size).toBe('5.3 GiB')
+    expect(formatBytes(nineB!.expectedBytes!)).toBe('5.3 GB')
+  })
 })
 
 /**

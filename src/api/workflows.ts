@@ -5,7 +5,6 @@ import { log } from '../lib/logger'
 import { resolveRunSeed } from '../lib/run-seed'
 import type {
   WorkflowTemplate,
-  WorkflowSearchResult,
   WorkflowSource,
   ParameterMap,
 } from '../types/workflows'
@@ -13,7 +12,7 @@ import type {
   ComfyApiGraph, ComfyApiNode, ComfyInputValue, ComfyNodeInputs,
 } from '../types/comfy-graph'
 import {
-  apiNodes, isComfyApiGraph, isComfyWebGraph,
+  apiNodes, isComfyApiGraph,
   inputNumber, linkTarget,
 } from '../types/comfy-graph'
 
@@ -24,22 +23,20 @@ import {
 // types/comfy-graph.ts; nothing below reads a field it has not narrowed first.
 
 /**
- * Accepts either ComfyUI graph format. Kept as a predicate over the API shape
- * because that is what every caller goes on to build.
+ * Accepts ONLY the ComfyUI API graph format ({ "1": { class_type, inputs }, ... }).
  *
- * A web-format file passes here and is stored as it came: the converter that
- * used to stand beside this went with the CivitAI workflow fetcher it was the
- * only caller of (3.0.0). Nothing in the app ever called it, because the Import
- * button in WorkflowsModal hands this JSON straight to `parseImportedWorkflow`,
- * so removing it changed no behaviour, and the modal already says what to do:
- * "Export it from ComfyUI using Save (API Format)".
+ * R2-32: this used to accept the Web/UI export format too ({ nodes: [...],
+ * links: [...] }), but every caller downstream (parameterMap detection,
+ * parameter injection, apiNodes) reads `class_type`/`inputs`, fields the
+ * Web/UI format does not carry. A Web/UI export therefore passed validation
+ * and then failed silently later, with the modal's own advice ("Export it
+ * from ComfyUI using Save (API Format)") never shown because validation had
+ * already said yes. Narrowed to the one shape every caller actually needs.
  */
 export function validateWorkflowJson(json: unknown): json is ComfyApiGraph {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return false
   // API format: { "1": { class_type: "...", inputs: {...} }, ... }
-  if (isComfyApiGraph(json)) return true
-  // Web/UI format: { nodes: [...], links: [...] }
-  return isComfyWebGraph(json)
+  return isComfyApiGraph(json)
 }
 
 // ─── Smart Search Terms ───
@@ -386,65 +383,4 @@ export function parseImportedWorkflow(
     workflow,
     parameterMap,
   }
-}
-
-// ─── Built-in Templates ───
-
-export function getBuiltinTemplates(): WorkflowSearchResult[] {
-  return [
-    {
-      name: 'SDXL / SD 1.5 (Checkpoint)',
-      description: 'Standard workflow for SDXL and SD 1.5 models. Uses CheckpointLoaderSimple with KSampler, VAEDecode and SaveImage.',
-      source: 'manual',
-      sourceUrl: '',
-      modelTypes: ['sdxl', 'sd15'],
-      mode: 'image',
-      rawWorkflow: {
-        '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'model.safetensors' } },
-        '2': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
-        '3': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
-        '4': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
-        '5': { class_type: 'KSampler', inputs: { model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0], seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
-        '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
-        '7': { class_type: 'SaveImage', inputs: { images: ['6', 0], filename_prefix: 'locally_uncensored' } },
-      },
-    },
-    {
-      name: 'FLUX / FLUX 2 (UNET + CLIP + VAE)',
-      description: 'Workflow for FLUX and FLUX 2 models. Uses separate UNETLoader, CLIPLoader and VAELoader for modular architecture.',
-      source: 'manual',
-      sourceUrl: '',
-      modelTypes: ['flux', 'flux2'],
-      mode: 'image',
-      rawWorkflow: {
-        '1': { class_type: 'UNETLoader', inputs: { unet_name: 'model.safetensors', weight_dtype: 'default' } },
-        '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'clip.safetensors', type: 'flux', device: 'default' } },
-        '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
-        '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-        '5': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
-        '6': { class_type: 'KSampler', inputs: { model: ['1', 0], positive: ['4', 0], negative: ['4', 0], latent_image: ['5', 0], seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
-        '7': { class_type: 'VAEDecode', inputs: { samples: ['6', 0], vae: ['3', 0] } },
-        '8': { class_type: 'SaveImage', inputs: { images: ['7', 0], filename_prefix: 'locally_uncensored' } },
-      },
-    },
-    {
-      name: 'Wan / Hunyuan Video',
-      description: 'Video workflow for Wan 2.1/2.2 and Hunyuan models. Uses EmptyHunyuanLatentVideo for temporal latent space.',
-      source: 'manual',
-      sourceUrl: '',
-      modelTypes: ['wan', 'hunyuan'],
-      mode: 'video',
-      rawWorkflow: {
-        '1': { class_type: 'CLIPLoader', inputs: { clip_name: 'clip.safetensors', type: 'wan', device: 'default' } },
-        '2': { class_type: 'UNETLoader', inputs: { unet_name: 'model.safetensors', weight_dtype: 'default' } },
-        '3': { class_type: 'VAELoader', inputs: { vae_name: 'vae.safetensors' } },
-        '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 0] } },
-        '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 0] } },
-        '6': { class_type: 'EmptyHunyuanLatentVideo', inputs: { width: 848, height: 480, length: 24, batch_size: 1 } },
-        '7': { class_type: 'KSampler', inputs: { model: ['2', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0], seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
-        '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
-        '9': { class_type: 'SaveAnimatedWEBP', inputs: { images: ['8', 0], filename_prefix: 'locally_uncensored_vid', fps: 8, lossless: false, quality: 90, method: 'default' } },
-      },
-    },
-  ]
 }

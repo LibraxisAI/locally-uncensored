@@ -35,7 +35,10 @@ export function PromptField({ value, onChange, placeholder, onSubmit, maxHeight 
       placeholder={placeholder}
       rows={1}
       className={cn(
-        't-body w-full resize-none bg-transparent outline-none text-gray-100 placeholder-gray-600 scrollbar-thin leading-relaxed',
+        // `lu-fokus-am-kasten`: beide Einbindungen sitzen in einem Kasten
+        // mit `focus-within:border-*` (Composer.tsx), der den Fokus schon
+        // zeichnet. Die Begruendung steht an der Regel in index.css.
+        'lu-fokus-am-kasten t-body w-full resize-none bg-transparent outline-none text-gray-100 placeholder-gray-600 scrollbar-thin leading-relaxed',
         className,
       )}
       style={{ maxHeight }}

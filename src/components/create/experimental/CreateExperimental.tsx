@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertTriangle, Cloud, Cpu } from 'lucide-react'
 import { useCreateStore, type GalleryItem } from '../../../stores/createStore'
@@ -20,7 +20,24 @@ import { Hinweis } from '../../ui/Hinweis'
 import { BannerText } from './BannerText'
 import { MaskEditor } from './MaskEditor'
 import { VhsInstallModal } from './VhsInstallModal'
+import { PresetShelf } from './PresetShelf'
+import type { CreatePreset } from '../../../lib/render/create-presets'
+import { Modal } from '../../ui/Modal'
+
+// `provider-schemas.json` (P1) ist 256 KB. `PresetShelf` haengt schon
+// synchron an `studio-contract.ts` (fuer `STUDIO_MODELS` in der
+// Einzelmodell-Auswahl der Schiene), zieht das Schema also ohnehin in den
+// Hauptbaum. Nur die WERKSTATT selbst, die `SchemaControl`/`AvatarPicker`
+// und damit `studioSchema()` fuer jedes einzelne Feld aufruft, laesst sich
+// ohne Vertragsaenderung an `PresetShelf`/`studio-contract.ts` (P1/P3, fremde
+// Dateien) aus dem ersten Ladevorgang heraushalten: sie oeffnet sich erst auf
+// einen Klick, der Import darf also warten.
+const PresetWorkshop = lazy(() =>
+  import('./PresetWorkshop').then((m) => ({ default: m.PresetWorkshop })),
+)
 import { INTENT_MAP, intentNeedsComfyGraph, isIntentAvailable, mlxOnlyCreateHost } from './intents'
+import { intentRoles, isStudioModel, resolveIntentPick } from '../../../lib/render/create-studio'
+import { modelForOp } from '../../../stores/cloudCatalogStore'
 import { stageShowsSetupCard, laneModelCount } from './stageGate'
 import { isMlxImageHost, isMlxImageModel } from '../../../api/mlx-image'
 import { fetchGalleryItemBlob } from './galleryUrl'
@@ -57,12 +74,46 @@ function CreateExperimentalInner() {
   const comfyRunning = useCreateStore((s) => s.comfyRunning)
   const { modelLoadError, connected, modelsLoaded, mlxMissing, comfyOnCpu, comfyCpuBanner } = useCreateExp()
 
+  // P9: AdvancedDrawer needs the same studioModel Composer.tsx derives
+  // (Portplan Abschnitt 3b), so the Expert drawer shows StudioParams instead
+  // of WorkflowFinder+ParamGroups whenever a Studio pick is active. P7's
+  // report flagged this as still open: Composer computes studioPick itself
+  // and never passed it up, so CreateExperimental rendered AdvancedDrawer
+  // with no studioModel at all and the drawer always fell back to the
+  // ComfyUI expert block even on a Studio pick. Same read-only derivation as
+  // Composer.tsx, kept in sync by hand (both read the same store getters and
+  // pure functions, no new state).
+  const intent = useCreateStore((s) => s.intent())
+  const characterTab = useCreateStore((s) => s.characterTab)
+  const cloudOpModel = useCreateStore((s) => s.cloudOpModel)
+  // characterUse never resolves to a Studio pick (Composer.tsx: roleIntent
+  // excludes it outright, character-use stays on its fixed -lora family via
+  // resolveCharacterModel), so this derivation does not need
+  // selectedCharacter at all.
+  const characterUse = intent === 'character' && characterTab === 'use'
+  const roleIntent = backend === 'cloud' && !characterUse && intentRoles(intent).length > 0
+  const rolePick = roleIntent ? resolveIntentPick(intent, cloudOpModel) : undefined
+  const studioPick = rolePick && isStudioModel(rolePick) ? rolePick : undefined
+
   const [shownId, setShownId] = useState<string | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [maskOpen, setMaskOpen] = useState(false)
   const [lightbox, setLightbox] = useState<GalleryItem | null>(null)
   const [panelOpen, setPanelOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
+
+  // Die gefuehrte Preset-Werkstatt (P6, Portplan Abschnitt 5): eine Schiene
+  // rechts neben Buehne/Galerie, ein Fenster obendrauf. `presetsOpen` haelt
+  // nur, ob die Schiene aufgeklappt ist; die Werkstatt selbst bleibt offen,
+  // solange ein Lauf darin arbeitet (`presetDialogOpen` schliesst nur die
+  // SICHTBARE Flaeche, `selectedPreset` bleibt fuer den Continue-Knopf
+  // stehen). Auf `Modal` statt eines eigenen Fokus-/Escape-Baus: dieselbe
+  // Sperrklinke wie jedes andere Fenster im Haus (X, Escape,
+  // e2e/escape-closes-overlays.spec.ts).
+  const [presetsOpen, setPresetsOpen] = useState(false)
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false)
+  const [selectedPreset, setSelectedPreset] = useState<CreatePreset | null>(null)
+  const [presetStarted, setPresetStarted] = useState(false)
 
   // One-click CORS fix (David 2026-07-17): restart the user-managed ComfyUI
   // under LU's management so it carries --enable-cors-header. On success the
@@ -154,8 +205,8 @@ function CreateExperimentalInner() {
   }, [gallery])
 
   // Switching intent/mode returns the Stage to empty — the newest gallery item
-  // must not reappear just because the axis changed.
-  const intent = useCreateStore((s) => s.intent())
+  // must not reappear just because the axis changed. (`intent` is read once,
+  // near the top of the component, for the studioModel derivation below.)
   useEffect(() => { setShownId(null) }, [intent])
 
   const displayed = shownId ? gallery.find((g) => g.id === shownId) : undefined
@@ -196,6 +247,7 @@ function CreateExperimentalInner() {
   // text-to-image instead of an edit). Hide the action where the lane can't
   // run, using the same rule the IntentBar renders from.
   const editAvailable = isIntentAvailable('edit', backend, mlxOnlyCreateHost(isMlxImageHost(), comfyRunning))
+  const animateAvailable = isIntentAvailable('animate', backend, mlxOnlyCreateHost(isMlxImageHost(), comfyRunning))
 
   // Pull a finished result back in as the working source (ImageRef). Needed
   // because a text-to-image run leaves `source` empty — without this, "Edit
@@ -214,6 +266,30 @@ function CreateExperimentalInner() {
       setMaskOpen(true)
     } catch (err) {
       setError(`Could not load the result for editing: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [adoptResult, setError])
+
+  // C1: "Animate this image" on a finished result (web parity, createStore's
+  // animateFrom / OutputView.tsx). setIntent('animate') already keeps the
+  // current source in place (see createStore.ts's 'animate' case, which
+  // deliberately skips ...dropAll), but a fresh t2i result was never adopted
+  // as `source` in the first place, so setSource still has to run after it,
+  // exactly like editResultWithMask does for 'edit'. No mask step needed here.
+  //
+  // C1 nachbessert, Punkt 8: also coerce cloudVideoModel onto a real i2v
+  // model via modelForOp, the same coercion submit/the credits gate already
+  // apply. Without this the ModelChip kept showing whatever was picked for
+  // the PREVIOUS intent (e.g. a t2v-only model), which the run itself never
+  // used, since modelForOp silently swaps to i2vModels()[0] at submit time.
+  // Web's animateFrom does the equivalent set for parity.
+  const animateResult = useCallback(async (item: GalleryItem) => {
+    const state = useCreateStore.getState()
+    state.setIntent('animate')
+    state.setCloudVideoModel(modelForOp('video', 'animate', state.cloudVideoModel))
+    try {
+      state.setSource(await adoptResult(item))
+    } catch (err) {
+      setError(`Could not load the result for animating: ${err instanceof Error ? err.message : String(err)}`)
     }
   }, [adoptResult, setError])
 
@@ -353,9 +429,16 @@ function CreateExperimentalInner() {
           displayed={displayed}
           onOpenMaskEditor={() => setMaskOpen(true)}
           onEditResult={editAvailable ? (it) => { void editResultWithMask(it) } : undefined}
+          onAnimateResult={animateAvailable ? (it) => { void animateResult(it) } : undefined}
           onFullscreen={(it) => setLightbox(it)}
         />
         <CreatePanel open={panelOpen} onOpenChange={setPanelOpen} activeId={shownId} onSelect={openGalleryItem} />
+        <PresetShelf
+          open={presetsOpen}
+          onOpenChange={setPresetsOpen}
+          onSelect={(p) => { setSelectedPreset(p); setPresetStarted(false); setPresetDialogOpen(true) }}
+          resume={selectedPreset && presetStarted && !presetDialogOpen ? { title: selectedPreset.title, onResume: () => setPresetDialogOpen(true) } : null}
+        />
       </div>
 
       {/* Prompt window — full width, beneath the viewer + gallery. */}
@@ -364,9 +447,54 @@ function CreateExperimentalInner() {
         onOpenWorkflows={() => { setWorkflowsOpen(true); setManagerNoticeSeen(true) }}
       />
 
-      <AdvancedDrawer open={advancedOpen} onClose={() => setAdvancedOpen(false)} />
+      <AdvancedDrawer open={advancedOpen} onClose={() => setAdvancedOpen(false)} studioModel={studioPick} />
       <WorkflowsModal open={workflowsOpen} onClose={() => setWorkflowsOpen(false)} />
       <MaskEditor open={maskOpen} onClose={() => setMaskOpen(false)} />
+
+      {/* Preset-Werkstatt (P6): ein Popup mit X und Escape, dieselbe Sperrklinke
+          wie jedes andere Fenster (Modal, siehe src/components/ui/Modal.tsx).
+          Die Generation laeuft IM Fenster weiter, auch wenn niemand zusieht,
+          geschlossen wird nur von Hand (Portplan Abschnitt 5/7).
+
+          Optik (21.09.2026): das Fenster lag auf der blanken
+          `.lu-elevated`-Flaeche (#363636). Fuer ein Menue ist das richtig,
+          fuer ein 4xl breites Arbeitsfenster war es ein mittelgrauer Block
+          vor der fast schwarzen App. Es traegt jetzt dieselbe schwarze
+          Modalflaeche wie das Was-ist-neu-Blatt (`bg-lu-base`), und der
+          Kopf des Hauses entfaellt: die Werkstatt schreibt den Titel des
+          Presets ohnehin in ihre eigene Kopfzeile, also stand er zweimal
+          da, und mit `panelPad="p-0"` klebte er obendrein ohne jeden
+          Abstand in der Ecke. `hideHeader` laesst genau das X stehen, das
+          die Hausregel verlangt; `ariaLabel` haelt den Namen des Dialogs
+          unveraendert. */}
+      {selectedPreset && backend === 'cloud' && (
+        <Modal
+          open={presetDialogOpen}
+          onClose={() => setPresetDialogOpen(false)}
+          title={selectedPreset.title}
+          hideHeader
+          ariaLabel={selectedPreset.title}
+          maxWidth="max-w-4xl"
+          panelPad="p-0"
+          // Review B2: X/Escape darf den bezahlten Schrittzustand der
+          // Werkstatt nicht wegwerfen. `keepMounted` haelt PresetWorkshop im
+          // Baum und blendet nur das Fenster aus; `selectedPreset` bleibt
+          // ohnehin schon stehen (siehe Kommentar oben bei presetDialogOpen),
+          // also ist dies die letzte fehlende Haelfte.
+          keepMounted
+        >
+          <div className="flex h-[min(600px,90vh)] flex-col overflow-hidden rounded-2xl bg-lu-base">
+            <Suspense fallback={<div className="flex flex-1 items-center justify-center t-control text-gray-400">Loading…</div>}>
+              <PresetWorkshop
+                key={selectedPreset.id}
+                preset={selectedPreset}
+                onGenerate={() => setPresetStarted(true)}
+                onClose={() => { setPresetDialogOpen(false); setSelectedPreset(null) }}
+              />
+            </Suspense>
+          </div>
+        </Modal>
+      )}
 
       <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
       <VhsInstallModal />

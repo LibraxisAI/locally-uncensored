@@ -15,5 +15,11 @@
         "dragDropEnabled": false
       }
     ]
+  },
+  "bundle": {
+    "resources": {
+      "resources/whisper_server.py": "resources/whisper_server.py",
+      "resources/llama/x86_64-pc-windows-msvc/*": ""
+    }
   }
 }

@@ -263,12 +263,25 @@ pub struct AppState {
     pub downloads: Arc<Mutex<HashMap<String, DownloadProgress>>>,
     pub download_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub pull_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    /// Per-stream cancellation tokens for `proxy_localhost_stream_chunked`.
+    /// Per-stream cancellation registry for `proxy_localhost_stream_chunked`.
     /// When the user hits Stop or deletes/closes a chat, the JS side calls
     /// `cancel_proxy_stream(stream_id)` → the token fires → the upstream reqwest
     /// stream is dropped → Ollama actually stops generating (David 2026-06-15:
     /// "Aktivität komplett stoppen"; aborting only stopped the JS loop before).
-    pub stream_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// `CancelRegistry` (not a bare token map) also survives a cancel that
+    /// arrives before the matching stream registers (review 2026-09-18, R3
+    /// Nachbesserung 1).
+    pub stream_tokens: crate::cancel_registry::CancelRegistry,
+    /// Per-call cancellation registry for the NON-streaming `proxy_localhost`
+    /// command (a tool call against the built-in engine / Ollama runs this
+    /// path, not the chunked one). Same `CancelRegistry` type as
+    /// `stream_tokens`, kept as its own instance so a stream id and a call id
+    /// can never collide. Without this, Stop only aborted the JS-side promise
+    /// while the Rust proxy sent the already-issued request to completion
+    /// against the local engine, so a stopped agent turn still burned the
+    /// full generation on the GPU (review 2026-09-18, "Loch 3": the local
+    /// engine ignores Stop).
+    pub call_tokens: crate::cancel_registry::CancelRegistry,
     pub install_status: Arc<Mutex<InstallState>>,
     /// Cancel flag for the ComfyUI installer (Bug #1, techx69 v2.4.3).
     /// `install_comfyui` polls this between steps; setting it from
@@ -428,7 +441,8 @@ impl AppState {
             downloads: Arc::new(Mutex::new(HashMap::new())),
             download_tokens: Arc::new(Mutex::new(HashMap::new())),
             pull_tokens: Arc::new(Mutex::new(HashMap::new())),
-            stream_tokens: Arc::new(Mutex::new(HashMap::new())),
+            stream_tokens: crate::cancel_registry::CancelRegistry::new(),
+            call_tokens: crate::cancel_registry::CancelRegistry::new(),
             install_status: Arc::new(Mutex::new(InstallState::default())),
             comfyui_install_cancel: Arc::new(AtomicBool::new(false)),
             ollama_install: Arc::new(Mutex::new(InstallState::default())),
@@ -722,6 +736,12 @@ mod shutdown_tests {
     /// which is the only runtime proof available for it on this machine.
     #[test]
     fn shutdown_kills_the_tracked_children_and_empties_the_slots() {
+        // Runde 2 Nachlauf: `shutdown_subprocesses` reaches the process-wide
+        // installer-children registry (`install::kill_installer_children`),
+        // which under the parallel test harness would otherwise SIGKILL
+        // another test's still-running pip/venv child. See
+        // `installer_children_test_lock`'s doc comment.
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
 
         let ollama = sleeper();
@@ -795,6 +815,7 @@ mod shutdown_tests {
     /// 127.0.0.1:11435, and the next launch binds that port (T-39).
     #[test]
     fn shutdown_takes_the_tunnel_with_it() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
         let pid = park_a_tunnel(&state);
 
@@ -813,6 +834,7 @@ mod shutdown_tests {
     /// kernel is free to have recycled by then.
     #[test]
     fn shutdown_empties_the_tunnel_slot_so_a_second_pass_finds_nothing() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
         let pid = park_a_tunnel(&state);
 
@@ -831,6 +853,7 @@ mod shutdown_tests {
     #[test]
     #[cfg(unix)]
     fn shutdown_takes_the_tunnels_children_with_it() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
 
         let mut cmd = std::process::Command::new(crate::test_support::posix_shell());
@@ -858,6 +881,7 @@ mod shutdown_tests {
     /// Quitting with nothing running must not panic or block.
     #[test]
     fn shutdown_on_an_idle_state_is_a_no_op() {
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         let state = AppState::new();
         state.shutdown_subprocesses();
         state.shutdown_subprocesses();

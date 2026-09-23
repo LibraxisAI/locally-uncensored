@@ -27,9 +27,10 @@ import { withInstallerOutput, withDetail } from '../../lib/error-text'
 import { ICON_LG } from '../ui/icon-size'
 import { Hinweis } from '../ui/Hinweis'
 import { ProgressBar } from '../ui/ProgressBar'
-import { backendCall, isMacOS, isWindows } from '../../api/backend'
+import { backendCall, isMacOS, isWindows, localFetch, comfyuiUrl } from '../../api/backend'
 import { comfyPathPlaceholder } from '../../lib/comfy-path-placeholder'
 import { formatBytes } from '../../lib/formatters'
+import { probeRunningComfyPort } from './comfyPortProbe'
 import { isRunning, formatElapsed, lastLog, type InstallerStatusResponse } from './installer-state'
 import type { Step } from './wizard-steps'
 import type { OnboardingSkin } from './onboarding-skin'
@@ -138,16 +139,32 @@ export function ComfyStep({ skin, fleet, step, setStep }: ComfyStepProps) {
           // Zero matches — fall back to legacy find_comfyui (env var, config
           // file overrides that aren't on the scan list).
           const legacy = await backendCall<{ found: boolean; path?: string; complete?: boolean }>('find_comfyui')
-          setComfyFound(legacy)
-          if (legacy.found && legacy.complete !== false) setComfyReady(true)
+          if (legacy.found) {
+            setComfyFound(legacy)
+            if (legacy.complete !== false) setComfyReady(true)
+            return
+          }
+          // aq: both scans reason from disk paths and still found nothing,
+          // so one last knock on the configured port before calling it not
+          // found, in case ComfyUI is already running from a place neither
+          // scan looks (a hand-launched venv, a network path, ...).
+          const running = await probeRunningComfyPort(localFetch, comfyuiUrl('/internal/folder_paths'))
+          setComfyFound({ found: running, complete: running })
+          if (running) setComfyReady(true)
         })
         .catch(async () => {
           // Older builds without detect_all_comfyui_installs — degrade
           // gracefully to the previous single-pick API.
           try {
             const legacy = await backendCall<{ found: boolean; path?: string; complete?: boolean }>('find_comfyui')
-            setComfyFound(legacy)
-            if (legacy.found && legacy.complete !== false) setComfyReady(true)
+            if (legacy.found) {
+              setComfyFound(legacy)
+              if (legacy.complete !== false) setComfyReady(true)
+              return
+            }
+            const running = await probeRunningComfyPort(localFetch, comfyuiUrl('/internal/folder_paths'))
+            setComfyFound({ found: running, complete: running })
+            if (running) setComfyReady(true)
           } catch {
             setComfyFound({ found: false, complete: false })
           }

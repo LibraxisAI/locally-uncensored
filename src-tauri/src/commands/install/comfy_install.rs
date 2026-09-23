@@ -16,7 +16,7 @@
 
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 
 #[cfg(target_os = "windows")]
@@ -36,7 +36,7 @@ use super::comfy_job::{ComfyJob, COMFY_JOB};
 use super::comfy_job::comfy_job_busy_message;
 use super::pip::pip_install_streaming_with_retry_cancellable;
 use super::torch::plan_pytorch_install;
-use super::venv::{create_comfyui_venv, is_pep668_protected};
+use super::venv::{create_comfyui_venv, is_pep668_protected, restore_orphaned_venv_if_needed};
 #[cfg(target_os = "windows")]
 use super::git::{windows_git_install_hint, windows_git_probe, WindowsGitState};
 #[cfg(target_os = "windows")]
@@ -295,6 +295,17 @@ pub fn install_comfyui(
             return;
         }
 
+        // Runde 6, F12: a crash mid Repair can leave a `venv.lu-old-*` sibling
+        // and no usable `venv` behind (see venv.rs's own doc). This used to be
+        // adopted back only when the customer next pressed Repair; pressing
+        // Install instead (a target directory that already has a ComfyUI
+        // checkout, the "already exists" branch below) walked right past the
+        // several-gigabyte orphan and read the folder as having no venv at
+        // all. A no-op on a healthy install (`venv_python_path` already
+        // exists), so this is safe to call unconditionally, before anything
+        // else looks at the folder.
+        restore_orphaned_venv_if_needed(&target_dir);
+
         // Bug N (juliandiggins-stack issue #40, 2026-05-18) — probe Windows
         // git BEFORE clone so a WSL/non-native git on PATH surfaces a clear
         // hint instead of failing the clone halfway with cryptic stderr.
@@ -312,12 +323,21 @@ pub fn install_comfyui(
             }
         }
 
+        // Linux setup stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13
+        // and Fedora 43 cloud/desktop images ship no git at all. Probe
+        // before spending any bytes on the clone and name the exact
+        // package manager command instead of dying with a generic error.
+        if let Some(hint) = super::git::git_download_preflight() {
+            update("error", &hint);
+            return;
+        }
+
         // Step 1: Git clone — spawn+poll instead of cmd.output() so the
         // Cancel button can kill an in-flight clone (Bug #1).
         println!("[Install] Cloning ComfyUI to {:?}", target_dir);
         update("downloading", "Step 1/4: Downloading ComfyUI repository...");
 
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::process_util::foreign_system_command("git");
         cmd.args(["clone", "https://github.com/comfyanonymous/ComfyUI.git"])
             .arg(&target_dir)
             .stdout(Stdio::piped())
@@ -381,7 +401,7 @@ pub fn install_comfyui(
                     update("cancelled", "Install cancelled.");
                     return;
                 }
-                let mut pull = Command::new("git");
+                let mut pull = crate::process_util::foreign_system_command("git");
                 pull.args(["pull"]).current_dir(&target_dir)
                     .stdout(Stdio::piped()).stderr(Stdio::piped());
                 #[cfg(target_os = "windows")]
@@ -466,53 +486,108 @@ pub fn install_comfyui(
             }
             crate::python::ComfyVenv::Absent => None,
         };
+
+        // Step 2's GPU probe + wheel choice, pulled up here (Runde 3,
+        // Nachbesserung 6): a venv must never be built from an interpreter
+        // the preflight below is about to reject, so the channel has to be
+        // known BEFORE any venv decision, not after. `plan_pytorch_install`
+        // does not touch disk or venv state, only nvidia-smi/GPU facts, so
+        // moving it earlier is free.
+        let (torch_args, gpu_info, torch_index, torch_packages) = plan_pytorch_install();
+        let torch_package_refs: Vec<&str> = torch_packages.iter().map(|s| s.as_str()).collect();
+
         let effective_python = if let Some(venv_py) = existing_venv {
-            update(
-                "installing",
-                &format!(
-                    "This ComfyUI already has its own environment. Installing into {venv_py}."
-                ),
-            );
-            venv_py
-        } else if is_pep668_protected(&python_bin) {
-            update(
-                "installing",
-                "Python is PEP 668 protected (Arch / Debian 12+ / Fedora 38+ / \
-                 Ubuntu 23.04+). Creating an isolated venv at ComfyUI/venv so \
-                 pip can install PyTorch + ComfyUI deps without touching your \
-                 system Python …",
-            );
-            match create_comfyui_venv(&target_dir, &python_bin, Some(&cancel_flag)) {
-                Ok(venv_py) => {
-                    let p = venv_py.to_string_lossy().to_string();
+            // Runde 4, B3 (review Runde 3, Abschnitt 2): Runde 3 moved the
+            // whole preflight into the "no existing venv" branch below and
+            // left THIS branch with no check at all, a regression against
+            // Runde 2 and literally the Reddit reporter's case: an
+            // externally installed ComfyUI whose own venv sat on Python
+            // 3.14.7. Without this, LU would download 2 GB into that venv
+            // and fail with pip's generic error, again. The venv itself is
+            // still never rebuilt here (it may be hand-built, or carry
+            // custom nodes' own state), only checked before the download.
+            // Runde 6, F11: this branch never builds a venv, it only installs
+            // into the one that is already there, so `ensurepip` is not
+            // required of this interpreter, only that pip itself still works.
+            let decision = super::torch::choose_torch_python(&venv_py, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again", false);
+            match super::torch::python_for_existing_venv(decision, &venv_py) {
+                Ok(py) => {
                     update(
                         "installing",
-                        &format!("venv ready, using {} for the install.", p),
+                        &format!(
+                            "This ComfyUI already has its own environment. Installing into {py}."
+                        ),
                     );
-                    p
+                    py
                 }
-                // A cancel the user asked for is not a failed install. Without
-                // this arm the new cancel path inside `create_comfyui_venv`
-                // would arrive here as the card "Installing ComfyUI did not
-                // finish", over a run that stopped because they said so.
-                Err(e) if e == "cancelled" => {
-                    update("cancelled", "Install cancelled while the venv was being created.");
-                    return;
-                }
-                Err(e) => {
-                    update("error", &format!("venv creation failed.\n\n{}", e));
+                Err(msg) => {
+                    update("error", &msg);
                     return;
                 }
             }
         } else {
-            python_bin.clone()
+            // B1(b): LU picks the interpreter itself, no Settings picker.
+            // Runs BEFORE `create_comfyui_venv`/PEP-668 detection so a
+            // healthy choice never gets discarded for one that cannot serve
+            // torch (Nachbesserung 6).
+            // No existing venv yet: `create_comfyui_venv` below may build one
+            // from this exact interpreter (only skipped when PEP 668 is not
+            // in effect), so the strict probe applies.
+            let chosen_python = match super::torch::choose_torch_python(&python_bin, torch_index.as_deref(), &torch_package_refs, "press Install ComfyUI again", true) {
+                super::torch::TorchPythonDecision::Proceed => python_bin.clone(),
+                super::torch::TorchPythonDecision::UseInstead { path, .. } => {
+                    update(
+                        "installing",
+                        &format!(
+                            "The default Python ({python_bin}) does not have a PyTorch wheel for \
+                             this machine yet; using {path} instead, found on this machine already."
+                        ),
+                    );
+                    path
+                }
+                super::torch::TorchPythonDecision::Blocked(msg) => {
+                    update("error", &msg);
+                    return;
+                }
+            };
+            if is_pep668_protected(&chosen_python) {
+                update(
+                    "installing",
+                    "Python is PEP 668 protected (Arch / Debian 12+ / Fedora 38+ / \
+                     Ubuntu 23.04+). Creating an isolated venv at ComfyUI/venv so \
+                     pip can install PyTorch + ComfyUI deps without touching your \
+                     system Python …",
+                );
+                match create_comfyui_venv(&target_dir, &chosen_python, Some(&cancel_flag)) {
+                    Ok(venv_py) => {
+                        let p = venv_py.to_string_lossy().to_string();
+                        update(
+                            "installing",
+                            &format!("venv ready, using {} for the install.", p),
+                        );
+                        p
+                    }
+                    // A cancel the user asked for is not a failed install. Without
+                    // this arm the new cancel path inside `create_comfyui_venv`
+                    // would arrive here as the card "Installing ComfyUI did not
+                    // finish", over a run that stopped because they said so.
+                    Err(e) if e == "cancelled" => {
+                        update("cancelled", "Install cancelled while the venv was being created.");
+                        return;
+                    }
+                    Err(e) => {
+                        update("error", &format!("venv creation failed.\n\n{}", e));
+                        return;
+                    }
+                }
+            } else {
+                chosen_python
+            }
         };
 
-        // Step 2: Detect GPU and install PyTorch (probe + wheel choice shared
-        // with repair_comfyui_env via plan_pytorch_install).
-        let (torch_args, gpu_info) = plan_pytorch_install();
         println!("[Install] {}", gpu_info);
         update("installing", &format!("Step 2/4: {}", gpu_info));
+
         update(
             "installing",
             "Downloading PyTorch + Torchvision + Torchaudio (~2 GB total). \
@@ -808,7 +883,7 @@ mod tests {
         let src = include_str!("comfy_install.rs");
         let needle = |head: &str, tail: &str| format!("{head}{tail}");
 
-        let build = needle("create_comfyui_venv(&target_dir, &python_bin,", " Some(&cancel_flag))");
+        let build = needle("create_comfyui_venv(&target_dir, &chosen_python,", " Some(&cancel_flag))");
         let cancelled_arm = needle("\"Install cancelled while the venv", " was being created.\"");
         let failed_arm = needle("\"venv creation faile", "d.\\n\\n{}\"");
 
@@ -831,6 +906,60 @@ mod tests {
         }
     }
 
+    /// Runde 4, B3: an EXISTING, usable venv must still go through
+    /// `choose_torch_python` before the 2 GB torch download starts, exactly
+    /// as the freshly-built-venv path already does. Runde 3 moved the check
+    /// into the "no existing venv" branch and left this one with none at
+    /// all, the Reddit reporter's exact case (an externally installed
+    /// ComfyUI whose own venv sat on an unsupported Python). Read out of
+    /// the source like the sibling order guard above, needles split in
+    /// half so they cannot match themselves here.
+    #[test]
+    fn an_existing_venv_is_also_checked_before_the_torch_download() {
+        let src = include_str!("comfy_install.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let existing_venv_check = needle("choose_torch_python(&venv_py,", " torch_index.as_deref(), &torch_package_refs, \"press Install ComfyUI again\", false)");
+        let download_start = needle("Downloading PyTorch + Torchvision", " + Torchaudio (~2 GB total)");
+
+        let at_check = src.find(&existing_venv_check).expect("the existing-venv path no longer checks torch/Python compatibility");
+        let at_download = src.find(&download_start).expect("the download step marker is gone");
+
+        assert!(at_check < at_download, "the existing-venv preflight must run before the download starts");
+
+        for (what, n) in [("the existing-venv check", existing_venv_check), ("the download marker", download_start)] {
+            assert_eq!(
+                src.matches(&n).count(),
+                1,
+                "{what}: the search string finds itself in this test, so its .expect can never fire",
+            );
+        }
+    }
+
+    /// Runde 6, F12: a crashed Repair can leave an orphaned `venv.lu-old-*`
+    /// sibling behind (venv.rs's `restore_orphaned_venv_if_needed`). Install
+    /// must adopt it back too, before either the "already exists" branch or
+    /// the fresh-venv branch looks at the folder, or a customer who presses
+    /// Install instead of Repair after a crash loses a working venv to a
+    /// silent rebuild. Read out of the source like the two guards above.
+    #[test]
+    fn install_also_recovers_an_orphaned_venv_before_touching_the_folder() {
+        let src = include_str!("comfy_install.rs");
+        let needle = |head: &str, tail: &str| format!("{head}{tail}");
+
+        let recovery_call = needle("restore_orphaned_venv_if_needed(&target_dir", ");");
+        let clone_start = needle("Cloning ComfyUI to ", "{:?}");
+        let existing_venv_check = needle("comfy_venv_state(&target_dir", ")");
+
+        let at_recovery = src.find(&recovery_call).expect("install no longer recovers an orphaned venv");
+        let at_clone = src.find(&clone_start).expect("the clone step marker is gone");
+        let at_existing_check = src.find(&existing_venv_check).expect("the existing-venv detection is gone");
+
+        assert!(at_recovery < at_clone, "orphan recovery must run before git clone/pull touches the folder");
+        assert!(at_recovery < at_existing_check, "orphan recovery must run before the existing-venv state is read");
+
+        assert_eq!(src.matches(&recovery_call).count(), 1, "the recovery call must appear exactly once");
+    }
 }
 
 /// KF-28: der Doc-Kommentar über `check_install_disk_pressure` darf nur
@@ -933,6 +1062,51 @@ mod disk_pressure_doc_matches_body {
              Kommentar:\n{doc}\n",
             if doc_promises_queue(&doc) { "spricht" } else { "spricht NICHT" },
             if body_probes_queue(&body) { "enthält eine" } else { "enthält KEINE" },
+        );
+    }
+}
+
+/// Review Runde 2, B1: nothing may delete the Linux git preflight in
+/// `install_comfyui` or move it after the first network write it is meant
+/// to guard, without a test going red. Same include_str! + marker technique
+/// as `update_checks_the_interpreter_before_pulling_the_repository` in
+/// comfy_repair.rs and `the_argv_matchers_share_one_refresh` in
+/// process_util.rs: read the file's own source, cut it at the function
+/// signature, and require the preflight call text to occur before both
+/// download literals the function can hit ("clone" for the fresh install,
+/// "pull" for the "already exists, update it" branch).
+#[cfg(test)]
+mod git_preflight_call_site_guard {
+    #[test]
+    fn install_comfyui_checks_git_before_clone_and_before_pull() {
+        let src = include_str!("comfy_install.rs");
+        let fn_start = src
+            .find("pub fn install_comfyui(")
+            .expect("install_comfyui is gone from comfy_install.rs");
+        let body = &src[fn_start..];
+
+        let at_preflight = body.find("git_download_preflight()").expect(
+            "install_comfyui no longer calls git_download_preflight(): a fresh \
+             Debian 13 or Fedora 43 box without git would clone straight into a \
+             cryptic spawn error again instead of the distro-specific hint",
+        );
+        let at_clone = body
+            .find("\"clone\"")
+            .expect("the git clone literal is gone from install_comfyui");
+        let at_pull = body
+            .find("\"pull\"")
+            .expect("the git pull literal (already-exists branch) is gone from install_comfyui");
+
+        assert!(
+            at_preflight < at_clone,
+            "git_download_preflight() (byte {at_preflight}) must run before the \
+             clone (byte {at_clone}), not after"
+        );
+        assert!(
+            at_preflight < at_pull,
+            "git_download_preflight() (byte {at_preflight}) must run before the \
+             already-exists pull (byte {at_pull}) too: both start from the same \
+             preflight call, which is single, up front"
         );
     }
 }

@@ -168,6 +168,51 @@ export const SHORTCUT_ACTIONS: Readonly<Record<ShortcutId, () => void>> = {
   },
 }
 
+/**
+ * Auflage 1 (Review composer, 19.09.2026): "new-conversation" wechselt ohne
+ * Mausklick, der Cursor lag also mit hoher Wahrscheinlichkeit noch im
+ * Composer-Feld. `key={conversationId}` (ChatInput.tsx) montiert das Feld
+ * beim Wechsel neu, und ein frischer DOM-Knoten hat nie von selbst Fokus,
+ * der naechste Tastendruck ginge sonst gegen `body` ins Leere.
+ *
+ * Dieses Modul haelt dafuer EINE einschuessige Fahne, kein React-State und
+ * kein Ref: sie wird hier, in einem Ereignis-Handler, gesetzt (erlaubt, siehe
+ * `passSendLock` in ChatInput.tsx fuer dasselbe Muster bei einer anderen
+ * Sperre) und von ChatInput in einem `useLayoutEffect` gelesen und sofort
+ * verbraucht. Ein Verbrauch ausserhalb eines Effekts wuerde waehrend des
+ * Renderns einen Seiteneffekt ausloesen, genau das Muster, das dieses Projekt
+ * schon einmal aus `passSendLock` herausgezogen hat.
+ */
+let composerFocusPending = false
+
+/**
+ * Auflage 7 (Review composer Runde 2, 19.09.2026): `SHORTCUT_ACTIONS['new-conversation']`
+ * ruft `createConversation` nur `if (model)`. Fehlt ein aktives Modell (frische
+ * Installation, Modelliste noch nicht geladen, Modell wegen `modelOutOfMode`
+ * geleert), wechselt `conversationId` nie, ChatInput bleibt montiert, der
+ * `useLayoutEffect` dort laeuft folglich nie, und die Fahne blieb bisher
+ * gesetzt stehen. Der naechste Wechsel per Maus haette dann einmalig den
+ * Fokus gestohlen, auch wenn der Nutzer laengst in einem Suchfeld stand.
+ *
+ * Fix: `markComposerFocusPending` setzt die Fahne nur noch, wenn wirklich
+ * gewechselt wird - derselbe `activeModel`-Blick, den die Aktion selbst
+ * gleich danach synchron macht, kann sich zwischen den beiden Aufrufen nicht
+ * aendern.
+ */
+function markComposerFocusPending() {
+  if (!useModelStore.getState().activeModel) return
+  composerFocusPending = true
+}
+
+/** Liest die Fahne UND loescht sie in einem Schritt, damit ein spaeterer,
+ *  fokuslos ausgeloester Wechsel (Sidebar-Klick, Kommandopalette) nichts
+ *  stiehlt. */
+export function consumeComposerFocusPending(): boolean {
+  const pending = composerFocusPending
+  composerFocusPending = false
+  return pending
+}
+
 export function useKeyboardShortcuts() {
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement | null
@@ -181,6 +226,12 @@ export function useKeyboardShortcuts() {
     const id = shortcutCommandFor(e, inInput, IS_MAC)
     if (!id) return
     e.preventDefault()
+    // `data-lu-composer` ist der stabile Erkennungspunkt des Composer-Feldes
+    // (siehe ChatInput.tsx); ein Suchfeld, ein Modal oder eine der Textareas
+    // der Preset-Werkstatt traegt es nicht und setzt die Fahne folglich nicht.
+    if (id === 'new-conversation' && tag === 'TEXTAREA' && target?.hasAttribute('data-lu-composer')) {
+      markComposerFocusPending()
+    }
     SHORTCUT_ACTIONS[id]()
   }, [])
 

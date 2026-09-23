@@ -62,8 +62,10 @@ test('mac local: MLX lanes run locally, cloud-only lanes stay visible as teasers
   await expect(page.getByRole('radio', { name: 'Video', exact: true })).toBeVisible()
   await expect(page.getByRole('radio', { name: 'Character Studio', exact: true })).toBeVisible()
 
-  // Comfy-backed hosted tools stay visible as locked teasers until :8080 answers.
-  for (const label of ['Upscale', 'Erase Object', 'Talking Character', 'Music', 'Extend Video', 'Motion Control']) {
+  // Comfy-backed hosted tools stay locked teasers until :8080 answers.
+  // R5-67 renamed the upscale label to "Enhance Image". Character Studio is a
+  // real local tab (asserted above), so it is not in this locked list.
+  for (const label of ['Enhance Image', 'Erase Object', 'Talking Character', 'Music', 'Extend Video', 'Motion Control']) {
     await expect(page.getByRole('radio', { name: `${label}, runs on LU Cloud` })).toBeVisible()
   }
 

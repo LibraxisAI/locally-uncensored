@@ -107,13 +107,16 @@ test('mit installierten Modellen bleibt der Schritt stehen, listet sie, und die 
   await page.getByRole('button', { name: /Get Started/i }).click()
   await openNewChat(page)
 
-  // Der Modellknopf des Composers. Er kuerzt die Groessenangabe bewusst weg
-  // (`displayModelName(activeModel).split(':')[0]` in ModelSelector), zeigt
-  // also die Familie und nicht die volle Kennung. Ein Waechter, der hier die
-  // volle Kennung verlangte, wuerde die Anzeige festnageln statt die Wahl.
+  // Der Modellknopf des Composers. F3 (3.0.1, ModelSelector.tsx um 1229)
+  // hat den fruehen `.split(':')[0]` gestrichen: ein Ollama-Tag nutzt den
+  // Doppelpunkt als EIGENEN Trenner ("llama3.1:8b"), der Split trennte also
+  // an der Groessenangabe statt am Provider-Praefix, und der Knopf zeigte nur
+  // "llama3.1" waehrend die Dropdown-Zeile darunter die volle Kennung zeigte.
+  // `title` traegt seitdem `activeDisplayName` unbeschnitten - die volle
+  // Kennung, nicht nur die Familie.
   const picker = page.getByRole('button', { name: /Select chat model/i })
   await expect(picker).toBeVisible({ timeout: 20_000 })
-  await expect(picker).toHaveAttribute('title', /Model: llama3\.1,/, { timeout: 20_000 })
+  await expect(picker).toHaveAttribute('title', /Model: llama3\.1:8b, click to switch/, { timeout: 20_000 })
 
   // Und der eigentliche Beweis am Payload statt am Bildschirm: mit welchem
   // Modell geht die naechste Nachricht wirklich hinaus? Hausregel seit dem

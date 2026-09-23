@@ -124,13 +124,13 @@
       <li><strong>CSP headers</strong>: Content Security Policy headers restrict all resource loading to localhost origins.</li>
     </ul>
 
-    <p>This isn't theoretical privacy. Run Wireshark while using the app and you'll see connections to <code>127.0.0.1</code> and your Ollama/ComfyUI ports. Nothing else. If you've read our guide on <a href="run-uncensored-ai-locally.html">how to run uncensored AI locally</a>, you know privacy is foundational to the project. This release makes that guarantee airtight.</p>
+    <p>This isn't theoretical privacy. Run Wireshark while using the app: you'll see connections to <code>127.0.0.1</code> and your Ollama/ComfyUI ports. Nothing else. If you've read our guide on <a href="run-uncensored-ai-locally.html">how to run uncensored AI locally</a>, you know privacy is foundational to the project. This release makes that guarantee airtight.</p>
 
     <h2>Tauri v2 Standalone Desktop App</h2>
 
     <p>Until now, Locally Uncensored ran as a Vite dev server that opened in your browser. That works, and it's still supported, but v1.5.0 adds a proper standalone <strong>local AI app desktop</strong> executable built with <strong>Tauri v2</strong>.</p>
 
-    <p>The tech stack: <strong>React 19 + TypeScript + Tailwind CSS 4 + Vite 8</strong> for the frontend, <strong>Tauri 2 (Rust)</strong> for the native shell. The result is a single <code>.exe</code> on Windows, with Linux builds alongside it, that weighs under 15 MB installed. Those two platforms are the whole list: the app has never shipped a Mac build. On a Mac the hosted studio at <a href="https://lu-labs.ai/" target="_blank" rel="noopener">lu-labs.ai</a> opens the same chat, code, image and video lanes in any browser. Compare that to Electron-based alternatives that start at 150+ MB.</p>
+    <p>The tech stack: <strong>React 19 + TypeScript + Tailwind CSS 4 + Vite 8</strong> for the frontend, <strong>Tauri 2 (Rust)</strong> for the native shell. The result is a single <code>.exe</code> on Windows (with a Linux build also available) that weighs under 15 MB installed. Compare that to Electron-based alternatives that start at 150+ MB.</p>
 
     <h3>Built-in CORS Proxy</h3>
 
@@ -217,7 +217,7 @@
       </tbody>
     </table>
 
-    <p>The pattern is clear. Other tools do one thing well, which is chat. Locally Uncensored is the only <strong>local AI app desktop</strong> that combines chat, image generation, video generation, and a model marketplace into a single interface, all while maintaining strict privacy guarantees. For a deeper dive into individual comparisons, check out our posts on <a href="locally-uncensored-vs-open-webui.html">Locally Uncensored vs Open WebUI</a>, <a href="locally-uncensored-vs-lm-studio.html">vs LM Studio</a>, <a href="locally-uncensored-vs-jan.html">vs Jan.ai</a>, and <a href="locally-uncensored-vs-gpt4all.html">vs GPT4All</a>.</p>
+    <p>The pattern is clear. Other tools do one thing well: chat. Locally Uncensored is the only <strong>local AI app desktop</strong> that combines chat, image generation, video generation, and a model marketplace into a single interface, all while maintaining strict privacy guarantees. For a deeper dive into individual comparisons, check out our posts on <a href="locally-uncensored-vs-open-webui.html">Locally Uncensored vs Open WebUI</a>, <a href="locally-uncensored-vs-lm-studio.html">vs LM Studio</a>, <a href="locally-uncensored-vs-jan.html">vs Jan.ai</a>, and <a href="locally-uncensored-vs-gpt4all.html">vs GPT4All</a>.</p>
 
     <h2>Upgrade Guide</h2>
 
@@ -228,7 +228,7 @@ git pull
 npm install
 npm run dev</code></pre>
 
-    <p>For the standalone desktop app, download the latest Windows <code>.exe</code> or a Linux build (<code>.AppImage</code>, <code>.deb</code>, <code>.rpm</code>) from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases">releases page</a>. There is no Mac download there, and there never has been. Your existing models, chat history, and settings carry over automatically, because they're stored in your OS's app data directory, not inside the app bundle.</p>
+    <p>For the standalone desktop app, download the latest <code>.exe</code> for Windows or <code>.AppImage</code> for Linux from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases">releases page</a>. There is no Mac build and there never was one; on a Mac the hosted studio runs in the browser at <a href="https://lu-labs.ai">lu-labs.ai</a>. Your existing models, chat history, and settings carry over automatically: they're stored in your OS's app data directory, not inside the app bundle.</p>
 
     <p>New users can follow the full setup guide in our <a href="run-uncensored-ai-locally.html">how to run uncensored AI locally</a> article, or just clone and run:</p>
 
@@ -267,7 +267,7 @@ cd locally-uncensored
     <p>Yes. The bundle installer checks for existing files before downloading. If you already have the FLUX.1 Schnell checkpoint, for example, the FLUX bundle will skip that file and only download the missing components (encoder, VAE, etc.).</p>
 
     <h3>What Whisper model should I use for speech-to-text?</h3>
-    <p>The default <code>base.en</code> model is fine for English-only use, because it's fast and accurate enough for dictating prompts. If you need multilingual transcription or higher accuracy for technical terms, switch to <code>medium</code> or <code>large-v3</code> in settings. The larger models need more VRAM and take longer to transcribe but produce noticeably better results.</p>
+    <p>The default <code>base.en</code> model is fine for English-only use: it's fast and accurate enough for dictating prompts. If you need multilingual transcription or higher accuracy for technical terms, switch to <code>medium</code> or <code>large-v3</code> in settings. The larger models need more VRAM and take longer to transcribe but produce noticeably better results.</p>
 
     <h3>How big is the Tauri desktop app?</h3>
     <p>Under 15 MB installed on Windows. That's the full application with the Rust backend, CORS proxy, and download manager included. Compare that to Electron-based alternatives like LM Studio (~200 MB) or Jan (~180 MB). Tauri compiles to native code and doesn't bundle a separate Chromium instance.</p>

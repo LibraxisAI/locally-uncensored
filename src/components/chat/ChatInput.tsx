@@ -1,10 +1,8 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, type ReactNode } from 'react'
 import { SamplingControls } from './SamplingControls'
 import { Send, Square, Paperclip, X, Brain, Gauge, Terminal } from 'lucide-react'
 import { matchAgentCommands, type AgentCommand, type CommandScope } from '../../lib/agent-commands'
 import { VoiceButton } from './VoiceButton'
-import { FlashChatNotice } from './FlashChatNotice'
-import { ModelMarks } from './ModelMarks'
 import { ApprovalDialog } from './ApprovalDialog'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -15,8 +13,8 @@ import { clampEffort, effortChoices, effortLabel, nextEffort, DEFAULT_EFFORT } f
 import type { AgentToolCall } from '../../types/agent-mode'
 import type { ImageAttachment } from '../../types/chat'
 import { COMPOSER_MAX_W } from './composer-width'
-import { Hinweis } from '../ui/Hinweis'
-import { HINWEIS_TEXT, HINWEIS_ZEILE } from '../../lib/hinweis'
+import { consumeComposerFocusPending } from '../../hooks/useKeyboardShortcuts'
+import { useChatNoticeStore, CHAT_NOTICE_MS } from '../../stores/chatNoticeStore'
 import { MONOGRAM, MONOGRAM_INVERT } from '../layout/brand'
 
 interface Props {
@@ -25,12 +23,18 @@ interface Props {
   /** THIS conversation is answering: the slot shows Stop. */
   isGenerating: boolean
   /**
-   * Another conversation is answering. The slot used to read one app-wide
-   * flag, so every other chat silently lost its Send button and grew a Stop
-   * that killed the foreign run (T1 nebenfund 4). Send stays where it is now
-   * and the composer says in one line why it is waiting.
+   * THIS conversation's send is queued behind another local run (Runde 4,
+   * review-lanes.md Blocker 1+6): the built-in engine runs one slot, so a
+   * second local send waits its turn instead of racing the first one for it.
+   * Distinct from plain `isGenerating`, where a stream is already flowing;
+   * here nothing has started yet, but the composer still shows Stop (the
+   * store aborter is registered the moment the run is admitted to the queue,
+   * not only once it starts) and a line explains why nothing is happening.
+   * Locking based on a DIFFERENT conversation is gone entirely as of this
+   * round: each conversation now only answers for its own send, running or
+   * queued, never for another one's.
    */
-  busyElsewhere?: boolean
+  waitingForLocalLane?: boolean
   pendingApproval?: AgentToolCall | null
   onApprove?: () => void
   onReject?: () => void
@@ -42,13 +46,6 @@ interface Props {
    * while Agent and Coding offer the whole set. Undefined = no menu at all.
    */
   slashCommands?: CommandScope
-  /**
-   * Open the Documents (RAG) panel. The clip button is images-only; this lets the
-   * composer point a user who tried to attach a PDF/doc to the right place
-   * (GH #69: a PDF was silently dropped and the model hallucinated it couldn't
-   * receive attachments).
-   */
-  onAttachDocs?: () => void
   /**
    * The model picker, rendered on the right of the action bar (before Send).
    * The header no longer carries it. Each surface passes an upward-opening
@@ -98,13 +95,10 @@ function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   })
 }
 
-export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pendingApproval, onApprove, onReject, disabled, slashCommands, onAttachDocs, composerModel, composerActions, composerAbove }: Props) {
+export function ChatInput({ onSend, onStop, isGenerating, waitingForLocalLane, pendingApproval, onApprove, onReject, disabled, slashCommands, composerModel, composerActions, composerAbove }: Props) {
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
-  // Transient hint shown when a non-image file is attached. The clip + drop are
-  // images-only; PDFs/Word/text belong in the Documents (RAG) panel (GH #69).
-  const [docHint, setDocHint] = useState(false)
   const [isVoiceRecording, setIsVoiceRecording] = useState(false)
   // Slash-command autocomplete (v2.5.3). When the input is a lone "/token", show
   // the matching agent commands; ↑/↓ to move, Enter/Tab to pick, Esc to dismiss.
@@ -222,12 +216,37 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
   const serverVision = declaredVision(activeModelMeta)
   const canSeeImages = serverVision !== undefined ? serverVision : isVisionCompatible(activeModel)
 
+  /**
+   * Auflage 1 (Review composer, 19.09.2026): `key={conversationId}` weiter
+   * unten montiert das Feld beim Gespraechswechsel neu, ein frischer Knoten
+   * hat aber nie von selbst Fokus. `useKeyboardShortcuts.ts` setzt die Fahne
+   * NUR, wenn der Tastendruck ("new-conversation", Ctrl/Cmd+N) selbst aus
+   * diesem Feld kam; ein Wechsel per Sidebar-Klick oder waehrend der Nutzer
+   * in einem Suchfeld/Modal tippt, setzt sie nie und stiehlt hier folglich
+   * nichts. `consumeComposerFocusPending()` liest und loescht sie in einem
+   * Schritt, und das geschieht bewusst HIER im Effekt (nach dem Commit, der
+   * Knoten `textareaRef.current` also schon der neue ist), nicht im
+   * Renderkoerper oben: ein Verbrauch dort waere ein Seiteneffekt waehrend
+   * des Renderns.
+   */
+  useLayoutEffect(() => {
+    if (consumeComposerFocusPending()) {
+      textareaRef.current?.focus()
+    }
+  }, [conversationId])
+
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px'
     }
-  }, [input])
+    // conversationId mit in der Abhaengigkeit: `key={conversationId}` unten
+    // montiert das Textfeld beim Wechsel neu, der frische Knoten startet aber
+    // auf `rows={1}`. Ist der uebernommene Entwurf identisch mit dem der
+    // vorigen Unterhaltung (gleicher mehrzeiliger Text), aendert sich `input`
+    // nicht, der Effekt liefe ohne diese Zeile also nicht, und die Hoehe
+    // bliebe auf einer Zeile stehen statt den Entwurf zu zeigen.
+  }, [input, conversationId])
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const all = Array.from(files)
@@ -236,19 +255,42 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
     // it belongs in the Documents panel (RAG) so the model can actually read it.
     // Silently dropping it made a user think their PDF attached when it didn't,
     // and the model then hallucinated that it "couldn't receive attachments"
-    // (GH #69). Surface a hint pointing at the right place instead.
-    if (imageFiles.length < all.length) setDocHint(true)
+    // (GH #69). Der Satz ist derselbe geblieben, nur sein Platz nicht mehr der
+    // Composer-Kasten, sondern der Kopf des Verlaufs (`ChatNotices`).
+    if (imageFiles.length < all.length) {
+      useChatNoticeStore.getState().show(
+        'attachment-is-not-an-image',
+        'The clip attaches images. To ask about a PDF, Word, or text file, add it in the Documents panel.',
+        'ruhig',
+        CHAT_NOTICE_MS,
+      )
+    }
     if (imageFiles.length === 0) return
     const newImages = await Promise.all(imageFiles.map(fileToImageAttachment))
     setImages(prev => [...prev, ...newImages].slice(0, 5)) // max 5 images
   }, [])
 
-  // Auto-dismiss the document hint after a few seconds.
+  /**
+   * Ein Bild an einem Modell, das keine sieht.
+   *
+   * Nicht blockierend (Senden geht weiter), und die Zeile geht von selbst
+   * wieder weg, sobald der Anhang weg ist oder das Modell sehen kann. Frueher
+   * war das eine Bedingung im Renderkoerper des Composers; sie ist ein Effekt
+   * geworden, weil ihr Ziel jetzt eine Etage hoeher gezeichnet wird und ein
+   * Speicher kein Render sein darf. gthvidsten, GH Discussion #67.
+   */
   useEffect(() => {
-    if (!docHint) return
-    const t = setTimeout(() => setDocHint(false), 8000)
-    return () => clearTimeout(t)
-  }, [docHint])
+    const blind = images.length > 0 && !!activeModel && !canSeeImages
+    const speicher = useChatNoticeStore.getState()
+    if (!blind) {
+      speicher.dismiss('model-cannot-see-images')
+      return
+    }
+    speicher.show(
+      'model-cannot-see-images',
+      "This model can't read images. Switch to a vision model (Gemma 4, LLaVA, Qwen-VL) to use the attachment.",
+    )
+  }, [images.length, activeModel, canSeeImages])
 
   const removeImage = (index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index))
@@ -277,7 +319,7 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
   const sendLockRef = useRef(0)
   const handleSend = () => {
     const trimmed = input.trim()
-    if ((!trimmed && images.length === 0) || isGenerating || busyElsewhere || disabled) return
+    if ((!trimmed && images.length === 0) || isGenerating || waitingForLocalLane || disabled) return
     if (!passSendLock(sendLockRef)) return
     onSend(trimmed || '(image)', images.length > 0 ? images : undefined)
     setInput('')
@@ -373,9 +415,14 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
 
   return (
     <div className={`px-3 pb-2 pt-1 w-full ${COMPOSER_MAX_W} mx-auto`}>
-      {/* Was dieses Modell kann, bevor die Frage getippt ist. */}
-      <ModelMarks />
-      <FlashChatNotice />
+      {/* David, 19.09.2026, Runde 2 (Nachtrag): ueber dem Eingabefeld steht
+          seither GAR KEINE Marke mehr, weder "No credits" noch "No refusals".
+          Die Komponente, die sie hier zeigte, ist geloescht, nicht nur
+          entkoppelt (siehe flash-hinweis-verschiebt-nichts.test.ts). Das
+          Etikett neben dem Agent-Schalter (ChatView.tsx, der Flash-Hinweis)
+          und die Modellauswahl selbst (ModelRowMarks in ModelSelector.tsx,
+          unveraendert) sind die einzigen Stellen, die diese Aussagen noch
+          tragen. */}
       {/* Approval used to live here as a popup over the chat input.
           Per user feedback ("eventuell in den chat einarbeiten") it now
           renders INSIDE the pending tool-call block in MessageList, so
@@ -441,49 +488,19 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
         {/* Prompt area: hints, image previews, then the textarea (buttons live
             in the action bar below, web-parity two-row composer). */}
         <div className="px-3 pt-2.5">
-          {/* Another chat is answering. Saying so beats what this composer did
-              before, which was to drop the Send button without a word and put a
-              Stop button there that aborted the OTHER chat's run. One answer at
-              a time is what the app really does today: the local engine runs a
-              single slot, and the streaming buffers behind the composer are
-              shared. Whoever lifts that lifts this line with it. */}
-          {busyElsewhere && (
-            <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`} data-testid="composer-busy-elsewhere">
-              <span className="flex-1 min-w-0">
-                Another chat is still answering. This app runs one answer at a time, so wait for it to finish or stop it in that chat.
-              </span>
-            </div>
-          )}
-          {/* Non-image attach hint (GH #69). The clip is images-only; PDFs, Word,
-              and text files go through the Documents panel so the model can read them. */}
-          {docHint && (
-            // Eine ruhige Zeile statt des gelben Kastens mit dem gelben
-            // Knopf darin: der Clip hat nur nicht das genommen, was der
-            // Nutzer wollte, kaputt ist dabei nichts. Gebaut aus den
-            // Konstanten und nicht aus `<Hinweis>`, weil beide Knoepfe hier
-            // `onMouseDown` mit `preventDefault` brauchen: sonst verliert das
-            // Textfeld beim Wegklicken den Schreibzeiger.
-            <div role="status" className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} mb-1.5 px-1`}>
-              <span className="flex-1 min-w-0">
-                The clip attaches images. To ask about a PDF, Word, or text file, add it in the Documents panel.
-                {onAttachDocs && (
-                  <button
-                    onMouseDown={(e) => { e.preventDefault(); setDocHint(false); onAttachDocs() }}
-                    className="ml-1 underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-                  >
-                    Open Documents
-                  </button>
-                )}
-              </span>
-              <button
-                onMouseDown={(e) => { e.preventDefault(); setDocHint(false) }}
-                className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
-                aria-label="Dismiss"
-              >
-                <X size={11} />
-              </button>
-            </div>
-          )}
+          {/* HIER STAND BIS ZUM 21.09.2026 EIN STAPEL HINWEISE, und genau
+              darum ging es dem Eigner am echten Windows-Bau: „NICHTS im
+              prompt fenster!" Drei Zeilen sind ausgezogen, keine ist
+              verlorengegangen:
+
+                Wartezeile der lokalen Spur  -> LocalLaneWaitLine, gezeichnet
+                  von ChatView/CodexView als Geschwister UEBER diesem Kasten
+                Anhang ist kein Bild (GH #69) -> ChatNotices, oben im Verlauf
+                Modell sieht keine Bilder      -> ChatNotices, oben im Verlauf
+
+              Was hier bleibt, ist kein Hinweis: die Bildvorschauen sind der
+              Anhang selbst, und die Freigabe ist eine Entscheidung mit zwei
+              Knoepfen. */}
 
           {/* Image previews */}
           {images.length > 0 && (
@@ -509,23 +526,34 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
             </div>
           )}
 
-          {/* Vision hint: a text-only model can't read the attached image.
-              Non-blocking (send still works); the runtime error is also mapped
-              to friendly copy. gthvidsten, GH Discussion #67. */}
-          {images.length > 0 && activeModel && !canSeeImages && (
-            <Hinweis className="mb-1.5 px-1">
-              This model can't read images. Switch to a vision model (Gemma 4, LLaVA, Qwen-VL) to use the attachment.
-            </Hinweis>
-          )}
+          {/* `data-lu-composer`: der stabile Erkennungspunkt DIESES Feldes,
+              gelesen von `useKeyboardShortcuts.ts` (Ctrl/Cmd+N aus dem
+              Composer heraus setzt die Fokusfahne, aus einem Suchfeld nicht).
+              Er hiess bis zum 21.09.2026 `data-lu-quiet-focus` und schaltete
+              nebenbei den Fokusring ab; beides in einem Attribut war schon
+              falsch, als das Attribut an sechs Feldern hing, denn damit
+              meldete auch eine Preset-Werkstatt-Textarea „ich bin der
+              Composer". Der Fokus ist jetzt eine Regel in index.css, die
+              jedes Textfeld der App deckt, und dieses Attribut sagt wieder
+              nur das eine, wofuer es gelesen wird.
 
-          {/* `data-lu-quiet-focus`: die EINE Ausnahme vom Fokusring des Hauses.
-              Der Kasten um diese Zeile traegt seinen Fokus schon selbst
-              (`focus-within:border-*` weiter oben), der Ring lag als zweiter,
-              staerkerer Rahmen darin. Die Begruendung samt Messung steht an
-              der Regel in index.css; `focus:outline-none` unten allein reicht
-              nicht, es verliert gegen sie. */}
+              `key={conversationId}`: der Gespraechswechsel oben raeumt `input`
+              ueber React (den kontrollierten Wert), aber das DOM-Textfeld
+              selbst behaelt ohne eigenen Schluessel denselben Knoten, samt
+              seiner eigenen Selektion/Cursorposition, ueber den Wechsel
+              hinweg. Ein Tastenereignis, das der Browser noch gegen den ALTEN
+              Knoten in der Warteschlange hat (eine reale Maus- oder
+              CDP-Eingabe, die kurz vor dem Wechsel begann), landet dann an der
+              alten Cursorposition MITTEN im gerade abgelegten Entwurf, bevor
+              Reacts Leerung ueberhaupt sichtbar wird - genau das Muster aus der
+              Box-Messung (BERICHT.md Z2: neuer Text mitten im alten,
+              Endstueck haengt hinten dran). Ein neuer Schluessel zwingt einen
+              WIRKLICH neuen DOM-Knoten pro Unterhaltung: es gibt dann keinen
+              alten Knoten mehr, an dem ein verspaetetes Ereignis noch landen
+              koennte. */}
           <textarea
-            data-lu-quiet-focus
+            data-lu-composer
+            key={conversationId ?? 'none'}
             ref={textareaRef}
             value={input}
             onChange={(e) => updateInput(e.target.value)}
@@ -535,7 +563,7 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
             placeholder={disabled ? "Unavailable" : isDragOver ? "Drop images here..." : isTranscribing ? "Transcribing..." : isVoiceRecording ? "Recording..." : "Message..."}
             disabled={disabled}
             rows={1}
-            className="w-full bg-transparent resize-none text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none text-[12px] leading-relaxed max-h-[200px] disabled:opacity-50 scrollbar-thin"
+            className="lu-fokus-am-kasten w-full bg-transparent resize-none text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none text-[12px] leading-relaxed max-h-[200px] disabled:opacity-50 scrollbar-thin"
           />
         </div>
 
@@ -697,7 +725,7 @@ export function ChatInput({ onSend, onStop, isGenerating, busyElsewhere, pending
             ) : (
               <button
                 onClick={handleSend}
-                disabled={(!input.trim() && images.length === 0) || isTranscribing || !!busyElsewhere}
+                disabled={(!input.trim() && images.length === 0) || isTranscribing || !!waitingForLocalLane}
                 className="lu-control lu-control--icon lu-primary w-full h-full"
                 aria-label="Send message"
               >

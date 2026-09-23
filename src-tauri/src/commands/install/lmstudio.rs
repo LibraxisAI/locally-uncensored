@@ -17,15 +17,9 @@
 //! des eingefrorenen Fensters, nicht die Anfrage selbst.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::process::Stdio;
 
 use crate::os_error;
-
-#[cfg(target_os = "windows")]
-use super::CREATE_NO_WINDOW;
 
 pub(super) const LMSTUDIO_DEFAULT_PORT: u16 = 1234;
 
@@ -100,10 +94,9 @@ pub(crate) fn lmstudio_lms_path() -> Option<PathBuf> {
     // Last resort: PATH lookup. Catches non-standard installs (Chocolatey,
     // user-relocated install dir, etc.). CREATE_NO_WINDOW so this `where` probe
     // never flashes a console window at the end user.
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("lms");
-    #[cfg(target_os = "windows")]
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     if let Ok(out) = where_cmd.output() {
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout);
@@ -303,13 +296,12 @@ fn start_lmstudio_server_blocking() -> Result<serde_json::Value, String> {
     }
     match lmstudio_lms_path() {
         Some(p) => {
-            let mut srv = Command::new(&p);
+            let mut srv = crate::process_util::foreign_system_command(&p);
             srv.args(["server", "start", "--cors", "--port"])
                 .arg(LMSTUDIO_DEFAULT_PORT.to_string())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            #[cfg(target_os = "windows")]
-            srv.creation_flags(CREATE_NO_WINDOW);
+            crate::process_util::suppress_window(&mut srv);
             srv.spawn()
                 .map_err(|e| format!("spawn lms: {}", os_error::english(&e)))?;
             Ok(serde_json::json!({"status": "starting"}))
@@ -442,10 +434,9 @@ fn lmstudio_load_model_blocking(model: String, contextLength: Option<u32>) -> Re
         // Hide the console window the `lms` CLI would otherwise flash on
         // Windows (CREATE_NO_WINDOW) — these run during normal model
         // switching / the VRAM hand-off, not just at install time.
-        let mut unload = Command::new(&lms);
+        let mut unload = crate::process_util::foreign_system_command(&lms);
         unload.args(["unload", &model]);
-        #[cfg(target_os = "windows")]
-        unload.creation_flags(CREATE_NO_WINDOW);
+        crate::process_util::suppress_window(&mut unload);
         let _ = unload.output();
     }
     let ctx = contextLength.unwrap_or(0);
@@ -455,10 +446,9 @@ fn lmstudio_load_model_blocking(model: String, contextLength: Option<u32>) -> Re
         args.push("-c");
         args.push(ctx_str.as_str());
     }
-    let mut cmd = Command::new(&lms);
+    let mut cmd = crate::process_util::foreign_system_command(&lms);
     cmd.args(&args);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     let output = cmd
         .output()
         .map_err(|e| format!("spawn lms load: {}", os_error::english(&e)))?;
@@ -549,10 +539,9 @@ pub async fn lmstudio_unload_model(model: String) -> Result<serde_json::Value, S
 fn lmstudio_unload_model_blocking(model: String) -> Result<serde_json::Value, String> {
     let lms = lmstudio_lms_path()
         .ok_or_else(|| "lms CLI not found".to_string())?;
-    let mut cmd = Command::new(&lms);
+    let mut cmd = crate::process_util::foreign_system_command(&lms);
     cmd.args(["unload", &model]);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut cmd);
     let output = cmd
         .output()
         .map_err(|e| format!("spawn lms unload: {}", os_error::english(&e)))?;

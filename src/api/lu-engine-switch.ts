@@ -20,7 +20,6 @@ import { useLuEngineSwitchStore } from '../stores/luEngineSwitchStore'
 import { luEngineSwapInFlight } from './lu-engine-swap-lock'
 import { useProviderStore } from '../stores/providerStore'
 import { useModelStore } from '../stores/modelStore'
-import { useUIStore } from '../stores/uiStore'
 import {
   slotHandbackUpdate, standbyOccupant,
   type HandoverSlot, type SlotOccupant,
@@ -34,7 +33,7 @@ import { slotTakeoverUpdate } from '../lib/openai-slot-handover'
 import { LU_ENGINE_NAME } from '../lib/engine-name'
 // Dieselbe Liste beantwortet die Frage auf dem Statusweg, der diese Datei
 // nicht importieren kann, ohne einen Kreis zu schliessen (lib/engine-offload).
-import { VIEWS_WITH_THE_ENGINE_NOTE } from '../lib/engine-offload'
+import { dieZeileIstZuSehen } from '../lib/engine-offload'
 import { displayModelName } from './providers'
 
 /** What the user is told when the pick moved his chat backend. */
@@ -328,20 +327,30 @@ function haltenBis(pruefung: () => boolean, frist = CHAT_PROVIDER_SWITCH_HOLD_MS
 export const UNSEEN_NOTE_HOLD_MS = 5 * 60_000
 
 /**
- * Halten, solange gar keine Seite offen ist, die diese Zeile zeichnet.
+ * Halten, solange der Satz nirgends als Satz zu sehen ist.
  *
  * Beide Ansagen ueber eine Wahl, die sich von selbst geaendert hat, werden von
  * den Einstellungen aus ausgeloest: Provider entfernen, Enable auf der
- * Standby-Karte. Die Zeile haengt aber ueber dem Eingabefeld im Chat und auf
- * der Models-Seite. Auf der gewoehnlichen Uhr lief sie also ab, waehrend
+ * Standby-Karte. Auf der gewoehnlichen Uhr liefen sie also ab, waehrend
  * niemand sie sehen konnte, und der Nutzer kam in einen Chat zurueck, in dem
  * ein anderes Modell stand und nichts dazu.
+ *
+ * Seit dem 21.09.2026 deckt derselbe Halt einen zweiten, engeren Fall ab. Die
+ * Zeile steht im Chat nicht mehr ueber dem Eingabefeld, sondern im
+ * Modellmenue; sichtbar ist ohne Klick nur der Punkt am Waehlerknopf. Die
+ * Ansicht `chat` allein ist damit kein Leser mehr, und `dieZeileIstZuSehen`
+ * sagt, was einer ist: die Models-Seite mit ihrer vollen Leiste, oder ein
+ * aufgeklapptes Modellmenue. Vorher lief die Uhr ab, waehrend vom Text kein
+ * Wort zu sehen war, und der Punkt ging mit ihr.
+ *
+ * Die Obergrenze gegen ewige Punkte ist die, die es schon gab, und sie bleibt
+ * die einzige: `UNSEEN_NOTE_HOLD_MS`. Danach laeuft die Lesezeit, ob gelesen
+ * oder nicht. Dazu kommt zweierlei, das ohne Zutun gilt und deshalb nichts
+ * kostet: dieser Speicher wird nicht persistiert, ein Neustart raeumt ihn
+ * also, und jede naechste Ansage ersetzt die vorige samt ihrem `gesehen`.
  */
 function bisJemandHinsehenKann(): () => boolean {
-  return haltenBis(
-    () => !VIEWS_WITH_THE_ENGINE_NOTE.has(useUIStore.getState().currentView),
-    UNSEEN_NOTE_HOLD_MS,
-  )
+  return haltenBis(() => !dieZeileIstZuSehen(), UNSEEN_NOTE_HOLD_MS)
 }
 
 /**

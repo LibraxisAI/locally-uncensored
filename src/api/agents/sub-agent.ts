@@ -1,20 +1,23 @@
 /**
- * Phase 13 (v2.4.0) — Sub-agent delegation.
+ * Phase 13 (v2.4.0), Sub-agent delegation.
  *
  * Exposes a `delegate_task` builtin tool that spawns a nested ReAct loop
  * with a sub-goal, its own isolated AgentBudget, and the same tool
  * registry minus `delegate_task` itself (so a sub-agent cannot fork-bomb
  * a tree of delegations).
  *
- * Depth is capped at 2 globally — a sub-agent that attempts to call
+ * Depth is capped at 2 globally, a sub-agent that attempts to call
  * delegate_task returns a refusal string. Combined with the tool-list
  * filtering, the model has no syntactically valid path to recurse.
  */
 
 import { settleThinking } from '../../lib/thinking-stripper'
 import { toolResultIsFailure } from '../../lib/tool-result-failure'
+import { isRunStopped } from '../../lib/run-stop'
+import { runInLane } from '../../lib/run-slot'
+import { laneOf, currentLaneFacts, type RunLane } from '../../lib/run-lane-of-model'
 // M7 / Audit W-T2: hier stand zweimal `await import('../mcp')`. Gesplittet hat
-// das nie — die Tonne mcp/index.ts hängt über useAgentChat, useCodex und
+// das nie, die Tonne mcp/index.ts hängt über useAgentChat, useCodex und
 // api/tool-registry.ts ohnehin statisch im Graph, also meldete Rolldown
 // INEFFECTIVE_DYNAMIC_IMPORT. Der import() war auch nie fürs Splitten da,
 // sondern um den Zyklus mcp/index → builtin-tools → sub-agent → mcp/index zu
@@ -55,7 +58,7 @@ import { allowedInReadOnlyTurn } from '../../lib/mutating-tools'
 
 // Recursion note: a sub-agent's tool list is filtered so it never SEES
 // `delegate_task`, which is what discourages nesting in practice. It is not a
-// hard block — the runner resolves over the full registry — but the in-flight
+// hard block, the runner resolves over the full registry, but the in-flight
 // concurrency cap below (SUB_AGENT_MAX_PARALLEL) plus each sub-agent's tight
 // budget bound the blast radius. (A former SUB_AGENT_MAX_DEPTH constant claimed
 // to enforce a depth limit but was never read; removed in 2.5.9. The design
@@ -64,8 +67,8 @@ import { allowedInReadOnlyTurn } from '../../lib/mutating-tools'
 
 /**
  * Max sub-agents in flight at the same time (Bonus, 2026-05). Parallel
- * siblings let the model fan out research tasks — e.g. "for each of these
- * 4 files, summarize the public surface" — without the historic serial
+ * siblings let the model fan out research tasks, e.g. "for each of these
+ * 4 files, summarize the public surface", without the historic serial
  * pressure from the depth counter doubling as a concurrency gate.
  */
 export const SUB_AGENT_MAX_PARALLEL = 4
@@ -75,7 +78,7 @@ export const SUB_AGENT_MAX_PARALLEL = 4
  *
  * Ab 2.6.8 die VORGABE, nicht mehr das Gesetz: `resolveSubAgentBudget()` liest
  * die Einstellungen und faellt auf diese Zahlen zurueck. Sie bleiben trotzdem
- * hier stehen und werden nicht durch DEFAULT_SETTINGS ersetzt — dieses Modul
+ * hier stehen und werden nicht durch DEFAULT_SETTINGS ersetzt, dieses Modul
  * laeuft in Tests ohne Store, und ein Sub-Agent ohne Kappe ist genau das, was
  * die Kappe verhindern soll.
  */
@@ -84,14 +87,14 @@ export const SUB_AGENT_BUDGET = { maxToolCalls: 10, maxIterations: 5 } as const
 /**
  * Die Kappen fuer EINEN delegierten Lauf.
  *
- * 0 heisst hier "nimm die Vorgabe" und nicht "unbegrenzt" — anders als bei den
+ * 0 heisst hier "nimm die Vorgabe" und nicht "unbegrenzt", anders als bei den
  * Kappen des Hauptlaufs. Der Unterschied ist kein Versehen: beim Hauptlauf
  * sitzt der Nutzer davor und kann Stop druecken, ein Sub-Agent laeuft ohne
  * Zuschauer. Unbegrenztheit soll man dort nicht aus Versehen einstellen
  * koennen, indem man ein Feld leert.
  */
 /** Hoechstlaenge des Rohmaterials, das ein Abbruch zurueckgibt. Es landet als
- *  WERKZEUGERGEBNIS im Fenster des Hauptagenten — grosszuegig waere hier
+ *  WERKZEUGERGEBNIS im Fenster des Hauptagenten, grosszuegig waere hier
  *  teuer, und der Zweck ist ein Anhaltspunkt, keine Akte. */
 const MATERIAL_KAPPE = 3000
 const MATERIAL_JE_ERGEBNIS = 700
@@ -100,14 +103,14 @@ const MATERIAL_JE_ERGEBNIS = 700
  * Was dieser Lauf per Werkzeug gefunden hat, als Rohmaterial.
  *
  * `finalContent` sammelt nur die PROSA-Zuege. Ein Unteragent, der alle seine
- * Schritte in Werkzeuge steckt — also genau der, der die Kappe reisst —, hat
+ * Schritte in Werkzeuge steckt, also genau der, der die Kappe reisst, , hat
  * am Ende viel gefunden und nichts gesagt, und bis zum 03.09.2026 ging das
  * alles verloren: „(no partial answer)" nach 78 Sekunden Recherche. Bei einem
  * lokalen Modell ist das die teuerste Sekunde im ganzen Ablauf.
  *
  * Fehlgeschlagene Aufrufe werden GEZAEHLT, nicht ausgegeben: „Web search
  * failed" ist kein Fund, und als Material waere es Rauschen. Als Zahl ist es
- * die wichtigste Auskunft, die es hier gibt — es wurde nichts gefunden, und
+ * die wichtigste Auskunft, die es hier gibt, es wurde nichts gefunden, und
  * der Hauptagent soll nicht anfangen zu raten.
  *
  * Ausdruecklich als Material benannt und nie als Antwort: der Hauptagent soll
@@ -131,7 +134,7 @@ export function gesammeltesMaterial(messages: Array<{ role: string; content?: st
 
   const notiz = gescheitert > 0 ? ` ${gescheitert} tool call${gescheitert === 1 ? '' : 's'} failed and produced nothing.` : ''
   if (teile.length === 0) return notiz.trim()
-  return `Raw material gathered before the stop (not an answer — verify before using):${notiz}\n\n${teile.join('\n\n---\n\n')}`
+  return `Raw material gathered before the stop (not an answer, verify before using):${notiz}\n\n${teile.join('\n\n---\n\n')}`
 }
 
 export function resolveSubAgentBudget(s?: {
@@ -154,24 +157,24 @@ export const DELEGATE_TASK_TOOL_DEF: MCPToolDefinition = {
     // Die Zahlen sind seit 2.6.8 einstellbar, also duerfen sie hier nicht mehr
     // als Tatsache stehen. Eine Beschreibung, die "max 10" sagt, waehrend die
     // Einstellung auf 3 steht, ist keine Hilfe fuer das Modell, sondern eine
-    // Falschauskunft — es plant dann Teilziele, die es nie zu Ende bringt.
+    // Falschauskunft, es plant dann Teilziele, die es nie zu Ende bringt.
     // Der echte Wert erreicht das Modell dort, wo er zaehlt: in
     // AgentBudget.haltMessage(), wenn die Kappe wirklich greift.
     // "Klein halten" stand hier frueher unmittelbar neben der neuen Bitte um
-    // einen AUSFUEHRLICHEN Auftrag — fuer ein 3B-Modell zwei Anweisungen, die
+    // einen AUSFUEHRLICHEN Auftrag, fuer ein 3B-Modell zwei Anweisungen, die
     // sich widersprechen, und es befolgt dann die kuerzere. Die beiden meinen
     // verschiedene Achsen: der UMFANG bleibt schmal, die BESCHREIBUNG wird
     // lang. Genau so steht es jetzt da, in einem Satz statt in zweien.
     + 'Its tool budget is tight: keep the SCOPE narrow, the brief detailed. '
     + 'PARALLELIZE: emit multiple delegate_task tool calls in the SAME assistant turn '
-    + 'to fan out (e.g. one sub-agent per file) — up to 4 run concurrently. '
+    + 'to fan out (e.g. one sub-agent per file), up to 4 run concurrently. '
     // Die Rueckgabeform wird ABSICHTLICH nicht mehr angekuendigt. Am
     // 02.09.2026 gemessen: ein 4B-Modell, dem gesagt wurde, der Aufruf liefere
     // „a task id at once", hat die Antwort ERFUNDEN statt das Werkzeug zu
-    // rufen — „Task ID: t12345, Status: Background task initiated". Wer einem
+    // rufen, „Task ID: t12345, Status: Background task initiated". Wer einem
     // schwachen Modell das Ergebnis beschreibt, gibt ihm eine Vorlage zum
     // Halluzinieren. Was der Aufruf zurueckgibt, erfaehrt es beim Aufrufen.
-    + 'DO NOT call from inside another delegate_task — recursion is filtered by the harness. '
+    + 'DO NOT call from inside another delegate_task, recursion is filtered by the harness. '
     + 'NOT a replacement for a regular tool call when one direct tool would do.',
   inputSchema: {
     type: 'object',
@@ -182,14 +185,14 @@ export const DELEGATE_TASK_TOOL_DEF: MCPToolDefinition = {
         // hier am schwersten zu sehen ist: der Sub-Agent teilt das Gespraech
         // NICHT. Er sieht nicht, was der Nutzer wollte, nicht die Dateien, die
         // schon offen waren, nicht die drei Fehlversuche davor. Ein Satz ist
-        // fuer den Aufrufer vollstaendig, weil er den Rest im Kopf hat — beim
+        // fuer den Aufrufer vollstaendig, weil er den Rest im Kopf hat, beim
         // Empfaenger kommt eine Aufgabe ohne Grundlage an, und er sucht sich
         // die Haelfte davon nochmal zusammen, aus einem Budget, das dafuer
         // nicht reicht. Die Task-Beschreibung der Claude-Code-Desktop-App
         // verlangt an genau dieser Stelle das Gegenteil von Kuerze.
         description:
           'A detailed, self-contained brief: what to do and what to report back. '
-          + 'The sub-agent does NOT see this conversation — anything you leave out, '
+          + 'The sub-agent does NOT see this conversation, anything you leave out, '
           + 'it cannot look up. Several sentences are right here; one line is too little.',
       },
       context: {
@@ -205,10 +208,10 @@ export const DELEGATE_TASK_TOOL_DEF: MCPToolDefinition = {
         // PLATZHALTER `"your-model-id"` mit, die Delegation lief gar nicht
         // erst los und der Nutzer bekam statt einer Antwort eine Fehlermeldung
         // samt Modelliste. Ein Feld, das nach einer Kennung fragt, bekommt von
-        // einem kleinen Modell eine erfundene — es sei denn, das Weglassen
+        // einem kleinen Modell eine erfundene, es sei denn, das Weglassen
         // steht ausdruecklich und zuerst da.
         description:
-          'OMIT unless the user named another model. Never a placeholder — '
+          'OMIT unless the user named another model. Never a placeholder, '
           + 'only an id copied verbatim from the user or your installed list.',
       },
       background: {
@@ -225,7 +228,7 @@ export const DELEGATE_TASK_TOOL_DEF: MCPToolDefinition = {
 }
 
 /**
- * In-flight counter — module-scoped so parallel siblings + nested
+ * In-flight counter, module-scoped so parallel siblings + nested
  * children share one bound. Reset only by successful return or thrown
  * error; see the try/finally in the executor.
  *
@@ -297,20 +300,20 @@ export interface SubAgentGates {
  * Build the gates for one delegated run (audit AGT-1).
  *
  * A sub-agent runs a full ReAct loop over the whole tool registry minus
- * delegate_task — shell_execute, file_write and file_edit included, all three
+ * delegate_task, shell_execute, file_write and file_edit included, all three
  * 'confirm' by default. Until 2.6.7 it called executeParallel with getTool +
  * execute + explainError and NOTHING else: no approval gate (the executor's
  * was optional and therefore skipped), no audit trail, no abort signal. One
  * approved delegate_task bought an unattended, unlogged, uninterruptible
  * shell. Threading `run` (plan 2.6.6 C1) did not fix that: the run context
  * carries the conversation, workspace, artifact and read-only flags, so it
- * scopes WHERE a tool writes and whether shell_execute is read-only — it never
+ * scopes WHERE a tool writes and whether shell_execute is read-only, it never
  * asked the user anything.
  *
  * The gates are resolved here rather than handed down from the hook on
  * purpose. All three live in module-scoped, conversation-keyed state (the
  * approval FIFO, the audit store, the permission store), so the run's
- * conversation id is enough to reach the SAME queue the parent loop uses —
+ * conversation id is enough to reach the SAME queue the parent loop uses,
  * the pending approval surfaces in the same UI, the tool call lands in the
  * same audit list. The parent's own awaitApproval closure could not be reused:
  * it resolves a request id against the batch it was built for and answers
@@ -406,7 +409,7 @@ export async function buildSubAgentGates(run?: AgentRunContext): Promise<SubAgen
       const entry: ApprovalEntry = { toolCall, resolve }
       approvals.enqueueApproval(convId, entry)
       // Stop has to answer a question nobody clicked, or the delegation (and
-      // with it the parent turn) waits forever — same lesson as audit A4.
+      // with it the parent turn) waits forever, same lesson as audit A4.
       abortSignal?.addEventListener(
         'abort',
         () => {
@@ -503,7 +506,7 @@ export async function defaultSubAgentRunner(
     function: { name: t.name, description: t.description, parameters: t.inputSchema },
   }))
 
-  // The sub-agent's own conversation — data this file writes, so it gets the
+  // The sub-agent's own conversation, data this file writes, so it gets the
   // declared type `provider.chatWithTools` reads rather than a guard.
   const messages: ChatMessage[] = [
     {
@@ -531,12 +534,12 @@ export async function defaultSubAgentRunner(
   let finalContent = ''
   // Hat dieser Unterauftrag ueberhaupt schon einen Handgriff getan, und hat er
   // seinen einen Anstoss schon bekommen? Beides zusammen entscheidet, ob ein
-  // Zug ohne Werkzeugaufruf als Antwort zaehlt — siehe ankuendigung.ts.
+  // Zug ohne Werkzeugaufruf als Antwort zaehlt, siehe ankuendigung.ts.
   let werkzeugGelaufen = false
   let angestossen = false
   // Die Schleifengrenze kommt aus DEMSELBEN Budget, das auch zaehlt. Vorher
   // stand hier die Konstante, waehrend `options.budget` die eingestellte Kappe
-  // trug — zwei Zahlen fuer eine Regel, und die stillere haette gewonnen.
+  // trug, zwei Zahlen fuer eine Regel, und die stillere haette gewonnen.
   const maxIterations = options.budget.snapshot().caps.maxIterations || SUB_AGENT_BUDGET.maxIterations
   for (let i = 0; i < maxIterations; i++) {
     if (gates.abortSignal?.aborted) {
@@ -564,7 +567,14 @@ export async function defaultSubAgentRunner(
       const material = finalContent || gesammeltesMaterial(messages)
       return `${options.budget.haltMessage()} ${material || '(no partial answer)'}`
     }
-    const turn = await provider.chatWithTools(modelId, messages, llmTools, {})
+    // B1 (3.0.1): `gates.abortSignal` was only checked at the TOP of the next
+    // iteration, never handed to the provider call itself. A Stop pressed
+    // mid-request left the fetch running to completion on its own, T4
+    // measured a 25.2s cloud request finishing with status 200, 13.4s after
+    // the user stopped, and that is paid compute the product promised would
+    // not happen ("Stop means stop"). Threading the same signal the tool
+    // gates already use into the request makes the abort reach the wire.
+    const turn = await provider.chatWithTools(modelId, messages, llmTools, { signal: gates.abortSignal })
     // What a sub-agent returns becomes a TOOL RESULT in the parent's context,
     // so leaked reasoning floods the run it was supposed to shorten (2.6.7
     // Denk-Audit, Loch 11). Same settlement as every visible surface.
@@ -572,7 +582,7 @@ export async function defaultSubAgentRunner(
     finalContent = settled || finalContent
     if (!turn.toolCalls || turn.toolCalls.length === 0) {
       // Persona B2 (03.09.2026): drei Unterauftraege, 251 Sekunden, und
-      // zurueck kamen zwei Ankuendigungen — „Ich recherchiere das Hamburger
+      // zurueck kamen zwei Ankuendigungen, „Ich recherchiere das Hamburger
       // Transparenzgesetz fuer Sie." Ein kleines Modell sagt erst hoeflich an,
       // was es tun wird, und faellt genau hier hinaus, bevor es einen
       // Handgriff getan hat. Ein Anstoss, einmal, und nur solange noch nichts
@@ -596,7 +606,7 @@ export async function defaultSubAgentRunner(
         // Die NAMEN, nicht die Argumente: siehe AgentTask.activity. Die drei
         // Regeln dahinter (doppelte zusammenfassen, namenlose nicht
         // verschweigen, kappen) stehen in describeToolCalls und werden dort
-        // geprueft — hier liefe kein Test dagegen.
+        // geprueft, hier liefe kein Test dagegen.
         activity: describeToolCalls(turn.toolCalls.map((tc) => tc.function?.name)),
       })
     }
@@ -628,7 +638,7 @@ export async function defaultSubAgentRunner(
     messages.push({ role: 'assistant', content: turn.content || '', tool_calls: turn.toolCalls })
     // Map each result back to its ORIGINATING call by index. executeParallel
     // preserves input order (results[i] <-> requests[i] <-> turn.toolCalls[i]),
-    // so zipping by index gives every tool message the correct tool_call_id —
+    // so zipping by index gives every tool message the correct tool_call_id,
     // even when the turn fired the same tool twice. The previous find-by-name
     // matched the FIRST call for both duplicates, leaving the second call's id
     // with no result; strict OpenAI-compatible providers (lu-cloud/DeepInfra,
@@ -661,13 +671,41 @@ export async function defaultSubAgentRunner(
 }
 
 /**
+ * Auf welcher Spur wuerde dieser Sub-Agent rechnen, aufgeloest genau wie in
+ * `defaultSubAgentRunner`: ein explizites `model`-Argument gewinnt, sonst
+ * das aktive Modell. Geteilt zwischen dem Vordergrund- und dem
+ * Hintergrundzweig von `buildDelegateExecutor`, damit beide dieselbe
+ * Antwort auf "welches Modell rechnet wirklich" geben, statt sie zweimal
+ * getrennt zu erraten.
+ */
+async function resolveSubAgentLane(model: string | undefined): Promise<RunLane> {
+  const { useModelStore } = await import('../../stores/modelStore')
+  const { resolveRequestedModel } = await import('../../lib/agent-fanout')
+  const modelStoreState = useModelStore.getState()
+  let subAgentModel = modelStoreState.activeModel
+  if (model) {
+    const treffer = resolveRequestedModel(model, modelStoreState.models)
+    if (treffer) subAgentModel = treffer.name
+  }
+  return subAgentModel ? laneOf(subAgentModel, currentLaneFacts()) : 'cloud'
+}
+
+/**
  * Build a tool executor suitable for toolRegistry.registerBuiltin. The
  * runner is injectable so tests can stub the whole LLM round-trip.
  */
 export function buildDelegateExecutor(
   runner: SubAgentRunner = defaultSubAgentRunner
-): (args: ToolArgs, run?: AgentRunContext) => Promise<string> {
-  return async (args: ToolArgs, run?: AgentRunContext) => {
+): (args: ToolArgs, run?: AgentRunContext, abort?: AbortSignal) => Promise<string> {
+  // `abort` is the merged signal toolRegistry.execute() hands every
+  // executor: the run's own Stop AND (klaerung-n5a Fix 2) the JS timeout
+  // race's own controller, aborted the moment the cap fires. Foreground
+  // delegation now has no realistic cap of its own (tool-timeout.ts,
+  // AGENT_LOOP_TOOLS), but the race still exists as a formality and its
+  // signal has to reach the nested loop for the same reason Stop does:
+  // otherwise a timed-out call would still orphan the sub-agent, holding
+  // its local lane, exactly the bug this fix closes.
+  return async (args: ToolArgs, run?: AgentRunContext, abort?: AbortSignal) => {
     const kappe = effectiveParallelCap(run?.conversationId)
     if (_inFlight >= kappe) {
       return `Error: Maximum sub-agent concurrency (${kappe}) reached. Wait for a running sub-agent to finish, or continue the task yourself.`
@@ -684,7 +722,7 @@ export function buildDelegateExecutor(
     // Einstellungen (ein dynamisches import(), also ein Mikrotask) und zaehlte
     // danach hoch. Fuenf gleichzeitige Aufrufe kamen damit alle an der
     // Schranke vorbei, bevor der erste sie erhoehte, und die Kappe war weg.
-    // Gefangen von 'a 5th parallel sibling is refused' — eine Sperrklinke,
+    // Gefangen von 'a 5th parallel sibling is refused', eine Sperrklinke,
     // die seit 2.5.x still gruen dastand und in dem Moment gebissen hat, in
     // dem sie gebraucht wurde. Die Reihenfolge hier ist die ganze Regel:
     // pruefen, zaehlen, DANN erst irgendetwas awaiten.
@@ -701,7 +739,57 @@ export function buildDelegateExecutor(
 
     if (!background) {
       try {
-        return await runner(goal, context, { budget, run, model })
+        // "Runs in the parent's held lane" (run-slot.ts header, "DIE
+        // WEITERGABE DES ELTERNLAUF-TOKENS"), but the proof is checked now,
+        // not assumed (Opus-Review Runde 4, bau/review-w2lane.md): a bare
+        // `true` here used to ride along even when the parent turn held NO
+        // local lane at all (a cloud parent, or a parent whose lane had
+        // already been given up), so a sub-agent pinned to its OWN local
+        // `model` ran unbooked next to a foreign local run. `run.abortSignal`
+        // is Stop for a run that books normally here; a run that rides along
+        // instead reaches the parent's own abort handle (run-slot.ts wires
+        // that up when the proof checks out).
+        const lane = await resolveSubAgentLane(model)
+        let output = ''
+        // NIE `run?.conversationId` fuer die eigene Buchung (Blocker 2,
+        // Nachpruefung von review-w2lane.md, gemessen): wenn der Beweis oben
+        // nicht sticht, faellt `runInLane` auf normales Buchen zurueck, und
+        // das registriert `generationStore.aborters[conversationId]`
+        // rueckhaltlos neu und LOESCHT ihn am Ende ersatzlos, ohne
+        // wiederherzustellen, was vorher da war. Unter der Kennung des
+        // ELTERNZUGS gebucht heisst das: dieser Sub-Agent nimmt dem
+        // Elternzug seinen Abbruchgriff weg, und `stopAllBackgroundWork`
+        // (Abmelden, Fenster schliessen, App beenden) erreicht ihn danach
+        // nicht mehr. Der gehaltene Weg oben braucht diesen Wert ohnehin
+        // nicht (er schlaegt unter `runsInHeldLane.conversationId` nach,
+        // nicht unter der hier uebergebenen Kennung), eine eigene, private
+        // Kennung aendert an ihm also nichts und behebt nur den Rueckfall.
+        await runInLane(
+          { conversationId: makeTaskId(_taskSeq++), lane, runsInHeldLane: run?.heldLocalLane ?? null },
+          async (held) => {
+            // `held` ist der EIGENE, gerade gueltige Beweis DIESES Sub-
+            // Agenten (mitgeritten oder frisch selbst gebucht), nicht der
+            // geerbte des Elternzugs (Blocker 1, Nachpruefung von
+            // review-w2lane.md): ein Werkzeugschritt dieses Sub-Agenten, der
+            // seinerseits `run_workflow` ruft, braucht GENAU diesen Wert,
+            // sonst legt er den laengst ungueltigen Beweis des Elternzugs
+            // vor und verklemmt sich hinter der eigenen Buchung dieses
+            // Sub-Agenten (dieselbe Fehlerform wie im Hintergrundzweig
+            // unten, nur eine Ebene hoeher).
+            // `abort` (the race's own signal, klaerung-n5a Fix 2) wins over
+            // `run.abortSignal` because it is the SUPERSET: toolRegistry.
+            // execute() already merges the run's Stop into it before this
+            // executor ever sees it (see useAgentChat.ts/useCodex.ts's
+            // `raceWithToolTimeout` call). Falling back to `run.abortSignal`
+            // only covers a caller that predates the fourth argument (a
+            // test stubbing this executor directly).
+            const kindLauf: AgentRunContext | undefined = run
+              ? { ...run, abortSignal: abort ?? run.abortSignal, heldLocalLane: held }
+              : undefined
+            output = await runner(goal, context, { budget, run: kindLauf, model })
+          },
+        )
+        return output
       } catch (err) {
         return `Error: ${err instanceof Error ? err.message : String(err)}`
       } finally {
@@ -722,16 +810,26 @@ export function buildDelegateExecutor(
     const { useAgentTaskStore } = await import('../../stores/agentTaskStore')
     const id = makeTaskId(_taskSeq++)
     const controller = new AbortController()
+
+    // Eigene Buchung unter der Aufgaben-Id, nicht der `conversationId` der
+    // sichtbaren Unterhaltung (run-slot.ts header, "DIE WEITERGABE DES
+    // ELTERNLAUF-TOKENS"): dieser Lauf ueberlebt seinen Elternzug, also
+    // kann er nicht in dessen Platz mitfahren. Ohne eigene Buchung raeumt
+    // der Elternlauf beim Fertigwerden seine Spur weg, waehrend dieser
+    // Hintergrundagent noch unbebucht gegen denselben Motor rechnet: zwei
+    // echte lokale Anfragen nebeneinander, dieselbe Klasse Fehler wie
+    // Blocker A.
+    const lane = await resolveSubAgentLane(model)
     // ── Stopp auf die Hauptantwort laesst Hintergrundagenten LAUFEN ─────────
     //
     // Hier wurde das Abbruchsignal des Elternzugs durchgereicht. Fuer einen
-    // Vordergrundagenten ist das richtig — der Elternzug wartet ja auf ihn —,
+    // Vordergrundagenten ist das richtig, der Elternzug wartet ja auf ihn, ,
     // und dort passiert es weiterhin von selbst, weil der unveraenderte
     // `run` mitsamt seinem Signal weitergegeben wird. Dieser Block hier
     // gehoert aber ausschliesslich dem Hintergrundfall, und da war es falsch:
     //
     //   Der Nutzer bestellt drei Hintergrund-Recherchen, die Hauptantwort
-    //   schweift ab, er drueckt Stopp — und bekommt drei abgebrochene Agenten
+    //   schweift ab, er drueckt Stopp, und bekommt drei abgebrochene Agenten
     //   samt halber Ergebnisse. Er wollte den Satz stoppen, nicht die Arbeit.
     //
     // Genau das trennt die Claude-Code-Desktop-App: Esc beendet die Antwort,
@@ -739,7 +837,7 @@ export function buildDelegateExecutor(
     // Liste gestoppt. Beide Griffe dafuer gibt es hier: der Abbrechen-Knopf an
     // jeder Zeile im Panel und "Stop every running agent" im Kopf.
     //
-    // Was WEITERHIN abbricht — und der Grund, warum diese Zeile ueberhaupt
+    // Was WEITERHIN abbricht, und der Grund, warum diese Zeile ueberhaupt
     // gestrichen werden durfte: das Loeschen oder Schliessen des Chats.
     // `dropConversationSideState` ruft `clearConv`, und das bricht laufende
     // Aufgaben ab, bevor es sie vergisst. Ein Agent ohne Chat haette niemanden
@@ -747,21 +845,67 @@ export function buildDelegateExecutor(
 
     useAgentTaskStore.getState().start({
       // `controller` MUSS mit. Die erste Fassung erzeugte ihn zwei Zeilen
-      // weiter oben und uebergab ihn nicht — der Abbrechen-Knopf im Panel
+      // weiter oben und uebergab ihn nicht, der Abbrechen-Knopf im Panel
       // waere fuer JEDE Hintergrundaufgabe tot gewesen, und nichts haette es
       // gemeldet: `cancel` gibt bei fehlendem Griff still `false` zurueck.
       // Gefunden, weil der Store ihn seither als Pflicht fuehrt.
       id, convId, goal, context, background: true, startedAt: Date.now(), controller,
+      // 'queued' (Folgeauftrag, bau/review-w2lane.md Runde 4): diese Zeile
+      // entsteht VOR der Buchung bei `lib/run-slot.ts` weiter unten, also
+      // bevor irgendetwas rechnet. Ohne dieses Feld meldete `check_tasks`
+      // die Aufgabe sofort als laufend, mit einer Uhr, die schon seit hier
+      // zaehlte, waehrend sie in Wahrheit noch auf die lokale Spur wartet.
+      status: 'queued',
     })
-    // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des Elternzugs:
-    // sonst liesse sich eine einzelne Aufgabe nicht abbrechen, ohne den
-    // ganzen Zug mitzunehmen.
-    const kindLauf: AgentRunContext | undefined = run
-      ? { ...run, abortSignal: controller.signal }
-      : undefined
 
-    void runner(goal, context, { budget, run: kindLauf, taskId: id, model })
-      .then((output) => {
+    // B1 Nachbesserung 2 (Opus-Review): Wettlauf Stop gegen Start. Zwischen
+    // `_inFlight++` weiter oben und diesem `start(...)` liegen zwei awaits
+    // (die zwei dynamischen imports), in deren Fenster ein Stop-Knopf
+    // `cancelAll` ueber eine Liste laufen liess, in der diese Aufgabe noch
+    // gar nicht stand, sie wurde erst DANACH eingetragen, mit einem
+    // Controller, den niemand mehr abbricht (der Lauf liest nur
+    // `gates.abortSignal`, nicht `isRunStopped`). Ergebnis: ein
+    // Hintergrundagent, der den Stop ueberlebt, bis sein Budget reisst.
+    // `isRunStopped` ist der klebrige, modulweite Merker aus lib/run-stop.ts,
+    // genau fuer diesen Fall gebaut, hier direkt nach dem Eintragen und vor
+    // dem ersten `runner(...)`-Aufruf geprueft schliesst das Fenster.
+    if (isRunStopped(convId)) {
+      controller.abort()
+      useAgentTaskStore.getState().finish(id, {
+        status: 'cancelled',
+        output: 'Cancelled before it could start: the user pressed Stop while this task was still being scheduled.',
+        endedAt: Date.now(),
+      })
+      _inFlight--
+      return `Task ${id} was cancelled before it started (Stop was pressed).`
+    }
+
+    void runInLane(
+      { conversationId: id, lane, abort: () => controller.abort() },
+      async (held) => {
+        // Drangekommen: erst JETZT ist "laufend" wahr, und erst ab jetzt
+        // zaehlt `taskElapsedSeconds` (siehe `runStartedAt` in agent-tasks.ts).
+        useAgentTaskStore.getState().update(id, { status: 'running', runStartedAt: Date.now() })
+        // Der Lauf bekommt das AbortSignal der AUFGABE, nicht das des
+        // Elternzugs: sonst liesse sich eine einzelne Aufgabe nicht
+        // abbrechen, ohne den ganzen Zug mitzunehmen. Und `heldLocalLane`
+        // ist der EIGENE Beweis DIESES Laufs (`held`, oben von `runInLane`
+        // an den eigenen Rumpf gereicht), nicht der geerbte des Elternzugs
+        // (Blocker 1, Nachpruefung von review-w2lane.md, gemessen): ein
+        // `{ ...run }` liesse den Beweis des Elternzugs stehen, der zu
+        // diesem Zeitpunkt laengst freigegeben ist (der Elternzug ist ein
+        // abgeschlossener Werkzeugaufruf, dieser Lauf hier ueberlebt ihn).
+        // Ein Werkzeugschritt dieses Agenten, der `run_workflow` ruft,
+        // reichte dann einen garantiert ungueltigen Beweis weiter, fiel auf
+        // normales Buchen unter 'tool-execution' zurueck und wartete dort
+        // auf einen Platz, den DIESER Lauf selbst haelt (unter `id`): eine
+        // Verklemmung, die erst der App-Neustart aufloest. Mit dem eigenen
+        // `held` faehrt ein solcher verschachtelter Ablauf stattdessen im
+        // Platz DIESES Hintergrundagenten mit, genau wie im Vordergrundfall.
+        const kindLauf: AgentRunContext | undefined = run
+          ? { ...run, abortSignal: controller.signal, heldLocalLane: held }
+          : undefined
+        const output = await runner(goal, context, { budget, run: kindLauf, taskId: id, model })
         const abgebrochen = controller.signal.aborted
         useAgentTaskStore.getState().finish(id, {
           status: abgebrochen ? 'cancelled' : 'done',
@@ -769,6 +913,16 @@ export function buildDelegateExecutor(
           endedAt: Date.now(),
         })
         void meldeInDenVerlauf(convId, id, goal, abgebrochen ? 'cancelled' : 'done', output)
+      },
+    )
+      .then((outcome) => {
+        if (outcome !== 'cancelled-while-queued') return
+        // Stop zog die Aufgabe aus der lokalen Schlange, bevor sie je
+        // anlief: kein Token, keine Ausgabe, nichts aufzuraeumen, dieselbe
+        // Lesart wie `run-slot.ts`s `'cancelled-while-queued'`.
+        const grund = 'Cancelled before it could start: Stop was pressed while it was waiting for the local lane.'
+        useAgentTaskStore.getState().finish(id, { status: 'cancelled', output: grund, endedAt: Date.now() })
+        void meldeInDenVerlauf(convId, id, goal, 'cancelled', grund)
       })
       .catch((err) => {
         const grund = err instanceof Error ? err.message : String(err)
@@ -779,11 +933,11 @@ export function buildDelegateExecutor(
         })
         void meldeInDenVerlauf(convId, id, goal, controller.signal.aborted ? 'cancelled' : 'failed', grund)
       })
-      // HIER faellt der Zaehler, nicht wenn der Aufruf zurueckkehrt — und
+      // HIER faellt der Zaehler, nicht wenn der Aufruf zurueckkehrt, und
       // genau darin lag die zweite Falle, die eine Entwurfskritik am
       // 02.09.2026 aufgedeckt hat. Das urspruengliche try/finally umschloss
       // `await runner(...)`. Eine Hintergrundaufgabe kehrt sofort zurueck,
-      // also waere der Platz freigegeben, waehrend der Agent noch rechnet —
+      // also waere der Platz freigegeben, waehrend der Agent noch rechnet,
       // SUB_AGENT_MAX_PARALLEL waere fuer genau den Pfad tot gewesen, der ihn
       // am noetigsten braucht. Der Zaehler gehoert an das Leben der AUFGABE.
       .finally(() => { _inFlight-- })
@@ -798,20 +952,20 @@ export function buildDelegateExecutor(
  *
  * DAS LOCH, DAS SIE STOPFT: die Meldung an das MODELL laeuft ueber
  * `appendTaskReport`, und das steht oben in der ReAct-Schleife. Endet eine
- * Aufgabe, NACHDEM der Elternzug vorbei ist — der Normalfall bei einer
- * Hintergrundaufgabe, sie laeuft ja laenger —, gibt es keine Schleife mehr,
+ * Aufgabe, NACHDEM der Elternzug vorbei ist, der Normalfall bei einer
+ * Hintergrundaufgabe, sie laeuft ja laenger, , gibt es keine Schleife mehr,
  * die sie abholt. Bis zur naechsten Nachricht des Nutzers erfuhr niemand
  * etwas: nicht das Modell und, wenn das Panel zugeklappt war, auch nicht der
  * Mensch. Ein Agent hatte gearbeitet und niemand sah es.
  *
  * Als App-Hinweis (`role:'system'` mit `notice`) und NICHT als
  * Assistentenblase: das Modell hat diesen Satz nicht gesagt. Die Nutzlast
- * verwirft `role:'system'`, der Verlauf zeigt ihn — genau der Mechanismus,
+ * verwirft `role:'system'`, der Verlauf zeigt ihn, genau der Mechanismus,
  * den auch `/compact` benutzt.
  *
  * Was hier ABSICHTLICH NICHT passiert: es wird kein Modellzug gestartet. Die
  * Claude-Code-Desktop-App weckt ihren Hauptagenten von selbst; hier waere das
- * eine Inferenz, die der Nutzer nicht angefordert hat — auf einem Laptop mit
+ * eine Inferenz, die der Nutzer nicht angefordert hat, auf einem Laptop mit
  * lokalem Modell eine spuerbare Minute Rechnerei ohne Frage. Der Mensch sieht
  * das Ergebnis sofort, das Modell bekommt es beim naechsten Zug ueber
  * `takeUnreported`, das die Aufgabe bis dahin als ungemeldet fuehrt.
@@ -849,7 +1003,7 @@ let _taskSeq = 1
  * hat. Leer, solange niemand eine Zahl genannt hat.
  *
  * SUB_AGENT_MAX_PARALLEL (4) bleibt die Vorgabe fuer das, was ein MODELL von
- * sich aus faechern darf — sie bremst eine Fan-out-Schleife, die niemand
+ * sich aus faechern darf, sie bremst eine Fan-out-Schleife, die niemand
  * bestellt hat. Sagt der Nutzer „nutze 5 agenten", ist dieselbe 4 keine
  * Sicherheitsgrenze mehr, sondern eine Bevormundung: er hat die Zahl genannt,
  * und die App weiss es nicht besser.

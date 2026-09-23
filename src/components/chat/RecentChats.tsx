@@ -14,6 +14,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useCodexStore } from '../../stores/codexStore'
 import { timeAgo } from '../../lib/time-ago'
+import { conversationMode } from '../../lib/conversation-mode'
 
 /** Same cut as the web list: plain chats only, newest first, eight rows. */
 const MAX_ROWS = 8
@@ -29,7 +30,7 @@ export function RecentChats() {
     // The chat you are already looking at is not a place to go back to. On the
     // no-chat screen nothing is active, so nothing is dropped there.
     .filter((c) => c.id !== activeConversationId)
-    .filter((c) => (c.mode ?? 'lu') === 'lu')
+    .filter((c) => conversationMode(c) === 'lu')
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, MAX_ROWS)
 

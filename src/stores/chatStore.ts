@@ -3,9 +3,11 @@ import { persist } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
 import type { Conversation, Message, ChatArtifact, CompactionRecord } from '../types/chat'
 import type { AgentBlock } from '../types/agent-mode'
+import { clampSampling, type SamplingOverrides } from '../lib/sampling'
 import { idbStorage } from '../lib/idbStorage'
 import { coalescedJSONStorage } from '../lib/coalescedStorage'
 import { migrateBlockInPlace } from '../api/agents/block-helpers'
+import { markStaleWorkflowProgressStoppedOnBlock, extractWorkflowNameFromProgressMessage } from '../lib/workflow-progress-view'
 import { useGenerationStore } from './generationStore'
 import { useRemoteStore } from './remoteStore'
 import { useRAGStore } from './ragStore'
@@ -32,11 +34,28 @@ export function migratePersistedChat(state: unknown): unknown {
     for (const msg of messages) {
       const blocks = prop(msg, 'agentBlocks')
       if (!Array.isArray(blocks)) continue
+      // Runde 3, B2 (review-wfprogress.md): the workflow's own name lives on
+      // the TRIGGER message's content ("Running workflow: **<name>**"), not
+      // on the block or the tool call, so it has to be pulled out here, once
+      // per message, and threaded into the block-level fix below.
+      const workflowName = extractWorkflowNameFromProgressMessage(prop(msg, 'content'))
       for (const block of blocks) {
         // migrateBlockInPlace reads `toolCall` and `toolCalls` and writes
         // `toolCalls`; the cast claims no more than those three, and the
         // record check above is what makes even that much true.
-        if (isRecord(block)) migrateBlockInPlace(block as unknown as AgentBlock)
+        if (!isRecord(block)) continue
+        const typedBlock = block as unknown as AgentBlock
+        migrateBlockInPlace(typedBlock)
+        // Runde 2 Blocker (app-restart case, workflow-progress-view.ts),
+        // fixed properly in Runde 3 (B2): a block still 'running' here means
+        // the app closed mid-run, since this migration only ever sees what
+        // was persisted, never a live in-session update (those go through
+        // addBlock/updateBlockById on the live Zustand state directly).
+        // Rewrite it as honestly stopped - on BOTH the legacy `toolCall` and
+        // the `toolCalls` array, since after a JSON persist round-trip they
+        // are separate objects and the chat surface (`groupAgentBlocks`,
+        // tool-call-groups.ts) renders only the legacy singular field.
+        markStaleWorkflowProgressStoppedOnBlock(typedBlock, workflowName)
       }
     }
   }
@@ -109,6 +128,15 @@ interface ChatState {
    *  persona's systemPrompt without changing the global Settings
    *  selection. */
   setConversationPersonaEnabled: (id: string, enabled: boolean) => void
+  /** R5-10/R5-11 (3.0.1-Liste): merge sampling values into ONE chat. Only the
+   *  keys in the patch move, the rest keep whatever the chat already had,
+   *  which is how "send only what THIS chat changed" survives a second visit
+   *  to the popup. */
+  setConversationSampling: (id: string, patch: SamplingOverrides) => void
+  /** Delete this chat's own sampling values entirely (the popup's Reset),
+   *  so it goes back to following the Settings page instead of pinning
+   *  today's defaults into the conversation forever. */
+  resetConversationSampling: (id: string) => void
   /** Group chat v1: the models that answer in turn (capped at 4). */
   setGroupModels: (id: string, models: string[]) => void
   /** Write the model the open chat is actually running on.
@@ -135,7 +163,6 @@ interface ChatState {
   updateMessageThinking: (conversationId: string, messageId: string, thinking: string) => void
   updateMessageUsage: (conversationId: string, messageId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number; estimated?: boolean }) => void
   updateMessageFinishReason: (conversationId: string, messageId: string, finishReason: string) => void
-  updateMessageMemorySources: (conversationId: string, messageId: string, sources: NonNullable<Message['memorySources']>) => void
   /** Z36 finding 3: links in the agent answer no tool returned. */
   updateMessageUnbackedLinks: (conversationId: string, messageId: string, unbackedLinks: string[]) => void
   updateMessageAgentBlocks: (conversationId: string, messageId: string, blocks: AgentBlock[]) => void
@@ -325,6 +352,25 @@ export const useChatStore = create<ChatState>()(
           ),
         })),
 
+      setConversationSampling: (id, patch) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === id
+              ? { ...c, sampling: { ...c.sampling, ...clampSampling(patch) }, updatedAt: Date.now() }
+              : c
+          ),
+        })),
+
+      resetConversationSampling: (id) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) => {
+            if (c.id !== id) return c
+            const next = { ...c, updatedAt: Date.now() }
+            delete next.sampling
+            return next
+          }),
+        })),
+
       setGroupModels: (id, models) =>
         set((state) => ({
           conversations: state.conversations.map((c) =>
@@ -466,18 +512,6 @@ export const useChatStore = create<ChatState>()(
               }
               : c
           ),
-        })),
-
-      updateMessageMemorySources: (conversationId, messageId, sources) =>
-        set(state => ({
-          conversations: state.conversations.map(conversation => conversation.id === conversationId ? {
-            ...conversation,
-            messages: conversation.messages.map(message => message.id === messageId ? {
-              ...message, memorySources: { ids: [...new Set(sources.ids)], scope: sources.scope,
-                ...(sources.owner === undefined ? {} : { owner: sources.owner }) },
-            } : message),
-            updatedAt: Date.now(),
-          } : conversation),
         })),
 
       updateMessageAgentBlocks: (conversationId, messageId, agentBlocks) =>

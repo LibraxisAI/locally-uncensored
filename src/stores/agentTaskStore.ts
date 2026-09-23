@@ -48,6 +48,16 @@ interface AgentTaskState {
    */
   start: (task: Omit<AgentTask, 'status' | 'inbox' | 'reported' | 'toolCalls' | 'iterations'> & {
     controller: AbortController
+    /**
+     * Default `'running'`. Pass `'queued'` when the row exists before the
+     * run is actually admitted to its resource lane (Folgeauftrag aus
+     * bau/review-w2lane.md Runde 4: a background sub-agent is entered here
+     * BEFORE `lib/run-slot.ts` says go, so `check_tasks` used to report a
+     * merely-waiting task as running, with a clock that had been counting
+     * since creation). Callers move it to `'running'` with `update()` once
+     * the run truly starts.
+     */
+    status?: 'queued' | 'running'
   }) => void
   update: (id: string, patch: Partial<AgentTask>) => void
   finish: (id: string, patch: { status: AgentTaskStatus; output?: string; error?: string; endedAt: number }) => void
@@ -77,13 +87,13 @@ function locate(byConv: Record<string, AgentTask[]>, id: string): { convId: stri
 export const useAgentTaskStore = create<AgentTaskState>((set, get) => ({
   byConv: {},
 
-  start: ({ controller, ...task }) => {
+  start: ({ controller, status, ...task }) => {
     controllers.set(task.id, controller)
     set((s) => {
       const list = s.byConv[task.convId] ?? []
       const voll: AgentTask = {
         ...task,
-        status: 'running',
+        status: status ?? 'running',
         inbox: [],
         reported: false,
         toolCalls: 0,
@@ -143,7 +153,22 @@ export const useAgentTaskStore = create<AgentTaskState>((set, get) => ({
   cancelAll: (convId) => {
     let n = 0
     for (const t of get().forConv(convId)) {
-      if (t.status === 'running' && get().cancel(t.id)) n++
+      // 'queued' zaehlt hier mit (Folgeauftrag, bau/review-w2lane.md Runde 4):
+      // vor der 'queued'-Einfuehrung deckte 'running' JEDEN nicht fertigen
+      // Zustand ab, eine wartende Aufgabe hatte keinen anderen.
+      //
+      // `stopAllBackgroundWork` selbst bleibt davon unberuehrt: es findet eine
+      // noch wartende Aufgabe ohnehin ueber `generationStore.runs` (die
+      // `bookRun` in lib/run-slot.ts setzt, sobald sich der Lauf anstellt, vor
+      // jeder Buchung) und ruft zusaetzlich `abortConversation`, das ueber
+      // `run-lanes.ts`s Abbruchgriff sogar richtig aus der Schlange nimmt,
+      // siehe background-shutdown.ts. Aber die beiden Kopf-Knoepfe hier im
+      // Panel ("Stop every running agent", die Leiste fuer andere
+      // Unterhaltungen) riefen bis hierher NUR `cancelAll`, ohne dieses
+      // zweite Paar: eine wartende Aufgabe blieb dort unberuehrt liegen und
+      // rief spaeter doch noch das Modell, nachdem der Nutzer auf genau
+      // diesen Knopf gedrueckt hatte.
+      if ((t.status === 'running' || t.status === 'queued') && get().cancel(t.id)) n++
     }
     return n
   },

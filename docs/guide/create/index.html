@@ -15,7 +15,7 @@
 <meta property="og:image" content="https://locallyuncensored.com/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"TechArticle","headline":"Create in Locally Uncensored: Image, Video, Audio, Character Studio and Trainer","description":"How the Create tab works in Locally Uncensored: image generation and editing, video, music and speech, the Character Studio and the LoRA trainer, with local requirements and the hosted alternative.","url":"https://locallyuncensored.com/guide/create/","dateModified":"2026-09-11","inLanguage":"en","author":{"@type":"Person","name":"PurpleDoubleD","url":"https://github.com/PurpleDoubleD"},"publisher":{"@type":"Organization","name":"Locally Uncensored","url":"https://locallyuncensored.com/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://locallyuncensored.com/guide/create/"},"isPartOf":{"@type":"WebPage","name":"Locally Uncensored Handbook: Install, Chat, Agent, Code, Create, Cloud","url":"https://locallyuncensored.com/guide/"},"about":{"@type":"SoftwareApplication","name":"Locally Uncensored","operatingSystem":"Windows, Linux","applicationCategory":"UtilitiesApplication"}}
+{"@context":"https://schema.org","@type":"TechArticle","headline":"Create in Locally Uncensored: Image, Video, Audio, Character Studio and Trainer","description":"How the Create tab works in Locally Uncensored: image generation and editing, video, music and speech, the Character Studio and the LoRA trainer, with local requirements and the hosted alternative.","url":"https://locallyuncensored.com/guide/create/","dateModified":"2026-09-22","inLanguage":"en","author":{"@type":"Person","name":"PurpleDoubleD","url":"https://github.com/PurpleDoubleD"},"publisher":{"@type":"Organization","name":"Locally Uncensored","url":"https://locallyuncensored.com/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://locallyuncensored.com/guide/create/"},"isPartOf":{"@type":"WebPage","name":"Locally Uncensored Handbook: Install, Chat, Agent, Code, Create, Cloud","url":"https://locallyuncensored.com/guide/"},"about":{"@type":"SoftwareApplication","name":"Locally Uncensored","operatingSystem":"Windows, Linux","applicationCategory":"UtilitiesApplication"}}
 </script>
 <link rel="icon" href="/favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -56,6 +56,7 @@
 <a href="#comfyui">ComfyUI, the program behind the lanes</a>
 <a href="#first-image">Your first image</a>
 <a href="#image-lanes">Edit, Cutout, Upscale, Erase</a>
+<a href="#qwen-image">Qwen-Image 2.1: one model that draws and edits</a>
 <a href="#video">Video, Animate, Extend, Motion, Lipsync</a>
 <a href="#music">Music</a>
 <a href="#character">Character Studio and the trainer</a>
@@ -131,6 +132,24 @@
 
 <p>Upscale and Erase Object run hosted only. Upscale takes a picture and needs no prompt. Erase Object takes a picture and a painted mask over the thing to remove.</p>
 
+<h2 id="qwen-image">Qwen-Image 2.1: one model that draws and edits</h2>
+
+<p>Most image models do one job. Qwen-Image 2.1 does two with the same files: it makes a picture from a prompt in the Image lane, and it changes a picture in the Edit lane. It runs on your own card on Windows and Linux.</p>
+
+<p>The Models tab carries it as one bundle, "Qwen-Image 2.1 (Generate and Edit)": three files, 16.1 GB together, and the description names the licence before you start ("Qwen Research License, non-commercial use"). One click puts all three in the right ComfyUI folders. The app counts the bundle as installed once the running ComfyUI lists the files, so ComfyUI has to be up for that to happen.</p>
+
+<p>After that there is nothing new to learn. The model appears in the model picker of the Image lane and in the model picker of the Edit lane, next to every other local image model. No new button, no new tab.</p>
+
+<p>In the Image lane it takes a prompt and a negative prompt, and starts from 25 steps, CFG 1, the euler sampler, the simple scheduler and 1024x1024. Those are the values the official template uses. CFG under 1 is not usable with this model. Everything under "Advanced settings" works the way it does for the other models.</p>
+
+<p>In the Edit lane it takes one reference image and a prompt, and no mask: the mask path is closed for this model on purpose, and the output follows the reference image. The resolution follows the canvas you picked.</p>
+
+<p>It needs ComfyUI 0.37.0 or newer. If the node it runs on is missing, the app says so before it builds anything, and the sentence names the version and the place to fix it.</p>
+
+<p>Several things the model itself can do are not in this release: several reference images at once, RGBA output, masks with this model, a prompt enhancer, and the KV cache node. There is no LoRA for Qwen-Image 2.1, so the LoRA stack has nothing to offer it, although the stack stays open the way it is for every local image model.</p>
+
+<p>The long version is on the blog: <a href="/blog/how-to-run-qwen-image-2-1-locally.html">how to run Qwen-Image 2.1 locally</a>, and <a href="/blog/qwen-image-2-1-explained.html">what changed in the model</a>.</p>
+
 <h2 id="video">Video, Animate, Extend, Motion, Lipsync</h2>
 
 <p>Video takes a prompt ("Describe the motion and the scene…"). Animate Image takes a picture and a prompt ("Describe how the image should move…"). Extend Video takes a clip and a prompt ("Describe how the clip should continue…"). Motion Control takes a reference clip and a picture, with an optional prompt ("Optional: extra style/scene hints…"). Talking Character takes a face and an audio clip.</p>
@@ -189,7 +208,7 @@
 
 <p>"Advanced settings" under the composer opens the controls the Quality preset hides: Steps, CFG scale (or Guidance), Width and Height, Seed (-1 = random; the gallery shows the seed a picture used, so you can repeat it), Batch size, and for video Frames and FPS. An Expert group has Sampler, Scheduler, Denoise, Mask edge feather, VAE and Skip CLIP layers. Leave those alone until you know what they do; the presets are tuned.</p>
 
-<p>The LoRA stack lists the add-on files in ComfyUI's <code>models/loras</code> folder, each with a strength. Empty, it reads "No LoRAs found yet. Drop .safetensors files into ComfyUI's models/loras folder and hit Rescan. Characters trained in Character Studio land there automatically." A LoRA from CivitAI or Hugging Face goes into that folder by hand. The CivitAI API key and the Hugging Face token under Settings, AI Backends unlock downloads those sites gate behind a login.</p>
+<p>The LoRA stack lists the add-on files in ComfyUI's <code>models/loras</code> folder, each with a strength. Empty, it reads "No LoRAs found yet. Drop .safetensors files into ComfyUI's models/loras folder and hit Rescan. Characters trained in Character Studio land there automatically." Models has a LoRAs tab of its own: "Get new" searches CivitAI for LoRAs and downloads what you pick straight into that folder, "Installed" lists what is there with its size and deletes a file you no longer want. A LoRA from Hugging Face still goes into the folder by hand. The CivitAI API key and the Hugging Face token under Settings, AI Backends unlock downloads those sites gate behind a login.</p>
 
 <h2 id="gallery">The gallery</h2>
 
@@ -210,6 +229,8 @@
 <p><strong>"ComfyUI's Python environment is broken. Rebuilding it as an isolated venv now (~2 GB download). Models, outputs and custom nodes are left alone…"</strong> The app repairs the environment on its own, once, when a render finds it broken. Wait for it. If it ends with "The environment repair failed. See Settings, AI Backends for details.", the output panel there names the cause; two causes the repair cannot fix are named in chapter 9 (a missing Visual C++ runtime, a driver older than the PyTorch build).</p>
 
 <p><strong>"Your ComfyUI blocks direct loads (v0.19+), so previews use a slower fallback."</strong> A bar with the button "Let me do it for you!" appears. Press it: the app restarts ComfyUI with the flag that allows the previews. The bar does not come back for that ComfyUI version once dismissed.</p>
+
+<p><strong>"Qwen-Image 2.1 needs ComfyUI 0.37.0 or newer. Update ComfyUI in Settings."</strong> The model runs on a node that older ComfyUI versions do not have. Open Settings, AI Backends, ComfyUI (Image &amp; Video) and press "Update ComfyUI", then pick the model again.</p>
 
 <p><strong>"Please enter a prompt."</strong> The lane needs a description and the field is empty.</p>
 

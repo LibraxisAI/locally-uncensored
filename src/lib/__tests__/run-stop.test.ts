@@ -1,10 +1,10 @@
 /**
- * Audit M1 — Stop must end a /loop that a DIFFERENT hook instance started.
+ * Audit M1, Stop must end a /loop that a DIFFERENT hook instance started.
  *
  * The bug, exactly: the Code view and the chat view unmount on a tab switch. The
  * /loop driver lives in the `finally` of the pass, inside the closure of the
  * instance that started it. Stop set `userStoppedRef.current = true` on the
- * REMOUNTED instance — a different ref object — so the old closure read `false`,
+ * REMOUNTED instance, a different ref object, so the old closure read `false`,
  * scheduled the next pass, and the loop came back. The loop has no pass ceiling
  * by design ("there is NO built-in ceiling … the stop button is the brake"), so
  * that left an unattended agent with full shell and write access running with no
@@ -39,7 +39,7 @@ function mountHook(conversationId: string) {
   }
 }
 
-describe('run-stop — the stop outlives the hook instance', () => {
+describe('run-stop: the stop outlives the hook instance', () => {
   beforeEach(() => { __resetRunStopsForTests() })
 
   it('a Stop pressed by a REMOUNTED instance ends the loop the old one is driving', () => {
@@ -65,7 +65,7 @@ describe('run-stop — the stop outlives the hook instance', () => {
     expect(hook.wouldScheduleNextPass()).toBe(true)
   })
 
-  it('a /loop PASS does not clear it — Stop ends the loop, not just the pass', () => {
+  it('a /loop PASS does not clear it: Stop ends the loop, not just the pass', () => {
     const conv = 'conv-c'
     beginRun(conv)
     stopRun(conv)
@@ -90,7 +90,7 @@ describe('run-stop — the stop outlives the hook instance', () => {
   })
 })
 
-describe('run-stop — both loop surfaces are wired to it', () => {
+describe('run-stop: both loop surfaces are wired to it', () => {
   const codex = read('../../hooks/useCodex.ts')
   const agent = read('../../hooks/useAgentChat.ts')
 
@@ -108,6 +108,15 @@ describe('run-stop — both loop surfaces are wired to it', () => {
   it('both clear it on a fresh instruction but not on a /loop pass', () => {
     for (const src of [codex, agent]) {
       expect(src).toContain('if (!opts?.loop) beginRun(convId)')
+    }
+  })
+
+  it('B1 (3.0.1): both stop buttons also cancel background delegate_task agents of the conversation', () => {
+    // Before this fix, a `delegate_task background: true` run kept billing
+    // compute after Stop, the main answer ended, the sub-agent did not, and
+    // the Orchestrator's decision is that Stop means stop for both.
+    for (const src of [codex, agent]) {
+      expect(src).toContain('useAgentTaskStore.getState().cancelAll(stoppedConvId')
     }
   })
 

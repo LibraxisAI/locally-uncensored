@@ -10,17 +10,28 @@
  * obwohl der generationStore die Wahrheit seit 22f76b04 je Unterhaltung
  * fuehrt und die Schreibanzeige sie auch schon las.
  *
- * Warum hier nur die halbe Strecke steht: ein vollstaendiges "jede
- * Unterhaltung darf gleichzeitig senden" haengt an den geteilten
- * Stream-Puffern in useChat.ts (contentRef, thinkingRef, abortRef) und
- * useAgentChat.ts, rund 110 Zugriffe, und daran, dass `runInLane` aus
- * lib/run-slot.ts bis heute keinen Aufrufer in der Produktion hat: ohne
+ * Warum hier zum Zeitpunkt dieses Befunds nur die halbe Strecke stand: ein
+ * vollstaendiges "jede Unterhaltung darf gleichzeitig senden" hing an den
+ * geteilten Stream-Puffern in useChat.ts (contentRef, thinkingRef, abortRef)
+ * und useAgentChat.ts, rund 110 Zugriffe, und daran, dass `runInLane` aus
+ * lib/run-slot.ts damals keinen Aufrufer in der Produktion hatte: ohne
  * Warteschlange liefen zwei lokale Laeufe gegen einen llama-server mit einem
- * einzigen Slot. Das ist mehr als eine Stunde Arbeit und gehoert in einen
- * eigenen Auftrag. Was hier steht, ist das, was ohne diese Entflechtung
- * richtig wird: der laufende Chat behaelt Stop und bricht nur sich selbst ab,
- * der andere behaelt seinen Sendeknopf und bekommt einen englischen Satz
- * statt eines stummen Tauschs.
+ * einzigen Slot. useChat.ts hat seine Haelfte seit B2 Commit 1/2
+ * (ChatRun-Objekt statt Refs, generationStore statt abortRef): siehe
+ * useChat-zwei-laeufe-vermischen-nicht.test.ts. useAgentChat.ts hat seine
+ * Haelfte seit B2 NEUER FUND (AgentRunState-Objekt statt Refs,
+ * activeAgentRuns statt abortRef/abortConvRef/runningRef, Wiedereintritts-
+ * Riegel je Unterhaltung statt app-weit): siehe
+ * useAgentChat-zwei-agentenlaeufe-vermischen-nicht.test.ts. Runde 4
+ * (review-lanes.md Blocker 1+6) hat `runInLane` seither in alle drei
+ * Sendewege verdrahtet: siehe useChat-lokale-spur-reiht-zweite-sendung-ein,
+ * useAgentChat-lokale-spur-reiht-zweiten-agentenlauf-ein und
+ * useCodex-lokale-spur-reiht-zweiten-lauf-ein. Die Oberflaeche unten haelt
+ * die App-weite Fahne fuer Regenerate/Edit deshalb bewusst, nicht mehr wegen
+ * geteilter Puffer. Was hier steht, ist das, was schon vorher richtig wurde:
+ * der laufende Chat behaelt Stop und bricht nur sich selbst ab, der andere
+ * behaelt seinen Sendeknopf und bekommt einen englischen Satz statt eines
+ * stummen Tauschs.
  *
  * Run: npx vitest run src/components/chat/__tests__/senden-und-stop-je-unterhaltung.test.tsx
  */
@@ -28,9 +39,13 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, act } from '@testing-library/react'
+import { renderHook } from '@testing-library/react'
 import { ChatInput } from '../ChatInput'
 import { composerBusy } from '../../../lib/composer-busy'
+import { useCodex } from '../../../hooks/useCodex'
+import { useGenerationStore } from '../../../stores/generationStore'
+import { useChatStore } from '../../../stores/chatStore'
 
 const src = (rel: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), rel), 'utf8')
@@ -40,45 +55,46 @@ const stopButton = () => screen.queryByRole('button', { name: 'Stop generation' 
 
 beforeEach(() => cleanup())
 
+/**
+ * Runde 4 (review-lanes.md Blocker 1+6): the cross-conversation lock this
+ * file used to test (`busyElsewhere`, "Another chat is still answering...")
+ * is gone from `ChatInput` entirely. It is no longer needed: a second local
+ * send now queues visibly instead of racing the first one for the built-in
+ * engine's one slot (see composer-zeigt-warten-auf-lokale-spur.test.tsx for
+ * that line), and a second cloud send just runs alongside the first. What is
+ * left to prove here is the negative: a conversation that is NOT the one
+ * answering keeps an ordinary, USABLE Send button, full stop, regardless of
+ * what `composerBusy` reports about some other conversation.
+ */
 describe('the composer of a chat that is NOT the one answering', () => {
-  /** What ChatView hands down while conversation `b` is the one generating. */
+  /** What ChatView hands down while conversation `b` is the one generating:
+   *  `thisChat` is what still reaches ChatInput's `isGenerating`. */
   const asSeenFromA = composerBusy(true, { b: true }, 'a')
 
-  it('keeps its Send button instead of losing it to a foreign run', () => {
+  it('keeps its Send button instead of losing it to a foreign run, and shows no waiting line', () => {
     render(
       <ChatInput
         onSend={() => {}}
         onStop={() => { throw new Error('a foreign run must not be stoppable from here') }}
         isGenerating={asSeenFromA.thisChat}
-        busyElsewhere={asSeenFromA.otherChat}
       />,
     )
     expect(sendButton()).toBeTruthy()
     expect(stopButton()).toBeNull()
+    expect(screen.queryByTestId('composer-busy-elsewhere')).toBeNull()
+    expect(screen.queryByTestId('composer-waiting-local-lane')).toBeNull()
   })
 
-  it('says in English why it is waiting, instead of going quiet', () => {
-    render(
-      <ChatInput onSend={() => {}} onStop={() => {}} isGenerating={asSeenFromA.thisChat} busyElsewhere={asSeenFromA.otherChat} />,
-    )
-    const line = screen.getByTestId('composer-busy-elsewhere')
-    expect(line.textContent).toContain('Another chat is still answering')
-    expect(line.textContent).toContain('one answer at a time')
-    // It has to tell the user what to do next, not just that something is off.
-    expect(line.textContent).toMatch(/wait for it to finish or stop it in that chat/)
-    expect(line.getAttribute('role')).toBe('status')
-  })
-
-  it('does not fire a send while another chat holds the engine', () => {
+  it('does fire a send while another chat is answering, no lock left to stop it', () => {
     let sent = 0
     render(
-      <ChatInput onSend={() => { sent += 1 }} onStop={() => {}} isGenerating={asSeenFromA.thisChat} busyElsewhere={asSeenFromA.otherChat} />,
+      <ChatInput onSend={() => { sent += 1 }} onStop={() => {}} isGenerating={asSeenFromA.thisChat} />,
     )
     const box = screen.getByRole('textbox')
     fireEvent.change(box, { target: { value: 'hello' } })
-    expect(sendButton()!.disabled).toBe(true)
+    expect(sendButton()!.disabled).toBe(false)
     fireEvent.keyDown(box, { key: 'Enter' })
-    expect(sent).toBe(0)
+    expect(sent).toBe(1)
   })
 })
 
@@ -88,7 +104,7 @@ describe('the composer of the chat that IS answering', () => {
   it('shows Stop, and no waiting line', () => {
     let stopped = 0
     render(
-      <ChatInput onSend={() => {}} onStop={() => { stopped += 1 }} isGenerating={asSeenFromB.thisChat} busyElsewhere={asSeenFromB.otherChat} />,
+      <ChatInput onSend={() => {}} onStop={() => { stopped += 1 }} isGenerating={asSeenFromB.thisChat} />,
     )
     expect(sendButton()).toBeNull()
     expect(screen.queryByTestId('composer-busy-elsewhere')).toBeNull()
@@ -98,7 +114,7 @@ describe('the composer of the chat that IS answering', () => {
 
   it('COUNTER-CHECK: an idle chat shows Send and says nothing', () => {
     const idle = composerBusy(false, {}, 'b')
-    render(<ChatInput onSend={() => {}} onStop={() => {}} isGenerating={idle.thisChat} busyElsewhere={idle.otherChat} />)
+    render(<ChatInput onSend={() => {}} onStop={() => {}} isGenerating={idle.thisChat} />)
     expect(sendButton()).toBeTruthy()
     expect(sendButton()!.disabled).toBe(true) // empty box, not a busy engine
     expect(screen.queryByTestId('composer-busy-elsewhere')).toBeNull()
@@ -106,27 +122,37 @@ describe('the composer of the chat that IS answering', () => {
 })
 
 /**
- * Die zweite Haelfte des Befunds sitzt in zwei Hooks, deren Abbruchgriffe der
- * Hook-INSTANZ gehoeren und nicht der Unterhaltung. Ein echter Lauf mit zwei
- * gleichzeitigen Unterhaltungen ist von hier aus nicht zu fahren, deshalb
- * steht hier der Quelltext-Waechter auf die Bedingung. Nachgemessen werden
- * muss das an der laufenden App (siehe Bericht).
+ * Die zweite Haelfte des Befunds sass (Stand vor B2) in zwei Hooks, deren
+ * Abbruchgriffe der Hook-INSTANZ gehoerten und nicht der Unterhaltung. Beide
+ * sind seither gefixt (useChat B2 Commit 2, useAgentChat B2 NEUER FUND), der
+ * dritte (useCodex) folgt unten.
  */
 describe('Stop bricht nur die eigene Erzeugung ab', () => {
-  it('useChat abortet den Controller der Instanz nur fuer die eigene Unterhaltung', () => {
+  it('useChat hat kein Instanz-Ref mehr, das ein zweiter Lauf ueberschreiben koennte', () => {
     const chat = src('../../../hooks/useChat.ts')
-    expect(chat).toMatch(/const abortConvRef = useRef<string \| null>\(null\)/)
-    expect(chat).toMatch(/if \(abortConvRef\.current === convId\) \{\s*\n\s*abortRef\.current\?\.abort\(\)/)
-    // Und der Ref wird auch wirklich gesetzt, sonst bricht Stop nie etwas ab.
-    expect(chat.match(/abortConvRef\.current = convId/g)?.length).toBe(2)
+    expect(chat).not.toMatch(/abortConvRef/)
+    expect(chat).not.toMatch(/const abortRef = useRef/)
+    // Der EINE Griff, der wirklich abbricht, bleibt: je Konversation, im
+    // generationStore, nicht in einem Hook-Ref.
+    expect(chat).toMatch(/useGenerationStore\.getState\(\)\.abortConversation\(convId\)/)
   })
 
-  it('useAgentChat beendet den Agentenlauf nur fuer die eigene Unterhaltung', () => {
+  it('useAgentChat hat kein Instanz-Ref mehr, das ein zweiter Lauf ueberschreiben koennte', () => {
     const agent = src('../../../hooks/useAgentChat.ts')
-    expect(agent).toMatch(/if \(abortConvRef\.current === stoppedConvId\) \{/)
-    expect(agent).toMatch(/abortConvRef\.current = convId/)
-    // setIsAgentRunning(false) darf NICHT mehr unbedingt am Ende stehen: das
-    // war die Zeile, die den fremden Lauf aus der Oberflaeche loeschte.
+    expect(agent).not.toMatch(/abortConvRef/)
+    expect(agent).not.toMatch(/const abortRef = useRef/)
+    expect(agent).not.toMatch(/const runningRef = useRef/)
+    // Der Griff, der wirklich abbricht, ist jetzt je Unterhaltung: eine Map,
+    // keine Hook-Instanz.
+    expect(agent).toMatch(/const activeAgentRuns = new Map<string, AgentRunState>\(\)/)
+    const stopAgent = agent.slice(agent.indexOf('const stopAgent = useCallback'))
+    expect(stopAgent).toMatch(/activeAgentRuns\.get\(stoppedConvId\)/)
+    expect(stopAgent).toMatch(/runToStop\.abort\.abort\(\)/)
+    expect(stopAgent).toMatch(/activeAgentRuns\.delete\(stoppedConvId!\)/)
+    // setIsAgentRunning(false) darf NICHT mehr unbedingt stehen: das war die
+    // Zeile, die den fremden Lauf aus der Oberflaeche loeschte. Es steht nur
+    // noch bedingt, unter demselben `if (runToStop)`, das den eigenen Lauf
+    // gefunden haben muss.
     expect(agent).not.toMatch(/drainApprovals\(stoppedConvId\)\s*\n\s*setIsAgentRunning\(false\)/)
   })
 
@@ -136,18 +162,39 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
    * Unterhaltungswechsel NICHT neu montiert wird (`ChatView.tsx` gibt ihm kein
    * `key`). Ein Lauf in A, Wechsel nach B, Stop gedrueckt: A war tot.
    */
+  /**
+   * Runde 3 (review-lanes.md): dieser Test war bis hierher ein reiner
+   * Quelltextpin auf `abortConvRef`, dem Griff, den Nachbesserung 5 dieser
+   * Runde aus useCodex.ts entfernt hat (der Ref war seit B2 Commit 3 tote
+   * Duplikation neben dem echten, identitaetsgeprueften Abbrecher im
+   * generationStore, siehe useCodex.ts). Der Pin wurde rot, weil der Griff,
+   * den er beschrieb, nicht mehr existiert, nicht weil Stop kaputt ist. Statt
+   * den Pin auf den neuen Namen (`activeCodexRuns`) umzuschreiben, beweist
+   * dieser Test jetzt das eigentliche Verhalten: `stopCodex` bricht den
+   * echten Abbrecher NUR der genannten Unterhaltung ab.
+   */
   it('useCodex bricht den Controller der Instanz nur fuer die eigene Unterhaltung ab', () => {
-    const codex = src('../../../hooks/useCodex.ts')
-    expect(codex).toMatch(/const abortConvRef = useRef<string \| null>\(null\)/)
-    expect(codex).toMatch(/if \(abortConvRef\.current === stoppedConvId\) \{/)
-    // Und der Ref wird gesetzt UND geleert, sonst bricht Stop nie etwas ab
-    // oder bricht einen laengst beendeten Lauf ab.
-    expect(codex).toMatch(/abortConvRef\.current = convId/)
-    expect(codex).toMatch(/abortConvRef\.current = null/)
-    // Der richtige Griff je Unterhaltung liegt weiter davor und bleibt
-    // bedingungslos: er trifft genau die gemeinte Unterhaltung.
-    expect(codex).toMatch(/stopRun\(stoppedConvId\)/)
-    expect(codex).toMatch(/abortConversation\(stoppedConvId\)/)
+    const convA = 'stop-test-conv-a'
+    const convB = 'stop-test-conv-b'
+    useChatStore.setState({ conversations: [], activeConversationId: convA })
+    useGenerationStore.setState({ generating: {}, aborters: {}, runs: {} })
+
+    let abortedA = 0
+    let abortedB = 0
+    useGenerationStore.getState().registerAborter(convA, () => { abortedA++ })
+    useGenerationStore.getState().registerAborter(convB, () => { abortedB++ })
+
+    const { result } = renderHook(() => useCodex())
+    act(() => { result.current.stopCodex(convA) })
+
+    expect(abortedA).toBe(1)
+    expect(abortedB).toBe(0)
+
+    // COUNTER-CHECK auf den Test selbst: stoppt man die andere Unterhaltung,
+    // trifft es auch wirklich nur sie.
+    act(() => { result.current.stopCodex(convB) })
+    expect(abortedB).toBe(1)
+    expect(abortedA).toBe(1)
   })
 
   it('und CodexView wird beim Unterhaltungswechsel wirklich nicht neu montiert', () => {
@@ -162,8 +209,16 @@ describe('Stop bricht nur die eigene Erzeugung ab', () => {
   it('der Komposer liest nicht mehr die app-weite Fahne', () => {
     const view = src('../ChatView.tsx')
     const composer = view.slice(view.indexOf('<ChatInput'), view.indexOf('composerActions='))
-    expect(composer).toContain('isGenerating={busy.thisChat}')
-    expect(composer).toContain('busyElsewhere={busy.otherChat}')
+    // Runde 4 Schritt 2 (review-lanes.md Blocker 1+6): `isGenerating` traegt
+    // jetzt auch den Warteschlangen-Fall (`queuedForLocalLane`), damit der
+    // Stop-Knopf schon waehrend des Wartens auf die lokale Spur steht, nicht
+    // erst wenn der Strom beginnt. Schritt 4: `busyElsewhere` ist ganz weg,
+    // kein Aufrufer sperrt mehr wegen einer ANDEREN Unterhaltung. Die Aussage
+    // dieses Tests bleibt dieselbe: kein app-weites `isGenerating`, alles
+    // hier ist je-Unterhaltung.
+    expect(composer).toContain('isGenerating={busy.thisChat || queuedForLocalLane}')
+    expect(composer).not.toContain('busyElsewhere')
+    expect(composer).toContain('waitingForLocalLane={queuedForLocalLane}')
     expect(composer).not.toContain('isGenerating={isGenerating}')
     // Die MessageList behaelt die app-weite Fahne mit Absicht: Regenerate und
     // Edit STARTEN einen Lauf, und solange die Stream-Puffer geteilt sind,

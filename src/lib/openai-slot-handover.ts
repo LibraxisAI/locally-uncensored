@@ -61,6 +61,17 @@ export interface SlotOccupant {
    * the card can tell them apart, because the slot itself looks identical.
    */
   disabledByUser?: boolean
+  /**
+   * Opus-Review Nachbesserung 6 (3.0.1, F3): carried through untouched, the
+   * same obfuscated representation `ProviderConfig.apiKey` itself uses. This
+   * module never decodes it, it only moves the value between the slot and
+   * its `displaced` memory, so a takeover stops destroying the pushed-out
+   * backend's key along with clearing the leak the original F3 fix closed.
+   * See ProviderConfig.tsx's `applyPreset`/`handBackSlot` for the actual
+   * store-and-keychain restore, which needs the plain key and therefore
+   * happens OUTSIDE this pure module.
+   */
+  apiKey?: string
 }
 
 /** The part of the `openai` slot this decision reads. */
@@ -81,6 +92,23 @@ export function isDifferentBackend(slot: SlotOccupant, incoming: SlotOccupant): 
   if (!sameUrl(slot.baseUrl, incoming.baseUrl)) return true
   if (slot.name !== incoming.name) return true
   return !!slot.managed !== !!incoming.managed
+}
+
+/**
+ * F3 (3.0.1, T4 Nebenfund): "a freshly added provider comes with a prefilled
+ * value". `slotTakeoverUpdate`'s patch never mentions `apiKey`, it only
+ * decides `name`/`baseUrl`/`isLocal`/`managed`/`displaced`, so the plain
+ * store merge in `setProviderConfig` left whatever key the DISPLACED backend
+ * had sitting in the shared `openai` slot's `apiKey` field. The new
+ * provider's key box then showed, and would have submitted, a secret that
+ * belongs to a completely different endpoint.
+ *
+ * Same condition `slotTakeoverUpdate` itself uses to decide anything changed
+ * at all: re-selecting the SAME backend that is already in the slot must not
+ * wipe a key the user already entered for it, only a REAL takeover should.
+ */
+export function takeoverClearsApiKey(slot: HandoverSlot, incoming: SlotOccupant): boolean {
+  return slot.enabled && isDifferentBackend(slot, incoming)
 }
 
 /**
@@ -121,6 +149,11 @@ export function slotTakeoverUpdate(
       baseUrl: slot.baseUrl,
       isLocal: slot.isLocal,
       managed: slot.managed,
+      // Nachbesserung 6: the outgoing backend's own key travels with it now,
+      // instead of being left to rot in the slot's field for the incoming
+      // backend to inherit (that leak is what `takeoverClearsApiKey` closes)
+      // or simply vanishing the moment something else takes the slot.
+      apiKey: slot.apiKey,
     },
   }
 }

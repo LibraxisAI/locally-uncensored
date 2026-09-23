@@ -153,12 +153,14 @@ function MemorySettingsPanel() {
       const result = await synchronizeMemoryCollection(activeOwner, sensitiveSyncConsent, resolution, controller.signal)
       if (syncController.current !== controller) return
       setSyncConflicts(result.conflicts)
-      setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.`)
+      const omittedNote = result.omittedSensitive > 0
+        ? ` ${result.omittedSensitive} sensitive ${result.omittedSensitive === 1 ? 'memory was' : 'memories were'} left out (not uploaded).`
+        : ''
+      setSyncMessage(`Synced ${result.uploaded} uploads and ${result.downloaded} downloads. ${result.conflicts.length} conflicting memories left unchanged.${omittedNote}`)
     } catch (error) {
       if (syncController.current !== controller) return
       if (quelle === 'finalize') { setLegacyReview(null); setConfirmLegacyRemoval(false) }
-      const messages = ['Sensitive memories need explicit permission for cloud storage before this collection can synchronize',
-        'This conflict changed. Sync again before choosing a version.',
+      const messages = ['This conflict changed. Sync again before choosing a version.',
         'Memory synchronization cancelled. Some changes may already be saved.',
         'Memories changed. Review the previous cloud copy again.',
         'Import and synchronize every previous memory before finalizing.']

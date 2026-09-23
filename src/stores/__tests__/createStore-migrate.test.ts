@@ -34,7 +34,7 @@ async function freshStore() {
   return mod.useCreateStore
 }
 
-describe('createStore persist migration (v0 → v1)', () => {
+describe('createStore persist migration (v0 → v2)', () => {
   beforeEach(() => localStorage.clear())
 
   it('migrates an unversioned v0 blob with mode "i2i" to image/img2img', async () => {
@@ -62,12 +62,12 @@ describe('createStore persist migration (v0 → v1)', () => {
     expect(store.getState().source).toBeNull()
   })
 
-  it('writes version 1 back to storage after rehydrate', async () => {
+  it('writes version 2 back to storage after rehydrate', async () => {
     seedStorage({ mode: 'i2i' })
     const store = await freshStore()
     store.getState().setSteps(21)
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}')
-    expect(raw.version).toBe(1)
+    expect(raw.version).toBe(2)
     expect(raw.state.mode).toBe('image')
   })
 })

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Wifi, WifiOff, Loader2, Eye, EyeOff, ChevronDown, Plus, Power, Play, Trash2 } from 'lucide-react'
-import { useProviderStore } from '../../stores/providerStore'
+import { Wifi, WifiOff, Loader2, Eye, EyeOff, ChevronDown, Plus, Power, Play, Trash2, X, AlertTriangle } from 'lucide-react'
+import { useProviderStore, deobfuscate } from '../../stores/providerStore'
 import { providerRowIds, isReturnableRow } from '../../lib/provider-visibility'
 import {
   slotTakeoverUpdate,
@@ -11,6 +11,7 @@ import {
   standbyIsRemovable,
   slotRemoveOccupantUpdate,
   slotForgetStandbyUpdate,
+  takeoverClearsApiKey,
 } from '../../lib/openai-slot-handover'
 import { getProvider } from '../../api/providers'
 import { PROVIDER_PRESETS } from '../../api/providers/types'
@@ -21,7 +22,10 @@ import { useBuiltinEngineStatus } from '../../hooks/useBuiltinEngineStatus'
 import { reachVerdict, liveSlotStatus, type SlotStatus } from '../../lib/builtin-slot-status'
 import type { ProviderId, ProviderConfig } from '../../api/providers/types'
 import { disabledSlotNote } from '../../lib/disabled-slot-note'
-import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
+import { HINWEIS_TEXT, HINWEIS_ZEILE, PUNKT_FARBE } from '../../lib/hinweis'
+import { parkApiKeyForBackend, restoreParkedApiKeyForBackend } from '../../lib/parked-key'
+import { isBuiltinEngineMissing } from '../../lib/builtin-engine-presence'
+import { engineNoticeDismissed as engineNoticeDismissedThisSession, dismissEngineNoticeForSession, resetEngineNoticeDismissal } from '../../lib/engine-notice-session'
 
 const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
 
@@ -98,14 +102,14 @@ export function providerSlotView(id: ProviderId, config: ProviderConfig): SlotVi
 // server is not currently listening on :1234 (user closed the GUI, the
 // server toggle is off, etc.), the previous Settings UI offered only
 // `Test` and `Disable`. The clean Plug-and-Play path is to call the
-// existing `start_lmstudio_server` Tauri command — same surface the
+// existing `start_lmstudio_server` Tauri command, same surface the
 // onboarding's Fix-(d) card uses. This keeps the user inside LU instead
 // of forcing them through Re-run-onboarding to recover from a
 // transient server outage.
 type LmStudioServerInfo = { lms_present: boolean; running: boolean }
 
 export function ProviderSettings() {
-  const { providers, setProviderConfig, setProviderApiKey, getProviderApiKey } = useProviderStore()
+  const { providers, setProviderConfig, setProviderApiKey, getProviderApiKey, engineOptedOut } = useProviderStore()
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [testing, setTesting] = useState<ProviderId | null>(null)
   const [statuses, setStatuses] = useState<Record<string, SlotStatus>>({})
@@ -119,10 +123,42 @@ export function ProviderSettings() {
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
   const [showCloudWarning, setShowCloudWarning] = useState(false)
   const [pendingPreset, setPendingPreset] = useState<typeof PROVIDER_PRESETS[0] | null>(null)
+  // Review-Runde 2, Punkt 5: a takeover the OS keychain cannot durably park.
+  // See wouldLoseApiKeyOnRestart below for why this exists.
+  const [showKeyLossWarning, setShowKeyLossWarning] = useState(false)
   const [expandedProvider, setExpandedProvider] = useState<ProviderId | null>(null)
+  // R13D Nebenfund 1: LU Engine can fall out of the `openai` slot entirely
+  // (see lib/builtin-engine-presence.ts for the read and the root cause).
+  // Dismissal is session-only, not persisted: a restart re-checks the slot
+  // and shows the notice again while the engine is still missing, so a
+  // dismissed notice never hides a standing problem across restarts. It also
+  // resets the moment the engine is back, so dismissing today's notice does
+  // not silently swallow tomorrow's.
+  // Sitzungsweit und an EINER Stelle gemerkt, damit das X hier und das X im
+  // Modellmenue des Chats dasselbe X sind (lib/engine-notice-session.ts).
+  const [engineNoticeDismissed, setEngineNoticeDismissed] = useState(engineNoticeDismissedThisSession)
+  // Opus review: `managed: false` with no `displaced` record is also the
+  // shape a customer who picked Ollama or LM Studio on purpose leaves
+  // behind (onboarding, the startup backend selector, Start LM Studio
+  // Server). `engineOptedOut` is how those are told apart from the R13D
+  // eviction bug; see lib/builtin-engine-presence.ts.
+  const engineMissing = isBuiltinEngineMissing(providers.openai, engineOptedOut)
+  // Reset the dismissal the moment the condition itself changes, adjusted
+  // during render rather than in an effect (react-hooks/set-state-in-effect):
+  // this is the "state that resets when a prop changes" case the React docs
+  // call out, not a cascading-render trap. It keeps a dismissed notice from
+  // hiding a DIFFERENT missing-engine episode than the one the user dismissed.
+  const [engineWasMissing, setEngineWasMissing] = useState(engineMissing)
+  if (engineMissing !== engineWasMissing) {
+    setEngineWasMissing(engineMissing)
+    if (!engineMissing) {
+      resetEngineNoticeDismissal()
+      setEngineNoticeDismissed(false)
+    }
+  }
 
 
-  // Bug (g) state — LM-Studio-on-disk-but-server-off detection.
+  // Bug (g) state, LM-Studio-on-disk-but-server-off detection.
   const [lmStudioInfo, setLmStudioInfo] = useState<LmStudioServerInfo | null>(null)
   const [startingLmStudioServer, setStartingLmStudioServer] = useState(false)
 
@@ -131,7 +167,7 @@ export function ProviderSettings() {
     try {
       const status = await backendCall<LmStudioServerInfo>('lmstudio_server_status')
       setLmStudioInfo(status)
-    } catch { /* command unavailable on older builds — leave null */ }
+    } catch { /* command unavailable on older builds, leave null */ }
   }
 
   // One status for one slot, and never a verdict nobody earned.
@@ -240,15 +276,36 @@ export function ProviderSettings() {
     run()
   }
 
+  // Opus-Review Nachbesserung 6 (3.0.1, F3) + R9: every path below that hands
+  // the shared `openai` slot to a REMEMBERED backend (Remove on the
+  // occupant, Enable on the standby card, Disable swapping it back in) must
+  // restore that backend's own key too, not just its name/URL. R9's OS
+  // keychain (secret_park_get, via restoreParkedApiKeyForBackend) is tried
+  // FIRST, since a key parked there survives an app restart; `displaced.
+  // apiKey` (F3, session-only) is the fallback for a device with no
+  // keychain, or a `displaced` record written before R9 existed. Through
+  // setProviderApiKey, not a plain field merge: that is the call that keeps
+  // the OS keychain in step with the store, and it has to run AFTER
+  // setProviderConfig so it is the last word on `openai`'s key field. No
+  // parked key anywhere (a backend that never had one) clears it instead of
+  // leaving the key of whichever backend just left sitting there under a
+  // new name.
+  async function restoreParkedApiKey(backendName: string | undefined, parkedObfuscated: string | undefined) {
+    const fromKeychain = backendName ? await restoreParkedApiKeyForBackend(backendName) : null
+    setProviderApiKey('openai', fromKeychain !== null ? fromKeychain : (parkedObfuscated !== undefined ? deobfuscate(parkedObfuscated) : ''))
+  }
+
   // Remove on the backend that holds the shared local slot: the slot goes back
   // to what it held before the takeover, and the removed backend is forgotten
   // instead of parked on standby. Offered only where `displaced` knows a state
   // to return to, so the app's own engine and the three other slots have no
   // Remove at all.
-  function removeOccupant() {
+  async function removeOccupant() {
     const update = slotRemoveOccupantUpdate(providers.openai)
     if (!update) return
+    const displaced = providers.openai.displaced
     setProviderConfig('openai', update)
+    await restoreParkedApiKey(displaced?.name, displaced?.apiKey)
     setStatuses(prev => ({ ...prev, openai: 'idle' }))
     setExpandedProvider('openai')
   }
@@ -265,19 +322,43 @@ export function ProviderSettings() {
   // Reset button has for this one slot, without resetting anything else, and
   // it swaps rather than forgets: the backend now leaving the slot takes the
   // standby card in its turn.
-  function handBackSlot() {
+  async function handBackSlot() {
     const update = slotHandbackUpdate(providers.openai)
     if (!update) return
+    const displaced = providers.openai.displaced
     setProviderConfig('openai', update)
+    await restoreParkedApiKey(displaced?.name, displaced?.apiKey)
     setStatuses(prev => ({ ...prev, openai: 'idle' }))
     setExpandedProvider('openai')
   }
 
+  // Review-Runde 2, Punkt 5 (F3) + R9: whether accepting `preset` into the
+  // shared `openai` slot would destroy a currently-set, non-empty API key
+  // with no way to bring it back. R9 tries to prevent that outright: the
+  // outgoing key is parked in the OS keychain (parkApiKeyForBackend,
+  // survives an app restart) before this function answers, and only a
+  // FAILED park still counts as a loss, e.g. no keychain on this device
+  // (Linux, or the LU_NO_KEYCHAIN test switch), in which case F3's warning
+  // card is shown so the loss is a choice made with eyes open instead of a
+  // 401 the next time the backend returns.
+  async function wouldLoseApiKeyOnRestart(preset: typeof PROVIDER_PRESETS[0]): Promise<boolean> {
+    if (preset.providerId === 'ollama' || preset.providerId === 'anthropic') return false
+    const incoming = { name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed }
+    if (!(takeoverClearsApiKey(providers.openai, incoming) && getProviderApiKey('openai') !== '')) return false
+    const parked = await parkApiKeyForBackend(providers.openai.name, getProviderApiKey('openai'))
+    return !parked
+  }
+
   // Add a preset (enable a provider without disabling others)
-  function selectPreset(preset: typeof PROVIDER_PRESETS[0]) {
+  async function selectPreset(preset: typeof PROVIDER_PRESETS[0]) {
     if (!preset.isLocal) {
       setPendingPreset(preset)
       setShowCloudWarning(true)
+      return
+    }
+    if (await wouldLoseApiKeyOnRestart(preset)) {
+      setPendingPreset(preset)
+      setShowKeyLossWarning(true)
       return
     }
     applyPreset(preset)
@@ -298,6 +379,15 @@ export function ProviderSettings() {
       // for it. `managed` is still set explicitly in both directions, so
       // switching to LM Studio/vLLM clears the built-in flag and re-selecting
       // Built-in restores it.
+      // F3 (3.0.1, T4 Nebenfund): a real takeover must not leave the
+      // displaced backend's API key sitting in the shared slot's field,
+      // see takeoverClearsApiKey in lib/openai-slot-handover.ts. Checked
+      // against the same shape slotTakeoverUpdate itself reads below.
+      if (takeoverClearsApiKey(providers.openai, {
+        name: preset.name, baseUrl: preset.baseUrl, isLocal: preset.isLocal, managed: preset.managed,
+      })) {
+        setProviderApiKey('openai', '')
+      }
       setProviderConfig('openai', slotTakeoverUpdate(providers.openai, {
         name: preset.name,
         baseUrl: preset.baseUrl,
@@ -333,7 +423,9 @@ export function ProviderSettings() {
     if (!nextEnabled && id === 'openai') {
       const handback = slotDisableOccupantUpdate(providers.openai)
       if (handback) {
+        const displaced = providers.openai.displaced
         setProviderConfig('openai', handback)
+        void restoreParkedApiKey(displaced?.name, displaced?.apiKey)
         setStatuses(prev => ({ ...prev, openai: 'idle' }))
         return
       }
@@ -421,6 +513,43 @@ export function ProviderSettings() {
 
   return (
     <div className="space-y-2">
+      {/* Windows-Bau t14, Bild 38-lmstudio-added.png: diese Zeile war knallrot,
+          Dreieck rot, X rot, und der Restore-Knopf ein eigenes Kaestchen. Der
+          Eigner will "unauffaellig, aber so, dass man es sieht", also derselbe
+          ruhige Ton wie die Zeile oben im Modellmenue: Text in gedecktem Grau,
+          Akzent nur fuer den Textknopf, eine Zeile, kein Kasten. Verhalten,
+          Texte und selectPreset unveraendert, `role="alert"` bleibt, die Farbe
+          war nie das, was die Zeile ankuendigt.
+          Das Warnsymbol bleibt im selben Grau statt in Amber: Gelb und Amber
+          sind in dieser Oberflaeche verboten (lib/hinweis.ts, Waechter
+          lib/__tests__/kein-gelb-in-der-oberflaeche.test.ts), und es gibt
+          keinen dritten Ton. */}
+      {engineMissing && !engineNoticeDismissed && (
+        <div
+          role="alert"
+          data-testid="engine-missing-notice"
+          className={`${HINWEIS_ZEILE} ${HINWEIS_TEXT.ruhig} px-1`}
+        >
+          <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+          <span className="flex-1 min-w-0">
+            LU Engine is missing from your providers. Restore it below. We are fixing the cause in the next update.
+          </span>
+          <button
+            onClick={() => selectPreset(PROVIDER_PRESETS.find(p => p.id === 'builtin')!)}
+            className="self-center shrink-0 text-lu-accent underline underline-offset-2"
+          >
+            Restore LU Engine
+          </button>
+          <button
+            onClick={() => { dismissEngineNoticeForSession(); setEngineNoticeDismissed(true) }}
+            className="self-center shrink-0 rounded p-[1px] opacity-70 hover:opacity-100 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            aria-label="Dismiss"
+            title="Dismiss"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
       {/* Providers List: enabled rows, plus the ones the user switched off */}
       {rowIds.map(id => {
         const config = providers[id]
@@ -506,7 +635,7 @@ export function ProviderSettings() {
             {/* Expanded config */}
             {isExpanded && (
               <div className="px-2 pb-2 space-y-1.5 border-t border-white/[0.04]">
-                {/* Endpoint — an edit box only where editing it does something.
+                {/* Endpoint, an edit box only where editing it does something.
                     The built-in engine and LU Cloud both run on an address the
                     app pins, so they show it instead of pretending. */}
                 {!view.endpointEditable ? (
@@ -722,7 +851,7 @@ export function ProviderSettings() {
         </button>
         {/* Hellmodus-Luecke aus Welle 2, in f336b91e gemeldet statt
             geaendert. Die Flaeche war `bg-[#363636]` OHNE `dark:`, blieb im
-            Hellmodus also dunkel — waehrend der Rescue-Layer in index.css
+            Hellmodus also dunkel, waehrend der Rescue-Layer in index.css
             die Schrift darin nach unten dreht (`.light .text-gray-500 →
             #374151`). Ergebnis: #374151 auf #363636 = 1,17:1, praktisch
             unsichtbar; jetzt 10,31:1. Kein zweites Literal, sondern
@@ -797,13 +926,53 @@ export function ProviderSettings() {
             </button>
             <button
               onClick={() => {
-                if (pendingPreset) applyPreset(pendingPreset)
                 setShowCloudWarning(false)
-                setPendingPreset(null)
+                void (async () => {
+                  if (pendingPreset && await wouldLoseApiKeyOnRestart(pendingPreset)) {
+                    setShowKeyLossWarning(true)
+                    return
+                  }
+                  if (pendingPreset) applyPreset(pendingPreset)
+                  setPendingPreset(null)
+                })()
               }}
               className="px-4 py-1.5 rounded-lg text-[0.7rem] font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
             >
               Continue
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Review-Runde 2, Punkt 5: standby key not surviving a restart. Only
+          reached now (R9) when parkApiKeyForBackend already tried and
+          failed to place the key in the OS keychain, so it stays accurate:
+          this device really has nowhere durable to keep it. */}
+      <Modal open={showKeyLossWarning} onClose={() => { setShowKeyLossWarning(false); setPendingPreset(null) }} title="">
+        <div className="space-y-4 text-center" data-testid="key-loss-warning-modal">
+          <h3 className="text-base font-semibold text-white">API Key Will Be Lost</h3>
+          <p className="t-control text-gray-400 leading-relaxed">
+            The current OpenAI-compatible backend has an API key set, and this device has no OS keychain LU could safely park it in. Switching backends clears it from this slot, and it will NOT survive an app restart while parked.
+          </p>
+          <p className="t-control text-gray-400 leading-relaxed">
+            If you switch back to this backend later, you will need to enter the key again.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => { setShowKeyLossWarning(false); setPendingPreset(null) }}
+              className="px-4 py-1.5 rounded-lg t-mono text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                if (pendingPreset) applyPreset(pendingPreset)
+                setShowKeyLossWarning(false)
+                setPendingPreset(null)
+              }}
+              className="px-4 py-1.5 rounded-lg t-mono font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition-colors"
+            >
+              Switch Anyway
             </button>
           </div>
         </div>

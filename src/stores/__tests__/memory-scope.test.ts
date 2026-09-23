@@ -46,6 +46,12 @@ it('rejects cross-project automatic merges and accepts matching scopes', () => {
   useMemoryStore.getState().applyWriteDecision(decision, { newId })
   expect(useMemoryStore.getState().entries[0].content).toBe('Merged fixture')
 })
+it('R2-36: an UPDATE without a candidate still merges (no ctx.newId to compare scope against)', () => {
+  const targetId = add('A')
+  const decision = { action: 'UPDATE' as const, targetId, mergedContent: 'Merged fixture' }
+  useMemoryStore.getState().applyWriteDecision(decision)
+  expect(useMemoryStore.getState().entries[0].content).toBe('Merged fixture')
+})
 it('pins the requested scope across asynchronous fallback', async () => {
   add('A', 'Alpha fixture')
   add('B', 'Beta fixture')

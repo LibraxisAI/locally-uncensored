@@ -127,6 +127,17 @@ describe('determineStrategy — wan22 gate', () => {
 describe('buildDynamicWorkflow — Wan 2.2 graph', () => {
   beforeEach(() => {
     vi.mocked(getAllNodeInfo).mockResolvedValue(WAN22_NODES as never)
+    // K2 (Punkt 1 of the nachbessert list): buildWan22Workflow now resolves
+    // its CLIP/VAE against the live enum (findMatchingCLIP/findMatchingVAE)
+    // instead of hardcoded literals, so /object_info/CLIPLoader and
+    // /object_info/VAELoader need real answers, not just getAllNodeInfo's.
+    vi.mocked(localFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        CLIPLoader: { input: { required: { clip_name: [['umt5_xxl_fp8_e4m3fn_scaled.safetensors']] } } },
+        VAELoader: { input: { required: { vae_name: [['wan2.2_vae.safetensors']] } } },
+      }),
+    } as never)
   })
 
   it('T2V (no inputImage): Wan22 latent has NO start_image, uses the 2.2 VAE + UMT5', async () => {
@@ -147,6 +158,28 @@ describe('buildDynamicWorkflow — Wan 2.2 graph', () => {
     // No image nodes on the T2V path.
     expect(nodeOf(wf, 'LoadImage')).toBeUndefined()
     expect(nodeOf(wf, 'ImageScale')).toBeUndefined()
+  })
+
+  // K2 (Punkt 1): before this fix, buildWan22Workflow wrote the CLIP/VAE
+  // names as hardcoded literals ('umt5_xxl_fp8_e4m3fn_scaled.safetensors' /
+  // 'wan2.2_vae.safetensors') REGARDLESS of the live enum, so a graph built
+  // against a different live list would still have shown the old literal
+  // here. This test's mock deliberately answers with DIFFERENT filenames
+  // (a plausible post-3.0 /internal/folder_paths rename) so it only passes
+  // if the values genuinely come from findMatchingCLIP/findMatchingVAE.
+  it('uses whatever the live enum actually names, not the historic literal filenames', async () => {
+    vi.mocked(localFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        CLIPLoader: { input: { required: { clip_name: [['models/umt5_xxl_fp8_e4m3fn_scaled.safetensors']] } } },
+        VAELoader: { input: { required: { vae_name: [['models/wan2.2_vae.safetensors']] } } },
+      }),
+    } as never)
+    const wf = await buildDynamicWorkflow({ ...wan22Params } as never)
+    const vae = nodeOf(wf, 'VAELoader')!
+    const clip = nodeOf(wf, 'CLIPLoader')!
+    expect(vae[1].inputs.vae_name).toBe('models/wan2.2_vae.safetensors')
+    expect(clip[1].inputs.clip_name).toBe('models/umt5_xxl_fp8_e4m3fn_scaled.safetensors')
   })
 
   it('T2V wires the sampler through ModelSamplingSD3 (Wan shift)', async () => {

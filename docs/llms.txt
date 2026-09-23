@@ -3,9 +3,11 @@
 Hosted includes 11 Flash models; Pro and Max include 12. Up to 500,000 combined input and output tokens per account per UTC day in app sessions. GLM 5.3 Flash uses credits on Hosted and joins the daily allowance on Pro and Max. API keys always use credits.
 Hosted EUR 19/month: 900,000 shared credits, up to 900 Spicy images OR 90 five-second Spicy image-to-video clips. Each maximum spends the entire shared monthly wallet on one model. These are alternatives, not separate allowances. Input-image generation, character training, LoRA routes and additional operations cost extra. Spicy video uses an input image and five-second clips. Failed jobs and changing catalog prices can affect results.
 https://locallyuncensored.com/cloud-facts.json
-https://locallyuncensored.com/uncensored-ai-image-generator-online/
-https://locallyuncensored.com/uncensored-ai-video-generator-online/
-https://locallyuncensored.com/vs/venice/
+Uncensored AI chat online: 47 chat models, all of them in every plan and every pack, and no moderation layer from us on text. https://locallyuncensored.com/uncensored-ai-chat-online/
+Uncensored AI image generator online: adult-capable models from 1,000 credits per image, only after the account switches its own content policy setting. https://locallyuncensored.com/uncensored-ai-image-generator-online/
+Uncensored AI video generator online: image-to-video only, clips are five seconds, the input image is not included. https://locallyuncensored.com/uncensored-ai-video-generator-online/
+Uncensored AI API: OpenAI-compatible Chat Completions at https://lu-labs.ai/api/inference/v1, keys start with lu_ and always spend credits. https://locallyuncensored.com/uncensored-ai-api/
+Venice AI alternatives: Venice Pro is 18 USD per month with 100 credits (read 2026-09-22); our credit packs start at 15 EUR and need no subscription. https://locallyuncensored.com/vs/venice/
 https://lu-labs.ai/product-facts
 <!-- LU-CLOUD-FACTS:END -->
 # Locally Uncensored
@@ -16,7 +18,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 
 ## Key Facts
 - Name: Locally Uncensored
-- Current Version: v3.0.0 (September 2026)
+- Current Version: v3.0.2 (September 2026)
 - Type: Desktop AI Application (local AI studio)
 - License: AGPL-3.0 (free and open source)
 - Platforms: Windows 10/11, Linux (deb, rpm, AppImage)
@@ -29,6 +31,8 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Author: PurpleDoubleD
 
 ## What Makes It Unique
+- Qwen-Image 2.1 runs locally on Windows and Linux and does both jobs: text to image, and editing a reference image from a prompt with no mask; about 16 GB of files, ComfyUI 0.37.0 or newer, research license without commercial use (v3.0.1)
+- Models has a dedicated LoRAs tab on Windows and Linux: CivitAI search and download into the ComfyUI loras folder, an installed list with sizes and trigger words, and deletion (v3.0.1)
 - Only local AI app combining chat + coding agent + image generation + video generation + mobile remote in one interface
 - Talking Character, Music, Extend Video and Motion Control run as full local ComfyUI lanes on your own GPU; only Upscale, Erase Object and Character Studio are cloud-only (v2.5.8, refined in v2.5.9)
 - Per-lane frame count, resolution and step controls on every Create lane, so low-VRAM runs are practical (v2.5.8)
@@ -46,7 +50,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Agent Mode with 14 tools, MCP integration, sub-agent delegation, budget caps
 - Mobile remote access via LAN or Cloudflare Tunnel with 6-digit passcode + QR setup
 - A/B Model Compare and Local Benchmark built in
-- Memory system and Document Chat (RAG) — local embeddings, no cloud
+- Memory system and Document Chat (RAG): local embeddings, no cloud
 - Voice STT (Whisper) and TTS
 - Auto-update over signed NSIS channel for Windows
 - Single-instance lock (v2.4.0): double-launch focuses existing window
@@ -55,13 +59,13 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Chat and memory persistence moved to IndexedDB, removing the old 5 MB storage cap (v2.5.0)
 - Editable memory with a user-settable injected-memory limit (v2.5.0)
 - Import existing ChatGPT, Claude, and Gemini conversations into the app (v2.5.0)
-- Small-model mode: a tool-calling reliability profile tuned for 3B–8B local models (v2.5.0)
+- Small-model mode: a tool-calling reliability profile tuned for 3B to 8B local models (v2.5.0)
 - Repo-Map with Aider-style PageRank for repository-aware coding (v2.5.0)
 - Streaming local voice: Whisper STT plus Piper neural TTS with one-click in-app install (v2.5.0)
 - Document Chat (RAG) with one-click nomic-embed-text install; embedding chunks survive NSIS auto-updates (v2.4.9)
-- VRAM tier filter (Lightweight ≤10 GB / Mid-Range 10–16 GB / High-End >16 GB) across text, image, and video models in Discover (v2.4.9)
+- VRAM tier filter (Lightweight ≤10 GB / Mid-Range 10 to 16 GB / High-End >16 GB) across text, image, and video models in Discover (v2.4.9)
 - Detects the ComfyUI Desktop App layout, not just classic main.py installs (v2.4.9)
-- Configurable image/video generation timeouts (1–480 min) for CPU/iGPU users (v2.4.7)
+- Configurable image/video generation timeouts (1 to 480 min) for CPU/iGPU users (v2.4.7)
 - Inline "Start LM Studio Server" button when LM Studio is installed but its server is off (v2.4.7)
 - Linux installer auto-detects deb/rpm/AppImage family; ComfyUI CPU mode + Arch venv auto-create (v2.4.5)
 
@@ -79,6 +83,7 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 
 ## Supported Image Models (via ComfyUI)
 - FLUX 2 Klein, FLUX.1
+- Qwen-Image 2.1 (generates and edits with one model; Qwen Research License, non-commercial)
 - Z-Image Turbo (uncensored)
 - Juggernaut XL, Dreamshaper, RealVis
 - ERNIE-Image (Baidu, Turbo + Base)
@@ -129,6 +134,8 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
   - Handbook chapter, Settings and troubleshooting: https://locallyuncensored.com/guide/settings-and-troubleshooting/
   - Handbook chapter, FAQ and glossary: https://locallyuncensored.com/guide/faq-and-glossary/
 - Blog (guides, comparisons, release notes): https://locallyuncensored.com/blog/
+- Qwen-Image 2.1 in Locally Uncensored (tutorial, explainer and handbook section in one place): https://locallyuncensored.com/qwen-image-2-1/
+- v3.0.2 Release Notes (hotfix: the Code tab scrolls again, issue 138, and the corrected count of open cloud models): https://locallyuncensored.com/blog/locally-uncensored-v3-0-2-hotfix.html
 - Full text for LLMs: https://locallyuncensored.com/llms-full.txt
 - How to Run AI Locally (5-minute beginner guide): https://locallyuncensored.com/blog/how-to-run-ai-locally.html
 - LM Studio Alternatives 2026: https://locallyuncensored.com/blog/lm-studio-alternatives.html
@@ -170,6 +177,8 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Kimi K3 vs DeepSeek V4 (price, thinking, vision, and which plan): https://locallyuncensored.com/blog/kimi-k3-vs-deepseek-v4.html
 - How to run Qwen 3.8 without a GPU (hosted Studio, API key, or the 27B at home): https://locallyuncensored.com/blog/run-qwen-3-8-without-gpu.html
 - Qwen 3.8 Max vs Qwen 3.8 A95B (the thinking switch, the price, the licence): https://locallyuncensored.com/blog/qwen-3-8-max-vs-a95b-explained.html
+- How to Run Qwen-Image 2.1 Locally (three files, ComfyUI 0.37.0, maskless editing, research licence): https://locallyuncensored.com/blog/how-to-run-qwen-image-2-1-locally.html
+- Qwen-Image 2.1 Explained (7B image model, alpha channel, ten references, no longer Apache 2.0): https://locallyuncensored.com/blog/qwen-image-2-1-explained.html
 - Flux 2 Online Without a 24 GB Card (browser image generation, credit math): https://locallyuncensored.com/blog/flux-2-online-without-gpu.html
 - Flux 2 Dev vs Flux Dev vs Flux Schnell (cost per image and which to default to): https://locallyuncensored.com/blog/flux-2-dev-vs-flux-dev-vs-schnell.html
 - LM Studio Alternative for Mac (browser Studio setup, no native Mac build): https://locallyuncensored.com/blog/lm-studio-alternative-for-mac.html
@@ -177,10 +186,14 @@ Locally Uncensored is a free, open-source (AGPL-3.0) local AI studio for the des
 - Uncensored AI Chat Online (browser, desktop Cloud switch, or API key): https://locallyuncensored.com/blog/uncensored-ai-chat-online-guide.html
 - What No Filter Actually Means Here (the honest limits): https://locallyuncensored.com/blog/what-no-filter-means-online.html
 - Uncensored AI chat online, no filter on text (landing page): https://locallyuncensored.com/uncensored-ai-chat-online/
+- Uncensored AI image generator online (seven adult-capable models from 1,000 credits per image, content policy setting on the account): https://locallyuncensored.com/uncensored-ai-image-generator-online/
+- Uncensored AI video generator online (fourteen adult-capable models, image-to-video only, five-second clips): https://locallyuncensored.com/uncensored-ai-video-generator-online/
+- Uncensored AI API (OpenAI-compatible, base URL https://lu-labs.ai/api/inference/v1, keys spend credits): https://locallyuncensored.com/uncensored-ai-api/
 - Locally Uncensored vs Open WebUI / LM Studio / Jan / GPT4All / Msty / SillyTavern / KoboldCpp: https://locallyuncensored.com/blog/
 
 ## Comparisons
 - Alternatives & Comparisons hub (all head-to-heads and roundups): https://locallyuncensored.com/alternatives/
+- Venice AI alternatives (Venice Pro 18 USD per month with 100 credits, read 2026-09-22; our packs start at 15 EUR with no subscription): https://locallyuncensored.com/vs/venice/
 - Locally Uncensored vs LM Studio (all-in-one studio vs polished chat client): https://locallyuncensored.com/vs/lm-studio/
 - Locally Uncensored vs ComfyUI (same engine, workflows built for you): https://locallyuncensored.com/vs/comfyui/
 - Locally Uncensored vs Ollama (engine vs all-in-one desktop app on top): https://locallyuncensored.com/vs/ollama/

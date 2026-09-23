@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { validateWorkflowJson, extractSearchTerms, autoDetectParameterMap, injectParameters, getBuiltinTemplates, parseImportedWorkflow, } from '../workflows'
+import { validateWorkflowJson, extractSearchTerms, autoDetectParameterMap, injectParameters, parseImportedWorkflow, } from '../workflows'
 import type { ModelType, VideoParams } from '../comfyui'
 
 describe('workflows — pure functions', () => {
@@ -14,7 +14,7 @@ describe('workflows — pure functions', () => {
       expect(validateWorkflowJson(wf)).toBe(true)
     })
 
-    it('accepts valid Web/UI format (nodes array with type)', () => {
+    it('R2-32: rejects Web/UI canvas format (nodes array with type), no caller reads that shape', () => {
       const wf = {
         nodes: [
           { id: 1, type: 'CheckpointLoaderSimple', widgets_values: [] },
@@ -22,7 +22,7 @@ describe('workflows — pure functions', () => {
         ],
         links: [],
       }
-      expect(validateWorkflowJson(wf)).toBe(true)
+      expect(validateWorkflowJson(wf)).toBe(false)
     })
 
     it('rejects object with no nodes (no class_type or nodes array)', () => {
@@ -49,11 +49,11 @@ describe('workflows — pure functions', () => {
       expect(validateWorkflowJson(undefined)).toBe(false)
     })
 
-    it('accepts web format even without links key', () => {
+    it('R2-32: rejects web format even without links key (still not API shape)', () => {
       const wf = {
         nodes: [{ id: 1, type: 'SaveImage' }],
       }
-      expect(validateWorkflowJson(wf)).toBe(true)
+      expect(validateWorkflowJson(wf)).toBe(false)
     })
 
     it('rejects nodes array with objects missing type field', () => {
@@ -396,61 +396,6 @@ it('detects ImageResizeKJv2 dimensions for custom I2V workflows', () => {
       expect(map.seed).toBeUndefined()
       expect(map.steps).toBeUndefined()
       expect(map.model).toBeUndefined()
-    })
-  })
-
-  // ─── getBuiltinTemplates ───
-
-  describe('getBuiltinTemplates', () => {
-    it('returns exactly 3 built-in templates', () => {
-      const templates = getBuiltinTemplates()
-      expect(templates).toHaveLength(3)
-    })
-
-    it('each template has required fields', () => {
-      for (const t of getBuiltinTemplates()) {
-        expect(typeof t.name).toBe('string')
-        expect(t.name.length).toBeGreaterThan(0)
-        expect(typeof t.description).toBe('string')
-        expect(t.source).toBe('manual')
-        expect(Array.isArray(t.modelTypes)).toBe(true)
-        expect(t.modelTypes.length).toBeGreaterThan(0)
-        expect(['image', 'video', 'both']).toContain(t.mode)
-        expect(t.rawWorkflow).toBeDefined()
-      }
-    })
-
-    it('includes SDXL/SD15 template', () => {
-      const templates = getBuiltinTemplates()
-      const sdxl = templates.find((t) => t.modelTypes.includes('sdxl'))
-      expect(sdxl).toBeDefined()
-      expect(sdxl!.mode).toBe('image')
-    })
-
-    it('includes FLUX template', () => {
-      const templates = getBuiltinTemplates()
-      const flux = templates.find((t) => t.modelTypes.includes('flux'))
-      expect(flux).toBeDefined()
-      expect(flux!.mode).toBe('image')
-    })
-
-    it('includes Wan/Hunyuan video template', () => {
-      const templates = getBuiltinTemplates()
-      const video = templates.find((t) => t.modelTypes.includes('wan'))
-      expect(video).toBeDefined()
-      expect(video!.mode).toBe('video')
-    })
-
-    it('builtin templates have valid rawWorkflow (API format nodes)', () => {
-      for (const t of getBuiltinTemplates()) {
-        const wf = t.rawWorkflow!
-        const nodes = Object.values(wf)
-        expect(nodes.length).toBeGreaterThan(0)
-        for (const node of nodes) {
-          expect(typeof node.class_type).toBe('string')
-          expect(node.inputs).toBeDefined()
-        }
-      }
     })
   })
 

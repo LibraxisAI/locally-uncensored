@@ -37,7 +37,7 @@ import {
   isEmbeddingGgufName as isEmbeddingModel,
 } from '../api/engine'
 import type { BundledModel } from '../api/engine'
-import type { PullProgress, AIModel, ModelCategory, ImageModel, VideoModel, CloudModel } from '../types/models'
+import type { PullProgress, AIModel, ModelCategory, ImageModel, VideoModel, CloudModel, ComfyModelSource } from '../types/models'
 
 
 // Boot-resume for the managed built-in engine (2.5.7): the llama-server
@@ -490,9 +490,17 @@ export function useModels() {
         // entry used to carry size 0, and the card hides a zero size, so the
         // Installed list answered "what is this costing me" with silence.
         const sizes = await readModelDiskSizes([...imageModels, ...videoModels])
-        const toModel = <T extends 'image' | 'video'>(m: { name: string; type: string }, type: T) => ({
+        // `source` rides along. It is the only thing that tells a LoRA from a
+        // checkpoint once the row is an AIModel (both are files under
+        // ComfyUI/models and both come out of this lane as type 'image'), and
+        // dropping it here is what put the LoRAs nameless between the
+        // checkpoints in the Image tab, clickable as if one were a main model.
+        const toModel = <T extends 'image' | 'video'>(
+          m: { name: string; type: string; source: ComfyModelSource },
+          type: T,
+        ) => ({
           name: m.name, model: m.name, size: sizes.get(m.name) ?? 0, format: format(m.name),
-          architecture: m.type, type, providerName: 'ComfyUI' as const,
+          architecture: m.type, type, providerName: 'ComfyUI' as const, source: m.source,
         })
         comfyModels = [
           ...imageModels.map((m) => toModel(m, 'image') as ImageModel),

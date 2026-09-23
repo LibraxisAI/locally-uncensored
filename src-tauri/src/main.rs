@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_identity;
+mod cancel_registry;
 mod commands;
 mod crash_report;
 mod install_state;
@@ -508,6 +509,7 @@ fn main() {
             commands::tts::installed_piper_voices,
             // Agent tools (legacy)
             commands::agent::execute_code,
+            commands::agent::execute_code_cancel,
             commands::agent::file_read,
             commands::agent::file_write,
             commands::agent::set_chat_workspace_override,
@@ -603,6 +605,12 @@ fn main() {
             commands::secret::secret_set,
             commands::secret::secret_get,
             commands::secret::secret_delete,
+            // Parked keys for a displaced OpenAI-compatible backend's API
+            // key (R9, 2026-09-18): narrow prefix-plus-validated-id vault
+            // namespace, separate from the fixed ALLOWED_ACCOUNTS list above.
+            commands::secret::secret_park_set,
+            commands::secret::secret_park_get,
+            commands::secret::secret_park_delete,
             // Web search
             commands::search::web_search,
             commands::search::web_fetch,
@@ -633,6 +641,7 @@ fn main() {
             commands::proxy::fetch_external,
             commands::proxy::fetch_external_bytes,
             commands::proxy::proxy_localhost,
+            commands::proxy::cancel_proxy_call,
             commands::proxy::proxy_localhost_stream,
             commands::proxy::proxy_localhost_stream_chunked,
             commands::proxy::cancel_proxy_stream,
@@ -1288,6 +1297,20 @@ mod log_file_tests {
             "commands::logging::log_write",
             "commands::logging::log_file_path",
             "commands::logging::log_reveal",
+        ] {
+            assert!(SRC.contains(cmd), "{cmd} is not in generate_handler!");
+        }
+    }
+
+    #[test]
+    fn the_frontend_can_actually_reach_the_parked_key_commands() {
+        // R9: an unregistered command is an invoke that rejects at runtime
+        // with "not allowed by scope", not a compile error, so the orchestrator's
+        // later TS wiring would otherwise silently find nothing here.
+        for cmd in [
+            "commands::secret::secret_park_set",
+            "commands::secret::secret_park_get",
+            "commands::secret::secret_park_delete",
         ] {
             assert!(SRC.contains(cmd), "{cmd} is not in generate_handler!");
         }

@@ -1,25 +1,23 @@
 /**
- * The two ComfyUI graph formats, plus the guards that turn a downloaded or
- * user-picked JSON file into one of them.
+ * The ComfyUI API graph format, plus the guards that turn a downloaded or
+ * user-picked JSON file into one.
  *
  * This is foreign data in the strongest sense in this app: a `.json` the user
  * dropped in, a CivitAI download, a `.png` with a workflow in its metadata.
  * Nothing about its shape is guaranteed, so every walk over a graph narrows
  * through the guards below before it reads a field.
  *
- * Two formats exist and they are NOT interchangeable:
+ * API format is what `/prompt` accepts and what this app builds:
+ * `{ "3": { class_type: "KSampler", inputs: { seed: 1, model: ["4", 0] } } }`.
+ * Node ids are the object keys (strings), and an input is either a literal
+ * or a `[sourceNodeId, slotIndex]` link.
  *
- *   - **API format** — what `/prompt` accepts and what this app builds:
- *     `{ "3": { class_type: "KSampler", inputs: { seed: 1, model: ["4", 0] } } }`.
- *     Node ids are the object keys (strings), and an input is either a literal
- *     or a `[sourceNodeId, slotIndex]` link.
+ * The ComfyUI canvas can also save a Web/UI format (`{ nodes: [...],
+ * links: [...] }`, numeric node ids, positional `widgets_values`), but
+ * nothing in this app reads that shape (R2-32), so it is not modelled here;
+ * the Import dialog tells the user to re-export with Save (API Format).
  *
- *   - **Web/UI format** — what the ComfyUI canvas saves: `{ nodes: [...],
- *     links: [...] }`, node ids numeric, inputs positional
- *     (`widgets_values`) and connections in a separate link table.
- *     `convertWebToApiFormat` in api/workflows.ts turns one into the other.
- *
- * Type-only plus pure guards, no imports — a leaf module that cannot join an
+ * Type-only plus pure guards, no imports, a leaf module that cannot join an
  * import cycle.
  */
 
@@ -74,38 +72,13 @@ export interface ComfyApiNode {
  */
 export type ComfyApiGraph = Record<string, ComfyApiNode>
 
-// ── Web / UI format ─────────────────────────────────────────────
-
-/** One declared input socket of a canvas node. */
-export interface ComfyWebInput {
-  name: string
-  type?: string
-  /** Link id into the graph's `links` table, or null when unconnected. */
-  link?: number | null
-}
-
-export interface ComfyWebNode {
-  id: number
-  type: string
-  inputs?: ComfyWebInput[]
-  /** Positional widget state — order is per node class and undocumented.
-   *  Plain parsed JSON, hence ComfyInputValue rather than unknown. */
-  widgets_values?: ComfyInputValue[]
-  /** Named widget slots, when the canvas saved them — lets an unknown node
-   *  type still have its widget values mapped by name. */
-  widgets?: { name?: string }[]
-  title?: string
-}
-
-/** `[linkId, sourceNodeId, sourceSlot, targetNodeId, targetSlot, type]`. */
-export type ComfyWebLink = [number, number, number, number, number, string?]
-
-export interface ComfyWebGraph {
-  nodes: ComfyWebNode[]
-  links?: unknown[]
-}
-
-
+// R2-32: the Web/UI canvas-save format (ComfyWebGraph/ComfyWebNode/ComfyWebInput/
+// ComfyWebLink, plus the isComfyWebGraph/isComfyWebNode guards) used to live
+// here so validateWorkflowJson could accept it, but nothing downstream reads
+// its shape (parameterMap detection, injection and apiNodes all need
+// class_type/inputs), so a Web/UI export passed validation and then failed
+// silently. Removed with the acceptance in workflows.ts; deleted rather than
+// left unused (Hausregel: toter Code wird ganz geloescht).
 
 // ── Guards ──────────────────────────────────────────────────────
 
@@ -152,23 +125,6 @@ export function apiNodes(graph: unknown): [string, ComfyApiNode][] {
 /** Is this the API format `/prompt` accepts? At least one real node. */
 export function isComfyApiGraph(v: unknown): v is ComfyApiGraph {
   return isPlainObject(v) && Object.values(v).some(isComfyApiNode)
-}
-
-/** One canvas node — a numeric id and a class name. */
-export function isComfyWebNode(v: unknown): v is ComfyWebNode {
-  return isPlainObject(v) && typeof v.type === 'string' && typeof v.id === 'number'
-}
-
-/**
- * Is this the canvas save format? Matches the historical check exactly: a
- * `nodes` array holding at least one entry with a string `type`. (Node ids are
- * verified per node by `isComfyWebNode` at conversion time, because a graph
- * with one malformed node should still convert the rest.)
- */
-export function isComfyWebGraph(v: unknown): v is ComfyWebGraph {
-  return isPlainObject(v)
-    && Array.isArray(v.nodes)
-    && v.nodes.some((n) => isPlainObject(n) && typeof n.type === 'string')
 }
 
 /** Read one input of a node without asserting anything about its type. */

@@ -87,6 +87,8 @@ const INITIAL_STATE = {
   batchSize: 1,
   frames: 24,
   fps: 8,
+  cloudFrames: 24,
+  cloudFps: 8,
   denoise: 0.7,
   i2iImage: null,
   i2vImage: null,
@@ -422,6 +424,53 @@ describe('createStore', () => {
     })
   })
 
+  // ── cloudFrames/cloudFps: own fields, no leak either way ────
+  //
+  // Review A kleiner Punkt 1 (studio-r2, 20.09.2026): the cloud Length
+  // control (Composer.tsx's LaneControls) used to read/write the SAME
+  // frames/fps the local video lane's Frames slider owns, so a cloud clip
+  // length pick silently rewrote what the local track remembered. Own
+  // fields now; this proves the independence the store itself must hold,
+  // the e2e test in create-studio.spec.ts proves it from the UI.
+  describe('cloudFrames/cloudFps stay independent of frames/fps', () => {
+    it('has its own defaults, same as frames/fps', () => {
+      const state = useCreateStore.getState()
+      expect(state.cloudFrames).toBe(24)
+      expect(state.cloudFps).toBe(8)
+    })
+
+    it('setCloudFrames never touches frames', () => {
+      useCreateStore.getState().setCloudFrames(96)
+      expect(useCreateStore.getState().cloudFrames).toBe(96)
+      expect(useCreateStore.getState().frames).toBe(24)
+    })
+
+    it('setCloudFps never touches fps', () => {
+      useCreateStore.getState().setCloudFps(16)
+      expect(useCreateStore.getState().cloudFps).toBe(16)
+      expect(useCreateStore.getState().fps).toBe(8)
+    })
+
+    it('setFrames (the local slider) never touches cloudFrames', () => {
+      useCreateStore.getState().setFrames(49)
+      expect(useCreateStore.getState().frames).toBe(49)
+      expect(useCreateStore.getState().cloudFrames).toBe(24)
+    })
+
+    it('setFps (the local slider) never touches cloudFps', () => {
+      useCreateStore.getState().setFps(30)
+      expect(useCreateStore.getState().fps).toBe(30)
+      expect(useCreateStore.getState().cloudFps).toBe(8)
+    })
+
+    it('clamps to its own, higher ceiling (cloud has no 120-frame hardware limit, see setCloudFrames)', () => {
+      useCreateStore.getState().setCloudFrames(9999)
+      useCreateStore.getState().setCloudFps(0)
+      expect(useCreateStore.getState().cloudFrames).toBe(3600)
+      expect(useCreateStore.getState().cloudFps).toBe(1)
+    })
+  })
+
   // ── setDenoise ─────────────────────────────────────────────
 
   describe('setDenoise', () => {
@@ -729,6 +778,20 @@ describe('createStore', () => {
       const state = useCreateStore.getState()
       expect(state.steps).toBe(12)
       expect(state.cfgScale).toBe(3.5)
+    })
+
+    // Qwen-Image 2.1: the numbers of the official Comfy-Org templates, and
+    // they have to match comfyui.ts MODEL_TYPE_DEFAULTS, which the workflow
+    // builder reads (the two tables are mirrored on purpose).
+    it('applies qwenimage defaults correctly', () => {
+      useCreateStore.getState().setImageModel('qwen_image_2.1_int8_convrot.safetensors', 'qwenimage')
+      const state = useCreateStore.getState()
+      expect(state.steps).toBe(25)
+      expect(state.cfgScale).toBe(1.0)
+      expect(state.sampler).toBe('euler')
+      expect(state.scheduler).toBe('simple')
+      expect(state.width).toBe(1024)
+      expect(state.height).toBe(1024)
     })
   })
 

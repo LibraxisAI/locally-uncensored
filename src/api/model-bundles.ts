@@ -237,6 +237,42 @@ export function getImageBundles(): ModelBundle[] {
         },
       ],
     },
+    // K9 nachbessert Runde 3 (GH #136): Krea 2 checkpoints come from LU's
+    // built-in CivitAI search, not this catalog, so there is no "Krea 2"
+    // checkpoint bundle here to attach these to. Without an entry the
+    // "Download X from the Model Manager" text findMatchingVAE/findMatchingCLIP
+    // throw (comfyui.ts) named two files the Model Manager had no way to
+    // actually get, so a customer who followed the message got stuck at the
+    // next step. Companions-only bundle, same pattern as every other type's
+    // files array, so the get-path is real: search "Krea 2" in the Model
+    // Manager, download both, done. Addresses verified reachable via HEAD
+    // (2026-09-18) against the official Comfy-Org/Krea-2 repackage.
+    {
+      name: 'Krea 2 Companion Files (Text Encoder + VAE)',
+      description: 'Not a checkpoint: the two files a Krea 2 CivitAI download needs alongside it (text encoder + VAE). Get the checkpoint itself from CivitAI search first.',
+      tags: ['Krea 2', 'Companion Files', 'Text Encoder', 'VAE'],
+      verified: true,
+      totalSizeGB: 5.5,
+      vramRequired: 'depends on the checkpoint',
+      workflow: 'krea2',
+      url: 'https://huggingface.co/Comfy-Org/Krea-2',
+      files: [
+        {
+          name: 'Qwen3-VL 4B Text Encoder (FP8)',
+          description: 'Required text encoder for Krea 2 (matches the "qwen3vl_4b_fp8_scaled" pipeline, e.g. LUSTIFY! v10 Krea2).',
+          pulls: '', tags: ['Text Encoder', '4.9 GB'], updated: '',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors',
+          filename: 'qwen3vl_4b_fp8_scaled.safetensors', subfolder: 'text_encoders', sizeGB: 4.9,
+        },
+        {
+          name: 'Qwen Image VAE',
+          description: 'Required autoencoder for Krea 2 (matches the "qwen_image_vae" pipeline variant).',
+          pulls: '', tags: ['VAE', '242 MB'], updated: '',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors',
+          filename: 'qwen_image_vae.safetensors', subfolder: 'vae', sizeGB: 0.24,
+        },
+      ],
+    },
     {
       name: 'Z-Image Turbo (Unfiltered, Fast)',
       description: 'Explicitly unfiltered image model. 8 to 15 seconds per image. No safety filters. Text to Image and Image to Image.',
@@ -302,6 +338,45 @@ export function getImageBundles(): ModelBundle[] {
           pulls: '', tags: ['Text Encoder', '7.5 GB'], updated: '',
           downloadUrl: 'https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors',
           filename: 'qwen_3_4b.safetensors', subfolder: 'text_encoders', sizeGB: 7.5,
+        },
+      ],
+    },
+    {
+      name: 'Qwen-Image 2.1 (Generate and Edit)',
+      description: 'Generates from a prompt and edits a reference image from a prompt, no mask needed. Qwen Research License, non-commercial use: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE',
+      tags: ['Qwen Image 2.1', 'Image', 'Edit', '1024px'],
+      uncensored: false,
+      verified: true,
+      // 6.76 + 8.71 + 0.63. sizeGB counts in gibibytes here (the install check
+      // multiplies it by 1_073_741_824), so these are the HF byte counts read
+      // on 2026-09-21 converted to GiB, not the decimal figures on the file
+      // listing. Needs ComfyUI 0.37.0 or newer for the TextEncodeQwenImage21
+      // node; an older one is told so before anything is built.
+      totalSizeGB: 16.1,
+      vramRequired: '16-24 GB',
+      workflow: 'qwenimage',
+      url: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1',
+      files: [
+        {
+          name: 'Qwen-Image 2.1 (INT8)',
+          description: 'Diffusion model · generates and edits, native 2K, transparent backgrounds.',
+          pulls: '', tags: ['Diffusion Model', '7.26 GB'], updated: 'New',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+          filename: 'qwen_image_2.1_int8_convrot.safetensors', subfolder: 'diffusion_models', sizeGB: 6.76,
+        },
+        {
+          name: 'Qwen3-VL 8B Text Encoder (INT8)',
+          description: 'Required text encoder for Qwen-Image 2.1 prompt understanding.',
+          pulls: '', tags: ['Text Encoder', '9.35 GB'], updated: 'New',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+          filename: 'qwen3vl_8b_int8_convrot.safetensors', subfolder: 'text_encoders', sizeGB: 8.71,
+        },
+        {
+          name: 'Qwen-Image 2.1 VAE',
+          description: 'Required autoencoder for Qwen-Image 2.1.',
+          pulls: '', tags: ['VAE', '676 MB'], updated: '',
+          downloadUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors',
+          filename: 'qwen_image_2.1_vae_bf16.safetensors', subfolder: 'vae', sizeGB: 0.63,
         },
       ],
     },

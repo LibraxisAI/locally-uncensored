@@ -21,7 +21,6 @@ vi.mock('../../lib/built-in-workflows', () => ({
 }))
 
 import { useAgentWorkflowStore } from '../agentWorkflowStore'
-import type { StepResult } from '../../types/agent-workflows'
 
 describe('agentWorkflowStore', () => {
   beforeEach(() => {
@@ -39,8 +38,6 @@ describe('agentWorkflowStore', () => {
           updatedAt: 1000,
         },
       ],
-      executions: [],
-      activeExecutionId: null,
     })
   })
 
@@ -191,114 +188,10 @@ describe('agentWorkflowStore', () => {
     })
   })
 
-  // ── startExecution ─────────────────────────────────────────
-
-  describe('startExecution', () => {
-    it('creates execution with running status and currentStepIndex=0', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1', 'conv-1')
-      expect(execId).not.toBeNull()
-      const exec = useAgentWorkflowStore.getState().executions[0]
-      expect(exec.status).toBe('running')
-      expect(exec.currentStepIndex).toBe(0)
-      expect(exec.conversationId).toBe('conv-1')
-    })
-
-    it('copies workflow variables to execution', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      const exec = useAgentWorkflowStore.getState().executions.find(e => e.id === execId)!
-      expect(exec.variables).toEqual({ topic: 'default' })
-    })
-
-    it('sets activeExecutionId', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1')
-      expect(useAgentWorkflowStore.getState().activeExecutionId).toBe(execId)
-    })
-
-    it('returns null for non-existent workflow', () => {
-      const result = useAgentWorkflowStore.getState().startExecution('nonexistent')
-      expect(result).toBeNull()
-    })
-
-    it('trims execution history to MAX_EXECUTION_HISTORY (50)', () => {
-      // Fill up with 50 executions
-      for (let i = 0; i < 55; i++) {
-        useAgentWorkflowStore.getState().startExecution('builtin-1')
-      }
-      expect(useAgentWorkflowStore.getState().executions.length).toBeLessThanOrEqual(50)
-    })
-  })
-
-  // ── addStepResult ──────────────────────────────────────────
-
-  describe('addStepResult', () => {
-    it('appends result and increments currentStepIndex', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      const result: StepResult = {
-        stepId: 's1',
-        status: 'completed',
-        output: 'done',
-        startedAt: Date.now(),
-        completedAt: Date.now(),
-      }
-      useAgentWorkflowStore.getState().addStepResult(execId, result)
-      const exec = useAgentWorkflowStore.getState().executions.find(e => e.id === execId)!
-      expect(exec.stepResults).toHaveLength(1)
-      expect(exec.stepResults[0].stepId).toBe('s1')
-      expect(exec.currentStepIndex).toBe(1)
-    })
-
-    it('adds multiple step results sequentially', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      for (let i = 0; i < 3; i++) {
-        useAgentWorkflowStore.getState().addStepResult(execId, {
-          stepId: `s${i}`,
-          status: 'completed',
-          output: `output-${i}`,
-          startedAt: Date.now(),
-        })
-      }
-      const exec = useAgentWorkflowStore.getState().executions.find(e => e.id === execId)!
-      expect(exec.stepResults).toHaveLength(3)
-      expect(exec.currentStepIndex).toBe(3)
-    })
-  })
-
-  // ── cancelExecution ────────────────────────────────────────
-
-  describe('cancelExecution', () => {
-    it('sets status to cancelled and completedAt', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      const before = Date.now()
-      useAgentWorkflowStore.getState().cancelExecution(execId)
-      const exec = useAgentWorkflowStore.getState().executions.find(e => e.id === execId)!
-      expect(exec.status).toBe('cancelled')
-      expect(exec.completedAt).toBeGreaterThanOrEqual(before)
-    })
-
-    it('clears activeExecutionId if cancelled execution was active', () => {
-      const execId = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      expect(useAgentWorkflowStore.getState().activeExecutionId).toBe(execId)
-      useAgentWorkflowStore.getState().cancelExecution(execId)
-      expect(useAgentWorkflowStore.getState().activeExecutionId).toBeNull()
-    })
-
-    it('does not clear activeExecutionId if a different execution is cancelled', () => {
-      const exec1 = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      const exec2 = useAgentWorkflowStore.getState().startExecution('builtin-1')!
-      // exec2 is now active
-      useAgentWorkflowStore.getState().cancelExecution(exec1)
-      expect(useAgentWorkflowStore.getState().activeExecutionId).toBe(exec2)
-    })
-  })
-
-  // ── clearExecutionHistory ──────────────────────────────────
-
-  describe('clearExecutionHistory', () => {
-    it('clears all executions and activeExecutionId', () => {
-      useAgentWorkflowStore.getState().startExecution('builtin-1')
-      useAgentWorkflowStore.getState().clearExecutionHistory()
-      expect(useAgentWorkflowStore.getState().executions).toEqual([])
-      expect(useAgentWorkflowStore.getState().activeExecutionId).toBeNull()
-    })
-  })
+  // Auflage 7, bau/review-wfgate.md: the execution-history slice this store
+  // used to carry (`startExecution`, `updateExecution`, `addStepResult`,
+  // `cancelExecution`, `clearExecutionHistory`, `activeExecutionId`,
+  // `MAX_EXECUTION_HISTORY`) was deleted as dead code, its last production
+  // reader and writer having gone with the deleted `useWorkflow.ts` (commit
+  // 8ca0df85). The test cases that exercised it are removed with it.
 })

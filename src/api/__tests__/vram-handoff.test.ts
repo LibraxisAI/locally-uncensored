@@ -858,6 +858,65 @@ describe('vramHandoffGenerate — Stop / cancel gating', () => {
     // and never submitted a second workflow.
     expect(submitWorkflow).toHaveBeenCalledTimes(1)
   })
+
+  // Blocker 4 (review-lanes.md, 3.0.1 lanes Runde 3): requestGenerationCancel()
+  // used to know no conversation at all, so a Stop pressed in conversation B
+  // killed conversation A's still-running image/video, literally the B2
+  // "Abbrueche landen in der falschen Unterhaltung" failure case.
+  it('a Stop scoped to conversation B does NOT touch conversation A\'s still-running generation', async () => {
+    getActiveAgentModel.mockReturnValue({ name: 'gpt-4o', providerId: 'openai', remote: false })
+    getImageModels.mockResolvedValue([{ name: 'sdxl.safetensors', type: 'sdxl', source: 'checkpoint' }])
+    buildDynamicWorkflow.mockResolvedValue({})
+    submitWorkflow.mockResolvedValue('pid-conv-a')
+    getHistory.mockResolvedValue({ status: { completed: false } }) // sits polling, never finishes on its own
+
+    const genA = vramHandoffGenerate('image', { prompt: 'a cat' }, 'conv-a')
+    await vi.waitFor(() => expect(submitWorkflow).toHaveBeenCalled())
+
+    // Stop pressed in a DIFFERENT conversation.
+    requestGenerationCancel('conv-b')
+
+    // Conversation A's job is completely untouched: no abandon, no cancel.
+    expect(abandonPrompt).not.toHaveBeenCalled()
+    expect(cancelGeneration).not.toHaveBeenCalled()
+    expect(clearComfyQueue).not.toHaveBeenCalled()
+
+    // Now the real owner stops it, and THAT does reach ComfyUI.
+    requestGenerationCancel('conv-a')
+    const out = await genA
+    expect(abandonPrompt).toHaveBeenCalledWith('pid-conv-a')
+    expect(out).toMatch(/cancelled/i)
+  })
+
+  it('a Stop scoped to conversation A cancels its OWN queued generation behind B\'s running one, without touching B', async () => {
+    getActiveAgentModel.mockReturnValue({ name: 'gpt-4o', providerId: 'openai', remote: false })
+    getImageModels.mockResolvedValue([{ name: 'sdxl.safetensors', type: 'sdxl', source: 'checkpoint' }])
+    buildDynamicWorkflow.mockResolvedValue({})
+    submitWorkflow.mockResolvedValue('pid-conv-b')
+    getHistory.mockResolvedValue({ status: { completed: false } })
+
+    const genB = vramHandoffGenerate('image', { prompt: 'running' }, 'conv-b')      // seq 1, runs
+    const genA = vramHandoffGenerate('image', { prompt: 'queued' }, 'conv-a')       // seq 2, parks behind B
+    await vi.waitFor(() => expect(submitWorkflow).toHaveBeenCalledTimes(1))
+
+    // A cancels ITS OWN still-queued generation. B, currently running, is not
+    // the target and must be left alone.
+    requestGenerationCancel('conv-a')
+    expect(abandonPrompt).not.toHaveBeenCalled()
+
+    // Let B finish on its own terms.
+    getHistory.mockResolvedValue({
+      status: { completed: true },
+      outputs: { images: [{ filename: 'out.png', subfolder: '', type: 'output' }] },
+    })
+    const [outB, outA] = await Promise.all([genB, genA])
+
+    expect(outA).toMatch(/cancelled/i)
+    expect(outB).not.toMatch(/cancelled/i)
+    // The key regression assertion: A's queued generation bailed on dequeue
+    // and never reached submit; only B's one call did.
+    expect(submitWorkflow).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ── Per-model auto-settings (David 2026-06-22: "setze die settings für jedes

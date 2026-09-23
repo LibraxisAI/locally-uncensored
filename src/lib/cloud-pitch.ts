@@ -95,8 +95,42 @@ export interface CloudPitchNumbers {
    */
   videoModels: number
   /**
-   * Bildmodelle OHNE eingebaute Inhaltsschranke: die `adult: true`-Zeilen mit
-   * `kind: 'image'` in `apps/web/lib/render/cloud-models.ts`.
+   * Bildmodelle OHNE eingebaute Inhaltsschranke, ueber den GANZEN Katalog
+   * gezaehlt: die `adult: true`-Zeilen mit `kind: 'image'` in
+   * `apps/web/lib/render/cloud-models.ts`, einschliesslich der Zeilen, die die
+   * erste Zeile dieses Arrays aus `studio-models.json` ueber `STUDIO_MODELS`
+   * mit `ops: ['studio']` hereinholt.
+   *
+   * ## Die Zaehlregel, Entscheid David 22.09.2026
+   *
+   * Gezaehlt wird jeder Endpunkt mit `adult: true` und `kind: 'image'`, den
+   * ein Kunde selbst waehlen kann, egal ob er im klassischen Waehler oder im
+   * Create-Studio liegt. Bis zum 22.09.2026 schloss die Regel `ops` aus und
+   * liess damit den halben Studio-Katalog draussen, obwohl der Kunde dort
+   * dieselben offenen Modelle anklickt.
+   *
+   * Nicht mitgezaehlt wird ein Studio-Eintrag mit `sourceModel`: das ist
+   * derselbe Endpunkt unter neuem Namen, und ein Modell zweimal zu zaehlen
+   * waere genau die Art von Zahl, die dieser Datei verboten ist.
+   *
+   * ## Herleitung der Sieben
+   *
+   *   * drei klassisch: `chroma`, `prefect-pony`, `neta-lumina`
+   *   * vier aus dem Studio: `z-image`, `nucleus-image`, `jib-mix-qwen`,
+   *     `wan-2.2-realism`
+   *   * NICHT mit: `preset-chroma`, `preset-prefect-pony`,
+   *     `preset-neta-lumina`, die drei Zwillinge mit `sourceModel`
+   *
+   * Die Zahl steht getippt, weil der Katalog im Web-Repo liegt und diese
+   * Oberflaeche sie zeigt, bevor jemand angemeldet ist. Nachgerechnet wird sie
+   * trotzdem bei jedem Commit: `__tests__/offene-modelle-in-den-texten.test.ts`
+   * rechnet sie aus den Zeilen der Preistabelle zusammen, klassische und
+   * Studio-Zeilen getrennt.
+   *
+   * `scripts/check-cloud-sales.mjs` zaehlt noch nach der ALTEN Regel (ohne
+   * `ops`) und widerspricht dieser Zahl deshalb. Das Skript laeuft seit
+   * 14.09.2026 ohnehin nicht mehr durch und wird in einem eigenen Auftrag
+   * nachgezogen (Entscheid David 22.09.2026).
    *
    * Das Flag markiert, was ein Modell KANN, und entscheidet nichts; was
    * durchgeht, entscheidet die Kontoeinstellung beim Absenden. Die Zeile im
@@ -105,18 +139,53 @@ export interface CloudPitchNumbers {
    */
   openImageModels: number
   /**
-   * Videomodelle ohne eingebaute Inhaltsschranke.
+   * Videomodelle ohne eingebaute Inhaltsschranke, ueber den GANZEN Katalog
+   * gezaehlt.
    *
-   * Gezaehlt wird, was einen Clip ERZEUGT: `adult: true` mit `kind: 'video'`
-   * und ohne `ops`. Das Verlaengerungs-Werkzeug `wan-2.2-spicy-extend` traegt
-   * dasselbe Flag, setzt aber einen vorhandenen Clip fort und ist deshalb
-   * kein Modell, das man waehlt. Es faellt aus dieser Zahl heraus.
+   * ## Die Zaehlregel, Entscheid David 22.09.2026
    *
-   * ACHTUNG BEIM ZAEHLEN: der Katalog wurde am 13.09.2026 umgebaut. Auf
-   * `release/3.0.0` stehen noch sechs, auf dem umgebauten Katalogzweig zehn.
-   * Die Zehn ist der Sollwert; `scripts/check-cloud-sales.mjs` zaehlt sie im
-   * Web-Repo nach, statt sie zu glauben, und steht so lange rot, bis der
-   * Katalog im geprueften Baum nachgezogen ist.
+   * Gezaehlt wird, was einen Clip ERZEUGT und was ein Kunde selbst waehlen
+   * kann: `adult: true` mit `kind: 'video'` in
+   * `apps/web/lib/render/cloud-models.ts`, einschliesslich der Eintraege mit
+   * `ops: ['studio']`, die die erste Zeile jenes Arrays aus
+   * `studio-models.json` hereinholt.
+   *
+   * Drei Arten von Zeilen fallen heraus:
+   *
+   *   * Verlaengerungs-Werkzeuge. `wan-2.2-spicy-extend` und
+   *     `preset-wan-2.2-spicy-extend` tragen dasselbe Flag, setzen aber einen
+   *     vorhandenen Clip fort und sind kein Modell, das man waehlt.
+   *   * Studio-Eintraege mit `sourceModel`: derselbe Endpunkt unter neuem
+   *     Namen. `preset-wan-2.2-spicy` und `preset-wan-2.7-spicy` stehen
+   *     bereits unter ihrem alten Namen in dieser Zahl.
+   *   * Alles ohne `adult: true`.
+   *
+   * Bis zum 22.09.2026 schloss die Regel `ops` pauschal aus. Damit fielen vier
+   * offene Bild-zu-Video-Endpunkte heraus, die im Create-Studio jeder Kunde
+   * anklickt, und die Zahl war zu klein statt zu gross.
+   *
+   * ## Herleitung der Vierzehn
+   *
+   *   * zehn klassisch: `wan-2.2-spicy`, `ltx-2.3-spicy`, `wan-2.6-spicy`,
+   *     `wan-2.7-spicy`, `minimax-h3-spicy`, `seedance-1.5-pro-spicy`,
+   *     `seedance-2.5-spicy`, `seedance-2.0-spicy`, `seedance-2.0-fast-spicy`,
+   *     `vidu-q3-spicy`
+   *   * vier aus dem Studio: `wan-3.0-spicy`, `wan-3.0-prime-spicy`,
+   *     `open-video`, `open-video-lora`
+   *
+   * `open-video` und `open-video-lora` heissen nicht "Spicy", tragen aber
+   * `adult: true` im selben Katalog wie die zehn anderen und laufen ueber
+   * dieselbe Kontoeinstellung. Die Marke haengt seit acaa0c9d am Katalogfeld
+   * und nie am Namen; ein Modell, das nicht Spicy heisst, ist deshalb nicht
+   * weniger offen.
+   *
+   * ACHTUNG BEIM ZAEHLEN: der Katalog wurde am 13.09.2026 umgebaut und traegt
+   * seit dem Create-Studio den Studio-Katalog mit. Ein Baum ohne den Umbau
+   * zaehlt sechs, einer ohne den Studio-Katalog zehn. Die Vierzehn ist der
+   * Sollwert. Bei jedem Commit rechnet
+   * `__tests__/offene-modelle-in-den-texten.test.ts` sie aus den Zeilen der
+   * Preistabelle zusammen; `scripts/check-cloud-sales.mjs` zaehlt dagegen noch
+   * nach der alten Regel und wird in einem eigenen Auftrag nachgezogen.
    */
   openVideoModels: number
   /**
@@ -142,8 +211,8 @@ export const CLOUD_PITCH: CloudPitchNumbers = {
   flashDailyTokens: 500_000,
   imageModels: 10,
   videoModels: 15,
-  openImageModels: 3,
-  openVideoModels: 10,
+  openImageModels: 7,
+  openVideoModels: 14,
   hostedMonthlyEUR: 19,
   hostedCredits: 900_000,
 }

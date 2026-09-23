@@ -23,8 +23,20 @@ import type { ModelType } from '../../../api/comfyui'
 export const TYPE_BADGE: Record<ModelType, { label: string; color: string }> = {
   flux: { label: 'FLUX', color: 'bg-purple-500/15 text-purple-300' },
   flux2: { label: 'FLUX 2', color: 'bg-purple-500/15 text-purple-300' },
+  // K9 (GH #136): every bright tone above is taken by a different family, and
+  // amber/yellow are the two the comment above rules out (they read as a
+  // warning, not a badge, see the cogvideo history). zinc is the one
+  // neutral family still free (slate/stone already carry ernie_image/cogvideo).
+  krea2: { label: 'Krea 2', color: 'bg-zinc-500/15 text-zinc-300' },
   zimage: { label: 'Z-Image', color: 'bg-rose-500/15 text-rose-300' },
   ernie_image: { label: 'Ernie', color: 'bg-slate-500/15 text-slate-300' },
+  // Same reasoning as krea2 above: every bright row is spoken for, amber and
+  // yellow are ruled out by the file header, and slate/stone/zinc already
+  // carry ernie_image/cogvideo/krea2. neutral is the one remaining row.
+  qwenimage: { label: 'Qwen Image 2.1', color: 'bg-neutral-500/15 text-neutral-300' },
+  // Same family as Qwen-Image 2.1 (the 2511 edit lane). Shares the neutral
+  // tone the way flux/flux2 and the Wan rows share theirs.
+  qwen_image_edit: { label: 'Qwen Edit', color: 'bg-neutral-500/15 text-neutral-300' },
   sdxl: { label: 'SDXL', color: 'bg-blue-500/15 text-blue-300' },
   sd15: { label: 'SD 1.5', color: 'bg-green-500/15 text-green-300' },
   wan: { label: 'Wan', color: 'bg-orange-500/15 text-orange-300' },

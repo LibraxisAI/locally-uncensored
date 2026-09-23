@@ -13,7 +13,7 @@ function makeNodes(overrides: Partial<CategorizedNodes> = {}): CategorizedNodes 
     loaders: ['CheckpointLoaderSimple', 'UNETLoader', 'VAELoader', 'CLIPLoader', 'ImageOnlyCheckpointLoader'],
     samplers: ['KSampler', 'KSamplerAdvanced', 'CogVideoXSampler', 'FramePackSampler', 'PyramidFlowSampler', 'AllegroSampler'],
     latentInit: ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyFlux2LatentImage', 'EmptyHunyuanLatentVideo'],
-    textEncoders: ['CLIPTextEncode'],
+    textEncoders: ['CLIPTextEncode', 'TextEncodeQwenImage21'],
     decoders: ['VAEDecode'],
     savers: ['SaveImage'],
     videoSavers: ['SaveAnimatedWEBP'],
@@ -50,6 +50,20 @@ describe('dynamic-workflow — determineStrategy', () => {
     it('zimage model -> unet_zimage strategy', () => {
       const result = determineStrategy('zimage', false, makeNodes(), makeModels())
       expect(result.strategy).toBe('unet_zimage')
+    })
+
+    // K9 (GH #136, eloieloie): Krea 2 checkpoints classified 'unknown' fell
+    // back to CheckpointLoaderSimple without a CLIP loader ("clip input is
+    // invalid: None"). krea2 now has its own branch, same shape as flux/flux2.
+    it('krea2 model -> unet_krea2 strategy', () => {
+      const result = determineStrategy('krea2', false, makeNodes(), makeModels())
+      expect(result.strategy).toBe('unet_krea2')
+    })
+
+    it('krea2 without VAELoader -> unavailable', () => {
+      const nodes = makeNodes({ loaders: ['UNETLoader', 'CLIPLoader'] })
+      const result = determineStrategy('krea2', false, nodes, makeModels())
+      expect(result.strategy).toBe('unavailable')
     })
   })
 
@@ -194,6 +208,19 @@ describe('dynamic-workflow — determineStrategy', () => {
       expect(result.strategy).toBe('unavailable')
     })
 
+    // K9: an unrecognized architecture with UNET+CLIP+VAE but no checkpoint
+    // loader used to fall through to 'unet_flux' on the unstated assumption
+    // that any UNET-only file is a FLUX model, silently applying FLUX's CLIP
+    // type and VAE match patterns to a model that might not be FLUX at all.
+    // It must now say honestly that it would not guess, never fall back.
+    it('unrecognized architecture (UNET+CLIP+VAE, no checkpoint loader) -> unavailable, never a guessed unet_flux', () => {
+      const nodes = makeNodes({ loaders: ['UNETLoader', 'CLIPLoader', 'VAELoader'] })
+      const result = determineStrategy('unknown' as ModelType, false, nodes, makeModels())
+      expect(result.strategy).toBe('unavailable')
+      expect(result.strategy).not.toBe('unet_flux')
+      expect(result.reason.toLowerCase()).toContain('could not determine')
+    })
+
     it('wan without VAELoader -> unavailable', () => {
       const nodes = makeNodes({ loaders: ['UNETLoader', 'CLIPLoader'] })
       const result = determineStrategy('wan', true, nodes, makeModels())
@@ -211,7 +238,7 @@ describe('dynamic-workflow — determineStrategy', () => {
 
   describe('reason strings', () => {
     it('includes a reason string for every result', () => {
-      const types: ModelType[] = ['flux', 'flux2', 'zimage', 'sdxl', 'sd15', 'wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'svd', 'cogvideo', 'framepack', 'pyramidflow', 'allegro', 'unknown']
+      const types: ModelType[] = ['flux', 'flux2', 'zimage', 'qwenimage', 'sdxl', 'sd15', 'wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'svd', 'cogvideo', 'framepack', 'pyramidflow', 'allegro', 'unknown']
       for (const t of types) {
         const result = determineStrategy(t, false, makeNodes(), makeModels())
         expect(typeof result.reason).toBe('string')

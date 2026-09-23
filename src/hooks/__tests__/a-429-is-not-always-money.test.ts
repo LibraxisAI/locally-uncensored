@@ -37,9 +37,10 @@ describe('jeder Geldgrund traegt seinen eigenen Satz, wortgleich mit dem Web', (
       .toBe("This month's video budget is used up. Top-up credits keep video going, or upgrade your plan.")
   })
 
-  it('monthly character trainings, and it does not point at a clock', () => {
+  it('monthly character trainings, names the top-up path, wortgleich mit dem Web (B1, review-a1.md)', () => {
     const err = new CloudJobError('no trainings left', 429, { code: 'trainings_exhausted' })
-    expect(throttleMessage(err)).toBe("Your plan's character trainings for this month are used up.")
+    expect(throttleMessage(err))
+      .toBe('Your included character trainings are used up. Top-up credits keep training going, or upgrade your plan.')
     expect(throttleMessage(err)).not.toMatch(/try again|wait/i)
   })
 

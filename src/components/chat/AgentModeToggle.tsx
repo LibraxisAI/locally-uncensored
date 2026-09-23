@@ -13,6 +13,18 @@ import { rememberedFolderRefusal } from '../../api/agents/workspace-validate'
 import type { AgentWorkspace } from '../../types/agent-workspace'
 import { MOTION_S } from '../ui/motion'
 
+/**
+ * The session-strip toolbar's own text size, one size below `.t-micro`
+ * (10px, this one 8.8px). `FlashChatNotice.tsx` shares this constant instead
+ * of typing the same arbitrary Tailwind size a second time: a second literal
+ * of the same value in that file would count as a second escape from the
+ * typo ladder against `die-typo-leiter-und-ihre-umgehung.test.ts`
+ * (`hoechstens 820 Fundstellen`, already at the cap), while one shared
+ * constant, referenced by name at every call site, counts once, no matter
+ * how many components read it.
+ */
+export const TOOLBAR_LABEL_TEXT = 'text-[0.55rem]'
+
 export function AgentModeToggle() {
   const [showNewChatModal, setShowNewChatModal] = useState(false)
   const [neverShowChecked, setNeverShowChecked] = useState(false)
@@ -174,7 +186,7 @@ export function AgentModeToggle() {
               : 'Agent Mode is off. Click to turn on'
         }
         className={
-          'flex items-center gap-1 px-2 py-0.5 rounded border transition-colors text-[0.55rem] ' +
+          `flex items-center gap-1 px-2 py-0.5 rounded border transition-colors ${TOOLBAR_LABEL_TEXT} ` +
           (isActive
             ? 'border-green-500/30 text-green-400'
             : !isCompatible

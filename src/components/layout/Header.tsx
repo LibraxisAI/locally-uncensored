@@ -60,6 +60,13 @@ export function Header() {
   // the model with "does not support (chat|completion|generate)". Offers a
   // one-click refresh that re-pulls the model (progress tracked in DownloadBadge).
   const [staleError, setStaleError] = useState<{ model: string; message: string } | null>(null)
+  // Models whose stale chip the user dismissed this session (Posten 3,
+  // bau/review-lanes.md "Runde 3 der Pruefung": lu-300-desktop 1f19b7b8,
+  // ported here because the two repos' Header.tsx have since diverged too
+  // far for a clean cherry-pick). Without this list the X below only clears
+  // local state, and the effect two below rebuilds the chip from the health
+  // store in the very same pass, so the click did nothing a user could see.
+  const [dismissedStale, setDismissedStale] = useState<string[]>([])
   const { pullModel, isPullingModel, fetchModels } = useModels()
   const healthStaleModels = useModelHealthStore((s) => s.staleModels)
   const addStaleToHealth = useModelHealthStore((s) => s.setStaleModels)
@@ -150,6 +157,13 @@ export function Header() {
       return
     }
     const isStale = healthStaleModels.includes(modelToUse)
+    // Dismissed this session: stay hidden even though the health store still
+    // lists the model as stale. Checked BEFORE the re-pin branches below, so
+    // switching away and back to this same model does not resurrect it.
+    if (isStale && dismissedStale.includes(modelToUse)) {
+      if (staleError) setStaleError(null)
+      return
+    }
     if (isStale && !staleError) {
       setStaleError({
         model: modelToUse,
@@ -165,7 +179,7 @@ export function Header() {
         message: `Model "${modelToUse}" has a stale manifest. Run "ollama pull ${modelToUse}" to refresh.`,
       })
     }
-  }, [modelToUse, isOllamaModel, healthStaleModels, staleError])
+  }, [modelToUse, isOllamaModel, healthStaleModels, staleError, dismissedStale])
 
   const toggleTheme = () => {
     updateSettings({ theme: settings.theme === 'dark' ? 'light' : 'dark' })
@@ -303,8 +317,50 @@ export function Header() {
        Kopfzeile war ausgerechnet die HELLERE, obwohl sie hinter allem liegt.
        Nebeneffekt, gemessen: die aktive Nav-Pille und die Hover-Flaeche der
        Fensterknoepfe waren beide `gray-100` auf `gray-100` und damit
-       unsichtbar; sie haben jetzt Grund unter sich. */
-    <header className="h-10 grid grid-cols-[auto_1fr_auto] items-center px-3 bg-gray-200 dark:bg-lu-canvas z-40 gap-4">
+       unsichtbar; sie haben jetzt Grund unter sich.
+
+       D-T-Mitte (18.09.2026): Spalten waren `auto_1fr_auto`. Die Mitte-Spalte
+       war damit der REST zwischen zwei ungleich breiten Aussenspalten (links
+       Burger+Logo ~59px, rechts vier Werkzeuge ~178px), und `justify-center`
+       zentriert nur INNERHALB dieser Restflaeche, nicht im Fenster. Gemessen
+       am laufenden Fenster stand die Reihe deshalb 59,7px links vom Fenster-
+       und Leistenmittelpunkt, bei jeder Breite und in Cloud wie Lokal gleich
+       weit, weil die Differenz allein aus den Aussenspalten kommt, nicht aus
+       dem Inhalt der Mitte. Der A/B-Vergleich zentriert sein "VS" seinerseits
+       im Inhaltsbereich (Compare blendet die Seitenleiste aus, `AppShell.tsx`:
+       `{!isComparing && <Sidebar />}`), und der liegt bei symmetrischem
+       `p-2` im Fenster mittig, also ist die Fenstermitte hier dieselbe Achse
+       wie die VS-Achse.
+
+       Jetzt `1fr_auto_1fr`: die Mitte ist eine dritte, eigene Spalte, die sich
+       auf ihren Inhalt einmisst und ZWISCHEN zwei GLEICH GROSSEN Restspalten
+       liegt, damit liegt sie automatisch auf der Fenstermitte, unabhaengig
+       davon, wie breit links und rechts sind. Links und rechts behalten ihre
+       Spalte (jetzt `1fr` statt `auto`) und dehnen sich damit, aber ihr
+       Inhalt bleibt an derselben Kante stehen wie vorher (links `justify-
+       start`, rechts unten `justify-end` sind schon gesetzt), nachgemessen
+       um 0,0px Differenz zur alten Position.
+
+       Runde 2 (Auflage 1, 19.09.2026): der enge Fall war nicht der gemessene.
+       Compare zeigt rechts nur drei ruhige Werkzeuge (~170px), Chat kann dort
+       zusaetzlich den Stale-Chip UND das Update-Badge tragen (~470px). Beide
+       Aussenspalten trugen `min-w-0`, also durfte die rechte Spalte auf ihren
+       1fr-Anteil (~281px bei 1024px Fensterbreite) schrumpfen, OHNE dass ihr
+       Inhalt mitschrumpfte: ein `<div>` ohne eigenes `flex-shrink` auf den
+       Kindern bleibt bei seiner natuerlichen Breite und lief links aus der
+       eigenen Spalte heraus, direkt in die letzten Reiter hinein (nachgemessen
+       Ueberlappung bei 1024/1100/1280px, `e2e/topnav-centering.spec.ts`,
+       "chat view with stale chip and update badge"). `min-w-0` runter von der
+       rechten Spalte (Zeile unten): jetzt ist ihre automatische Mindestbreite
+       ihr eigener Inhalt, die Spalte kann nicht mehr enger werden als das, was
+       darin steht. Nebeneffekt bei diesem seltenen Zusammentreffen: die
+       Reitergruppe weicht dann von der Fenstermitte ab (die linke Spalte
+       bleibt schmal, die rechte nimmt sich, was sie braucht), das ist die
+       Abwaegung, kein Fehler: nichts ueberlappt mehr und nichts wird
+       abgeschnitten, und im normalen Fall (keine der beiden Ausnahmen sichtbar)
+       bleibt die Zentrierung bei 0px, weil der Inhalt dann so oder so unter dem
+       1fr-Anteil liegt. */
+    <header className="h-10 grid grid-cols-[1fr_auto_1fr] items-center px-3 bg-gray-200 dark:bg-lu-canvas z-40 gap-4">
       {/* Left: Sidebar + Logo */}
       <div className="flex items-center gap-2 min-w-0">
         <button
@@ -433,7 +489,7 @@ export function Header() {
           ein Ziel, keins klappt je ins Kebab — das ist die andere Haelfte der
           Regel aus D-S47. Die Navigation, die hier stand, ist in die Mitte
           gezogen. */}
-      <div className="flex items-center justify-end gap-2.5 min-w-0">
+      <div className="flex items-center justify-end gap-2.5">
         {/* Der Stale-Hinweis stand bis 04.09.2026 in der Mitte-Gruppe und
             schob die Navigation zur Seite, sobald er auftauchte. Er gehoert
             ohnehin hierher: er zeigt einen ZUSTAND, und das ist genau die
@@ -456,7 +512,10 @@ export function Header() {
               <span>Refresh</span>
             </button>
             <button
-              onClick={() => setStaleError(null)}
+              onClick={() => {
+                setDismissedStale((d) => (staleError && !d.includes(staleError.model) ? [...d, staleError.model] : d))
+                setStaleError(null)
+              }}
               className="flex items-center rounded p-[1px] hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
               title="Dismiss"
               aria-label="Dismiss"

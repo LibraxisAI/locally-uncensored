@@ -115,6 +115,30 @@ describe('sendWithTransientRetry', () => {
     expect(await out.text()).toContain('credits_exhausted')
   })
 
+  it('R5-53: does not retry a flash_timeout, which answers 504 and never clears', async () => {
+    const clock = recorder()
+    const send = vi.fn().mockResolvedValue(
+      res(504, JSON.stringify({ error: 'The free chat request reached its four-minute limit. Please retry.', code: 'flash_timeout' })),
+    )
+
+    const out = await sendWithTransientRetry(send, { wait: clock.wait })
+
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(clock.waited).toEqual([])
+    expect(await out.text()).toContain('flash_timeout')
+  })
+
+  it('NEGATIVE CONTROL: a 504 without flash_timeout is still retried', async () => {
+    const clock = recorder()
+    const send = vi.fn().mockResolvedValue(res(504, 'bad gateway'))
+
+    const out = await sendWithTransientRetry(send, { wait: clock.wait })
+
+    expect(out.status).toBe(504)
+    expect(send).toHaveBeenCalledTimes(MAX_TRANSIENT_ATTEMPTS)
+    expect(clock.waited).toEqual([500, 1000])
+  })
+
   it('stops on abort instead of queueing Stop behind a backoff', async () => {
     const abort = new AbortController()
     const send = vi.fn().mockResolvedValue(res(503))

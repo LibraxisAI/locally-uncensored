@@ -78,6 +78,14 @@ export interface ActiveRun {
    * stehender Lauf nicht aussieht wie ein eben angekommener.
    */
   bookedAt: number
+  /**
+   * Wer hat das gebucht. Undurchsichtig, nur fuer den Identitaetsvergleich in
+   * `endRun` gedacht (Blocker A, Opus-Review Runde 2): `run-slot.ts` bucht
+   * jeden Lauf mit einem frischen Objekt, damit ein spaet kommendes `finally`
+   * eines ALTEN Laufs (Stop, sofort neu gesendet) nicht die Buchung des NEUEN
+   * Laufs derselben Unterhaltung wegraeumt.
+   */
+  runToken: unknown
 }
 
 interface GenerationState {
@@ -107,10 +115,21 @@ interface GenerationState {
    * Schreiber waere genau der Pfad, der irgendwann nicht mehr gepflegt wird.
    */
   runs: Record<string, ActiveRun>
-  /** Diesen Lauf mit seiner Spur eintragen. Zweite Buchung behaelt `bookedAt`. */
-  bookRun: (conversationId: string | null | undefined, lane: RunLane) => void
-  /** Der Lauf ist vorbei. Raeumt nur den Eintrag, nicht die Fahne. */
-  endRun: (conversationId: string | null | undefined) => void
+  /**
+   * Diesen Lauf mit seiner Spur eintragen. Zweite Buchung behaelt `bookedAt`,
+   * wenn die Spur gleich bleibt, uebernimmt aber IMMER den neuen `runToken`
+   * (Blocker A): sonst zeigt der Eintrag nach einem Stop-dann-neu-Senden
+   * weiter auf den alten Lauf, und dessen `endRun` raeumt die Buchung des
+   * neuen weg, obwohl der neue noch laeuft.
+   */
+  bookRun: (conversationId: string | null | undefined, lane: RunLane, runToken?: unknown) => void
+  /**
+   * Der Lauf ist vorbei. Raeumt nur den Eintrag, nicht die Fahne, und nur,
+   * wenn `runToken` noch zum aktuellen Eintrag passt (Blocker A): ein spaet
+   * kommendes `finally` eines abgeloesten Laufs darf die Buchung des Laufs,
+   * der die Unterhaltung inzwischen uebernommen hat, nicht wegraeumen.
+   */
+  endRun: (conversationId: string | null | undefined, runToken?: unknown) => void
 }
 
 /**
@@ -176,26 +195,33 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     })
   },
 
-  bookRun: (conversationId, lane) =>
+  bookRun: (conversationId, lane, runToken) =>
     set((state) => {
       if (!conversationId) return state
       const vorhanden = state.runs[conversationId]
-      if (vorhanden && vorhanden.lane === lane) return state
+      // Gleiche Spur, gleicher Lauf (gleicher `runToken`): reines Nachfragen,
+      // nichts zu tun. Gleiche Spur, ANDERER Lauf: `bookedAt` bleibt (siehe
+      // oben), aber `runToken` MUSS auf den neuen Lauf zeigen, sonst raeumt
+      // dessen `endRun` spaeter die Buchung des neuen Laufs weg.
+      if (vorhanden && vorhanden.lane === lane && vorhanden.runToken === runToken) return state
       return {
         runs: {
           ...state.runs,
           [conversationId]: {
             conversationId,
             lane,
-            bookedAt: vorhanden?.bookedAt ?? Date.now(),
+            runToken,
+            bookedAt: vorhanden && vorhanden.lane === lane ? vorhanden.bookedAt : Date.now(),
           },
         },
       }
     }),
 
-  endRun: (conversationId) =>
+  endRun: (conversationId, runToken) =>
     set((state) => {
-      if (!conversationId || !state.runs[conversationId]) return state
+      if (!conversationId) return state
+      const vorhanden = state.runs[conversationId]
+      if (!vorhanden || vorhanden.runToken !== runToken) return state
       const next = { ...state.runs }
       delete next[conversationId]
       return { runs: next }

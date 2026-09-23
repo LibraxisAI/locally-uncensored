@@ -102,13 +102,32 @@ export function engineStandingNote(status: EngineOffloadStatus): string {
 }
 
 /**
- * The views that actually draw the standing line (`LuEngineSwitchBar`).
+ * Die Ansicht, die die stehende Zeile OHNE Zutun als Satz zeigt.
+ *
+ * Bis zum 21.09.2026 waren es zwei, `chat` und `models`, und beide zeichneten
+ * dieselbe `LuEngineSwitchBar`. Im Chat haengt die Zeile seither im
+ * Modellmenue, und ohne Klick ist dort nur der Punkt am Waehlerknopf zu sehen.
+ * Die Models-Seite zeichnet die Leiste unveraendert.
+ */
+export const VIEW_WITH_THE_ENGINE_NOTE = 'models'
+
+/**
+ * Ist der Satz gerade als SATZ zu sehen?
+ *
+ * Genau das, woran die Lesezeit haengt. Zwei Wege fuehren zu ja: die
+ * Models-Seite zeigt die volle Leiste von selbst, oder jemand hat im Chat das
+ * Modellmenue mit dieser Zeile aufgeklappt (`gesehen` im Speicher, gesetzt von
+ * `ModelSelector`). Ein Punkt allein zaehlt nicht: er sagt, dass es etwas zu
+ * lesen gibt, er ist nicht das Gelesene.
  *
  * Lives here, in the leaf, because two callers need it and one of them
  * (api/lu-engine-switch) cannot be imported from the status path without a
- * cycle. It is the same list either way and must not become two.
+ * cycle. It is the same answer either way and must not become two.
  */
-export const VIEWS_WITH_THE_ENGINE_NOTE: ReadonlySet<string> = new Set(['chat', 'models'])
+export function dieZeileIstZuSehen(): boolean {
+  if (useUIStore.getState().currentView === VIEW_WITH_THE_ENGINE_NOTE) return true
+  return useLuEngineSwitchStore.getState().gesehen
+}
 
 /**
  * How long a note waits for a reader before it gives up.
@@ -149,6 +168,6 @@ export function announceEngineCpuFallback(status: EngineOffloadStatus | null | u
   useLuEngineSwitchStore.getState().announce(
     engineStandingNote(status as EngineOffloadStatus),
     'info',
-    () => Date.now() < ende && !VIEWS_WITH_THE_ENGINE_NOTE.has(useUIStore.getState().currentView),
+    () => Date.now() < ende && !dieZeileIstZuSehen(),
   )
 }

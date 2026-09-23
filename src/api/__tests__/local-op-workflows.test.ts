@@ -3,7 +3,7 @@
 // they lean on. allNodes is mocked as a plain presence map — exactly what
 // getAllNodeInfo() feeds the builders at runtime.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   buildMusicWorkflow,
   buildS2VWorkflow,
@@ -13,6 +13,22 @@ import {
 } from '../dynamic-workflow'
 import { classifyModel, galleryTypeForFile, resolveLocalOpPick, type ClassifiedModel } from '../comfyui'
 import type { ComfyApiGraph, ComfyApiNode } from '../../types/comfy-graph'
+
+// K2: buildS2VWorkflow/buildMotionWorkflow now resolve CLIP/VAE/audio-encoder
+// against ComfyUI's live enum (findMatchingCLIP/findMatchingVAE/
+// findMatchingAudioEncoder) instead of writing hardcoded filenames straight
+// into the loader nodes, same fix Bug C already applied to the FLUX/video
+// lanes. Mock the live-fetch boundary only; classifyModel/galleryTypeForFile/
+// resolveLocalOpPick stay real.
+vi.mock('../comfyui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../comfyui')>()
+  return {
+    ...actual,
+    findMatchingCLIP: vi.fn(async () => 'umt5_xxl_fp8_e4m3fn_scaled.safetensors'),
+    findMatchingVAE: vi.fn(async () => 'wan_2.1_vae.safetensors'),
+    findMatchingAudioEncoder: vi.fn(async () => 'wav2vec2_large_english_fp16.safetensors'),
+  }
+})
 
 /**
  * The builders now declare their own graph shape (types/comfy-graph.ts), so
@@ -167,8 +183,8 @@ describe('buildS2VWorkflow', () => {
     ...over,
   })
 
-  it('wires audio embeddings into the S2V conditioner and muxes the voice into the mp4', () => {
-    const wf: ComfyGraph = buildS2VWorkflow(s2v(), 7, FULL_NODES)
+  it('wires audio embeddings into the S2V conditioner and muxes the voice into the mp4', async () => {
+    const wf: ComfyGraph = await buildS2VWorkflow(s2v(), 7, FULL_NODES)
     const types = classTypes(wf)
     for (const t of ['LoadAudio', 'AudioEncoderLoader', 'AudioEncoderEncode', 'WanSoundImageToVideo', 'CreateVideo', 'SaveVideo']) {
       expect(types).toContain(t)
@@ -177,13 +193,18 @@ describe('buildS2VWorkflow', () => {
     const s2vNode = nodeOfType(wf, 'WanSoundImageToVideo')
     // length stays on the 4k+1 grid
     expect((numInput(s2vNode, 'length') - 1) % 4).toBe(0)
+    // K2: CLIP/VAE/audio encoder came from the (mocked) live resolvers, not a
+    // hardcoded literal.
+    expect(nodeOfType(wf, 'CLIPLoader').inputs?.clip_name).toBe('umt5_xxl_fp8_e4m3fn_scaled.safetensors')
+    expect(nodeOfType(wf, 'VAELoader').inputs?.vae_name).toBe('wan_2.1_vae.safetensors')
+    expect(nodeOfType(wf, 'AudioEncoderLoader').inputs?.audio_encoder_name).toBe('wav2vec2_large_english_fp16.safetensors')
   })
 
-  it('loads .gguf quants through the GGUF pack and hints its install when missing', () => {
-    const wf: ComfyGraph = buildS2VWorkflow(s2v({ model: 'Wan2.2-S2V-14B-Q4_K_M.gguf' }), 7, FULL_NODES)
+  it('loads .gguf quants through the GGUF pack and hints its install when missing', async () => {
+    const wf: ComfyGraph = await buildS2VWorkflow(s2v({ model: 'Wan2.2-S2V-14B-Q4_K_M.gguf' }), 7, FULL_NODES)
     expect(classTypes(wf)).toContain('UnetLoaderGGUF')
     try {
-      buildS2VWorkflow(s2v({ model: 'Wan2.2-S2V-14B-Q4_K_M.gguf' }), 7, nodesWithout('UnetLoaderGGUF'))
+      await buildS2VWorkflow(s2v({ model: 'Wan2.2-S2V-14B-Q4_K_M.gguf' }), 7, nodesWithout('UnetLoaderGGUF'))
       expect.unreachable('should have thrown')
     } catch (e) {
       expect(e).toBeInstanceOf(WorkflowUnavailableError)
@@ -191,9 +212,9 @@ describe('buildS2VWorkflow', () => {
     }
   })
 
-  it('rejects a missing voice or portrait before anything uploads', () => {
-    expect(() => buildS2VWorkflow(s2v({ audioFile: undefined }), 7, FULL_NODES)).toThrow(/voice/i)
-    expect(() => buildS2VWorkflow(s2v({ refImage: undefined }), 7, FULL_NODES)).toThrow(/portrait/i)
+  it('rejects a missing voice or portrait before anything uploads', async () => {
+    await expect(buildS2VWorkflow(s2v({ audioFile: undefined }), 7, FULL_NODES)).rejects.toThrow(/voice/i)
+    await expect(buildS2VWorkflow(s2v({ refImage: undefined }), 7, FULL_NODES)).rejects.toThrow(/portrait/i)
   })
 })
 
@@ -206,8 +227,8 @@ describe('buildMotionWorkflow', () => {
     ...over,
   })
 
-  it('builds the Animate graph: DWPose skeleton in, trimmed latent out, driving audio carried over', () => {
-    const wf: ComfyGraph = buildMotionWorkflow(motion(), 7, FULL_NODES)
+  it('builds the Animate graph: DWPose skeleton in, trimmed latent out, driving audio carried over', async () => {
+    const wf: ComfyGraph = await buildMotionWorkflow(motion(), 7, FULL_NODES)
     const types = classTypes(wf)
     for (const t of ['LoadVideo', 'GetVideoComponents', 'DWPreprocessor', 'WanAnimateToVideo', 'TrimVideoLatent', 'CreateVideo']) {
       expect(types).toContain(t)
@@ -217,18 +238,21 @@ describe('buildMotionWorkflow', () => {
     expect(arrInput(trim, 'trim_amount')[1]).toBe(3)
     const components = Object.entries(wf).find(([, n]) => n.class_type === 'GetVideoComponents')![0]
     expect(nodeOfType(wf, 'CreateVideo').inputs?.audio).toEqual([components, 1])
+    // K2: CLIP/VAE came from the (mocked) live resolvers, not a hardcoded literal.
+    expect(nodeOfType(wf, 'CLIPLoader').inputs?.clip_name).toBe('umt5_xxl_fp8_e4m3fn_scaled.safetensors')
+    expect(nodeOfType(wf, 'VAELoader').inputs?.vae_name).toBe('wan_2.1_vae.safetensors')
   })
 
-  it('routes VACE models through WanVaceToVideo with the skeleton as control video', () => {
-    const wf: ComfyGraph = buildMotionWorkflow(motion({ model: 'wan2.1_vace_1.3B_fp16.safetensors' }), 7, FULL_NODES)
+  it('routes VACE models through WanVaceToVideo with the skeleton as control video', async () => {
+    const wf: ComfyGraph = await buildMotionWorkflow(motion({ model: 'wan2.1_vace_1.3B_fp16.safetensors' }), 7, FULL_NODES)
     const types = classTypes(wf)
     expect(types).toContain('WanVaceToVideo')
     expect(types).not.toContain('WanAnimateToVideo')
   })
 
-  it('hints the controlnet_aux install when DWPose is missing', () => {
+  it('hints the controlnet_aux install when DWPose is missing', async () => {
     try {
-      buildMotionWorkflow(motion(), 7, nodesWithout('DWPreprocessor'))
+      await buildMotionWorkflow(motion(), 7, nodesWithout('DWPreprocessor'))
       expect.unreachable('should have thrown')
     } catch (e) {
       expect(e).toBeInstanceOf(WorkflowUnavailableError)

@@ -98,3 +98,24 @@ describe('401 depends on whose credential it is', () => {
     expect(isTerminalModelError(Object.assign(new Error('timeout'), { statusCode: 408 }))).toBe(false)
   })
 })
+
+// ── R5-53: a 504 with code 'flash_timeout' is a hard four-minute deadline ───
+//
+// Without this, `status >= 400 && status < 500` is false for a 504, so
+// isTerminalModelError fell through to "not terminal" and the connRetries
+// ladder in useAgentChat.ts repeated the same request up to three times.
+// The server had already spent its own four-minute deadline once, so three
+// attempts meant twelve silent minutes before the run gave up.
+describe('R5-53: flash_timeout is terminal like credits_exhausted', () => {
+  it('a 504 carrying code: flash_timeout is terminal', () => {
+    expect(isTerminalModelError(new ProviderError(
+      'The free chat request reached its four-minute limit. Please retry.',
+      'lu-cloud', 'flash_timeout', 504,
+    ))).toBe(true)
+  })
+
+  it('NEGATIVE CONTROL: a 504 WITHOUT that code is still retried', () => {
+    expect(isTerminalModelError(new ProviderError('bad gateway', 'lu-cloud', undefined, 504))).toBe(false)
+    expect(isTerminalModelError(Object.assign(new Error('gateway timeout'), { statusCode: 504 }))).toBe(false)
+  })
+})

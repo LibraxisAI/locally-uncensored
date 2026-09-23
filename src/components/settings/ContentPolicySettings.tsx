@@ -2,22 +2,28 @@ import { useCallback, useEffect, useState } from 'react'
 import { HINWEIS_TEXT } from '../../lib/hinweis'
 import { getContentPolicy, setContentPolicy, type ContentPolicy } from '../../api/cloud/jobs'
 import { useCloudAuthStore } from '../../stores/cloudAuthStore'
+import { primeContentPolicyCache } from '../../hooks/useContentPolicy'
 
 /*
  * Der Zusatz am Off-Hinweis haengt am Schalter des Servers. Ein Satz, der eine
  * Bestaetigung ankuendigt, die nicht mehr kommt, verspricht genau das, was die
  * Oberflaeche nicht mehr tut. Gleicher Bau wie im Web.
+ *
+ * Wortlaut (R5-5, R5-6): identisch mit apps/web/components/settings/
+ * ContentPolicySettings.tsx, ein Wortlaut ist besser als zwei. Das Wort
+ * "filter" bleibt hier erlaubt, anders als in der oeffentlichen Doku unter
+ * docs/: die Regel gegen das Wort gilt der Zahlungsdomain, nicht dieser App.
  */
 function options(bestaetigungNoetig: boolean): { value: ContentPolicy; label: string; hint: string }[] {
   return [
-    { value: 'strict', label: 'Strict', hint: 'The tightest filter we have. Choose this if others use your screen.' },
+    { value: 'strict', label: 'Strict', hint: 'The strictest setting we have. Choose this if others use your screen.' },
     { value: 'soft', label: 'Standard', hint: 'The default for every account.' },
     {
       value: 'off',
       label: 'Off',
       hint: bestaetigungNoetig
-        ? 'No filter beyond the legal limits below. Requires an age confirmation.'
-        : 'No filter beyond the legal limits below.',
+        ? 'Only the legal limits below apply. Requires an age confirmation.'
+        : 'Only the legal limits below apply.',
     },
   ]
 }
@@ -66,6 +72,10 @@ export function ContentPolicySettings() {
     try {
       const saved = await setContentPolicy(next, ageConfirmed)
       setPolicy(saved)
+      // C2: the ModelChip badge reads a separate shared cache (useContentPolicy)
+      // so it does not fire its own GET per mount, push the fresh value in
+      // immediately instead of leaving it to catch up on the next reload.
+      primeContentPolicyCache(saved)
       /*
        * Das Bestaetigungsdatum kommt vom Server, nicht von der Uhr dieses
        * Rechners (R2-30). `setContentPolicy` gibt nur die Richtlinie zurueck,
@@ -105,8 +115,11 @@ export function ContentPolicySettings() {
   return (
     <div className="space-y-2" data-testid="content-policy">
       <p className="text-[0.6rem] text-gray-500 leading-relaxed">
-        Applies to images and video rendered in the cloud. Text is unaffected, and nothing on
-        your own machine is.
+        {/* R5-4: Web-Wortlaut fuer die ersten beiden Saetze, der dritte ist ein
+            Desktop-Zusatz, den es im Web nicht braucht, weil dort nichts
+            lokal rendert. */}
+        Applies to images and video generated in the cloud. Text is unaffected. Nothing on your
+        own machine is affected.
       </p>
 
       {options(requiresAge).map((o) => (

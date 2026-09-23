@@ -40,7 +40,7 @@ export function BackendSelector({ open, backends, onClose }: Props) {
   // Pre-checked: the common case is "saw it once, don't bug me again". User can
   // uncheck if they want it to re-appear on next launch.
   const [dontShowAgain, setDontShowAgain] = useState(true)
-  const { setProviderConfig, setHideBackendSelector } = useProviderStore()
+  const { setProviderConfig, setHideBackendSelector, setEngineOptedOut } = useProviderStore()
   // 2.5.7: the `openai` slot holds the app-managed built-in engine by default.
   // When it does, this modal offers *alternatives* — skipping keeps the
   // built-in engine, and picking one switches away from it (clears `managed`).
@@ -83,6 +83,11 @@ export function BackendSelector({ open, backends, onClose }: Props) {
         isLocal: true,
         managed: false,
       })
+      // Opus review, R13D follow-up: a deliberate pick in this dialog, not
+      // an eviction bug, so the missing-engine notice must not read this as
+      // LU Engine having fallen out from under the customer. See
+      // lib/builtin-engine-presence.ts.
+      setEngineOptedOut(true)
     }
 
     dismiss()

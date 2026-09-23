@@ -3,7 +3,7 @@ use crate::python::python_command;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tracing::{error, info};
@@ -175,12 +175,16 @@ pub fn needs_cpu_fallback() -> bool {
 
 /// Is an NVIDIA driver present (nvidia-smi exits 0)?
 fn nvidia_present() -> bool {
-    // CREATE_NO_WINDOW: this probe runs on every ComfyUI start — without it an
+    // CREATE_NO_WINDOW: this probe runs on every ComfyUI start, without it an
     // NVIDIA Windows box flashes a console window each time. End users must
     // never see a terminal pop up.
-    let mut cmd = Command::new("nvidia-smi");
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    //
+    // K14 Runde 2, Punkt 5: this exact spot was the one the review found
+    // still using a bare Command::new for nvidia-smi (a foreign vendor CLI)
+    // after the K14 commit claimed the app's nvidia-smi call sites were
+    // covered.
+    let mut cmd = crate::process_util::foreign_system_command("nvidia-smi");
+    crate::process_util::suppress_window(&mut cmd);
     cmd.output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -765,10 +769,9 @@ fn collect_candidate_pythons() -> Vec<String> {
     {
     let mut out: Vec<String> = Vec::new();
     // `where python` candidates (excluding WindowsApps stub).
-    let mut where_cmd = Command::new("where");
+    let mut where_cmd = crate::process_util::foreign_system_command("where");
     where_cmd.arg("python");
-    #[cfg(target_os = "windows")]
-    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::suppress_window(&mut where_cmd);
     if let Ok(output) = where_cmd.output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1109,14 +1112,14 @@ fn listener_cwd(port: u16) -> Option<PathBuf> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let Ok(out) = Command::new("lsof")
+        let Ok(out) = std::process::Command::new("lsof")
             .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-F", "p"])
             .output()
         else {
             return None;
         };
         let pid = pid_from_lsof_f(&String::from_utf8_lossy(&out.stdout))?;
-        let Ok(cwd_out) = Command::new("lsof")
+        let Ok(cwd_out) = std::process::Command::new("lsof")
             .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
             .output()
         else {
@@ -1385,7 +1388,7 @@ fn walk_for_comfyui<F: FnMut(PathBuf)>(dir: &Path, depth: i32, cb: &mut F) {
     }
 }
 
-fn is_comfyui_running_on_port(port: u16) -> bool {
+pub(crate) fn is_comfyui_running_on_port(port: u16) -> bool {
     reqwest::blocking::get(format!("http://localhost:{}/system_stats", port))
         .map(|r| r.status().is_success())
         .unwrap_or(false)
@@ -1400,9 +1403,9 @@ fn kill_port_owner(port: u16) {
     let own_pid = std::process::id();
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = Command::new("netstat");
+        let mut cmd = crate::process_util::foreign_system_command("netstat");
         cmd.args(["-ano", "-p", "tcp"]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        crate::process_util::suppress_window(&mut cmd);
         let Ok(out) = cmd.output() else { return };
         let text = String::from_utf8_lossy(&out.stdout);
         let needle = format!(":{}", port);
@@ -1421,19 +1424,19 @@ fn kill_port_owner(port: u16) {
         }
         for pid in pids {
             println!("[ComfyUI] CORS fix: killing port {} owner pid {}", port, pid);
-            let mut kill = Command::new("taskkill");
+            let mut kill = crate::process_util::foreign_system_command("taskkill");
             kill.args(["/pid", &pid.to_string(), "/T", "/F"]);
-            kill.creation_flags(CREATE_NO_WINDOW);
+            crate::process_util::suppress_window(&mut kill);
             let _ = kill.output();
         }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(out) = Command::new("lsof").args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"]).output() {
+        if let Ok(out) = crate::process_util::foreign_system_command("lsof").args(["-ti", &format!("tcp:{}", port), "-sTCP:LISTEN"]).output() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Ok(pid) = line.trim().parse::<u32>() {
                     if pid != 0 && pid != own_pid {
-                        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+                        let _ = crate::process_util::foreign_system_command("kill").args(["-9", &pid.to_string()]).output();
                     }
                 }
             }
@@ -1488,9 +1491,9 @@ fn fix_comfyui_cors_blocking(state: &AppState) -> Result<serde_json::Value, Stri
             let pid = child.id();
             #[cfg(target_os = "windows")]
             {
-                let mut cmd = Command::new("taskkill");
+                let mut cmd = crate::process_util::foreign_system_command("taskkill");
                 cmd.args(["/pid", &pid.to_string(), "/T", "/F"]);
-                cmd.creation_flags(CREATE_NO_WINDOW);
+                crate::process_util::suppress_window(&mut cmd);
                 let _ = cmd.output();
             }
             #[cfg(not(target_os = "windows"))]
@@ -1576,7 +1579,8 @@ fn start_ollama_blocking(state: &AppState) -> Result<serde_json::Value, String> 
     }
 
     println!("[Ollama] Starting...");
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1585,7 +1589,14 @@ fn start_ollama_blocking(state: &AppState) -> Result<serde_json::Value, String> 
     // CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES / ONEAPI_DEVICE_SELECTOR
     // so Ollama uses the pinned card on multi-vendor / multi-GPU machines.
     // No-op when the pick is "auto" (default).
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
     #[cfg(target_os = "windows")]
@@ -2026,7 +2037,14 @@ fn start_comfyui_blocking(state: &AppState) -> Result<serde_json::Value, String>
     // backend (torch / DirectML / IPEX) reads these on import, so the pick
     // takes effect on next spawn (current process must be restarted for a
     // change to apply — surfaced as a hint in the Settings UI).
-    if let Ok(sel) = state.gpu_selection.lock() {
+    // B2 fix (review-w2rust.md): apply_gpu_env can now shell out to
+    // nvidia-smi (GPU-UUID resolution) instead of doing zero I/O, so the
+    // lock is held only long enough to clone the small selection out --
+    // never across the detection call, which would freeze the Hardware
+    // tab's set_gpu_selection/get_gpu_selection (same mutex) for however
+    // long that subprocess I/O takes.
+    let gpu_selection = state.gpu_selection.lock().ok().map(|sel| sel.clone());
+    if let Some(sel) = gpu_selection {
         crate::commands::gpu::apply_gpu_env(&mut cmd, &sel);
     }
     #[cfg(target_os = "windows")]
@@ -2262,6 +2280,49 @@ pub(crate) fn find_orphaned_comfyui_in(sys: &sysinfo::System, port: u16) -> Opti
     None
 }
 
+/// The one answer to "is this app allowed to treat the ComfyUI on this port
+/// as its own", shared by every caller that needs it instead of each one
+/// drawing the line itself.
+///
+/// box-gruen/n9 punkt 87, final review 19.09.2026 (B2): Update's confirmation
+/// dialog used to ask only whether THIS run's child handle is alive, so a
+/// ComfyUI LU started in an EARLIER run and never lost track of (T-68's
+/// orphan, exactly what a live ComfyUI looks like after every LU restart)
+/// read as foreign, the status line lied ("started outside LU" about LU's
+/// own process), and the customer could no longer reach Update at all. Both
+/// `comfyui_status`'s `ownedByApp` field and `update_comfyui`'s running-
+/// instance guard now ask this one function the same three questions, so
+/// they cannot answer differently for the same ComfyUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComfyOwnership {
+    /// Nothing is listening on the port.
+    NotRunning,
+    /// This app started it: a live tracked child from this run, or an
+    /// earlier one it can still identify as its own (`find_orphaned_comfyui`).
+    Own,
+    /// Something answers on the port, and it is neither of the above.
+    Foreign,
+}
+
+/// Pure decision over three inputs: is the port occupied at all, does this
+/// run hold a live child handle for it, and did a scan of the process table
+/// find an LU-started orphan on it. Kept free of any I/O of its own so both
+/// directions (a ComfyUI that counts as ours, and one that does not) are
+/// cheap to prove without a real process table or a real HTTP probe.
+pub(crate) fn classify_comfyui_ownership(
+    port_occupied: bool,
+    own_child_alive: bool,
+    orphan_pid: Option<u32>,
+) -> ComfyOwnership {
+    if !port_occupied {
+        ComfyOwnership::NotRunning
+    } else if own_child_alive || orphan_pid.is_some() {
+        ComfyOwnership::Own
+    } else {
+        ComfyOwnership::Foreign
+    }
+}
+
 // ── The same shape, one step out: a child that outlives its launcher ────────
 //
 // `tauri-plugin-shell`'s `CommandChild::kill` is `SharedChild::kill`, i.e. one
@@ -2326,15 +2387,14 @@ pub(crate) fn kill_process_tree_blocking(pid: u32) -> Result<serde_json::Value, 
     Ok(serde_json::json!({ "killed": true, "pid": pid, "processes": tree }))
 }
 
-fn stop_comfyui_blocking(state: &AppState) -> Result<serde_json::Value, String> {
+pub(crate) fn stop_comfyui_blocking(state: &AppState) -> Result<serde_json::Value, String> {
     let mut proc = state.comfy_process.lock().unwrap();
     if let Some(ref mut child) = *proc {
         let pid = child.id();
         if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("taskkill");
+            let mut cmd = crate::process_util::foreign_system_command("taskkill");
             cmd.args(["/pid", &pid.to_string(), "/T", "/F"]);
-            #[cfg(target_os = "windows")]
-            cmd.creation_flags(CREATE_NO_WINDOW);
+            crate::process_util::suppress_window(&mut cmd);
             let _ = cmd.output();
         } else {
             let _ = child.kill();
@@ -2506,6 +2566,32 @@ pub async fn comfyui_status(state: State<'_, AppState>) -> Result<serde_json::Va
     let since_start = state.comfy_start_at.lock().unwrap().map(|t| t.elapsed());
     let (starting, stalled) = comfy_starting_state(process_alive, running, since_start);
 
+    // B2 (final review 19.09.2026): only scan the process table when the
+    // cheap answer (this run's own handle) does not already settle it. A
+    // live `process_alive` is always `Own`, and nothing running at all is
+    // always `NotRunning`, so the sysinfo walk only ever runs for the one
+    // case that needs it, a port answering with no handle from this run.
+    //
+    // R2-k2 (final review Runde 2, 19.09.2026): that walk is
+    // `process_table_with_cmdlines`, a full sysinfo snapshot with command
+    // lines, and it used to run straight on this `async fn`'s own thread.
+    // The panel polls this command every 5 s, and the case that needs the
+    // scan is not rare: it holds for the whole time a customer's own
+    // ComfyUI keeps running, and again after every app restart until the
+    // customer's next click. `spawn_blocking` moves the scan off the async
+    // worker so it cannot stall other commands sharing that thread.
+    let orphan_pid = if is_local && running && !process_alive {
+        tokio::task::spawn_blocking(move || find_orphaned_comfyui(port))
+            .await
+            .unwrap_or(None)
+    } else {
+        None
+    };
+    let owned_by_app = is_local && running && matches!(
+        classify_comfyui_ownership(running, process_alive, orphan_pid),
+        ComfyOwnership::Own,
+    );
+
     Ok(serde_json::json!({
         "running": running,
         "starting": starting,
@@ -2517,6 +2603,10 @@ pub async fn comfyui_status(state: State<'_, AppState>) -> Result<serde_json::Va
         "host": host,
         "isLocal": is_local,
         "processAlive": process_alive,
+        // The one field the panel and Update's confirm dialog both read to
+        // tell an LU-owned ComfyUI (this run's, or an earlier run's orphan)
+        // from one this app never started -- see `classify_comfyui_ownership`.
+        "ownedByApp": owned_by_app,
     }))
 }
 
@@ -2882,7 +2972,8 @@ pub fn auto_start_ollama(state: &AppState) {
     }
 
     println!("[Ollama] Starting...");
-    let mut cmd = Command::new("ollama");
+    // K14: a foreign program, never something LU bundles.
+    let mut cmd = crate::process_util::foreign_system_command("ollama");
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -4642,7 +4733,7 @@ mod comfy_adoption_tests {
     ///   not, and the stand-in that does not have the problem is right here.
     #[cfg(unix)]
     fn live_comfy_stand_in(port: u16) -> std::process::Child {
-        Command::new(crate::test_support::park_binary())
+        std::process::Command::new(crate::test_support::park_binary())
             .args([
                 "main.py",
                 "--listen",
@@ -4860,6 +4951,39 @@ mod comfy_adoption_tests {
             }
         }
     }
+
+    // ── box-gruen/n9 Punkt 87, final review (B2/K3): one pure decision for
+    //    "is this ComfyUI ours", shared by the status panel and Update's
+    //    running-instance guard ──────────────────────────────────────────
+
+    #[test]
+    fn nothing_on_the_port_is_never_running() {
+        assert_eq!(classify_comfyui_ownership(false, false, None), ComfyOwnership::NotRunning);
+        // A stale handle or a stale orphan pid must not override an empty
+        // port: if nothing answers, there is nothing to own or refuse.
+        assert_eq!(classify_comfyui_ownership(false, true, Some(123)), ComfyOwnership::NotRunning);
+    }
+
+    #[test]
+    fn a_live_handle_from_this_run_is_always_ours() {
+        assert_eq!(classify_comfyui_ownership(true, true, None), ComfyOwnership::Own);
+    }
+
+    #[test]
+    fn an_orphan_from_an_earlier_run_is_ours_too() {
+        // box-gruen/n9 punkt 87 B2: this is exactly what a live ComfyUI looks
+        // like after an LU restart, own_child_alive is false, but the orphan
+        // scan still finds it.
+        assert_eq!(classify_comfyui_ownership(true, false, Some(4242)), ComfyOwnership::Own);
+    }
+
+    #[test]
+    fn a_port_answering_with_neither_is_foreign() {
+        // The n9 shape itself: `python.exe main.py --port 8188` with no
+        // `--enable-cors-header`, so neither the handle nor the orphan scan
+        // claims it.
+        assert_eq!(classify_comfyui_ownership(true, false, None), ComfyOwnership::Foreign);
+    }
 }
 
 /// A child that outlives its launcher — the `npx -y <package>` MCP server, and
@@ -4902,7 +5026,7 @@ mod process_tree_kill_tests {
 
         // A launcher that spawns a long-lived grandchild and then waits —
         // the shape `npx -y <pkg>` has (shim in front, real server behind).
-        let mut launcher = Command::new("/bin/sh")
+        let mut launcher = std::process::Command::new("/bin/sh")
             .args(["-c", "sleep 60 & wait"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())

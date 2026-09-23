@@ -30,7 +30,7 @@
  */
 import { useState, useEffect } from 'react'
 import { Check, Download, ChevronRight } from 'lucide-react'
-import { ONBOARDING_MODELS } from '../../lib/constants'
+import { ONBOARDING_MODELS, recommendedOnboardingModelName, strongestOnboardingModelName } from '../../lib/constants'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { useDownloadStore } from '../../stores/downloadStore'
@@ -44,6 +44,7 @@ import { mayEnableFromWizard } from '../../lib/onboarding-provider-gate'
 import { bundledPickerIdForFile } from '../../lib/bundled-download-activation'
 import { backendCall } from '../../api/backend'
 import { getSystemVRAM } from '../../api/comfyui'
+import { getMaxVramGb } from '../../lib/hardware'
 import { classifyOnboardingBackend, resolveOnboardingBackend } from '../../lib/onboarding-backend'
 import { ProgressBar } from '../ui/ProgressBar'
 import { formatBytes } from '../../lib/formatters'
@@ -156,6 +157,13 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
       }
     }
 
+    // Built-in engine only: names that finish downloading in this run, so
+    // the strongest of them (not whichever the loop below activates last)
+    // can be made active once the whole batch is done. Ollama and LM Studio
+    // pick their own active model elsewhere, this loop never calls
+    // `setActiveModel` for them.
+    const builtinPulledThisRun: string[] = []
+
     for (const name of selectedModels) {
       if (pulledModels.includes(name)) continue
       const model = ONBOARDING_MODELS.find(m => m.name === name)
@@ -227,7 +235,7 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
           try {
             const found = await activateBuiltinModel(builtinModelNameFromPath(model.filename))
             if (!found) setDownloadError(`Model downloaded, but the LU Engine did not find ${model.filename} in its model folder.`)
-            else setActiveModel(bundledPickerIdForFile(model.filename))
+            else { setActiveModel(bundledPickerIdForFile(model.filename)); builtinPulledThisRun.push(name) }
           } catch (e) {
             setDownloadError(`Model downloaded, but the LU Engine failed to start: ${e instanceof Error ? e.message : String(e)}`)
           }
@@ -248,6 +256,23 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
       }
     }
     setPullingModel(null)
+    // Two or more built-in models picked at once: the loop above activated
+    // each in turn as its download finished, so whatever is active right
+    // now is just the last one clicked. Re-activate the strongest of the
+    // ones that actually finished, so the choice is "the most capable model
+    // downloaded", not "whichever button order happened to be clicked in".
+    // The file is already on disk from the loop above, so this is a re-scan,
+    // not a second download.
+    if (builtinPulledThisRun.length > 1) {
+      const strongestName = strongestOnboardingModelName(ONBOARDING_MODELS, builtinPulledThisRun)
+      const strongestModel = ONBOARDING_MODELS.find(m => m.name === strongestName)
+      if (strongestModel?.filename) {
+        try {
+          const found = await activateBuiltinModel(builtinModelNameFromPath(strongestModel.filename))
+          if (found) setActiveModel(bundledPickerIdForFile(strongestModel.filename))
+        } catch { /* leave the last-activated model active; no worse than before this fix */ }
+      }
+    }
     // Tell the rest of the app the model list changed — Model Manager,
     // Chat picker, etc. listen for this and re-fetch.
     window.dispatchEvent(new CustomEvent('lu-models-refresh'))
@@ -256,7 +281,24 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
 
   // Detect VRAM for a memory advisory. Failed probes leave the model visible
   // with its stated requirements; they never imply that the model will fit.
-  useEffect(() => { getSystemVRAM().then(v => setSystemVRAM(v)).catch(() => {}) }, [])
+  //
+  // R2-51: `getSystemVRAM` asks the RUNNING ComfyUI's own /system_stats, so
+  // the advisory only ever appeared once ComfyUI itself was up, and on this very
+  // step, before ComfyUI has necessarily been started, that is most of the
+  // time. `getMaxVramGb` (lib/hardware.ts) asks the Rust `detect_gpus` probe
+  // instead (nvidia-smi/rocm-smi/lspci/wmic), which works with no engine
+  // running at all. ComfyUI's own number stays the fallback for a GPU vendor
+  // none of those tools name (0 from getMaxVramGb reads as "unknown", not as
+  // "no VRAM"), so a machine ComfyUI can already see is not made to look
+  // worse than it is.
+  useEffect(() => {
+    getMaxVramGb().then((v) => {
+      if (v > 0) { setSystemVRAM(v); return }
+      getSystemVRAM().then((v2) => setSystemVRAM(v2)).catch(() => {})
+    }).catch(() => {
+      getSystemVRAM().then((v2) => setSystemVRAM(v2)).catch(() => {})
+    })
+  }, [])
 
   // Die CHATFAEHIGEN Modelle, die der Nutzer schon hat, mit Namen und nicht
   // nur als Zahl.
@@ -317,6 +359,11 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
   // Nutzer, die Auswahl nicht. Das ist kein Widerspruch, sondern die
   // Trennlinie zwischen „welches ist gut?" und „welches willst du?".
   const showRecommendedBadge = existingModelCount === 0
+
+  // Which entry the badge sits on: the hardware-aware pick, or the static
+  // fallback when VRAM is unknown / fits nothing. See
+  // `recommendedOnboardingModelName` for the reused threshold.
+  const recommendedModelName = recommendedOnboardingModelName(ONBOARDING_MODELS, systemVRAM)
 
   // Die Wahl steht NICHT hier. Sie steht dort, wo der Chat sie liest, in
   // `modelStore.activeModel`, derselben Stelle, die der Modellknopf des
@@ -497,11 +544,22 @@ export function ModelsStep({ skin, scan, fleet, step, setStep, pulledModels, set
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-medium text-[0.7rem]">{model.label}</span>
-                    {model.recommended && showRecommendedBadge && (
+                    {model.name === recommendedModelName && showRecommendedBadge && (
                       <span className={`text-[0.5rem] px-1 py-0.5 rounded ${isDark ? 'bg-white/10 text-gray-300' : 'bg-gray-200 text-gray-600'}`}>
                         Recommended
+                      </span>
+                    )}
+                    {/* The one place `OnboardingModel.agent` is read. Without
+                        this it was a display flag nothing displayed: set on
+                        the catalog entries this list is drawn from, but
+                        never rendered here, so the only agent hint reaching
+                        the user was whatever happened to be written into
+                        `description`. */}
+                    {model.agent && (
+                      <span className={`text-[0.5rem] px-1 py-0.5 rounded ${isDark ? 'bg-purple-500/15 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
+                        Agent-ready
                       </span>
                     )}
                   </div>

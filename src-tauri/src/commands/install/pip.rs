@@ -105,9 +105,11 @@ pub(super) fn diagnose_pip_error(stderr: &str) -> String {
 }
 
 /// Same diagnosis, plus which interpreter produced it when the caller knows.
-/// Version-shaped failures are unanswerable without that line.
+/// Version-shaped failures are unanswerable without that line, and K14's
+/// PythonWithoutSsl needs the interpreter path to cross-check `import ssl`
+/// under a clean environment before it accuses the Python build.
 pub(super) fn diagnose_pip_error_for(stderr: &str, python_bin: Option<&str>) -> String {
-    let base = diagnose_pip_error_inner(stderr);
+    let base = diagnose_pip_error_inner(stderr, python_bin);
     let needs_interpreter = {
         let lower = stderr.to_lowercase();
         lower.contains("could not find a version")
@@ -121,9 +123,19 @@ pub(super) fn diagnose_pip_error_for(stderr: &str, python_bin: Option<&str>) -> 
     }
 }
 
-fn diagnose_pip_error_inner(stderr: &str) -> String {
+fn diagnose_pip_error_inner(stderr: &str, python_bin: Option<&str>) -> String {
     let snippet: String = stderr.chars().take(400).collect();
-    let hint = pip_failure_hint(pip_failure_kind(stderr), stderr);
+    let kind = pip_failure_kind(stderr);
+    // K14: this is the one PipFailureKind whose hint text changes depending
+    // on something OTHER than the pip output already in hand, see
+    // diagnose_python_ssl for why the check has to happen here, not inside
+    // the otherwise-pure pip_failure_hint.
+    let hint = if kind == PipFailureKind::PythonWithoutSsl {
+        let diagnosis = python_bin.map(diagnose_python_ssl).unwrap_or(SslDiagnosis::Unknown);
+        python_without_ssl_hint(&diagnosis)
+    } else {
+        pip_failure_hint(kind, stderr)
+    };
 
     if hint.is_empty() {
         snippet
@@ -407,10 +419,27 @@ pub(crate) fn pip_failure_hint(kind: PipFailureKind, text: &str) -> String {
         // numbrain (Discord, 2026-08-02): a pyenv/source-built python without
         // the _ssl extension can't reach pypi AT ALL, and the generic SSL hint
         // below (antivirus/clock) sent him in the wrong direction.
+        //
+        // K14 (Reddit, Linux, 2026-09-17): this used to assert "was built
+        // without the ssl module" unconditionally, but the SAME pip message
+        // ("the ssl module in Python is not available") is what a perfectly
+        // healthy Python prints when something ELSE stops its `_ssl`
+        // extension from loading, an AppImage's inherited LD_LIBRARY_PATH
+        // pointing a bundled libssl/libcrypto at an unrelated interpreter,
+        // in that report. Every caller that KNOWS which interpreter failed
+        // goes through diagnose_pip_error_for / python_without_ssl_hint
+        // instead, which actually runs `import ssl` under a cleaned
+        // environment before choosing a sentence. This arm is what a caller
+        // without an interpreter path falls back to (env_check.rs's broken-
+        // import probes, mainly), so it stays honest rather than asserting a
+        // build defect it never checked.
         PipFailureKind::PythonWithoutSsl =>
-            "This Python was built without the ssl module, so pip cannot reach \
-             pypi.org at all. Use your distro's regular python3 (it ships with \
-             ssl): check with  python3 -c \"import ssl\". If that fails, \
+            "pip cannot reach pypi.org: Python's ssl module is not available. This can mean \
+             the Python was built without ssl support, or that something else (an \
+             inherited library path from another program) is stopping its ssl \
+             extension from loading. Check with  python3 -c \"import ssl\"  in a plain \
+             terminal, outside this app. If that succeeds, restart LU and retry, the \
+             environment the check just ran in was poisoned. If it fails there too, \
              reinstall python3 via your package manager (pyenv builds need the \
              OpenSSL headers installed first, e.g. libssl-dev / openssl-devel), \
              then retry.".to_string(),
@@ -479,6 +508,80 @@ pub(crate) fn pip_failure_hint(kind: PipFailureKind, text: &str) -> String {
     }
 }
 
+/// K14: whether `import ssl` genuinely fails on an interpreter, or only
+/// failed in the run that produced the pip output because the child
+/// inherited a poisoned environment (K11's AppImage LD_LIBRARY_PATH case is
+/// the one with a field report, but the whole APPIMAGE_ENV_VARS table in
+/// process_util.rs is the same shape of bug).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SslDiagnosis {
+    /// `import ssl` succeeded once run through the cleaned environment every
+    /// other foreign spawn uses. This was never a Python build problem.
+    EnvironmentCollision,
+    /// `import ssl` still failed after cleaning. This is what a Python
+    /// actually built without ssl looks like, the real ImportError is
+    /// worth quoting instead of a canned sentence.
+    GenuinelyMissing(String),
+    /// The interpreter could not even be run to check (deleted, no exec
+    /// permission, ...). Silent about which case this is, on purpose: this
+    /// path already failed once (that is how we got here) and no diagnosis
+    /// text should imply certainty this check could not establish.
+    Unknown,
+}
+
+/// Actually ask the interpreter, through the SAME sanitized spawn every
+/// other foreign program uses (`foreign_system_command`: a venv's own
+/// Python, like the system Python it was built from, is never something LU
+/// bundles). A clean run here proves the interpreter itself is fine and the
+/// ORIGINAL pip failure's environment was the poisoned one, not the Python.
+pub(crate) fn diagnose_python_ssl(python_bin: &str) -> SslDiagnosis {
+    let mut cmd = crate::process_util::foreign_system_command(python_bin);
+    cmd.args(["-c", "import ssl"]);
+    crate::process_util::suppress_window(&mut cmd);
+    match cmd.output() {
+        Ok(out) if out.status.success() => SslDiagnosis::EnvironmentCollision,
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            SslDiagnosis::GenuinelyMissing(if err.is_empty() {
+                "no ssl module".to_string()
+            } else {
+                err
+            })
+        }
+        Err(_) => SslDiagnosis::Unknown,
+    }
+}
+
+/// Pure: the sentence for each of the three outcomes above. Split from
+/// [`diagnose_python_ssl`] so the wording is testable without ever spawning
+/// a real interpreter.
+pub(crate) fn python_without_ssl_hint(diagnosis: &SslDiagnosis) -> String {
+    match diagnosis {
+        SslDiagnosis::EnvironmentCollision =>
+            "pip could not reach pypi.org because Python's ssl module failed to load, \
+             but re-checked in a cleaned environment, the SAME interpreter imports ssl \
+             just fine. This is an environment problem, not a broken Python install, and \
+             LU already retried the step automatically once the environment checked out \
+             clean; it failed the same way again. Tell us which Linux distro and \
+             packaging (AppImage, deb, ...) you're running so we can find what keeps \
+             poisoning the ssl module on your machine.".to_string(),
+        SslDiagnosis::GenuinelyMissing(err) =>
+            format!(
+                "This Python really was built without the ssl module, so pip cannot reach \
+                 pypi.org at all ({err}). Use your distro's regular python3 (it ships with \
+                 ssl), or reinstall python3 via your package manager (pyenv builds need the \
+                 OpenSSL headers installed first, e.g. libssl-dev / openssl-devel), then retry."
+            ),
+        SslDiagnosis::Unknown =>
+            "pip could not reach pypi.org because Python's ssl module failed to load, and LU \
+             could not re-run the interpreter to tell whether that is a real gap in this \
+             Python or an environment problem. Check with  python3 -c \"import ssl\"  in a \
+             plain terminal, outside this app. If that works, restart LU and retry; if it \
+             fails too, reinstall python3 via your package manager (pyenv builds need the \
+             OpenSSL headers installed first, e.g. libssl-dev / openssl-devel).".to_string(),
+    }
+}
+
 /// Run a `python -m pip install ...` command, streaming its stdout + stderr
 /// line-by-line into the install state's `logs` so the user sees live
 /// progress instead of a frozen UI. Retries up to `max_attempts` times on
@@ -538,6 +641,10 @@ pub(crate) fn pip_install_streaming_with_retry_raw(
 ) -> Result<(), PipFailure> {
     let mut delay_seconds = 10u64;
     let mut last_stderr = String::new();
+    // Review Runde 2, Punkt 11: bounded to ONE retry, and only for this one
+    // specific diagnosis, so a genuinely broken environment cannot loop
+    // forever chasing the same failure.
+    let mut ssl_collision_retry_used = false;
 
     for attempt in 1..=max_attempts {
         if cancel.as_ref().map(|c| c.load(Ordering::SeqCst)).unwrap_or(false) {
@@ -723,6 +830,27 @@ pub(crate) fn pip_install_streaming_with_retry_raw(
             .unwrap_or_default();
 
         if !is_transient_pip_error(&last_stderr) {
+            // Review Runde 2, Punkt 11: "Restart LU and press Repair
+            // environment again" was dead advice: python_command already
+            // cleans every spawn's environment, this run's own included, so
+            // a python_without_ssl_hint::EnvironmentCollision verdict means
+            // the run that just failed was ALREADY clean and a restart
+            // changes nothing. Self-heal before error message (harte Regel
+            // feedback-fix-the-whole-journey): run the SAME step again once
+            // instead of telling the customer to do something that cannot
+            // help. If it fails the same way twice, it genuinely needs a
+            // human, and the message below says so honestly.
+            let ssl_collision = !ssl_collision_retry_used
+                && pip_failure_kind(&last_stderr) == PipFailureKind::PythonWithoutSsl
+                && matches!(diagnose_python_ssl(python_bin), SslDiagnosis::EnvironmentCollision);
+            if ssl_collision {
+                ssl_collision_retry_used = true;
+                push_install_log(
+                    install_state,
+                    "Python's ssl module failed to load once; the environment checks out clean, retrying now...",
+                );
+                continue;
+            }
             return Err(PipFailure {
                 diagnosis: diagnose_pip_error_for(&last_stderr, Some(python_bin)),
                 stderr: last_stderr,
@@ -1034,14 +1162,258 @@ mod tests {
     fn a_python_without_ssl_is_named_not_blamed_on_antivirus() {
         // numbrain's exact pip wording (Discord 2026-08-02): the interpreter
         // itself has no _ssl, so the antivirus/clock hint is the wrong trail.
+        //
+        // K14: without an interpreter path, LU cannot actually check, so the
+        // message stays neutral between "built without ssl" and "environment
+        // problem" instead of asserting the one it never verified, see
+        // a_verified_ssl_collision_and_a_verified_genuine_gap_read_differently
+        // for the two cases where LU DOES know which it is.
         let msg = diagnose_pip_error(
             "WARNING: pip is configured with locations that require TLS/SSL, \
              however the ssl module in Python is not available.",
         );
         let lower = msg.to_lowercase();
-        assert!(lower.contains("built without the ssl module"));
+        assert!(lower.contains("ssl module"));
         assert!(lower.contains("import ssl"));
         assert!(!lower.contains("antivirus"));
+        assert!(
+            !lower.contains("really was built without"),
+            "no interpreter was given, so this must not assert a build defect: {msg}"
+        );
+    }
+
+    // ── K14: honest ssl diagnosis, pure half ────────────────────────────────
+
+    #[test]
+    fn python_without_ssl_hint_reads_differently_for_all_three_outcomes() {
+        let collision = python_without_ssl_hint(&SslDiagnosis::EnvironmentCollision);
+        let missing = python_without_ssl_hint(&SslDiagnosis::GenuinelyMissing(
+            "ModuleNotFoundError: No module named '_ssl'".to_string(),
+        ));
+        let unknown = python_without_ssl_hint(&SslDiagnosis::Unknown);
+
+        assert!(collision.contains("environment problem, not a broken Python install"), "{collision}");
+        assert!(!collision.to_lowercase().contains("really was built without"), "{collision}");
+
+        assert!(missing.contains("really was built without the ssl module"), "{missing}");
+        assert!(missing.contains("No module named '_ssl'"), "the real ImportError must be quoted: {missing}");
+
+        assert!(unknown.contains("could not re-run the interpreter"), "{unknown}");
+        // Negative control: Unknown must not lean either way, neither
+        // claiming the environment is fine (like EnvironmentCollision) nor
+        // that the build is broken (like GenuinelyMissing).
+        assert!(!unknown.to_lowercase().contains("not a broken python install"), "{unknown}");
+        assert!(!unknown.to_lowercase().contains("really was built without"), "{unknown}");
+
+        assert_ne!(collision, missing);
+        assert_ne!(collision, unknown);
+        assert_ne!(missing, unknown);
+    }
+
+    // ── K14: honest ssl diagnosis, the actual subprocess check ─────────────
+
+    #[test]
+    fn a_healthy_interpreter_is_read_as_an_environment_collision() {
+        // The real system Python on the machine running this test suite has
+        // ssl, every CI platform and every developer box does. This proves
+        // diagnose_python_ssl calls through foreign_system_command (so an
+        // AppImage-poisoned test environment would still get a clean child)
+        // and reads a successful `import ssl` correctly.
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        match diagnose_python_ssl(python) {
+            SslDiagnosis::EnvironmentCollision => {}
+            other => panic!("expected EnvironmentCollision from a real, healthy {python}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_interpreter_that_really_cannot_import_ssl_is_named_genuinely_missing() {
+        // A fake "python" that always fails `import ssl`, the way a build
+        // with no OpenSSL at configure time actually behaves.
+        let dir = tempfile::tempdir().expect("tempdir");
+        #[cfg(not(windows))]
+        let fake = {
+            let path = dir.path().join("fake-python-no-ssl.sh");
+            std::fs::write(
+                &path,
+                "#!/bin/sh\necho \"ModuleNotFoundError: No module named '_ssl'\" 1>&2\nexit 1\n",
+            )
+            .unwrap();
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+            path
+        };
+        #[cfg(windows)]
+        let fake = {
+            let path = dir.path().join("fake-python-no-ssl.bat");
+            std::fs::write(&path, "@echo ModuleNotFoundError: No module named '_ssl' 1>&2\r\n@exit /b 1\r\n").unwrap();
+            path
+        };
+        match diagnose_python_ssl(&fake.to_string_lossy()) {
+            SslDiagnosis::GenuinelyMissing(err) => assert!(err.contains("_ssl"), "{err}"),
+            other => panic!("expected GenuinelyMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_interpreter_that_cannot_even_be_run_is_unknown_not_a_guess() {
+        // Negative control against diagnose_python_ssl inventing a verdict:
+        // a path that does not exist must come back Unknown, neither
+        // EnvironmentCollision nor GenuinelyMissing.
+        match diagnose_python_ssl("/no/such/interpreter/on/this/machine-lu-test") {
+            SslDiagnosis::Unknown => {}
+            other => panic!("a nonexistent interpreter must read as Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_verified_ssl_collision_and_a_verified_genuine_gap_read_differently() {
+        // End to end through diagnose_pip_error_for, the function the real
+        // install failure path calls (pip_install_streaming_with_retry_raw).
+        // Review Runde 2, Punkt 1 (BLOCKER): this used to name "python3" on
+        // both branches, which clippy's if_same_then_else correctly flagged
+        // under --all-targets, the exact flag the CI runs
+        // (ci.yml:222) and this branch's own gate script skipped. It was
+        // also factually wrong: python.org's Windows installer registers
+        // "python", not "python3": "python3.exe" on Windows is usually the
+        // Microsoft Store placeholder that exits 9009, which would have made
+        // diagnose_python_ssl return Unknown on the Windows CI runner and
+        // failed this very test there.
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let msg = diagnose_pip_error_for(
+            "WARNING: pip is configured with locations that require TLS/SSL, \
+             however the ssl module in Python is not available.",
+            Some(python),
+        );
+        assert!(
+            msg.contains("not a broken Python install"),
+            "the real system python has ssl, so this must read as an environment problem: {msg}"
+        );
+        assert!(!msg.to_lowercase().contains("really was built without"), "{msg}");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    // Same reason `a_venv_nobody_cancels_is_still_built_and_found` (venv.rs)
+    // is `#[ignore]`d: this test's tracked child joins the process-wide
+    // `INSTALLER_CHILDREN` registry for the length of two pip attempts, and
+    // ANY `AppState` this test binary drops anywhere else during that window
+    // runs `shutdown_subprocesses` -> `kill_installer_children`, which
+    // SIGKILLs every registered pid, ours included, not just its own. The
+    // `installer_children_test_lock` guard below closes the gap against the
+    // FEW call sites this file can see (`state::shutdown_tests`,
+    // `venv.rs`'s equivalent test) but not against an AppState dropped by
+    // some unrelated test elsewhere in the binary, so this still needs
+    // `--ignored` (or `--test-threads=1`) to run reliably; verified green
+    // both ways.
+    #[ignore]
+    fn a_ssl_collision_is_retried_once_instead_of_just_telling_the_customer_to_restart() {
+        let _guard = crate::commands::install::installer_children_test_lock();
+        // Review Runde 2, Punkt 11: the OLD behaviour returned the collision
+        // diagnosis straight to the caller with "Restart LU and press Repair
+        // environment again", advice that cannot possibly help since the
+        // failed run was already clean. This proves the self-heal actually
+        // runs the step again and that a second, successful attempt is
+        // reported as success, not as a diagnosis.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("calls");
+        let fake = dir.path().join("fake-python-ssl-collision.sh");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"-c\" ]; then exit 0; fi\n\
+                 COUNT=$(cat '{marker}' 2>/dev/null || echo 0)\n\
+                 COUNT=$((COUNT + 1))\n\
+                 echo $COUNT > '{marker}'\n\
+                 if [ \"$COUNT\" = \"1\" ]; then\n\
+                 echo 'WARNING: pip is configured with locations that require TLS/SSL, however the ssl module in Python is not available.' 1>&2\n\
+                 exit 1\n\
+                 fi\n\
+                 exit 0\n",
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let result = pip_install_streaming_with_retry_raw(
+            &["-m", "pip", "install", "torch"],
+            &fake.to_string_lossy(),
+            3,
+            &state,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "the retried attempt should have succeeded: diag={:?} stderr={:?} marker={:?}",
+            result.as_ref().err().map(|e| e.diagnosis.as_str()).unwrap_or(""),
+            result.as_ref().err().map(|e| e.stderr.as_str()).unwrap_or(""),
+            std::fs::read_to_string(&marker).unwrap_or_default(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().trim(),
+            "2",
+            "the pip step must have run exactly twice: the failing attempt and the self-heal retry"
+        );
+        let logged = state.lock().unwrap().logs.join("\n");
+        assert!(
+            logged.contains("retrying now"),
+            "the self-heal must say what it is doing: {logged}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    // See the comment on `a_ssl_collision_is_retried_once_...` just above:
+    // same tracked-child race against the process-wide installer registry,
+    // same `#[ignore]`, verified green with `--ignored`.
+    #[ignore]
+    fn a_genuine_ssl_gap_is_not_retried_forever() {
+        let _guard = crate::commands::install::installer_children_test_lock();
+        // Negative control: when the recheck ALSO fails (a real ssl-less
+        // interpreter), the self-heal branch must never fire, and the loop
+        // must not spin, it fails on the first non-transient error like any
+        // other GenuinelyMissing case.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("calls");
+        let fake = dir.path().join("fake-python-no-ssl.sh");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"-c\" ]; then exit 1; fi\n\
+                 COUNT=$(cat '{marker}' 2>/dev/null || echo 0)\n\
+                 COUNT=$((COUNT + 1))\n\
+                 echo $COUNT > '{marker}'\n\
+                 echo 'WARNING: pip is configured with locations that require TLS/SSL, however the ssl module in Python is not available.' 1>&2\n\
+                 exit 1\n",
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let result = pip_install_streaming_with_retry_raw(
+            &["-m", "pip", "install", "torch"],
+            &fake.to_string_lossy(),
+            3,
+            &state,
+            None,
+        );
+        assert!(result.is_err(), "a genuinely missing ssl module must not succeed");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().trim(),
+            "1",
+            "the pip step must have run exactly once: no self-heal retry for a real gap"
+        );
     }
 
     #[test]

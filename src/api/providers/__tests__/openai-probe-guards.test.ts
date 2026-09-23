@@ -106,6 +106,50 @@ describe('the side probes on the send path are bounded and cancellable', () => {
     expect(body).not.toHaveProperty('max_tokens')
   })
 
+  it('a caller-side maxTokens DEFAULT stays off the wire when the window is not derivable (Runde 3 klein 1)', async () => {
+    // bau/wfprogress.md Runde 3, klein 1 (review-wfprogress.md): a workflow
+    // prompt step's own fallback (DEFAULT_PROMPT_STEP_MAX_TOKENS = 8192) is
+    // not "ein ausdruecklicher Wunsch des Nutzers": sending it here would be
+    // exactly the GH #129 failure again, an unmeasured number presented to
+    // the server as a real budget. `maxTokensIsDefault: true` is how a
+    // caller says "this is only MY fallback, not the user's own value".
+    const provider = new OpenAIProvider(lanConfig(1304))
+    localFetch.mockRejectedValue(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+    localFetchStream.mockResolvedValue(new Response(
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+      { status: 200 },
+    ))
+
+    await drain(provider.chatStream(
+      'some-unknown-local-model-d',
+      [{ role: 'user', content: 'hi' }],
+      { maxTokens: 8192, maxTokensIsDefault: true },
+    ))
+
+    const body = JSON.parse(String(localFetchStream.mock.calls[0][1].body))
+    expect(body).not.toHaveProperty('max_tokens')
+  })
+
+  it('NEGATIVKONTROLLE: without maxTokensIsDefault, that same fallback value WOULD have gone out unclamped', async () => {
+    // Same setup as the test above, but omitting the new flag reproduces the
+    // exact regression it fixes: an unmeasured number reaching the wire.
+    const provider = new OpenAIProvider(lanConfig(1305))
+    localFetch.mockRejectedValue(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+    localFetchStream.mockResolvedValue(new Response(
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+      { status: 200 },
+    ))
+
+    await drain(provider.chatStream(
+      'some-unknown-local-model-e',
+      [{ role: 'user', content: 'hi' }],
+      { maxTokens: 8192 },
+    ))
+
+    const body = JSON.parse(String(localFetchStream.mock.calls[0][1].body))
+    expect(body.max_tokens).toBe(8192)
+  })
+
   it('a probed window still wins over the name heuristic', async () => {
     const provider = new OpenAIProvider(lanConfig(1303))
     localFetch.mockResolvedValue(

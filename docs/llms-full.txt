@@ -3,22 +3,24 @@
 Hosted includes 11 Flash models; Pro and Max include 12. Up to 500,000 combined input and output tokens per account per UTC day in app sessions. GLM 5.3 Flash uses credits on Hosted and joins the daily allowance on Pro and Max. API keys always use credits.
 Hosted EUR 19/month: 900,000 shared credits, up to 900 Spicy images OR 90 five-second Spicy image-to-video clips. Each maximum spends the entire shared monthly wallet on one model. These are alternatives, not separate allowances. Input-image generation, character training, LoRA routes and additional operations cost extra. Spicy video uses an input image and five-second clips. Failed jobs and changing catalog prices can affect results.
 https://locallyuncensored.com/cloud-facts.json
-https://locallyuncensored.com/uncensored-ai-image-generator-online/
-https://locallyuncensored.com/uncensored-ai-video-generator-online/
-https://locallyuncensored.com/vs/venice/
+Uncensored AI chat online: 47 chat models, all of them in every plan and every pack, and no moderation layer from us on text. https://locallyuncensored.com/uncensored-ai-chat-online/
+Uncensored AI image generator online: adult-capable models from 1,000 credits per image, only after the account switches its own content policy setting. https://locallyuncensored.com/uncensored-ai-image-generator-online/
+Uncensored AI video generator online: image-to-video only, clips are five seconds, the input image is not included. https://locallyuncensored.com/uncensored-ai-video-generator-online/
+Uncensored AI API: OpenAI-compatible Chat Completions at https://lu-labs.ai/api/inference/v1, keys start with lu_ and always spend credits. https://locallyuncensored.com/uncensored-ai-api/
+Venice AI alternatives: Venice Pro is 18 USD per month with 100 credits (read 2026-09-22); our credit packs start at 15 EUR and need no subscription. https://locallyuncensored.com/vs/venice/
 https://lu-labs.ai/product-facts
 <!-- LU-CLOUD-FACTS:END -->
-# Locally Uncensored — Full Reference
+# Locally Uncensored, Full Reference
 
 > Free, open-source (AGPL-3.0) plug-and-play local AI studio for Windows and Linux: chat with 20+ providers, generate images and video via ComfyUI, and code with a built-in agent. One installer, no command line, no Docker. No telemetry, and no account for local use. Cloud only when you switch it on.
 
-Last updated: 2026-09-12. Current version: v3.0.0 (September 2026).
+Last updated: 2026-09-22. Current version: v3.0.2 (September 2026).
 
 This file is the full, citable reference for Locally Uncensored. Facts are stated plainly so they can be quoted directly.
 
 ## What Locally Uncensored Is
 
-Locally Uncensored is a plug-and-play local AI studio: a desktop application for running AI models on your own hardware that installs like a normal program (no command line, no Docker, no config files). It combines four things most local-AI tools keep separate: AI chat, a coding agent, image generation, and video generation — in one interface. It is free and open source under AGPL-3.0. It runs 100% locally by default; the only outbound traffic without explicit opt-in is the GitHub Releases auto-update check. Cloud providers are optional and use your own API keys.
+Locally Uncensored is a plug-and-play local AI studio: a desktop application for running AI models on your own hardware that installs like a normal program (no command line, no Docker, no config files). It combines four things most local-AI tools keep separate: AI chat, a coding agent, image generation, and video generation, all in one interface. It is free and open source under AGPL-3.0. It runs 100% locally by default; the only outbound traffic without explicit opt-in is the GitHub Releases auto-update check. Cloud providers are optional and use your own API keys.
 
 - Name: Locally Uncensored (abbreviated LU)
 - Category: local AI studio / desktop AI application
@@ -45,7 +47,7 @@ Yes. Locally Uncensored works as a ChatGPT and Claude alternative that runs on y
 Yes. After setup and model download, no internet is needed for the local providers. There are no accounts, no telemetry, and no usage limits. Cloud providers are optional; the core runs entirely on your hardware.
 
 ### How is this different from Open WebUI, LM Studio, Jan or Msty?
-Those tools handle text chat. Locally Uncensored adds a coding agent with 14 MCP tools, image generation via ComfyUI, video creation, mobile remote access via LAN or Cloudflare Tunnel, A/B model comparison, local benchmarking, granular permissions, file upload with vision, and thinking mode — all in one app.
+Those tools handle text chat. Locally Uncensored adds a coding agent with 14 MCP tools, image generation via ComfyUI, video creation, mobile remote access via LAN or Cloudflare Tunnel, A/B model comparison, local benchmarking, granular permissions, file upload with vision, and thinking mode, all in one app.
 
 ### What hardware do I need?
 Text chat: 8 GB RAM. Image generation: an NVIDIA card from 6 GB of VRAM with the starter checkpoint, 8 to 10 GB for FLUX. Video generation: from 6 GB for AnimateDiff and image to video with FramePack F1, from 8 GB for the Wan 2.1 starter, 12 GB and up for Wan 2.2 and HunyuanVideo. Windows 10/11 and Linux are supported.
@@ -80,6 +82,9 @@ Yes, on the right machine. Ling 3.0 Flash is a 124B Mixture-of-Experts model wit
 ### Can I run Qwen 3.8 locally?
 Yes, the 27B. Qwen 3.8 27B came out on 13 August 2026 under Apache 2.0 and GGUFs appeared the same day: Q4_K_M measures 17.1 GB and wants a 24 GB card, IQ4_XS at 15.7 GB is the largest quant that stays whole on 16 GB, and the 2-bit quants sit at 9.0 to 10.7 GB for 12 GB cards. Add the 0.9 GB mmproj file if you want it to read images. Not the Max: at ~2.4 trillion parameters even 4-bit weights are around 1.2 TB, which is datacenter hardware, and its weights carry a custom qwen3.8-max licence rather than Apache. Setup guide: https://locallyuncensored.com/blog/how-to-run-qwen-3-8-27b-locally.html
 
+### Can I run Qwen-Image 2.1 locally?
+Yes, on Windows or Linux with Locally Uncensored 3.0.1 and ComfyUI 0.37.0 or newer. Qwen-Image 2.1 came out on 20 September 2026 and is the first in its series where one set of weights both generates a picture from a prompt and edits a reference image, with no separate edit model. The Model Manager bundle Qwen-Image 2.1 (Generate and Edit) pulls three int8 files totalling 16.1 GB into the right ComfyUI folders: the 7B image model at 7.26 GB as listed, the Qwen3-VL-8B text encoder at 9.35 GB, and the VAE at 676 MB. As a guide to memory rather than a measurement of ours, ai.rs puts the int8 pipeline at roughly 16 GiB in total, so a 24 GB card holds all three parts resident and a 16 GB card usually keeps the text encoder in system RAM; the full bf16 weights want 33 to 40 GB. Defaults follow the official template: 25 steps, CFG 1, euler, simple, 1024x1024. Editing takes one reference image plus a prompt and no mask. The weights carry the Qwen Research License, which covers research and evaluation and does not grant commercial use without a separate license; Qwen-Image 2512 and Qwen-Image-Edit 2511 remain Apache 2.0. Setup guide: https://locallyuncensored.com/blog/how-to-run-qwen-image-2-1-locally.html. What changed in the model: https://locallyuncensored.com/blog/qwen-image-2-1-explained.html
+
 ### Can I run DeepSeek V4 Flash locally?
 Yes, on the right machine. V4 Flash is a 284B MoE with only 13B active parameters; the 4-bit GGUF is about 155 GB, so a 192 GB Mac Studio or a workstation with 192-256 GB RAM plus a GPU runs it at interactive speeds. Smaller machines can run the 5.3 GB Qwen 3.5 9B V4 distill from the in-app catalog, and the huihui abliterated build (154 GB, 600K+ downloads) is the most popular uncensored model of 2026. Full guide: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-flash-locally.html. V4 Pro (1.6T) is cloud territory: https://locallyuncensored.com/blog/how-to-run-deepseek-v4-pro.html
 
@@ -88,6 +93,15 @@ It auto-detects 12 local backends: Ollama, LM Studio, vLLM, KoboldCpp, llama.cpp
 
 ### How long does setup take?
 About five minutes. There is no Docker, terminal or config file. Run the installer, let the wizard scan for backends, pick a model, and start.
+
+### Is there an uncensored AI image generator online?
+Yes, in the LU Labs Cloud, and it is paid, not free. Seven image models render adult content: Neta Lumina Spicy, Z-Image Base and Nucleus at 1,000 credits per image, Chroma Spicy and Prefect Pony XL Spicy at 1,500, JibMix Qwen at 2,000 and Wan 2.2 Realism at 2,500, all drawn from the same wallet as chat and video. Adult output only happens once the account changes its own content policy setting, content involving minors is blocked everywhere with no exception, and photos of real people need their consent. Details: https://locallyuncensored.com/uncensored-ai-image-generator-online/
+
+### Can I generate uncensored AI video online?
+Yes, on fourteen models, with one limit worth knowing before you pay: hosted video is image-to-video only, there is no text-to-video, and every clip is five seconds long. You supply the starting image, and it is not included in the price of the clip. LTX 2.3 Spicy and OpenVideo cost 10,000 credits per clip and Wan 2.2 Spicy 15,000, up to Seedance 2.5 Spicy at 90,000. Wan 3.0 Spicy and Wan 3.0 Prime Spicy also accept an end image. Details: https://locallyuncensored.com/uncensored-ai-video-generator-online/
+
+### Is there an uncensored AI API?
+Yes. The endpoint is OpenAI-compatible Chat Completions at the base URL https://lu-labs.ai/api/inference/v1. You create a key in the "Cloud API keys" section of an lu-labs.ai account, it begins with lu_ and is shown once, and up to five keys can be active at a time. An API key always spends plan credits, never the daily Flash allowance, and it can neither read nor change the account. Details: https://locallyuncensored.com/uncensored-ai-api/
 
 ## Features
 
@@ -119,7 +133,7 @@ About five minutes. There is no Docker, terminal or config file. Run the install
 ## Supported Chat Models
 - Qwen 3.8: 27B dense with vision through a separate mmproj file, plus a 9B distill for small cards (text only). Official, huihui abliterated and OrcaRouter uncensored builds, and two Ollama tags (v2.6.6, uncensored rows reworked in v2.6.8)
 - Qwen 3-Coder: 30B and Next 80B
-- Gemma 4: 31B / 26B MoE / E4B / E2B — native vision and tools, Apache 2.0
+- Gemma 4: 31B / 26B MoE / E4B / E2B, native vision and tools, Apache 2.0
 - GPT-OSS: 120B and 20B (via Ollama)
 - GLM 4.7 Flash: 30B; GLM 5.1: 754B MoE
 - DeepSeek R1: distilled 8B / 14B / 32B / Llama 70B
@@ -129,7 +143,7 @@ About five minutes. There is no Docker, terminal or config file. Run the install
 
 ## Supported Image Models (via ComfyUI)
 - FLUX 2 Klein, FLUX.1 (8-10 GB VRAM)
-- Z-Image Turbo — explicitly uncensored (10-16 GB VRAM)
+- Z-Image Turbo, explicitly uncensored (10-16 GB VRAM)
 - Juggernaut XL, Dreamshaper, RealVis (SDXL finetunes)
 - ERNIE-Image (Baidu, Turbo and Base)
 - Stable Diffusion XL, SD 3.5
@@ -171,7 +185,7 @@ A correctness release. Most of it is things that looked like they worked and did
 - Best in class: 24 GB+ VRAM for 35B MoE and 35B+ chat models
 
 ## Installation
-1. Download the signed installer for Windows or Linux from GitHub Releases (https://github.com/PurpleDoubleD/locally-uncensored/releases/latest). One-click install — no Docker, no terminal, no config files.
+1. Download the signed installer for Windows or Linux from GitHub Releases (https://github.com/PurpleDoubleD/locally-uncensored/releases/latest). One-click install, no Docker, no terminal, no config files.
 2. On first launch, the setup wizard scans for 12 local AI backends and offers one-click install links if none are running.
 3. Pick a model from the Model Manager and start chatting. Switch to the Coding Agent for coding, or open Create to generate images and video. Add cloud providers in Settings to mix local and cloud.
 

@@ -25,7 +25,7 @@ use tracing::warn;
 
 use super::children::{wait_or_cancel, TrackedInstallerChild};
 use crate::os_error;
-use crate::python::venv_python_path;
+use crate::python::{venv_python_path, venv_python_path_named};
 use crate::state::AppState;
 
 
@@ -80,25 +80,77 @@ pub fn is_pep668_protected(python_bin: &str) -> bool {
 /// file exists, and `python -m venv` writes that file BEFORE it runs
 /// `ensurepip`, so leaving the ruin behind would have autostart launching
 /// ComfyUI out of an env with an empty site-packages.
+/// Runde 6, B9: this always builds under the fixed name `venv`, never a
+/// staging sibling. See [`retire_for_rebuild`]'s doc for why: a venv's own
+/// scripts bake in the ABSOLUTE path it was built at, so a venv that is ever
+/// going to live at `<comfyui_dir>/venv` has to be BUILT there, not built
+/// somewhere else and renamed in afterwards. The repair calls
+/// [`retire_for_rebuild`] first when an old venv is in the way, so this
+/// always runs against an empty slot.
+/// `python -m venv`'s own failure text, stdout and stderr merged into one
+/// string, so the hint detection in [`create_comfyui_venv`] sees whichever
+/// stream CPython actually chose for a given error (see that function's
+/// comment on the `Stdio` setup for the ENG-14 field measurement behind this).
+fn venv_failure_text(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
+/// The generic sentence for a failed venv build that neither of the two
+/// specific hints above recognized.
+///
+/// Never ends with an empty rest: `python -m venv` can exit non-zero having
+/// printed nothing to either stream (killed by a signal before it could write
+/// anything, or a distro whose failure mode is silent), and
+/// "venv creation failed: " with nothing after the colon told the customer
+/// nothing they could act on. The exit code is at least something to search
+/// for when there is no text at all.
+fn venv_creation_failed_message(combined_output: &str, exit_code: Option<i32>) -> String {
+    let snippet: String = combined_output.chars().take(400).collect();
+    if snippet.trim().is_empty() {
+        return match exit_code {
+            Some(code) => format!("venv creation failed with exit code {code} and no output."),
+            None => {
+                "venv creation failed: the process was terminated by a signal, with no output."
+                    .to_string()
+            }
+        };
+    }
+    format!("venv creation failed: {snippet}")
+}
+
 pub fn create_comfyui_venv(
     comfyui_dir: &Path,
     python_bin: &str,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<PathBuf, String> {
-    let venv_dir = comfyui_dir.join("venv");
+    let venv_name = "venv";
+    let venv_dir = comfyui_dir.join(venv_name);
     // venv is idempotent: re-running on an existing dir just no-ops, but be
     // explicit so the log reads cleanly.
-    let already_existed = venv_dir.exists() && venv_python_path(comfyui_dir).exists();
+    let venv_py_path = venv_python_path_named(comfyui_dir, venv_name);
+    let already_existed = venv_dir.exists() && venv_py_path.exists();
     if already_existed {
-        return Ok(venv_python_path(comfyui_dir));
+        return Ok(venv_py_path);
     }
 
     let mut cmd = python_command(python_bin);
     cmd.args(["-m", "venv", venv_dir.to_string_lossy().as_ref()])
-        // Only stderr is ever read. stdout went into a buffer nobody looked at
-        // even before this, and an unread pipe is one more way to block while
-        // we are supposed to be polling the cancel flag.
-        .stdout(Stdio::null())
+        // Both are read, and merged, before the hint below ever looks at the
+        // text: measured on a real Ubuntu 22.04 box (E2E report, matrix point
+        // 83 / ENG-14), CPython's own `ensurepip` failure, the exact sentence
+        // that names `apt install python3.10-venv`, is written with `print()`,
+        // which lands on STDOUT, while stderr stays empty. Reading stderr
+        // alone (the old behaviour here) made the hint below never fire in
+        // that case: the customer saw only "venv creation failed: " with
+        // nothing after the colon.
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut child = cmd
@@ -110,21 +162,35 @@ pub fn create_comfyui_venv(
 
     // Drained next to the wait, not after it: a full pipe would stall the
     // child while the loop below thinks it is still working.
+    let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
+    let stdout_buf = Arc::new(Mutex::new(String::new()));
     let stderr_buf = Arc::new(Mutex::new(String::new()));
-    let sink = stderr_buf.clone();
-    let reader = std::thread::spawn(move || {
+    let stdout_sink = stdout_buf.clone();
+    let stderr_sink = stderr_buf.clone();
+    let stdout_reader = std::thread::spawn(move || {
+        if let Some(mut pipe) = stdout_pipe {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            if let Ok(mut slot) = stdout_sink.lock() {
+                *slot = text;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
         if let Some(mut pipe) = stderr_pipe {
             let mut text = String::new();
             let _ = pipe.read_to_string(&mut text);
-            if let Ok(mut slot) = sink.lock() {
+            if let Ok(mut slot) = stderr_sink.lock() {
                 *slot = text;
             }
         }
     });
 
     let waited = wait_or_cancel(&mut child, cancel, "`python -m venv`");
-    let _ = reader.join();
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    let stdout = stdout_buf.lock().map(|b| b.clone()).unwrap_or_default();
     let stderr = stderr_buf.lock().map(|b| b.clone()).unwrap_or_default();
 
     let exit_status = match waited {
@@ -137,7 +203,8 @@ pub fn create_comfyui_venv(
     };
 
     if !exit_status.success() {
-        let lower = stderr.to_lowercase();
+        let combined = venv_failure_text(&stdout, &stderr);
+        let lower = combined.to_lowercase();
         // Most common Arch / minimal-Python failure: stdlib venv module
         // isn't available because the distro packages it separately.
         if lower.contains("no module named venv") || lower.contains("ensurepip") {
@@ -147,20 +214,17 @@ pub fn create_comfyui_venv(
                  • Debian/Ubuntu: sudo apt install python3-venv\n\
                  • Fedora: sudo dnf install python3-virtualenv\n\
                  Then retry the ComfyUI install.\n\n--- python output ---\n{}",
-                stderr.chars().take(400).collect::<String>()
+                combined.chars().take(400).collect::<String>()
             ));
         }
-        return Err(format!(
-            "venv creation failed: {}",
-            stderr.chars().take(400).collect::<String>()
-        ));
+        return Err(venv_creation_failed_message(&combined, exit_status.code()));
     }
 
-    let venv_py = venv_python_path(comfyui_dir);
+    let venv_py = venv_py_path;
     if !venv_py.exists() {
         return Err(format!(
             "venv was created at {} but no Python binary appeared at {}. \
-             This usually means the venv module is broken — try `sudo pacman -S python-virtualenv` (Arch) or the equivalent on your distro.",
+             This usually means the venv module is broken. Try `sudo pacman -S python-virtualenv` (Arch) or the equivalent on your distro.",
             venv_dir.display(),
             venv_py.display()
         ));
@@ -179,6 +243,26 @@ pub fn create_comfyui_venv(
 /// autostart and to `resolve_lu_python`.
 pub(crate) const RETIRED_VENV_PREFIX: &str = "venv.lu-old-";
 
+/// Runde 5, B7(c), superseded by Runde 6's B9 fix: the name a NEW venv used
+/// to be built under while the old `venv` was still live. Nothing this LU
+/// version writes carries this prefix any more (see [`retire_for_rebuild`]'s
+/// doc for why that approach broke every console script's shebang), but
+/// `sweep_retired_venvs` still recognizes and clears it, because a customer
+/// upgrading FROM a version that used it can still have one sitting in their
+/// ComfyUI folder from an interrupted repair.
+pub(crate) const STAGING_VENV_PREFIX: &str = "venv.lu-new-";
+
+/// Nanoseconds plus our own process id, so two runs (or a retired venv and a
+/// discarded failed-build venv from the same rebuild) never land on the same
+/// folder.
+fn stamped_sibling_name(prefix: &str) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}{}-{}", prefix, stamp, std::process::id())
+}
+
 /// Move `<comfy>/venv` out of the way and answer where it went.
 ///
 /// Deleting it in line was the 76 seconds P3 measured: a venv holding PyTorch
@@ -188,9 +272,6 @@ pub(crate) const RETIRED_VENV_PREFIX: &str = "venv.lu-old-";
 /// metadata operation no matter how much is inside. The deleting happens
 /// afterwards on a worker thread, and the caller is free again the moment this
 /// returns.
-///
-/// Nanoseconds plus our own process id in the name, so two runs never land on
-/// the same folder.
 pub(crate) fn retire_venv(venv_dir: &Path) -> std::io::Result<PathBuf> {
     let parent = venv_dir.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -198,21 +279,198 @@ pub(crate) fn retire_venv(venv_dir: &Path) -> std::io::Result<PathBuf> {
             "the venv path has no parent directory to move it into",
         )
     })?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let retired = parent.join(format!(
-        "{}{}-{}",
-        RETIRED_VENV_PREFIX,
-        stamp,
-        std::process::id()
-    ));
+    let retired = parent.join(stamped_sibling_name(RETIRED_VENV_PREFIX));
     std::fs::rename(venv_dir, &retired)?;
     Ok(retired)
 }
 
-/// Delete whatever [`retire_venv`] left lying around.
+/// Runde 6, BLOCKER B9 (review Runde 5): a venv is not relocatable. Every
+/// console script's shebang (`venv/bin/pip`, `huggingface-cli`, `torchrun`,
+/// every `Scripts\*.exe` launcher on Windows) and every `activate` script
+/// bakes in the ABSOLUTE path the venv was BUILT at. Runde 5's build-then-
+/// swap built the new venv under a staging name and then renamed the folder
+/// to `venv` afterwards, a rename `create_comfyui_venv_named` itself never
+/// does anything to fix up. Measured on this machine (see the Runde 6 report
+/// in `bau/engine.md` for the exact transcript):
+///
+/// ```text
+/// head -1 venv/bin/pip
+///   #!/.../venvtest/venv.lu-new-123/bin/python3
+/// venv/bin/pip --version
+///   bad interpreter: /.../venv.lu-new-12: no such file or directory
+/// ```
+///
+/// LU never noticed, because every one of ITS OWN pip calls goes through
+/// `<python> -m pip` (`venv/bin/python` survives the rename fine, since its own
+/// `pyvenv.cfg` only points at the BASE interpreter, never at itself), and
+/// the last verification ran against the staging name, before the rename.
+/// The customer notices the first time they `source venv/bin/activate` by
+/// hand, which is exactly how the venv reasonably installs the requirements
+/// a repair does not carry over (F2/#72's territory).
+///
+/// The fix is to never rename a BUILT venv into its final resting place at
+/// all: [`retire_for_rebuild`] moves the OLD venv aside FIRST (a rename is
+/// still fine there, since it is reversible back to the exact same name, so the
+/// path it was originally built at is restored byte-for-byte the moment it
+/// is renamed back), and the caller then builds the NEW venv directly under
+/// the final `venv` name via [`create_comfyui_venv`], so its build path and
+/// its resting path are the same string from the very first `python -m
+/// venv` call. Nothing here renames a fully-built venv into a different
+/// name than it was created with, ever again.
+///
+/// `retire_for_rebuild` alone is the "stilllegen" half B9 asks for; the
+/// "auf jeden Fehlschlag zurueckrollen" half lives in the caller
+/// (`comfy_repair.rs`'s `abort_and_restore`), because only the caller knows
+/// whether the NEW venv got far enough to exist at all when a step fails.
+pub(crate) fn retire_for_rebuild(venv_dir: &Path) -> Result<Option<PathBuf>, String> {
+    if !venv_dir.exists() {
+        return Ok(None);
+    }
+    retire_venv(venv_dir).map(Some).map_err(|e| windows_lock_aware_retire_error(venv_dir, &e))
+}
+
+/// Runde 6, B9: on Windows, a process still holding any file inside the old
+/// venv open (a ComfyUI process, including one started OUTSIDE LU, exactly
+/// the K14 shape this task is measured against) makes `retire_venv`'s
+/// rename fail with `ERROR_ACCESS_DENIED` (raw code 5) or
+/// `ERROR_SHARING_VIOLATION` (32). The rename itself is one atomic metadata
+/// operation, so a failure here has not touched the old venv at all: there
+/// is nothing to roll back, but "os error 5" is not a sentence a customer
+/// can act on. This turns that specific pair of codes into the one thing
+/// they actually need to do about it, and falls back to the general wording
+/// for every other failure (permissions, a read-only filesystem, ...).
+fn windows_lock_aware_retire_error(venv_dir: &Path, e: &std::io::Error) -> String {
+    if cfg!(target_os = "windows") && matches!(e.raw_os_error(), Some(5) | Some(32)) {
+        return format!(
+            "Could not rebuild the environment: something is still using the existing venv \
+             folder at {}. This usually means ComfyUI is still running, including a copy \
+             started outside LU. Close ComfyUI first, then retry. Nothing was changed.",
+            venv_dir.display(),
+        );
+    }
+    venv_removal_error(venv_dir, e)
+}
+
+/// Runde 6, B9: the rollback half of the rebuild. Called on ANY failure from
+/// the moment `retire_for_rebuild` has moved the old venv aside up to the
+/// moment the new one passes verification: a failed build, a failed
+/// download, a failed requirements install, a failed verification, or the
+/// user cancelling at any of those points. `retired` is `None` when there
+/// was no old venv to begin with (a first install), in which case there is
+/// nothing to restore and only a half-built `venv` (if any) is cleared away.
+///
+/// The half-built `venv` is renamed to a throwaway sibling FIRST, a fast
+/// metadata operation that frees the `venv` name immediately, the same
+/// reasoning `retire_venv` itself documents for why a rename beats a
+/// blocking delete, and only then deleted, on a background thread, so this
+/// function returns as soon as the customer's old environment is back,
+/// never after walking however many files PyTorch left behind.
+///
+/// A pure filesystem operation, deliberately not accepting a comfy_dir plus
+/// hardcoded child names beyond the one directory it needs to place the
+/// throwaway sibling in: this is what makes it directly testable with plain
+/// temp directories instead of a real ComfyUI checkout.
+pub(crate) fn restore_after_failed_rebuild(comfy_dir: &Path, venv_dir: &Path, retired: Option<PathBuf>) -> Result<(), String> {
+    if venv_dir.exists() {
+        let discard = comfy_dir.join(stamped_sibling_name("venv.lu-failed-"));
+        std::fs::rename(venv_dir, &discard).map_err(|e| venv_removal_error(venv_dir, &e))?;
+        std::thread::spawn(move || {
+            if let Err(e) = std::fs::remove_dir_all(&discard) {
+                warn!(error = %e, folder = %discard.display(), "a failed rebuild's half-built venv could not be deleted");
+            }
+        });
+    }
+    if let Some(retired) = retired {
+        std::fs::rename(&retired, venv_dir).map_err(|e| {
+            format!(
+                "Your previous environment could not be restored: {}. It is still on disk at {}; \
+                 rename that folder to \"venv\" manually to recover it.",
+                venv_removal_error(&retired, &e),
+                retired.display(),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Runde 6, B9: after the new venv (built directly at `venv`, see
+/// [`retire_for_rebuild`]'s doc) has PASSED verification, the retired old
+/// one is no longer needed. Deleted on a background thread, the same
+/// reasoning as the old `swap_in_new_venv`'s deletion, followed by a sweep
+/// for any OTHER leftover a previous, interrupted run left behind.
+pub(crate) fn finish_rebuild(comfy_dir: &Path, retired: Option<PathBuf>) {
+    let sweep_dir = comfy_dir.to_path_buf();
+    std::thread::spawn(move || {
+        if let Some(retired) = retired {
+            if let Err(e) = std::fs::remove_dir_all(&retired) {
+                warn!(error = %e, folder = %retired.display(), "the retired venv could not be deleted");
+            }
+        }
+        sweep_retired_venvs(&sweep_dir);
+    });
+}
+
+/// Runde 6, B9, "Wiederanlauf": if a previous rebuild died between
+/// `retire_for_rebuild` and the new venv passing verification (a crash, a
+/// power loss, the process being killed), the customer's ComfyUI folder can
+/// be left with a `venv.lu-old-*` sibling and NO working `venv` at all
+/// (`restore_after_failed_rebuild` never got to run). Runde 6, F12 (review
+/// Runde 6): called at the START of every entry point that reads or writes
+/// this venv, not only Repair, where it was originally called alone. Install
+/// (both the existing-venv and the fresh-venv branch) and Update read
+/// `comfy_venv_state`/`venv_python_path` just as directly, and used to read
+/// an orphaned rebuild as "no venv" and fall back to the system Python,
+/// walking right past a several-gigabyte recoverable folder instead of
+/// adopting it back. Called before anything else touches the folder: if
+/// there is already a usable venv, this does nothing at all. If there is
+/// not, but a retired one exists, the NEWEST retired folder (the one this
+/// run's own interrupted attempt would have made) is restored to `venv`
+/// before the run continues; any OLDER retired or abandoned staging folder
+/// is swept away rather than restored, since it is a leftover from a run
+/// even earlier than the crash this is recovering from.
+pub(crate) fn restore_orphaned_venv_if_needed(comfy_dir: &Path) {
+    if venv_python_path(comfy_dir).exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(comfy_dir) else {
+        return;
+    };
+    let mut retired: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let name = path.file_name()?.to_str()?.to_string();
+            if !name.starts_with(RETIRED_VENV_PREFIX) || !path.is_dir() {
+                return None;
+            }
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect();
+    if !retired.is_empty() {
+        retired.sort_by_key(|(t, _)| *t);
+        if let Some((_, newest)) = retired.pop() {
+            let venv_dir = comfy_dir.join("venv");
+            if let Err(e) = std::fs::rename(&newest, &venv_dir) {
+                warn!(error = %e, folder = %newest.display(), "could not restore an orphaned venv left by an interrupted rebuild");
+            }
+        }
+        // Anything older is not restorable to a meaningful state: swept,
+        // not adopted.
+        for (_, leftover) in retired {
+            let _ = std::fs::remove_dir_all(&leftover);
+        }
+    }
+    // Always swept, even when there was no retired folder at all: a
+    // customer upgrading FROM the Runde 5 staging approach can still have a
+    // `venv.lu-new-*` leftover with nothing to restore it FROM, and that
+    // must not be left sitting there just because this run found no
+    // RETIRED_VENV_PREFIX folder to act on.
+    sweep_retired_venvs(comfy_dir);
+}
+
+/// Delete whatever [`retire_venv`] OR an interrupted staging build left
+/// lying around.
 ///
 /// Quietly, over tracing only: these are folders nobody is looking for, and a
 /// failure to clear one must not colour a repair the user is watching. Every
@@ -221,24 +479,24 @@ pub(crate) fn retire_venv(venv_dir: &Path) -> std::io::Result<PathBuf> {
 /// delete does not keep the space forever and two deleters never meet on the
 /// same tree.
 ///
-/// Only names carrying [`RETIRED_VENV_PREFIX`] are touched. This runs inside
-/// the user's ComfyUI folder, next to models, outputs and custom nodes, so the
-/// match being too eager is the one way this could destroy something.
+/// Only names carrying [`RETIRED_VENV_PREFIX`] or [`STAGING_VENV_PREFIX`] are
+/// touched. This runs inside the user's ComfyUI folder, next to models,
+/// outputs and custom nodes, so the match being too eager is the one way
+/// this could destroy something.
 pub(crate) fn sweep_retired_venvs(comfy_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(comfy_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let retired = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with(RETIRED_VENV_PREFIX));
-        if !retired || !path.is_dir() {
+        let ephemeral = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.starts_with(RETIRED_VENV_PREFIX) || n.starts_with(STAGING_VENV_PREFIX)
+        });
+        if !ephemeral || !path.is_dir() {
             continue;
         }
         if let Err(e) = std::fs::remove_dir_all(&path) {
-            warn!(error = %e, folder = %path.display(), "a retired venv could not be swept");
+            warn!(error = %e, folder = %path.display(), "a retired or staging venv could not be swept");
         }
     }
 }
@@ -474,6 +732,217 @@ mod tests {
         // swallow the spawn error and return false so install proceeds as
         // it always did on systems that aren't PEP 668 protected.
         assert!(!is_pep668_protected("/definitely/not/a/real/python-9.99"));
+    }
+
+    // ── ENG-14 (matrix point 83): `python -m venv`'s hint reaches stdout ───
+    //
+    // Real transcript, e2e/linux/BERICHT-4.md, Punkt 83: on a fresh Ubuntu
+    // 22.04 with `python3-venv` missing, `python3 -m venv <dir>` writes its
+    // "apt install python3.10-venv" hint to STDOUT and exits 1 with stderr
+    // completely empty. `create_comfyui_venv` used to read only stderr, so
+    // the hint below (`lower.contains("ensurepip")`) never matched in that
+    // exact, measured case, and the customer saw the bare
+    // "venv creation failed: " sentence with nothing after the colon.
+
+    /// The exact text from the field measurement, word for word.
+    const ENG14_REAL_UBUNTU_STDOUT: &str = "The virtual environment was not created successfully because ensurepip is\nnot available. On Debian/Ubuntu systems, you need to install the\npython3-venv package using the following command.\n\n    apt install python3.10-venv\n";
+
+    #[test]
+    fn venv_failure_text_merges_stdout_and_stderr() {
+        assert_eq!(venv_failure_text("out", "err"), "out\nerr");
+        // The ENG-14 shape: the hint is entirely on stdout, stderr is empty.
+        assert_eq!(venv_failure_text(ENG14_REAL_UBUNTU_STDOUT, ""), ENG14_REAL_UBUNTU_STDOUT.trim());
+        // The old shape this file always handled: only stderr has text.
+        assert_eq!(venv_failure_text("", "boom"), "boom");
+        // Negative control: nothing on either stream merges to nothing.
+        assert_eq!(venv_failure_text("", ""), "");
+    }
+
+    #[test]
+    fn venv_creation_failed_message_never_ends_on_an_empty_colon() {
+        // The other half of ENG-14: a process that exits non-zero with
+        // literally nothing on either stream must still tell the customer
+        // something they can act on, not "venv creation failed: ".
+        let msg = venv_creation_failed_message("", Some(1));
+        assert!(msg.contains("exit code 1"), "{msg}");
+        assert!(!msg.trim_end().ends_with(':'), "{msg}");
+
+        // A signal kill (no exit code at all) gets its own honest sentence,
+        // still never a bare colon.
+        let msg = venv_creation_failed_message("", None);
+        assert!(msg.contains("terminated by a signal"), "{msg}");
+        assert!(!msg.trim_end().ends_with(':'), "{msg}");
+
+        // Negative control: real output is passed through unchanged, not
+        // replaced by the fallback wording.
+        let msg = venv_creation_failed_message("ERROR: something broke", Some(1));
+        assert_eq!(msg, "venv creation failed: ERROR: something broke");
+    }
+
+    /// The body of `create_comfyui_venv`, source lines only.
+    ///
+    /// Same pattern as `remote.rs`'s `shutdown_body` (KF-1's guard): the two
+    /// process tests that would actually catch a regression here
+    /// (`eng14_real_env_create_comfyui_venv_against_system_python3` and
+    /// `a_venv_failure_with_no_output_at_all_still_names_the_exit_code`) are
+    /// both `#[ignore]`'d for the `installer_children_test_lock` reason
+    /// documented above, so neither runs in a normal `cargo test`. Without a
+    /// standardly-running guard, reverting the one line this whole fix turns
+    /// on (`.stdout(Stdio::piped())` back to `.stdout(Stdio::null())`) would
+    /// leave every test green and quietly reintroduce ENG-14.
+    fn create_comfyui_venv_body() -> String {
+        let this_file = include_str!("venv.rs");
+        let from = this_file
+            .find("pub fn create_comfyui_venv")
+            .expect("venv.rs no longer has create_comfyui_venv");
+        let body = &this_file[from..];
+        let to = body
+            .find("\n// ── P3 (04.09.)")
+            .expect("venv.rs no longer follows create_comfyui_venv with the P3 retire section");
+        body[..to].to_string()
+    }
+
+    /// ENG-14's actual regression shape: `Stdio::null()` on stdout instead of
+    /// `Stdio::piped()`. The negative control this test answers to is
+    /// literal: comment the fix line back to `.stdout(Stdio::null())` (the
+    /// state this file was in before commit 09d2c2c5) and this is the ONE
+    /// test, of the whole standard suite, that turns red. Before the fix,
+    /// `cargo test --bins commands::install::venv::` still reported "32
+    /// passed" with the same count as after, because the two tests that
+    /// would have caught it are `#[ignore]`'d; with this guard added, the
+    /// same reverted line instead fails right here.
+    #[test]
+    fn create_comfyui_venv_still_pipes_stdout_instead_of_nulling_it() {
+        let body = create_comfyui_venv_body();
+        assert!(
+            body.contains(".stdout(Stdio::piped())"),
+            "create_comfyui_venv no longer pipes stdout for `python -m venv`. \
+             ENG-14 (matrix point 83): CPython's own ensurepip/venv-module hint, the \
+             sentence naming `apt install python3.10-venv`, lands on STDOUT, not \
+             stderr, measured live on Ubuntu 22.04. Reading only stderr makes the \
+             hint below never fire and the customer sees a bare \
+             \"venv creation failed: \" with nothing after the colon."
+        );
+        assert!(
+            !body.contains(".stdout(Stdio::null())"),
+            "create_comfyui_venv discards stdout again (`.stdout(Stdio::null())`); \
+             see the message above for why that reintroduces ENG-14."
+        );
+    }
+
+    /// A fake `python3` that ignores its arguments and reproduces exactly
+    /// what the real Ubuntu 22.04 box did: the hint on stdout, nothing on
+    /// stderr, exit code 1. `create_comfyui_venv` never gets far enough to
+    /// look at the venv directory it was asked to build, so this stands in
+    /// for the real `python3 -m venv` call end to end.
+    #[cfg(not(windows))]
+    fn write_fake_python_eng14_stdout_only(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-eng14.sh");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncat <<'EOF'\n{}EOF\nexit 1\n",
+                ENG14_REAL_UBUNTU_STDOUT
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[cfg(windows)]
+    fn write_fake_python_eng14_stdout_only(dir: &std::path::Path) -> String {
+        let path = dir.join("fake-python-eng14.bat");
+        // cmd's `echo` cannot carry embedded newlines cleanly; one `echo` per
+        // line reproduces the same stdout-only, empty-stderr, exit-1 shape.
+        std::fs::write(
+            &path,
+            "@echo off\r\n\
+             echo The virtual environment was not created successfully because ensurepip is\r\n\
+             echo not available. On Debian/Ubuntu systems, you need to install the\r\n\
+             echo python3-venv package using the following command.\r\n\
+             echo(\r\n\
+             echo     apt install python3.10-venv\r\n\
+             exit /b 1\r\n",
+        )
+        .unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    #[ignore]
+    fn eng14_real_env_create_comfyui_venv_against_system_python3() {
+        // The negative control this whole fix answers to: BEFORE it, this
+        // test failed because the returned message did not contain
+        // "python3-venv" at all (only the bare "venv creation failed: "),
+        // since the hint text lived on stdout and only stderr was read.
+        //
+        // `#[ignore]` for the same reason as `a_venv_nobody_cancels_is_still_built_and_found`
+        // below: this registers a real tracked child, and `installer_children_test_lock`
+        // only protects against the tests IN THIS FILE that cooperate by
+        // taking it. It cannot protect against every OTHER test in the whole
+        // binary whose `AppState` drop reaches `shutdown_subprocesses` ->
+        // `kill_installer_children`, which SIGKILLs every tracked pid,
+        // this fake python's included, process-wide. Under
+        // `cargo test --all-targets` that happens often enough to turn the
+        // very assertions this test exists for into a false "terminated by a
+        // signal, with no output" failure that has nothing to do with ENG-14.
+        //
+        // Run with: cargo test --bins -- --ignored eng14_real_env
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let fake_python = write_fake_python_eng14_stdout_only(tmp.path());
+
+        let err = create_comfyui_venv(&comfy, &fake_python, None)
+            .expect_err("a python3 that always fails must not report success");
+
+        assert!(err.contains("python3-venv"), "the apt hint did not reach the message: {err}");
+        assert!(err.contains("apt install python3.10-venv"), "the exact command was lost: {err}");
+        assert!(err.contains("ensurepip"), "the wording lost its cause: {err}");
+        // The half-built venv folder venv itself never creates (the fake
+        // python never touches disk) must not be left behind either.
+        assert!(!comfy.join("venv").exists());
+    }
+
+    #[test]
+    #[ignore]
+    fn a_venv_failure_with_no_output_at_all_still_names_the_exit_code() {
+        // Negative control on the other axis: a python that fails SILENTLY
+        // (neither stream has a word on it) must not fall back to the bare
+        // "venv creation failed: " colon either.
+        //
+        // `#[ignore]` for the same reason as the test above: a real tracked
+        // child, vulnerable to any other test's `AppState` drop sweeping it
+        // away process-wide.
+        //
+        // Run with: cargo test --bins -- --ignored a_venv_failure_with_no_output
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        #[cfg(not(windows))]
+        let fake_python = {
+            let path = tmp.path().join("fake-python-silent.sh");
+            std::fs::write(&path, "#!/bin/sh\nexit 3\n").unwrap();
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        #[cfg(windows)]
+        let fake_python = {
+            let path = tmp.path().join("fake-python-silent.bat");
+            std::fs::write(&path, "@echo off\r\nexit /b 3\r\n").unwrap();
+            path.to_string_lossy().to_string()
+        };
+
+        let err = create_comfyui_venv(&comfy, &fake_python, None)
+            .expect_err("a python3 that always fails must not report success");
+
+        assert!(err.contains("exit code 3"), "{err}");
+        assert!(!err.trim_end().ends_with(':'), "{err}");
     }
 
     // ── Bug E — LIVE integration test ──────────────────────────────────────
@@ -747,7 +1216,371 @@ mod tests {
     }
 
     #[test]
+    fn the_sweep_also_takes_abandoned_staging_folders() {
+        // B7(c): a staging venv an interrupted repair never got to swap in is
+        // exactly as much of a leftover as a retired one, and the widened
+        // sweep is what keeps it from sitting there forever. Same shape as
+        // the retired-folder test above, on purpose: one prefix's coverage
+        // must not silently stand in for the other's.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        for keep in ["venv", "models", "custom_nodes"] {
+            std::fs::create_dir_all(comfy.join(keep)).unwrap();
+        }
+        let gone = comfy.join(format!("{STAGING_VENV_PREFIX}1"));
+        tree_with_files(&gone, 2, 2);
+
+        sweep_retired_venvs(&comfy);
+
+        assert!(!gone.exists(), "an abandoned staging venv survived the sweep: {}", gone.display());
+        for keep in ["venv", "models", "custom_nodes"] {
+            assert!(comfy.join(keep).is_dir(), "the sweep took {keep}");
+        }
+    }
+
+    // ── Runde 6, BLOCKER B9: retire-then-build-at-final-name ───────────────
+    //
+    // Attrappen fuer die vom Auftrag verlangten Faelle: Erfolg,
+    // Fehlschlag im Bau, Fehlschlag in der Pruefung, Abbruch, Wiederanlauf,
+    // Umbenennen scheitert. Jede benutzt zwei simple Marker-Verzeichnisse
+    // statt echter venvs, so wie die Runde-5-Tests es schon taten; der reale
+    // Beweis mit echtem `python3 -m venv` steht getrennt unten.
+
+    fn marked_dir(path: &Path, marker: &str) {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("marker.txt"), marker.as_bytes()).unwrap();
+    }
+
+    fn retired_siblings(comfy: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(comfy)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(RETIRED_VENV_PREFIX))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn retire_for_rebuild_moves_the_old_venv_aside_and_frees_the_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "old");
+
+        let retired = retire_for_rebuild(&venv_dir).expect("retire failed").expect("an old venv should have been reported");
+
+        assert!(!venv_dir.exists(), "venv is still there after retiring");
+        assert_eq!(std::fs::read(retired.join("marker.txt")).unwrap(), b"old");
+    }
+
+    #[test]
+    fn retire_for_rebuild_reports_nothing_when_there_is_no_old_venv() {
+        // A first install: nothing to retire, and nothing must be invented.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        assert_eq!(retire_for_rebuild(&venv_dir).unwrap(), None);
+    }
+
+    #[test]
+    fn erfolg_the_new_venv_stays_and_the_retired_old_one_is_swept_away() {
+        // Der Erfolgsfall: retire, "bauen" (Attrappe: der Aufrufer legt die
+        // neue venv direkt unter dem finalen Namen an), dann finish_rebuild.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "old");
+
+        let retired = retire_for_rebuild(&venv_dir).unwrap();
+        marked_dir(&venv_dir, "new"); // built directly at the final name
+        finish_rebuild(&comfy, retired);
+
+        // The delete runs on a background thread; give it a moment, the same
+        // way the rest of this file's swap tests always treated deletion as
+        // best-effort rather than synchronous.
+        for _ in 0..50 {
+            if retired_siblings(&comfy).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read(venv_dir.join("marker.txt")).unwrap(), b"new");
+        assert!(retired_siblings(&comfy).is_empty(), "the retired old venv was not cleared away");
+    }
+
+    #[test]
+    fn fehlschlag_im_bau_restores_the_old_venv_when_the_new_one_never_got_built() {
+        // Der Bau selbst schlaegt fehl (z. B. `python -m venv` scheitert und
+        // raeumt sich, wie create_comfyui_venv es tut, selbst wieder ab): am
+        // finalen Pfad liegt gar nichts, nur die stillgelegte alte venv.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "old");
+
+        let retired = retire_for_rebuild(&venv_dir).unwrap();
+        assert!(!venv_dir.exists(), "sanity: retiring did not clear the name");
+        // The build never produced anything at venv_dir at all.
+
+        restore_after_failed_rebuild(&comfy, &venv_dir, retired).expect("restore failed");
+
+        assert_eq!(std::fs::read(venv_dir.join("marker.txt")).unwrap(), b"old");
+        assert!(retired_siblings(&comfy).is_empty(), "a retired sibling is still lying around after the restore");
+    }
+
+    #[test]
+    fn fehlschlag_in_der_pruefung_discards_the_half_built_venv_and_restores_the_old_one() {
+        // Der Bau selbst lief durch, aber `verify_and_heal_environment`
+        // scheitert danach: am finalen Pfad liegt eine halb-fertige neue
+        // venv, die verworfen werden muss, waehrend die alte zurueckkommt.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "old");
+
+        let retired = retire_for_rebuild(&venv_dir).unwrap();
+        marked_dir(&venv_dir, "half-built-new");
+
+        restore_after_failed_rebuild(&comfy, &venv_dir, retired).expect("restore failed");
+
+        assert_eq!(
+            std::fs::read(venv_dir.join("marker.txt")).unwrap(),
+            b"old",
+            "the customer was left with the broken new venv instead of the working old one"
+        );
+        // The half-built venv is discarded on a background thread; give it a
+        // moment, same convention as the success test above.
+        for _ in 0..50 {
+            let leftover_discard = std::fs::read_dir(&comfy)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("venv.lu-failed-")));
+            if !leftover_discard {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            std::fs::read_dir(&comfy)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_str().is_some_and(|n| n.starts_with("venv.lu-failed-"))),
+            "the discarded half-built venv is still on disk"
+        );
+    }
+
+    #[test]
+    fn abbruch_durch_den_nutzer_rolls_back_exactly_like_any_other_failure() {
+        // Ein Abbruch durch den Nutzer ist am Dateisystem nicht von einem
+        // Fehlschlag zu unterscheiden: beide rufen `restore_after_failed_rebuild`
+        // an genau derselben Stelle auf. Dieser Test haelt fest, dass ein
+        // Abbruch WAEHREND des Baus (halb-fertige neue venv liegt schon da)
+        // genauso sauber zurueckrollt wie ein regulaerer Fehlschlag.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "old");
+
+        let retired = retire_for_rebuild(&venv_dir).unwrap();
+        marked_dir(&venv_dir, "half-built-when-cancelled");
+
+        restore_after_failed_rebuild(&comfy, &venv_dir, retired).expect("restore after cancel failed");
+
+        assert_eq!(std::fs::read(venv_dir.join("marker.txt")).unwrap(), b"old");
+    }
+
+    #[test]
+    fn restore_after_failed_rebuild_with_no_retired_venv_just_clears_the_half_built_one() {
+        // Negativkontrolle: ein Fehlschlag bei der ALLERERSTEN Installation
+        // (keine alte venv vorhanden, `retired` also `None`) darf nichts
+        // erfinden; es bleibt schlicht kein `venv` uebrig.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "half-built-first-install");
+
+        restore_after_failed_rebuild(&comfy, &venv_dir, None).expect("restore failed");
+
+        assert!(!venv_dir.exists(), "a first-install failure invented an old venv to restore");
+    }
+
+    #[test]
+    fn wiederanlauf_restores_the_newest_retired_venv_when_no_valid_venv_exists() {
+        // B9 "Wiederanlauf": ein Absturz zwischen retire_for_rebuild und dem
+        // Verifikationstor laesst eine stillgelegte alte venv und KEIN
+        // brauchbares `venv` zurueck. Der naechste Start von Repair/Install
+        // muss die alte zuerst wiederherstellen, nicht danebenstehen.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        std::fs::create_dir_all(&comfy).unwrap();
+        let older = comfy.join(format!("{RETIRED_VENV_PREFIX}1"));
+        let newer = comfy.join(format!("{RETIRED_VENV_PREFIX}2"));
+        marked_dir(&older, "even-older-crash-leftover");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        marked_dir(&newer, "the-one-this-crash-retired");
+
+        restore_orphaned_venv_if_needed(&comfy);
+
+        assert_eq!(
+            std::fs::read(comfy.join("venv").join("marker.txt")).unwrap(),
+            b"the-one-this-crash-retired",
+            "the newest retired venv (the one this crash actually retired) was not restored"
+        );
+        assert!(!older.exists(), "an older, unrelated retired venv was left instead of swept");
+        assert!(!newer.exists(), "the retired folder is still there after being restored");
+    }
+
+    #[test]
+    fn wiederanlauf_does_nothing_when_a_valid_venv_already_exists() {
+        // Negativkontrolle: ein GESUNDER Nutzer darf davon nichts merken. Ein
+        // brauchbares `venv` (mit Interpreter-Datei) neben einer retirierten
+        // venv ist der normale Zustand kurz vor deren Hintergrund-Loeschung,
+        // kein Absturz, und darf nicht angefasst werden.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        marked_dir(&venv_dir, "healthy-current-venv");
+        let interpreter = venv_python_path(&comfy);
+        std::fs::create_dir_all(interpreter.parent().unwrap()).unwrap();
+        std::fs::write(&interpreter, b"#!/bin/sh\n").unwrap();
+        let leftover = comfy.join(format!("{RETIRED_VENV_PREFIX}1"));
+        marked_dir(&leftover, "awaiting background deletion");
+
+        restore_orphaned_venv_if_needed(&comfy);
+
+        assert_eq!(std::fs::read(venv_dir.join("marker.txt")).unwrap(), b"healthy-current-venv");
+        // Whether the leftover survives this particular call is not the
+        // point (its own background delete handles that); the point is that
+        // `venv` itself must be completely untouched.
+    }
+
+    #[test]
+    fn wiederanlauf_sweeps_an_abandoned_staging_folder_from_an_older_lu_version() {
+        // Ein Kunde, der von einer aelteren LU-Version mit dem
+        // Staging-Ansatz (Runde 5) aktualisiert, kann noch einen
+        // `venv.lu-new-*`-Ordner liegen haben. Der neue Wiederanlauf muss
+        // ihn wegraeumen statt ihn stehen zu lassen.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        std::fs::create_dir_all(&comfy).unwrap();
+        let abandoned = comfy.join(format!("{STAGING_VENV_PREFIX}1"));
+        marked_dir(&abandoned, "old-lu-version-staging-leftover");
+
+        restore_orphaned_venv_if_needed(&comfy);
+
+        assert!(!abandoned.exists(), "an old staging leftover from before this fix survived");
+        assert!(!comfy.join("venv").exists(), "a staging leftover must never be adopted as venv");
+    }
+
+    /// Umbenennen scheitert: what code 5 (Windows ERROR_ACCESS_DENIED, the
+    /// exact code a held-open ComfyUI process produces) and code 32 (Windows
+    /// ERROR_SHARING_VIOLATION) turn into. Runs on every platform because the
+    /// function's own `cfg!(target_os = "windows")` check is exercised either
+    /// way: off this platform it must fall through to the generic wording
+    /// instead of claiming a Windows-only cause.
+    #[test]
+    fn a_locked_old_venv_gets_a_close_comfyui_message_on_windows_only() {
+        let dir = PathBuf::from("C:\\Users\\ddrob\\ComfyUI\\venv");
+        for code in [5, 32] {
+            let e = std::io::Error::from_raw_os_error(code);
+            let msg = windows_lock_aware_retire_error(&dir, &e);
+            if cfg!(target_os = "windows") {
+                assert!(msg.contains("Close ComfyUI first"), "code {code}: {msg}");
+                assert!(msg.contains("Nothing was changed"), "code {code}: {msg}");
+            } else {
+                assert!(!msg.contains("Close ComfyUI first"), "code {code} on a non-Windows box: {msg}");
+            }
+        }
+    }
+
+    /// Negative control: an unrelated failure (permissions, a missing
+    /// folder) must not get the "close ComfyUI" wording on any platform.
+    #[test]
+    fn an_unrelated_retire_failure_keeps_the_generic_wording() {
+        let dir = PathBuf::from("/tmp/ComfyUI/venv");
+        let e = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let msg = windows_lock_aware_retire_error(&dir, &e);
+        assert!(!msg.contains("Close ComfyUI first"), "{msg}");
+        assert!(msg.contains("Could not remove the old venv"), "{msg}");
+    }
+
+    #[test]
+    fn restoring_a_retired_venv_that_vanished_underneath_us_fails_loudly_instead_of_silently() {
+        // Umbenennen scheitert, zweite Form: `retired` existiert laut Aufruf,
+        // ist aber tatsaechlich weg (etwa von Hand geloescht zwischen dem
+        // Retire und dem Restore). Der Aufrufer darf nie glauben, die alte
+        // venv sei zurueck, wenn sie es nicht ist.
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        let venv_dir = comfy.join("venv");
+        let phantom_retired = comfy.join(format!("{RETIRED_VENV_PREFIX}vanished"));
+        // phantom_retired is deliberately never created.
+        std::fs::create_dir_all(&comfy).unwrap();
+
+        let err = restore_after_failed_rebuild(&comfy, &venv_dir, Some(phantom_retired))
+            .expect_err("restoring a vanished retired venv must not silently succeed");
+        assert!(!err.is_empty());
+        assert!(!venv_dir.exists(), "a venv was invented out of nothing");
+    }
+
+    /// Runde 6, B9's real proof: an ACTUAL `python3 -m venv`, not a marker
+    /// directory. Builds an "old" venv, retires it, builds the new one
+    /// directly at the final name the way the fixed `repair_comfyui_env`
+    /// now does, and reads `bin/pip`'s shebang back. Before this fix it
+    /// would have named a staging folder that no longer existed; after it,
+    /// it must name the FINAL path, because that is the only path the new
+    /// venv was ever built at.
+    #[test]
+    #[ignore]
+    fn a_rebuilt_venvs_scripts_point_at_the_final_path_not_a_staging_name() {
+        let Some(python) = probe_python() else {
+            eprintln!("no usable Python on this box, skipping the live venv checks");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let comfy = tmp.path().join("ComfyUI");
+        std::fs::create_dir_all(&comfy).unwrap();
+
+        let _old_py = create_comfyui_venv(&comfy, &python, None).expect("the 'old' venv build failed");
+        let venv_dir = comfy.join("venv");
+        let retired = retire_for_rebuild(&venv_dir).expect("retire failed");
+
+        let new_py = create_comfyui_venv(&comfy, &python, None).expect("the new venv build failed");
+        assert_eq!(new_py, venv_python_path(&comfy), "the new venv was not built at the final path");
+
+        #[cfg(not(windows))]
+        {
+            let pip_path = venv_dir.join("bin").join("pip");
+            let shebang = std::fs::read_to_string(&pip_path).expect("bin/pip is missing");
+            let final_venv = venv_dir.to_string_lossy().into_owned();
+            assert!(
+                shebang.contains(&final_venv),
+                "bin/pip's shebang does not name the final venv path.\nshebang: {shebang}\nfinal path: {final_venv}"
+            );
+            let activate = std::fs::read_to_string(venv_dir.join("bin").join("activate")).expect("bin/activate is missing");
+            assert!(
+                activate.contains(&final_venv),
+                "activate's VIRTUAL_ENV does not name the final venv path"
+            );
+            // And the working end-to-end proof, not just the text: pip itself runs.
+            let out = std::process::Command::new(pip_path).arg("--version").output().expect("pip did not even spawn");
+            assert!(out.status.success(), "bin/pip does not run: {}", String::from_utf8_lossy(&out.stderr));
+        }
+
+        finish_rebuild(&comfy, retired);
+    }
+
+    #[test]
     fn creating_a_venv_gives_up_on_a_raised_flag_and_leaves_no_ruin() {
+        // Runde 2 Nachlauf: this registers a real tracked child, however
+        // briefly, and `state::shutdown_tests` calls the real process-wide
+        // `kill_installer_children` under the parallel harness. See
+        // `installer_children_test_lock`'s doc comment.
+        let _installer_children_guard = crate::commands::install::installer_children_test_lock();
         // The flag is raised before the call, so the outcome is the same on
         // every machine. That the loop keeps reading it WHILE the child runs
         // is the other half, and that is pinned deterministically in

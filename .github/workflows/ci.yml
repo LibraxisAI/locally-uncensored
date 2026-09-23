@@ -77,6 +77,17 @@ jobs:
       - name: Import cycles
         run: npm run cycles
 
+      # AUFLAGE a (review-isalinux.md Runde 2): the K1 ISA guard's own
+      # decision logic (scripts/lib/isa-guard-linux-rules.sh) had zero CI
+      # coverage -- it only ever ran once, by hand, on the Bauer's Mac. This
+      # needs no build, no ELF file and no objdump (it proves the pure
+      # classification/ceiling functions against checked-in fixture text,
+      # scripts/__fixtures__/linux-isa/*.disasm.txt), so it runs here on
+      # every commit, on the plain ubuntu-22.04 runner this job already
+      # has, well before the real per-platform run in release.yml.
+      - name: K1 ISA guard selftest (Linux decision logic)
+        run: bash scripts/verify-sidecar-isa.selftest.sh
+
       - name: Unit tests
         run: npx vitest run
 
@@ -114,6 +125,12 @@ jobs:
   cargo-check:
     runs-on: ${{ matrix.platform }}
     strategy:
+      # E5: without this, one platform's failure cancels the other lane
+      # before it reports anything, so a run that broke on BOTH platforms
+      # only ever shows the first one found, the 3.0.0 release night cost
+      # five rounds finding the second failure only after fixing the first.
+      # Same rationale as tauri-build below, vorbild for this line.
+      fail-fast: false
       matrix:
         platform: [ubuntu-22.04, windows-latest]
 
@@ -173,6 +190,19 @@ jobs:
             *)           touch "src-tauri/bin/lu-llama-server-$triple" ;;
           esac
           ls -la src-tauri/bin/
+          # K1 (3.0.1): tauri.windows.conf.json / tauri.linux.conf.json now
+          # declare a bundle.resources glob for the dynamic-ISA companion
+          # libraries (src-tauri/resources/llama/<triple>/*), and the comment
+          # below already established that build.rs resolves bundle.resources
+          # during a plain `cargo check`, not only a full `tauri build`. A
+          # glob with zero matches would make that resolution fail here too,
+          # so this stub needs a companion file to match, the same reasoning
+          # as the exe stub above, just for the resources side of the bundle
+          # instead of externalBin.
+          case "$triple" in
+            *-windows-*) mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.dll" ;;
+            *-linux-*)   mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.so" ;;
+          esac
 
       # tauri-build also resolves bundle.resources, and ../dist only exists
       # after a frontend build. This job runs no npm at all, so build.rs bailed
@@ -193,9 +223,99 @@ jobs:
       # They are unit tests over pure logic and short-lived child processes —
       # the whole suite runs in seconds once the crate is built, so there is no
       # cost argument for leaving them out.
+      #
+      # mlx_snapshot.rs's seven set_len tests allocate real bytes on NTFS
+      # (9.18 GB per test), unlike on the other platforms where a sparse file
+      # costs nothing. cargo test's default runner is one thread per core;
+      # windows-latest has 4 vCPUs, so the parallel default would peak around
+      # 35 GB (four tests at 9.18 GB) against the 15 to 30 GB a windows-latest
+      # runner has free. Linux keeps the parallel default; only the Windows
+      # lane is forced single-threaded, which caps the same tests at 9.18 GB.
+      # Split into two steps, one per platform, so this stays a literal
+      # `run: cargo test` on the non-Windows lane for tooling that greps
+      # the workflow file for that exact line.
       - name: Cargo test
+        if: matrix.platform != 'windows-latest'
         working-directory: src-tauri
         run: cargo test
+
+      - name: Cargo test (Windows, one thread)
+        if: matrix.platform == 'windows-latest'
+        working-directory: src-tauri
+        run: cargo test -- --test-threads=1
+
+      # Runde 3, Nachbesserung 7: the self-heal tests in install/pip.rs
+      # (a_ssl_collision_is_retried_once_..., a_genuine_ssl_gap_is_not_
+      # retried_forever) are #[ignore]d, documented in
+      # install/children.rs:148-167 - INSTALLER_CHILDREN is a process-wide
+      # registry, and any AppState drop anywhere in the SAME test binary
+      # SIGKILLs every registered pid, not just its own. That is real under
+      # `cargo test`'s default parallel runner, so the tests skip there
+      # rather than flake. Without this step, though, the plain `cargo
+      # test` above never ran them at all: the self-heal behaviour from
+      # Punkt 11, the actual fix for the customer's ticket, had no gate.
+      # `--test-threads=1` removes the exact hazard the tests are ignored
+      # for, so this step runs them for real.
+      #
+      # Named by filter, NOT a blanket `-- --ignored`: this crate's other
+      # #[ignore]d tests are live/e2e checks that need something this
+      # runner does not have (pep668_e2e_live_detect_and_create_venv wants
+      # LU_PEP668_TEST_PYTHON pointed at a fake interpreter on disk;
+      # commands::proxy's live_strict_aiohttp test wants a local stub
+      # server on 127.0.0.1:18899). Running the whole ignored set here
+      # would turn CI red for a setup problem, not a regression. Two
+      # substring filters are OR'd by the test harness, so both self-heal
+      # tests run and nothing else ignored does.
+      #
+      # Runde 4 (review-engine.md Runde 3, Abschnitt 5): a filter that
+      # matches ZERO tests is not an error to libtest, it prints "0 passed"
+      # and exits 0. Both tests are `#[cfg(not(windows))]`, so on
+      # windows-latest this step always ran nothing and stayed silently
+      # green, including in a future where both tests are renamed or
+      # deleted outright, exactly the case this gate exists to catch. Two
+      # fixes: skip the step on Windows instead of pretending to run it
+      # there, and on the platform where it actually matters, grep the
+      # test harness's own summary line for "2 passed" so a filter that
+      # stops matching (a rename, a deletion) fails the step instead of
+      # quietly running nothing.
+      - name: Cargo test (ignored self-heal tests, serial)
+        if: runner.os != 'Windows'
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          out="$(cargo test -- --ignored --test-threads=1 ssl_collision_is_retried_once genuine_ssl_gap_is_not_retried_forever 2>&1)"
+          echo "$out"
+          echo "$out" | grep -Eq '^test result: ok\. 2 passed; 0 failed;' || {
+            echo "::error::expected exactly 2 passed self-heal tests, the filter matched a different count (renamed or deleted test?)"
+            exit 1
+          }
+
+      # Runde 6, F15 (review Runde 6, Abschnitt 7): the B9 real-venv proof
+      # (`a_rebuilt_venvs_scripts_point_at_the_final_path_not_a_staging_name`,
+      # install/venv.rs) is `#[ignore]`d for the same INSTALLER_CHILDREN
+      # reason as the self-heal tests above, and it never had a CI gate at
+      # all, only a note in the review that someone ran it by hand once. That
+      # means the actual proof that a rebuilt venv's `bin/pip` names the
+      # final path instead of a vanished staging folder could regress
+      # silently, exactly the shape of the bug it exists to catch. Same
+      # pattern as the self-heal step: named by filter, serial, and the
+      # summary line is grep'd for the exact passed count so a rename or
+      # deletion turns this step red instead of leaving it quietly green on
+      # "0 passed". Linux only: it needs a real `python3` on the runner (the
+      # test itself skips gracefully without one, but that would make the
+      # count check ambiguous between "skipped" and "ran"), and this is the
+      # platform review-engine.md's Beweisliste actually exercises it on.
+      - name: Cargo test (ignored B9 real venv proof, serial)
+        if: runner.os == 'Linux'
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          out="$(cargo test -- --ignored --test-threads=1 a_rebuilt_venvs_scripts_point_at_the_final_path_not_a_staging_name 2>&1)"
+          echo "$out"
+          echo "$out" | grep -Eq '^test result: ok\. 1 passed; 0 failed;' || {
+            echo "::error::expected exactly 1 passed B9 real-venv test, the filter matched a different count (renamed or deleted test?)"
+            exit 1
+          }
 
       # Gating since 01.09.2026 — the debt this comment used to describe is paid.
       # The deny-by-default error sat at src/commands/secret.rs:173, not :108 as
@@ -324,6 +444,18 @@ jobs:
             *)           touch "src-tauri/bin/lu-llama-server-$triple" ;;
           esac
           ls -la src-tauri/bin/
+          # K1 (3.0.1): this job runs a REAL `tauri build`, which resolves
+          # bundle.resources for real: tauri.windows.conf.json /
+          # tauri.linux.conf.json now glob src-tauri/resources/llama/<triple>/*
+          # for the dynamic-ISA companion libraries, and this gate never runs
+          # scripts/build-llama.sh to produce them. Same stub reasoning as the
+          # exe above, on the resources side of the bundle instead of
+          # externalBin, so a glob with zero matches cannot fail this gate for
+          # a reason that has nothing to do with what it is checking.
+          case "$triple" in
+            *-windows-*) mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.dll" ;;
+            *-linux-*)   mkdir -p "src-tauri/resources/llama/$triple" && touch "src-tauri/resources/llama/$triple/ggml-cpu-x64.so" ;;
+          esac
 
       - name: Install npm dependencies
         run: npm ci
@@ -332,4 +464,20 @@ jobs:
       # header. Deliberately the last word on whether this commit is shippable.
       - name: Tauri build (unsigned — exit code is the verdict)
         shell: bash
-        run: bash scripts/ci-tauri-build.sh
+        run: |
+          # K1-18 (lu-301/e2e/linux/BERICHT.md): release.yml's real, non-stub
+          # Linux build measured that linuxdeploy resolves lu-llama-server's
+          # NEEDED entries via the standard ld search path, not via the
+          # staged usr/lib/.../llama/ location, and fails without
+          # LD_LIBRARY_PATH pointed at it. This job stubs the sidecar as a
+          # zero-byte file (see "Stub llama-server sidecar" above), so
+          # whether linuxdeploy hits the identical failure here was NOT
+          # independently measured on that stub; this only mirrors the
+          # release-lane fix defensively, for the same reason, so this gate
+          # and the real release build cannot silently diverge on it. Empty
+          # on windows-latest, where LD_LIBRARY_PATH is meaningless.
+          if [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            triple="$(rustc -vV | awk '/^host:/{print $2}')"
+            export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/src-tauri/resources/llama/$triple${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          bash scripts/ci-tauri-build.sh

@@ -30,7 +30,9 @@ test('cloud render: submit → poll → gallery, meter + utility intents present
   await bootIntoCloudCreate(page, { license: 'active', access: true, mediaLive: true })
 
   // Cloud-only utility intents are offered on the cloud backend.
-  await expect(page.getByRole('radio', { name: /Upscale/i })).toBeVisible({ timeout: 15_000 })
+  // R5-67 renamed the upscale label to "Enhance Image" (parity with web);
+  // the id stays 'upscale', only the visible text changed.
+  await expect(page.getByRole('radio', { name: /Enhance Image/i })).toBeVisible({ timeout: 15_000 })
   await expect(page.getByRole('radio', { name: /Erase Object/i })).toBeVisible()
 
   // Credits meter reflects the mocked quota (remaining = 2,550,000 − 12,345).
@@ -112,13 +114,14 @@ test('local mode: local lanes usable, cloud-only ops shown as locked teasers', a
   // Character Studio is the musubi trainer — a real local tab on Mac without ComfyUI.
   await expect(page.getByRole('radio', { name: 'Character Studio', exact: true })).toBeVisible()
 
-  // Upscale / eraser now have local ComfyUI lanes, so they are selectable
-  // radios (not locked teasers) on a Comfy host. Playwright CI is not a Mac.
-  await expect(page.getByRole('radio', { name: 'Upscale', exact: true })).toBeVisible()
+  // Enhance Image / eraser have local ComfyUI lanes (hasLocalLane), so they
+  // are selectable radios on a Comfy host. Playwright CI is not a Mac.
+  // R5-67 renamed the upscale label to "Enhance Image".
+  await expect(page.getByRole('radio', { name: 'Enhance Image', exact: true })).toBeVisible()
   await expect(page.getByRole('radio', { name: 'Erase Object', exact: true })).toBeVisible()
 
-  await page.getByRole('radio', { name: 'Upscale', exact: true }).click()
-  await expect(page.getByRole('radio', { name: 'Upscale', exact: true })).toBeChecked()
+  await page.getByRole('radio', { name: 'Enhance Image', exact: true }).click()
+  await expect(page.getByRole('radio', { name: 'Enhance Image', exact: true })).toBeChecked()
 })
 
 test('media_live=false: generate shows the honest coming-soon message', async ({ page }) => {

@@ -25,7 +25,7 @@
 //! `self_migrate_cmd.rs`, everything else lives here.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use super::install_method::{on_path, InstallKind};
 use crate::app_identity::APP_CONFIG_DIR;
@@ -354,7 +354,8 @@ pub fn refresh_desktop_database(layout: &Layout) {
     if !on_path("update-desktop-database") {
         return;
     }
-    let _ = Command::new("update-desktop-database")
+    // K14 Runde 2, Punkt 5: a foreign desktop-integration tool.
+    let _ = crate::process_util::foreign_system_command("update-desktop-database")
         .arg(layout.applications_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -394,18 +395,33 @@ fn shell_quote(path: &Path) -> String {
 /// would make the new process report the old path, so they are dropped.
 pub fn launch_after_exit(exe: &Path, pid: u32) -> Result<(), String> {
     let script = relaunch_script(exe, pid);
+    // K14 Runde 2, Punkt 5: this IS the in-app update path the Reddit
+    // melder hit. `setsid` and `sh` are foreign system programs, exactly
+    // K11's `git` category, so they get the same LD_LIBRARY_PATH/PYTHONPATH/
+    // etc. cleanup every other foreign spawn does. The new AppImage this
+    // launches is OUR OWN binary, and `exec`s straight into its own AppRun,
+    // which sets up its own fresh environment on top of whatever `sh`
+    // inherits, so stripping the OLD mount's poisoned values first only
+    // helps: it cannot leave the new process worse off, and it means the new
+    // process is not the one left to clean up after the old mount.
     let mut command = if on_path("setsid") {
-        let mut c = Command::new("setsid");
+        let mut c = crate::process_util::foreign_system_command("setsid");
         c.arg("sh").arg("-c").arg(&script);
         c
     } else {
         // Without util-linux the process still survives: it is reparented to
         // init when we exit, and a windowed app has no controlling terminal to
         // be signalled from.
-        let mut c = Command::new("sh");
+        let mut c = crate::process_util::foreign_system_command("sh");
         c.arg("-c").arg(&script);
         c
     };
+    // APPIMAGE/APPDIR/OWD/ARGV0 describe THIS bundle and are not in
+    // APPIMAGE_ENV_VARS (strip_appimage_env deliberately leaves APPDIR alone
+    // everywhere else, see process_util.rs, so a grandchild can still
+    // sanitize itself). This one spawn is the exception: the child being
+    // started IS the next LU, so its own identity variables must not carry
+    // the old process's values.
     for stale in ["APPIMAGE", "APPDIR", "OWD", "ARGV0"] {
         command.env_remove(stale);
     }

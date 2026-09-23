@@ -22,6 +22,7 @@ use crate::os_error;
 // base models resolve only from known filenames inside LU-managed dirs, and
 // the training-set id / names are sanitized before any path join.
 
+use crate::process_util::foreign_system_command;
 use crate::state::AppState;
 use std::fs;
 use std::io::{BufReader, Read};
@@ -64,7 +65,26 @@ const TRAINER_REINSTALL_NEEDS_GIB: u64 = 7;
 /// checkpointing, 8 bit optimizer) was proven on has 12 GB. Below that the run
 /// gets through both cache steps and dies with CUDA out of memory in the first
 /// training step, after ten minutes of work. Asked before the first step.
-const TRAINER_VRAM_FLOOR_MIB: u64 = 11 * 1024;
+const TRAINER_VRAM_FLOOR_MIB_FP8: u64 = 11 * 1024;
+
+/// Nachbesserung Runde 2: `TRAINER_VRAM_FLOOR_MIB_FP8` assumes fp8 weight
+/// storage is on, which `train_precision_for_capability` now guarantees for
+/// every measured card (see its doc comment). This floor is only reached
+/// for the one case where it is off: an unmeasured card (`cap: None`), the
+/// fully conservative fallback. musubi has no zimage-specific number for
+/// running WITHOUT `--fp8_base`; the only concrete figure in its docs is
+/// `docs/hunyuan_video.md:236`, "without --fp8_base, 24 GB VRAM or more is
+/// recommended" -- a different model, not measured for zimage on our own
+/// box. Read honestly as an upper estimate rather than invented precision.
+const TRAINER_VRAM_FLOOR_MIB_NO_FP8: u64 = 24 * 1024;
+
+/// The floor `vram_verdict` checks against, coupled to the precision that
+/// will actually run: a card refused for lacking fp8-recipe memory when fp8
+/// storage is in fact on (or the reverse) was praezisionsblind, exactly the
+/// Runde-2 review's finding.
+fn vram_floor_mib(precision: &TrainPrecision) -> u64 {
+    if precision.fp8 { TRAINER_VRAM_FLOOR_MIB_FP8 } else { TRAINER_VRAM_FLOOR_MIB_NO_FP8 }
+}
 
 /// Known Z-Image training-base files, resolved by exact filename from the
 /// trainer root's models dir or the active ComfyUI models tree.
@@ -129,6 +149,149 @@ fn write_config_value(key: &str, value: &str) {
     let _ = fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or_default());
 }
 
+/// Whether a candidate path starts with `~`. `~` is a SHELL expansion, and
+/// nothing on the Rust side of the trainer ever resolves it: the value goes
+/// straight into `PathBuf::from`. K5 Blocker 1 (Opus review of `4fda5a0a`):
+/// the old placeholder suggested `~/LU-Trainer` on Mac and Linux, so typing
+/// exactly what the field offered created a literal folder named `~` next to
+/// the app's working directory, not a folder in the user's home. Refusing
+/// beats silently expanding it ourselves: there is no shell context here to
+/// expand `~` FOR (a different user could run the app under a service
+/// account with a different home than the one the customer meant).
+fn starts_with_tilde(p: &str) -> bool {
+    p.starts_with('~')
+}
+
+/// The absolute example shown in the trainer's own install-path field and
+/// quoted back in its own rejection messages, one per platform family so the
+/// example is never impossible on the machine reading it (same reasoning as
+/// `comfy_path_placeholder.ts` on the frontend, kept in sync by
+/// `trainer-path-placeholder.test.ts`/`k5-trainer-path-honesty.test.tsx`).
+fn example_trainer_path() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "D:\\LU-Trainer"
+    } else if cfg!(target_os = "macos") {
+        "/Users/you/LU-Trainer"
+    } else {
+        "/home/you/LU-Trainer"
+    }
+}
+
+/// Everything a customer-typed trainer folder has to clear before it is
+/// written to `config.json` and an install starts against it. K5 Blocker 2
+/// (Opus review of `4fda5a0a`): the old code wrote the value first and asked
+/// nothing afterward, so a relative path, a path with no write access or a
+/// drive with no room was persisted anyway, and stayed persisted even though
+/// the install that followed could never use it. `install_comfyui` is the
+/// pattern this mirrors, except the check happens before the value is
+/// remembered instead of after the whole install finishes -- checking a
+/// folder is fast, an install is not, and there is nothing here yet to lose
+/// on a failed check.
+///
+/// Order matters: the drive-space question is asked with the CANDIDATE path
+/// (no directory has to exist yet for a mount-point lookup), before anything
+/// is created, so a rejection on space leaves no empty folder behind.
+fn validate_trainer_root_candidate(p: &str) -> Result<PathBuf, String> {
+    if starts_with_tilde(p) {
+        return Err(format!(
+            "\"{p}\" starts with ~, and this field never expands it: the path is used exactly as typed, so ~ would become a literal folder named ~, not your home folder. Use a full path instead, for example {}.",
+            example_trainer_path()
+        ));
+    }
+    let path = PathBuf::from(p);
+    if !path.is_absolute() {
+        return Err(format!(
+            "\"{p}\" is not an absolute path. Use a full path starting from the drive or root, for example {}.",
+            example_trainer_path()
+        ));
+    }
+    if let Some(free) = crate::commands::download::available_space_for(&path) {
+        if let Some(msg) = disk_room_message(&path, free, TRAINER_SETUP_NEEDS_GIB) {
+            return Err(msg);
+        }
+    }
+    fs::create_dir_all(&path).map_err(|e| format!("Could not create \"{p}\": {}", os_error::english(&e)))?;
+    let probe = path.join(".lu-write-check");
+    fs::write(&probe, b"ok").map_err(|e| format!("\"{p}\" is not writable: {}", os_error::english(&e)))?;
+    let _ = fs::remove_file(&probe);
+    Ok(path)
+}
+
+/// Whether `a` and `b` sit on the same drive resp. filesystem. `None` when
+/// this cannot be determined, which the caller must treat as "do not
+/// suggest" (review-teil10.md M1): a suggestion is only ever worth showing
+/// when the customer's folder is PROVABLY elsewhere.
+///
+/// Windows: the drive letter or UNC prefix (`Component::Prefix`), compared
+/// case-insensitively. Neither path needs to exist for this; a prefix is
+/// part of the path text itself.
+#[cfg(windows)]
+fn same_drive(a: &Path, b: &Path) -> Option<bool> {
+    use std::path::Component;
+    fn prefix_key(p: &Path) -> Option<String> {
+        match p.components().next()? {
+            Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().to_lowercase()),
+            _ => None,
+        }
+    }
+    Some(prefix_key(a)? == prefix_key(b)?)
+}
+
+/// Unix: the device number (`MetadataExt::dev`) of the nearest existing
+/// ancestor of each path, since a freshly suggested folder does not exist
+/// yet and cannot be `stat`-ed directly.
+#[cfg(unix)]
+fn same_drive(a: &Path, b: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    fn nearest_existing_dev(p: &Path) -> Option<u64> {
+        let mut cur = Some(p);
+        while let Some(c) = cur {
+            if let Ok(meta) = fs::metadata(c) {
+                return Some(meta.dev());
+            }
+            cur = c.parent();
+        }
+        None
+    }
+    Some(nearest_existing_dev(a)? == nearest_existing_dev(b)?)
+}
+
+/// A folder to suggest, not set, in the trainer's own install-path field: K5
+/// architecture point 5. A customer who already moved ComfyUI (and with it
+/// the model folder `download_model` writes into, see `models_dir_in` in
+/// `commands/download.rs`) off the system drive is not left to retype a
+/// matching drive letter for the trainer by hand. `None` once `trainer_root`
+/// is already customized (nothing left to suggest), when no ComfyUI folder
+/// is known yet, or when the ComfyUI folder is not PROVABLY on a different
+/// drive resp. filesystem than `default_root` (review-teil10.md M1: without
+/// this check, "Your model folder is on another drive" could be shown for a
+/// customer whose ComfyUI sits on the very same drive as the app data
+/// folder, and the field would move a fresh install's default target for
+/// every customer with a known ComfyUI folder, not only the ones with a
+/// second drive). Read only as far as the PLACEHOLDER: nothing here writes
+/// `config.json` or moves a single byte.
+fn suggested_trainer_root(comfy_dir: Option<&Path>, default_root: &Path) -> Option<String> {
+    suggested_trainer_root_with(comfy_dir, default_root, same_drive)
+}
+
+/// Same as [`suggested_trainer_root`], with the drive comparison injected so
+/// the "actually on another drive" branch has a unit test that does not
+/// depend on this machine happening to have a second filesystem mounted.
+/// The real code path always calls this through [`suggested_trainer_root`],
+/// which passes the real, platform-specific [`same_drive`].
+fn suggested_trainer_root_with(
+    comfy_dir: Option<&Path>,
+    default_root: &Path,
+    same_drive: impl Fn(&Path, &Path) -> Option<bool>,
+) -> Option<String> {
+    let comfy = comfy_dir?;
+    let parent = comfy.parent()?;
+    if same_drive(comfy, default_root)? {
+        return None;
+    }
+    Some(parent.join("LU-Trainer").to_string_lossy().to_string())
+}
+
 /// Trainer root: persisted override (config `trainer_root`) else
 /// `<app_data>/musubi`. Layout: `<root>/venv`, `<root>/musubi-tuner`,
 /// `<root>/models`, `<root>/train/<set_id>/...`.
@@ -142,6 +305,68 @@ fn trainer_root(app: &tauri::AppHandle) -> PathBuf {
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("musubi")
+}
+
+/// pip, Hugging Face and torch each keep a cache of their own, and left at
+/// their OS defaults every one of them lands under the user's profile
+/// (`%LOCALAPPDATA%` on Windows), regardless of where [`trainer_root`]
+/// itself points (K5 Punkt 13, Trainer-Folgeauftrag). This is a pure
+/// function of `root` alone: `<root>/cache/pip`,
+/// `<root>/cache/huggingface[/xet]`, `<root>/cache/torch`, plus
+/// `XDG_CACHE_HOME` at `<root>/cache` itself (the base every XDG-aware tool
+/// falls back to for a cache this list has not named directly).
+///
+/// A version of this existed until `4b01feaf` and was deleted rather than
+/// left unwired, per the house rule against dead code (it built the paths
+/// but nothing ever called it). Reintroduced here WIRED IN this time, see
+/// [`apply_trainer_cache_env`] for the one rule that keeps it from silently
+/// orphaning an existing multi-GB cache.
+pub(crate) fn trainer_cache_env(root: &Path) -> [(&'static str, PathBuf); 5] {
+    let cache = root.join("cache");
+    let hf = cache.join("huggingface");
+    [
+        ("PIP_CACHE_DIR", cache.join("pip")),
+        ("HF_HOME", hf.clone()),
+        ("HF_XET_CACHE", hf.join("xet")),
+        ("TORCH_HOME", cache.join("torch")),
+        ("XDG_CACHE_HOME", cache),
+    ]
+}
+
+/// Whether the user actually moved `trainer_root` away from the built-in
+/// default: a persisted, non-empty `trainer_root` config value. Mirrors
+/// exactly the check [`trainer_root`] itself makes to decide whether to use
+/// the override.
+///
+/// This is the migration guard for [`apply_trainer_cache_env`]: a customer
+/// who never touched the setting must not have pip/HF/torch's caches
+/// silently redirected out from under an install that predates this
+/// feature. Their existing `~/.cache/huggingface` (or the platform
+/// equivalent) already holds every base model and dependency this app
+/// asked pip/HF for before this fix landed; redirecting it unconditionally
+/// would leave that multi-GB cache empty at the new path and pay for the
+/// same downloads a second time the moment the trainer runs again. Only a
+/// customer who deliberately set `trainer_root` to move the trainer off a
+/// small system drive gets the caches moved with it, because for that
+/// customer a cache still filling up the old drive is the bug, not a
+/// feature.
+fn trainer_root_is_customized() -> bool {
+    read_config_value("trainer_root").map(|p| !p.trim().is_empty()).unwrap_or(false)
+}
+
+/// Sets pip/HF/torch's caches on `cmd` to the SAME configured root as the
+/// trainer folder itself, but ONLY when `customized` is true. Pure over
+/// that argument (rather than reading `trainer_root_is_customized()`
+/// itself) so the migration rule is a plain unit test instead of one that
+/// has to fake a config file on disk; every real call site below passes
+/// `trainer_root_is_customized()` for the actual decision.
+fn apply_trainer_cache_env(cmd: &mut Command, root: &Path, customized: bool) {
+    if !customized {
+        return;
+    }
+    for (name, path) in trainer_cache_env(root) {
+        cmd.env(name, path);
+    }
 }
 
 fn venv_python(root: &Path) -> PathBuf {
@@ -217,6 +442,40 @@ fn active_comfy_dir(state: &AppState) -> Option<PathBuf> {
 ///
 /// It is NOT the whole fix. The launcher path (step 3 below) never asked
 /// torch's env store anything; see `training_command`.
+///
+/// The third fix carried here is K3, 2026-09-18, corrected 2026-09-18 after
+/// an Opus review that read the real mechanism further than this comment
+/// first did. `892a7e21` dropped `accelerate launch` (see `training_command`)
+/// so nothing sets `LOCAL_RANK` / `RANK` / `WORLD_SIZE` any more, and
+/// `accelerate/state.py`'s `PartialState.__init__` (v1.6.0, read from the
+/// real cloned source, not guessed) never calls `init_process_group` without
+/// `LOCAL_RANK`, card count or not. The actual trigger is one step earlier,
+/// in musubi's own `prepare_accelerator()` (`training/accelerator_setup.py`):
+/// it builds `InitProcessGroupKwargs(backend="gloo" if os.name == "nt" ...)`
+/// whenever `torch.cuda.device_count() > 1`, and hands it to `Accelerator()`.
+/// `Accelerator.__init__` (`accelerate/accelerator.py` Z. 460-461) turns that
+/// into `kwargs["backend"] = "gloo"` and passes it on to `PartialState`.
+/// `_prepare_backend` (`state.py` Z. 735-804) finds no `LOCAL_RANK` and
+/// returns `("gloo", DistributedType.NO)` UNCHANGED: the backend name
+/// itself leaks through even though nothing distributed was ever set up.
+/// Back in `PartialState.__init__` (Z. 268-292), the branch that should read
+/// `if self.backend is None:` is then false, because `self.backend == "gloo"`,
+/// not `None`; the `else` arm calls `torch.distributed.get_world_size()` on a
+/// process group that was never initialized. That call is, word for word,
+/// the melders' traceback.
+///
+/// `CUDA_VISIBLE_DEVICES` pinned to one card (`pin_trainer_gpu`, resolved by
+/// `resolve_trainer_gpu`) keeps `device_count() > 1` from ever being true, so
+/// the handler is never built and `self.backend` stays `None`. This closes
+/// the door for Z0mbieK (two visible cards, confirmed). It does NOT explain
+/// sdrairsoft: a single visible card never builds the handler in the first
+/// place, `device_count() == 1` cannot reach this branch, and nobody has
+/// measured `torch.cuda.device_count()` or `nvidia-smi -L` from his machine.
+/// A second, unused NVIDIA card the driver still enumerates would fit
+/// (Tesla P100 has no display output, so a Windows box built around one
+/// commonly has a second card for the screen), but that is a plausible read
+/// of the report, not a measurement; see the question drafted in
+/// `lu-301/bau/trainer.md`.
 fn trainer_child_env(cmd: &mut Command) {
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PYTHONUTF8", "1");
@@ -438,6 +697,151 @@ fn training_gpu_label() -> Option<&'static str> {
     }
 }
 
+/// The single card the trainer pins itself to, and where that pick came from
+/// (for the log line, see `start_character_training`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrainerGpuChoice {
+    pub(crate) index: u32,
+    pub(crate) name: String,
+    pub(crate) memory_mib: Option<u64>,
+    pub(crate) source: &'static str,
+    /// The card's `GPU-<uuid>` when `detect_gpus()` could name it (never for
+    /// the "CUDA_VISIBLE_DEVICES already set" branch, whose card may not be
+    /// in `nvidia` at all). GPU-UUID Nachzug, review 2026-09-18 Runde 2 "UUID
+    /// statt Index": `pin_trainer_gpu` prefers this over `index` the same
+    /// way `gpu.rs::cuda_visible_devices_value` does for Ollama/ComfyUI.
+    pub(crate) uuid: Option<String>,
+}
+
+/// Narrow `nvidia` down to the one card every trainer child runs on. Pure on
+/// purpose (no `nvidia-smi`, no env read) so the priority order is a unit
+/// test, not a Windows box: [`resolve_trainer_gpu`] is the thin wrapper that
+/// gathers the real inputs.
+///
+/// Nachbesserung after the Opus review of `0e826c22`: that commit pinned
+/// every trainer child to `CUDA_VISIBLE_DEVICES=0` unconditionally, which
+/// (a) is not necessarily the strong card -- CUDA without
+/// `CUDA_DEVICE_ORDER=PCI_BUS_ID` sorts fastest-first, and Z0mbieK's RTX
+/// 3090 Ti and RTX 3050 share compute capability 8.6, so the heuristic
+/// tie-breaks on something neither promised nor measured -- and (b) silently
+/// overrides both LU's own Hardware-tab GPU picker (`gpu.rs::GpuSelection`,
+/// already wired into Ollama and ComfyUI via `apply_gpu_env`) and a
+/// `CUDA_VISIBLE_DEVICES` the user set outside LU on purpose.
+///
+/// Order: the Hardware tab's own pick first (narrowed to its highest-memory
+/// entry if the user selected more than one card there); failing that, a
+/// `CUDA_VISIBLE_DEVICES` already set on this process (same narrowing);
+/// failing that, the NVIDIA card with the most memory, never a bare index.
+pub(crate) fn choose_trainer_gpu(
+    nvidia: &[crate::commands::gpu::DetectedGpu],
+    selection: &crate::commands::gpu::GpuSelection,
+    existing_cuda_visible_devices: Option<&str>,
+) -> Option<TrainerGpuChoice> {
+    let best_of = |indices: &[u32]| -> Option<&crate::commands::gpu::DetectedGpu> {
+        nvidia.iter().filter(|g| indices.contains(&g.index)).max_by_key(|g| g.memory_mib.unwrap_or(0))
+    };
+    if selection.vendor == "nvidia" && !selection.indices.is_empty() {
+        if let Some(g) = best_of(&selection.indices) {
+            return Some(TrainerGpuChoice {
+                index: g.index,
+                name: g.name.clone(),
+                memory_mib: g.memory_mib,
+                uuid: g.uuid.clone(),
+                source: "the Hardware tab's GPU selection",
+            });
+        }
+    }
+    if let Some(existing) = existing_cuda_visible_devices {
+        // Tokens may be plain indices OR `GPU-<uuid>` forms -- a user who set
+        // this themselves outside LU is just as entitled to the UUID form
+        // this module now prefers internally (GPU-UUID Nachzug, review
+        // 2026-09-18 Runde 2). Try a uuid match per token first, then a
+        // numeric index, so either spelling of the user's own choice is
+        // honoured the same way.
+        let indices: Vec<u32> = existing
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|tok| {
+                nvidia
+                    .iter()
+                    .find(|g| g.uuid.as_deref() == Some(tok))
+                    .map(|g| g.index)
+                    .or_else(|| tok.parse::<u32>().ok())
+            })
+            .collect();
+        if !indices.is_empty() {
+            if let Some(g) = best_of(&indices) {
+                return Some(TrainerGpuChoice {
+                    index: g.index,
+                    name: g.name.clone(),
+                    memory_mib: g.memory_mib,
+                    uuid: g.uuid.clone(),
+                    source: "the CUDA_VISIBLE_DEVICES already set for this process",
+                });
+            }
+            // detect_gpus could not name it (a stale index, a probe that did
+            // not run) -- the user's own choice still wins over a guess.
+            return Some(TrainerGpuChoice {
+                index: indices[0],
+                name: format!("device {}", indices[0]),
+                memory_mib: None,
+                uuid: None,
+                source: "the CUDA_VISIBLE_DEVICES already set for this process",
+            });
+        }
+    }
+    nvidia.iter().max_by_key(|g| g.memory_mib.unwrap_or(0)).map(|g| TrainerGpuChoice {
+        index: g.index,
+        name: g.name.clone(),
+        memory_mib: g.memory_mib,
+        uuid: g.uuid.clone(),
+        source: "the card with the most memory",
+    })
+}
+
+/// [`choose_trainer_gpu`] with its inputs gathered for real: `detect_gpus()`
+/// (the same probe the Hardware tab itself lists cards from) and this
+/// process's own `CUDA_VISIBLE_DEVICES`.
+pub(crate) fn resolve_trainer_gpu(selection: &crate::commands::gpu::GpuSelection) -> Option<TrainerGpuChoice> {
+    let all = crate::commands::gpu::detect_gpus().unwrap_or_default();
+    let nvidia: Vec<crate::commands::gpu::DetectedGpu> =
+        all.into_iter().filter(|g| g.vendor == "nvidia").collect();
+    let existing = std::env::var("CUDA_VISIBLE_DEVICES").ok();
+    choose_trainer_gpu(&nvidia, selection, existing.as_deref())
+}
+
+/// Set on a Command right before it runs: every trainer child sees exactly
+/// this one card, regardless of how many are actually plugged in.
+///
+/// BLOCKER fix, Runde 2: `choice.index` comes from `nvidia-smi`, which
+/// numbers cards in PCI bus order. CUDA itself, without `CUDA_DEVICE_ORDER`,
+/// defaults to FASTEST_FIRST, a different ordering whenever visible cards
+/// differ in speed. `CUDA_VISIBLE_DEVICES` alone can therefore pin the wrong
+/// physical card on a multi-GPU box, the VRAM preflight measures a
+/// different card than the one that trains, and the log line names the
+/// intended card while a different one runs. This also covers the branch in
+/// `choose_trainer_gpu` that reads a user-set `CUDA_VISIBLE_DEVICES`: its
+/// index is matched against `detect_gpus()`'s PCI-order list, so the index
+/// this function writes back out needs the same ordering to mean what it
+/// says.
+///
+/// GPU-UUID Nachzug (review 2026-09-18 Runde 2, "UUID statt Index"): prefers
+/// `choice.uuid` (a `GPU-<uuid>` string `detect_gpus()` could name) over the
+/// bare index whenever it is known, the same env var value NVIDIA's own
+/// CUDA_VISIBLE_DEVICES documentation and `nvidia-smi -L` both describe, and
+/// identical on Windows and Linux. This survives a driver renumbering cards
+/// between detection and launch, the PCI-order/FASTEST_FIRST mismatch
+/// `CUDA_DEVICE_ORDER` only patches over for the index form. `CUDA_DEVICE_
+/// ORDER=PCI_BUS_ID` is still set unconditionally as the fallback net for
+/// whenever `choice.uuid` is `None` (an old driver, a MIG-enabled card, or
+/// the "stale index, probe did not run" branch of `choose_trainer_gpu`).
+fn pin_trainer_gpu(cmd: &mut Command, choice: &TrainerGpuChoice) {
+    let selector = choice.uuid.clone().unwrap_or_else(|| choice.index.to_string());
+    cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+    cmd.env("CUDA_VISIBLE_DEVICES", selector);
+}
+
 /// Every site-packages of the trainer venv. Windows puts one at
 /// `venv/Lib/site-packages`, POSIX one per python version under `venv/lib`.
 fn site_packages_dirs(root: &Path) -> Vec<PathBuf> {
@@ -480,21 +884,30 @@ fn musubi_installed(root: &Path) -> bool {
 /// preflight_verdict below. The trainer package is probed with find_spec
 /// rather than a real import: importing it pulls the whole training stack and
 /// would turn a cheap check into seconds of work and a second CUDA context.
-const TORCH_PREFLIGHT_PY: &str = "import importlib.util\nimport torch\nprint('TORCH_OK', torch.__version__)\ncuda = torch.cuda.is_available()\nprint('CUDA', '1' if cuda else '0')\nif cuda:\n    cap = torch.cuda.get_device_capability(0)\n    print('CAP', cap[0], cap[1])\n    print('ARCHS', ' '.join(torch.cuda.get_arch_list()))\n    print('VRAM_MIB', torch.cuda.get_device_properties(0).total_memory // (1024 * 1024))\nif importlib.util.find_spec('musubi_tuner') is not None:\n    print('MUSUBI_OK')\n";
+const TORCH_PREFLIGHT_PY: &str = "import importlib.util\nimport torch\nprint('TORCH_OK', torch.__version__)\ncuda = torch.cuda.is_available()\nprint('CUDA', '1' if cuda else '0')\nif cuda:\n    cap = torch.cuda.get_device_capability(0)\n    print('CAP', cap[0], cap[1])\n    print('NAME', torch.cuda.get_device_name(0))\n    print('ARCHS', ' '.join(torch.cuda.get_arch_list()))\n    print('VRAM_MIB', torch.cuda.get_device_properties(0).total_memory // (1024 * 1024))\nif importlib.util.find_spec('musubi_tuner') is not None:\n    print('MUSUBI_OK')\n";
 
-/// What the preflight found. Four failure classes that all used to surface as
+/// What the preflight found. Five failure classes that all used to surface as
 /// a raw error deep inside the run: torch not importable (half install), a
 /// torch build whose kernel list stops below the GPU's compute capability
 /// (cu121 on Blackwell, which imports fine and even reports CUDA as
-/// available), a torch that reaches no card at all on a machine that has one
+/// available), the mirror of that for a card OLDER than the build's kernel
+/// floor (Opus review of K3, 2026-09-18: nothing checked this direction
+/// before), a torch that reaches no card at all on a machine that has one
 /// (the CUDA wheels an AMD box used to be handed), and the trainer package
-/// missing (an install that died after torch). Each one is repairable, which
-/// is why they are distinguished rather than collapsed into one error string.
+/// missing (an install that died after torch). Each one is repairable or at
+/// least namable, which is why they are distinguished rather than collapsed
+/// into one error string.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Preflight {
     Ok,
     TorchBroken(String),
     KernelsTooOld { cap: u32, max: u32 },
+    /// `cap < min`: this build's kernel list does not reach down to the
+    /// card's compute capability either -- the two named archs are the
+    /// build's floor and the card's own number, not a version range.
+    /// Unlike `KernelsTooOld`, no other channel `trainer_torch_plan` already
+    /// picks from would fix this, so it does not ask for a torch reinstall.
+    CardBelowKernelFloor { cap_major: u32, cap_minor: u32, min: u32, name: Option<String> },
     /// torch imports, runs, and reports no device at all on a machine that
     /// has a card. A CUDA build on an AMD box does exactly this. It used to
     /// pass the check as an ordinary processor only environment and then die
@@ -510,7 +923,10 @@ impl Preflight {
 
     /// A torch that is there but wrong has to be pushed out of the way, which
     /// is the kernel gap and the card it cannot reach; the other two classes
-    /// install into what is missing.
+    /// install into what is missing. `CardBelowKernelFloor` is deliberately
+    /// absent: `trainer_torch_plan` already picks the best channel for this
+    /// card's capability, so reinstalling the same wheels a second time would
+    /// not change the outcome, only spend another 2.5 GB finding that out.
     pub(crate) fn needs_torch_reinstall(&self) -> bool {
         matches!(
             self,
@@ -547,6 +963,12 @@ impl Preflight {
             Preflight::KernelsTooOld { cap, max } => format!(
                 "This PyTorch build has no kernels for your GPU (compute capability {cap}.x, the build stops at {max}.x). An RTX 50 card on the old cu121 build does exactly this."
             ),
+            Preflight::CardBelowKernelFloor { cap_major, cap_minor, min, name } => {
+                let card = name.as_deref().unwrap_or("This GPU");
+                format!(
+                    "{card} has compute capability {cap_major}.{cap_minor}, and this PyTorch build's kernels start at {min}.0: there is no kernel for a card this old in it. This is a hardware floor, not a broken install; character training needs a newer card or Character Studio in Cloud mode."
+                )
+            }
             Preflight::GpuUnreachable { vendor } => format!(
                 "The PyTorch in the trainer environment cannot see your {vendor} card, it reports no usable GPU. That is a wrong build for this machine, not a driver fault."
             ),
@@ -610,34 +1032,75 @@ const UNIX_NATIVE_NEXT_STEP: &str = "PyTorch is on disk but its native libraries
 /// A wrong wheel, not a broken machine. The setup probes the card again, so it
 /// is the same button and a completely different reason.
 const WHEEL_NEXT_STEP: &str = "The PyTorch that was installed carries no support for the card in this machine, so it can only run on the processor. Press Set up trainer in Character Studio: the setup probes the card again and picks the matching wheel.";
-const PYTHON_VERSION_NEXT_STEP: &str = "The Python in the trainer environment is one the trainer cannot use (it needs 3.10, 3.11 or 3.12). Press Set up trainer in Character Studio: the setup looks for a matching Python on this machine on its own, installs 3.12 on Windows when there is none, and rebuilds the environment with it.";
 const PERMISSION_NEXT_STEP: &str = "The installer was not allowed to write into the Python folder. Close every open Python, Jupyter or IDE debugger, and if that changes nothing, install Python for your own user instead of for all users, then press Set up trainer in Character Studio.";
 const PEP668_NEXT_STEP: &str = "This Python refuses installs outside a virtual environment and the venv module is missing. Install it from your package manager (python3-venv on Debian and Ubuntu, python-virtualenv on Arch, python3-virtualenv on Fedora), then press Set up trainer in Character Studio.";
+
+/// The message gekiritz actually saw (Discord, 2026-09-16), built fresh at
+/// the point of failure instead of a static sentence. The review found the
+/// gap: `no_trainer_python_message` learned to name path and version, but
+/// this is the DIFFERENT message pip's own `NoMatchingWheel` /
+/// `UnsupportedPython` failure reaches, through `next_step_for_log`, and it
+/// still only said "needs 3.10, 3.11 or 3.12" with nothing about what was
+/// actually found. On Windows each interpreter's architecture is added too
+/// (`python_version_and_arch`): a 32-bit or ARM64 Python 3.11 answers the
+/// plain version check exactly like a real one and is why "rebuild the venv"
+/// alone never broke gekiritz's loop -- see `venv_action`.
+fn python_version_next_step() -> String {
+    let mut seen: Vec<String> = Vec::new();
+    let mut found: Vec<String> = Vec::new();
+    for p in crate::python::python_interpreters() {
+        if !crate::python::is_real_python(&p) || seen.iter().any(|s| s.eq_ignore_ascii_case(&p)) {
+            continue;
+        }
+        seen.push(p.clone());
+        #[cfg(target_os = "windows")]
+        {
+            if let Some((v, arch_ok)) = crate::python::python_version_and_arch(&p) {
+                let arch = if arch_ok { "64-bit x86" } else { "not 64-bit x86, no PyTorch wheel exists for it" };
+                found.push(format!("Python {v} at {p} ({arch})"));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Some(v) = crate::python::python_version(&p) {
+                found.push(format!("Python {v} at {p}"));
+            }
+        }
+    }
+    let have = if found.is_empty() {
+        "no Python that starts".to_string()
+    } else {
+        found.join(", ")
+    };
+    format!(
+        "The Python in the trainer environment is one the trainer cannot use (it needs {TRAINER_PYTHON_RANGE}). This machine has: {have}. Press Set up trainer in Character Studio: the setup looks for a matching Python on this machine on its own, installs 3.12 on Windows when there is none, and rebuilds the environment with it."
+    )
+}
 
 /// The way out that fits what actually failed, on the platform it failed on.
 /// The old code offered exactly one, "check that you are online and that the
 /// drive has room", for every failure class there is.
-pub(crate) fn next_step_for_log(log: &str, fallback: &'static str, os: &str) -> &'static str {
+pub(crate) fn next_step_for_log(log: &str, fallback: &str, os: &str) -> String {
     use crate::commands::install::pip::PipFailureKind as K;
     let windows = os == "windows";
     if out_of_disk(log) {
-        return DISK_NEXT_STEP;
+        return DISK_NEXT_STEP.to_string();
     }
     match crate::commands::install::pip::pip_failure_kind(log) {
         K::MissingRuntimeLibrary => {
-            if windows { WINDOWS_REDIST_NEXT_STEP } else { UNIX_LIBRARY_NEXT_STEP }
+            if windows { WINDOWS_REDIST_NEXT_STEP } else { UNIX_LIBRARY_NEXT_STEP }.to_string()
         }
         K::NativeLoadFailure => {
-            if windows { WINDOWS_NATIVE_NEXT_STEP } else { UNIX_NATIVE_NEXT_STEP }
+            if windows { WINDOWS_NATIVE_NEXT_STEP } else { UNIX_NATIVE_NEXT_STEP }.to_string()
         }
-        K::TorchWithoutGpuSupport => WHEEL_NEXT_STEP,
-        K::NoMatchingWheel | K::UnsupportedPython => PYTHON_VERSION_NEXT_STEP,
-        K::Permission => PERMISSION_NEXT_STEP,
-        K::ExternallyManaged => PEP668_NEXT_STEP,
-        K::DiskFull => DISK_NEXT_STEP,
+        K::TorchWithoutGpuSupport => WHEEL_NEXT_STEP.to_string(),
+        K::NoMatchingWheel | K::UnsupportedPython => python_version_next_step(),
+        K::Permission => PERMISSION_NEXT_STEP.to_string(),
+        K::ExternallyManaged => PEP668_NEXT_STEP.to_string(),
+        K::DiskFull => DISK_NEXT_STEP.to_string(),
         // Network failures and everything we cannot name keep the old text.
         // Naming the network for a failure that is not one is the whole bug.
-        _ => fallback,
+        _ => fallback.to_string(),
     }
 }
 
@@ -648,7 +1111,7 @@ pub(crate) fn next_step_for_log(log: &str, fallback: &'static str, os: &str) -> 
 /// Before this, a repair that never finished put the raw process error into the
 /// status line instead, which on a full disk meant fifteen `Moving to ...`
 /// lines and no next step at all.
-pub(crate) fn env_failure_message(diagnosis: &str, fallback_step: &'static str, log: &str) -> String {
+pub(crate) fn env_failure_message(diagnosis: &str, fallback_step: &str, log: &str) -> String {
     let step = next_step_for_log(log, fallback_step, std::env::consts::OS);
     let head = diagnosis.trim();
     let head = if head.is_empty() { String::new() } else { format!("{head} ") };
@@ -723,11 +1186,21 @@ fn preflight_verdict(exit_ok: bool, stdout: &str, stderr: &str, gpu: Option<&str
         return Preflight::TorchBroken(tail);
     }
     let mut cap_major: Option<u32> = None;
+    let mut cap_minor: Option<u32> = None;
     let mut arch_max: Option<u32> = None;
+    let mut arch_min: Option<u32> = None;
+    let mut card_name: Option<String> = None;
     for line in stdout.lines() {
         let l = line.trim();
         if let Some(rest) = l.strip_prefix("CAP ") {
-            cap_major = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+            let mut parts = rest.split_whitespace();
+            cap_major = parts.next().and_then(|v| v.parse().ok());
+            cap_minor = parts.next().and_then(|v| v.parse().ok());
+        } else if let Some(rest) = l.strip_prefix("NAME ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                card_name = Some(name.to_string());
+            }
         } else if let Some(rest) = l.strip_prefix("ARCHS ") {
             for arch in rest.split_whitespace() {
                 // CUDA names only. A ROCm build lists gfx1030 and gfx90a, and
@@ -745,6 +1218,7 @@ fn preflight_verdict(exit_ok: bool, stdout: &str, stderr: &str, gpu: Option<&str
                 if digits.len() >= 2 {
                     if let Ok(n) = digits[..digits.len() - 1].parse::<u32>() {
                         arch_max = Some(arch_max.map_or(n, |p| p.max(n)));
+                        arch_min = Some(arch_min.map_or(n, |p| p.min(n)));
                     }
                 }
             }
@@ -759,6 +1233,22 @@ fn preflight_verdict(exit_ok: bool, stdout: &str, stderr: &str, gpu: Option<&str
     if let (Some(cap), Some(max)) = (cap_major, arch_max) {
         if cap > max {
             return Preflight::KernelsTooOld { cap, max };
+        }
+    }
+    // The mirror check, added after the Opus review of K3 (2026-09-18): a
+    // card OLDER than the build's kernel floor. Measured as unlikely to fire
+    // for the concrete melder (a Tesla P100 is compute capability 6.0, and
+    // both channels `trainer_torch_plan` picks from carry kernels well below
+    // that), but it is the genuine lower bound the review asked for, and the
+    // one direction `KernelsTooOld` never checked.
+    if let (Some(cap), Some(min)) = (cap_major, arch_min) {
+        if cap < min {
+            return Preflight::CardBelowKernelFloor {
+                cap_major: cap,
+                cap_minor: cap_minor.unwrap_or(0),
+                min,
+                name: card_name,
+            };
         }
     }
     if !stdout.contains("MUSUBI_OK") {
@@ -825,7 +1315,7 @@ fn winget_install(
     cancel: &Arc<std::sync::atomic::AtomicBool>,
     pid_slot: &Arc<Mutex<Option<u32>>>,
 ) -> Result<(), String> {
-    let mut winget = Command::new("winget");
+    let mut winget = foreign_system_command("winget");
     winget.args(winget_install_args(id, user_scope));
     run_quiet(winget, &format!("winget install {id}"), run, cancel, pid_slot)
 }
@@ -1074,6 +1564,61 @@ pub fn parse_step_counter(line: &str) -> Option<(u64, u64)> {
 
 // ── one-time environment install ─────────────────────────────────────────────
 
+/// RAII claim on `state.trainer_install`'s "installing" slot. N2 (Opus review
+/// of `3ef38668`): the check ("is one already running?") and the set ("mark
+/// one as running") used to share a single lock, but the K5 validation step
+/// added between them (`validate_trainer_root_candidate`, real disk IO) was
+/// pulled OUT from under that lock, so the check and the set became two
+/// separate locks with a window in between. Two concurrent calls could both
+/// see `status != "installing"`, both pass, and both go on to start
+/// `provision_trainer_env` against the same venv.
+///
+/// The fix moves the set back next to the check (claim the slot first, while
+/// still holding the one lock, before any IO), and this guard is what makes a
+/// failed claim reversible: validation runs AFTER the slot is claimed, so a
+/// rejection has to hand the slot back rather than leave it stuck on
+/// "installing" forever. `defuse()` disarms it once the install has
+/// genuinely started (the spawned thread's own `set_status` calls own the
+/// status from there); an undefused guard resets to "idle" on drop, which
+/// covers every early return in between, including the `?` on validation
+/// failure and on a poisoned `gpu_selection` lock.
+struct InstallClaim<'a> {
+    install: &'a Arc<Mutex<crate::state::InstallState>>,
+    active: bool,
+}
+
+impl<'a> InstallClaim<'a> {
+    /// The check-and-set itself, under ONE lock held only long enough to
+    /// read the status and, if free, write it back to "installing". `None`
+    /// means another caller already holds the slot. This is the exact
+    /// sequence `install_character_trainer` needs before it does anything
+    /// else, pulled into its own function (review-teil10.md M2) so the
+    /// concurrency test below calls this PRODUCT code from two threads
+    /// instead of a hand-copied stand-in that could drift from it.
+    fn try_claim(install: &'a Arc<Mutex<crate::state::InstallState>>) -> Option<Self> {
+        let mut st = install.lock().unwrap();
+        if st.status == "installing" {
+            return None;
+        }
+        st.status = "installing".to_string();
+        Some(InstallClaim { install, active: true })
+    }
+
+    fn defuse(mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for InstallClaim<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            if let Ok(mut st) = self.install.lock() {
+                st.status = "idle".to_string();
+            }
+        }
+    }
+}
+
 #[allow(non_snake_case)]
 #[tauri::command]
 pub fn install_character_trainer(
@@ -1081,22 +1626,35 @@ pub fn install_character_trainer(
     state: State<'_, AppState>,
     installPath: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Check-and-set under ONE lock, held only long enough to claim the slot,
+    // never across the validation below (sysinfo disk lookup, create_dir_all,
+    // a probe write). See `InstallClaim` for why a failed validation still
+    // has to release the slot it just claimed.
+    let claim = match InstallClaim::try_claim(&state.trainer_install) {
+        Some(claim) => claim,
+        None => return Ok(serde_json::json!({"status": "already_installing"})),
+    };
+
+    // K5 Blocker 2/3 (Opus review of `4fda5a0a`): validated and persisted
+    // BEFORE the install starts, not after, and an empty field is the way
+    // back to the default (point 3), not "leave whatever was there before".
+    // Nothing at a previous customized location is touched or deleted here;
+    // see `trainerRootHint` on the frontend for the sentence that says so.
+    let trimmed = installPath.as_deref().map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        write_config_value("trainer_root", "");
+    } else {
+        let validated = validate_trainer_root_candidate(trimmed)?;
+        write_config_value("trainer_root", &validated.to_string_lossy());
+    }
+
     {
         let mut st = state.trainer_install.lock().unwrap();
-        if st.status == "installing" {
-            return Ok(serde_json::json!({"status": "already_installing"}));
-        }
-        st.status = "installing".to_string();
         st.logs.clear();
         st.logs.push("Setting up the local character trainer...".to_string());
     }
     info!("character trainer install start");
 
-    if let Some(p) = installPath.as_deref() {
-        if !p.trim().is_empty() {
-            write_config_value("trainer_root", p.trim());
-        }
-    }
     let root = trainer_root(&app);
     // An empty or unusable default Python is no longer a reason to stop here:
     // trainer_base_python surveys the machine and, on Windows, installs 3.12
@@ -1108,10 +1666,18 @@ pub fn install_character_trainer(
     let cancel = state.trainer_cancel.clone();
     let pid_slot = state.trainer_process.clone();
     let env_broken = state.trainer_env_broken.clone();
+    // Cloned here, resolved (nvidia-smi and all) inside the thread: the same
+    // card the setup's own smoke test measures is the one training pins to
+    // later, see `resolve_trainer_gpu`.
+    let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
+    // The slot stays claimed from here on; the thread's own set_status calls
+    // take over reporting the status.
+    claim.defuse();
 
     std::thread::spawn(move || {
-        match provision_trainer_env(&root, &python_bin, false, &install, "installing", &cancel, &pid_slot) {
+        let device = resolve_trainer_gpu(&gpu_selection);
+        match provision_trainer_env(&root, &python_bin, false, &install, "installing", &cancel, &pid_slot, device.as_ref()) {
             Ok(()) => {
                 env_broken.store(false, Ordering::SeqCst);
                 set_status(&install, "complete", "Trainer environment ready.")
@@ -1157,11 +1723,20 @@ pub(crate) enum VenvAction {
 /// not start and the version for one that does, and a venv built from a
 /// Python outside the trainer's range is exactly as unusable as a dead one.
 /// It ran fine on sockenmonster's machine, its pip just refused musubi.
-pub(crate) fn venv_action(python_exists: bool, python_version: Option<&str>) -> VenvAction {
+///
+/// `arch_ok` is the Opus review's finding on this exact function: a venv
+/// built from a 32-bit or ARM64 Python 3.11/3.12 reports a version
+/// `trainer_supports_python` accepts, so before this it always read `Keep`
+/// -- gekiritz's "3.11-Umgebung loeschen half nicht" (Rebuild only ever fired
+/// on the FIRST build; a Keep venv was never re-examined the same way) is
+/// exactly the gap this closes. `true` on a platform where architecture is
+/// not checked (see `python_version_and_arch`, Windows only) so this stays a
+/// no-op everywhere else.
+pub(crate) fn venv_action(python_exists: bool, python_version: Option<&str>, arch_ok: bool) -> VenvAction {
     match (python_exists, python_version) {
         (false, _) => VenvAction::Create,
         (true, None) => VenvAction::Rebuild,
-        (true, Some(v)) if !trainer_supports_python(v) => VenvAction::Rebuild,
+        (true, Some(v)) if !trainer_supports_python(v) || !arch_ok => VenvAction::Rebuild,
         (true, Some(_)) => VenvAction::Keep,
     }
 }
@@ -1183,11 +1758,22 @@ pub(crate) fn venv_create_args(action: VenvAction) -> &'static [&'static str] {
 /// Python is deliberately not the pointer: it short-circuits as soon as any
 /// Python exists, which on a 3.14 machine is exactly the one that cannot help.
 /// The last sentence is the marker `already_explained` looks for.
-pub(crate) fn no_trainer_python_message(found: &[String], os: &str, winget_tried: bool) -> String {
+///
+/// K4, 2026-09-18: `found` used to be versions alone, so the message named
+/// what version was on the machine but not where LU looked or which install
+/// it was reading. gekiritz's rebuild loop (see `python_version_and_arch`)
+/// is exactly the case where two Pythons report the same version and only
+/// one of them is real; the path is what lets the customer, or us reading a
+/// Discord paste, tell which is which.
+pub(crate) fn no_trainer_python_message(found: &[(String, String)], os: &str, winget_tried: bool) -> String {
     let have = if found.is_empty() {
         "no Python that starts".to_string()
     } else {
-        format!("Python {}", found.join(" and "))
+        found
+            .iter()
+            .map(|(path, version)| format!("Python {version} at {path}"))
+            .collect::<Vec<_>>()
+            .join(" and ")
     };
     let get = match os {
         "windows" if winget_tried => {
@@ -1220,6 +1806,23 @@ fn trainer_base_python(
             if !crate::python::is_real_python(&p) || seen.iter().any(|(s, _)| s.eq_ignore_ascii_case(&p)) {
                 continue;
             }
+            // K4: a 32-bit or ARM64 Python answers `sys.version_info` exactly
+            // like a normal one, builds a venv that looks complete, and only
+            // dies once pip resolves torch, which reports as the wrong
+            // Python-version message and sends the customer back to the same
+            // interpreter. Excluding it here, before the venv is ever built,
+            // is what makes the retry pick a different one instead of
+            // looping (gekiritz, Discord 2026-09-16).
+            #[cfg(target_os = "windows")]
+            match crate::python::python_version_and_arch(&p) {
+                Some((v, true)) => seen.push((p, v)),
+                Some((v, false)) => push_log(
+                    state,
+                    &format!("Skipping {p} (Python {v}): not a 64-bit x86 build, the trainer's PyTorch wheels do not exist for it."),
+                ),
+                None => {}
+            }
+            #[cfg(not(target_os = "windows"))]
             if let Some(v) = crate::python::python_version(&p) {
                 seen.push((p, v));
             }
@@ -1248,9 +1851,8 @@ fn trainer_base_python(
         // that matters, the interpreter on disk is.
         found = survey();
     }
-    let versions: Vec<String> = found.iter().map(|(_, v)| v.clone()).collect();
     let (path, version) = choose_trainer_python(&found)
-        .ok_or_else(|| no_trainer_python_message(&versions, std::env::consts::OS, winget_tried))?;
+        .ok_or_else(|| no_trainer_python_message(&found, std::env::consts::OS, winget_tried))?;
     if path != python_bin {
         let default = found
             .first()
@@ -1282,8 +1884,13 @@ pub(crate) fn musubi_source_present(root: &Path) -> bool {
 }
 
 /// Step 1 without a git binary: the tag as an archive, unpacked into place.
-/// git is the fallback, not the requirement, so a machine without it gets the
-/// network sentence when the archive fails, never "install git first".
+/// git is the fallback the source falls back to, not a requirement checked
+/// up front, so a machine without it only hears about git once the archive
+/// has already failed. On Linux that answer names the exact package manager
+/// command (review Runde 2, B3: this used to say the opposite, "never
+/// install git first", which stopped being true the moment the preflight
+/// below was added); on Windows and macOS it stays the plain network
+/// sentence it always was.
 fn fetch_musubi_source(
     root: &Path,
     state: &Arc<Mutex<crate::state::InstallState>>,
@@ -1298,17 +1905,29 @@ fn fetch_musubi_source(
         Err(e) if e == "cancelled" => return Err(e),
         Err(e) => e,
     };
-    let mut git = Command::new("git");
-    git.arg("--version");
-    #[cfg(target_os = "windows")]
-    git.creation_flags(CREATE_NO_WINDOW);
-    let has_git = git.output().map(|o| o.status.success()).unwrap_or(false);
+    // One git probe for both platform decisions (review Runde 2,
+    // Nachbesserung 2: this used to run `git --version` a second time right
+    // after git_download_preflight() already ran it). Linux setup
+    // stolpstein (BERICHT-5-APPIMAGE.md): fresh Debian 13 and Fedora 43
+    // cloud/desktop images ship no git at all, so name the exact package
+    // manager command instead of a bare "could not download" there.
+    let has_git = crate::commands::install::git::is_git_present();
     if !has_git {
-        return Err(format!("Could not download the trainer source: {archive_err}"));
+        #[cfg(target_os = "linux")]
+        {
+            let hint = crate::commands::install::git::linux_git_missing_message(
+                &crate::commands::install::git::read_os_release(),
+            );
+            return Err(format!("Could not download the trainer source: {archive_err}\n\n{hint}"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err(format!("Could not download the trainer source: {archive_err}"));
+        }
     }
     push_log(state, &format!("Could not get the trainer source as an archive ({archive_err}); getting it with git instead."));
     let _ = fs::remove_dir_all(repo_dir(root));
-    let mut clone = Command::new("git");
+    let mut clone = crate::process_util::foreign_system_command("git");
     clone.args(["clone", "--branch", MUSUBI_TAG, "--depth", "1", MUSUBI_REPO])
         .arg(repo_dir(root));
     run_streamed(clone, "git clone", state, cancel, pid_slot)
@@ -1412,15 +2031,24 @@ pub(crate) fn runtime_library_missing(tail: &str) -> bool {
     )
 }
 
-/// The card's memory as the probe reports it, against the recipe's floor.
-pub(crate) fn vram_verdict(vram_mib: Option<u64>) -> Option<String> {
+/// The card's memory as the probe reports it, against the floor the CHOSEN
+/// precision actually needs (Nachbesserung Runde 2: a fixed floor was
+/// precision-blind, see `vram_floor_mib`).
+pub(crate) fn vram_verdict(vram_mib: Option<u64>, precision: &TrainPrecision) -> Option<String> {
     let mib = vram_mib?;
-    if mib >= TRAINER_VRAM_FLOOR_MIB {
+    let floor = vram_floor_mib(precision);
+    if mib >= floor {
         return None;
     }
+    let recipe = if precision.fp8 {
+        "it was proven on a 12 GB card with fp8 weights and block swapping"
+    } else {
+        "without fp8 weight storage this needs noticeably more headroom"
+    };
     Some(format!(
-        "This card has {:.0} GB of memory and the local training recipe needs 12 GB: it was proven on a 12 GB card with fp8 weights and block swapping, and below that the first training step runs out of memory after both cache steps. Character Studio in Cloud mode trains the same character without this limit.",
-        mib as f64 / 1024.0
+        "This card has {:.0} GB of memory and the local training recipe needs {:.0} GB: {recipe}, and below that the first training step runs out of memory after both cache steps. Character Studio in Cloud mode trains the same character without this limit.",
+        mib as f64 / 1024.0,
+        floor as f64 / 1024.0,
     ))
 }
 
@@ -1429,6 +2057,18 @@ pub(crate) fn parse_vram_mib(stdout: &str) -> Option<u64> {
         .lines()
         .find_map(|l| l.trim().strip_prefix("VRAM_MIB "))
         .and_then(|v| v.trim().parse().ok())
+}
+
+/// `(major, minor)` from the preflight's own `CAP 8 6` line -- the same
+/// number `preflight_verdict` reads, kept as a pair here because the
+/// training recipe (`train_precision_for_capability`) needs the minor digit
+/// too (8.0 has hardware bf16, 7.9 does not exist, but the boundary is real).
+pub(crate) fn parse_capability(stdout: &str) -> Option<(u32, u32)> {
+    let rest = stdout.lines().find_map(|l| l.trim().strip_prefix("CAP "))?;
+    let mut parts = rest.split_whitespace();
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 /// The run's own dead ends, named. CUDA out of memory is the one a 12 GB card
@@ -1464,14 +2104,25 @@ pub(crate) fn training_failure_message(err: &str, vram_mib: Option<u64>) -> Stri
 struct ProbeOutcome {
     verdict: Preflight,
     vram_mib: Option<u64>,
+    /// `(major, minor)`, read once here so `start_character_training` builds
+    /// its recipe from the exact same probe the VRAM check already used --
+    /// not a second call that could in principle answer a different card.
+    cap: Option<(u32, u32)>,
 }
 
 /// One probe for every place that asks whether the environment loads: the end
-/// of a setup, the start of a run, and the check after a repair.
-fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome {
-    let mut probe = Command::new(vpy);
+/// of a setup, the start of a run, and the check after a repair. `device`, if
+/// given, pins this probe to the same single card the run itself trains on
+/// (Opus review of K3: the VRAM check has to measure the card that trains,
+/// not whatever the driver puts at index 0).
+fn probe_trainer_env(root: &Path, vpy: &Path, gpu: Option<&str>, device: Option<&TrainerGpuChoice>, label: &str) -> ProbeOutcome {
+    let mut probe = foreign_system_command(vpy);
     probe.args(["-c", TORCH_PREFLIGHT_PY]);
     trainer_child_env(&mut probe);
+    apply_trainer_cache_env(&mut probe, root, trainer_root_is_customized());
+    if let Some(choice) = device {
+        pin_trainer_gpu(&mut probe, choice);
+    }
     #[cfg(target_os = "windows")]
     probe.creation_flags(CREATE_NO_WINDOW);
     match probe.output() {
@@ -1485,6 +2136,7 @@ fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome
                     gpu,
                 ),
                 vram_mib: parse_vram_mib(&stdout),
+                cap: parse_capability(&stdout),
             }
         }
         Err(e) => ProbeOutcome {
@@ -1493,8 +2145,57 @@ fn probe_trainer_env(vpy: &Path, gpu: Option<&str>, label: &str) -> ProbeOutcome
                 os_error::english(&e)
             )),
             vram_mib: None,
+            cap: None,
         },
     }
+}
+
+/// Nachbesserung Runde 4 (Opus review, Runde 3 of bau/review-trainer.md):
+/// bitsandbytes was the wrong reason. The real floor is bfloat16 itself, and
+/// it is not optional the way `train_precision_for_capability` used to treat
+/// it. Read in the trainer's own source (`src/musubi_tuner/zimage/`, the
+/// only local model this trainer runs, see below):
+///
+/// - `zimage_utils.py:123`: loading the DiT's fp8 weight sets
+///   `org_dtype = torch.bfloat16` ("model weight is fp8 in loading, but
+///   original dtype is bfloat16") and dequantizes to bf16, never fp16.
+/// - `zimage_utils.py:211`: the text encoder cache step wraps its forward
+///   pass in `torch.autocast(device_type=..., dtype=torch.bfloat16)`,
+///   hardcoded, independent of `--mixed_precision`.
+/// - `zimage_train_network.py:146`: the sample-prompt path is hardcoded
+///   bf16 too (unused here, since this trainer never samples).
+///
+/// `--mixed_precision fp16` therefore never reaches the step that actually
+/// needs a dtype: the text encoder cache (`--fp8_llm`, set at
+/// `trainer_child_env`'s call site below) hits `torch.autocast(...,
+/// torch.bfloat16)` regardless, and a card without bf16 either raises out
+/// of `is_bf16_supported()` or limps through an emulated path unusable for
+/// a real run. fp16 was never a rescue for this model, it was a second,
+/// silent way to die a few minutes further into the run. The honest fix is
+/// the floor itself: compute capability 8.0, Ampere, the generation bf16
+/// tensor cores start at.
+///
+/// This is currently a Z-Image-specific floor, not a general LU one: this
+/// trainer drives exactly one local model (`zimage_train_network.py`, see
+/// `training_command`), so one constant is enough today. A second local
+/// trainer with its own dtype requirements would need its own floor, not a
+/// wider one here.
+const TRAINER_MIN_PROVEN_COMPUTE_CAP: (u32, u32) = (8, 0);
+
+/// Refuses a card below `TRAINER_MIN_PROVEN_COMPUTE_CAP` in plain English,
+/// before a single byte of torch downloads. Pure so the wording is a unit
+/// test; the caller reads `cap` with `nvidia-smi --query-gpu=compute_cap`
+/// (`detect_nvidia_compute_cap`), which needs no torch on disk, so this runs
+/// even on a machine that has never had the trainer environment set up.
+pub(crate) fn capability_floor_refusal(cap: (u32, u32), card_name: &str) -> Option<String> {
+    let (major, minor) = cap;
+    let (min_major, min_minor) = TRAINER_MIN_PROVEN_COMPUTE_CAP;
+    if major > min_major || (major == min_major && minor >= min_minor) {
+        return None;
+    }
+    Some(format!(
+        "{card_name} has compute capability {major}.{minor}. Local character training needs at least compute capability {min_major}.{min_minor}: the model code of this trainer requires bfloat16, which this GPU generation does not support. This is a hardware floor, not a broken install; Character Studio in Cloud mode trains the same character with credits instead."
+    ))
 }
 
 /// The four install steps, idempotent by design: an existing checkout and a
@@ -1519,8 +2220,21 @@ fn provision_trainer_env(
     status_kind: &str,
     cancel: &Arc<std::sync::atomic::AtomicBool>,
     pid_slot: &Arc<Mutex<Option<u32>>>,
+    device: Option<&TrainerGpuChoice>,
 ) -> Result<(), String> {
     let tag = if repairing { "Repairing the trainer environment" } else { "Setting up the trainer" };
+
+    // Nachbesserung Runde 2, the honest refusal for a card genuinely below
+    // the floor: read BEFORE anything downloads, including the 2.5 GB torch
+    // install, with nvidia-smi alone so it needs no torch on disk yet. See
+    // `capability_floor_refusal` for the floor and its source.
+    if let Some(choice) = device {
+        if let Some(cap) = crate::commands::install::detect_nvidia_compute_cap() {
+            if let Some(msg) = capability_floor_refusal(cap, &choice.name) {
+                return Err(msg);
+            }
+        }
+    }
 
     // Decided first, before a clone, a venv and 2.5 GB of wheels: a machine
     // whose card has no PyTorch build should not have to pay for all of that
@@ -1587,24 +2301,40 @@ fn provision_trainer_env(
     // not fix; a venv from the wrong Python was kept and failed at step 4.
     let vpy_path = venv_python(root);
     let exists = vpy_path.exists();
-    let venv_version = if exists {
-        crate::python::python_version(&vpy_path.to_string_lossy())
+    // Version AND architecture: see `venv_action`'s doc comment for why a
+    // venv that answers "3.11" is not automatically one the trainer can use.
+    let (venv_version, venv_arch_ok) = if !exists {
+        (None, true)
     } else {
-        None
+        #[cfg(target_os = "windows")]
+        {
+            match crate::python::python_version_and_arch(&vpy_path.to_string_lossy()) {
+                Some((v, ok)) => (Some(v), ok),
+                None => (None, true),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            (crate::python::python_version(&vpy_path.to_string_lossy()), true)
+        }
     };
-    let action = venv_action(exists, venv_version.as_deref());
+    let action = venv_action(exists, venv_version.as_deref(), venv_arch_ok);
     if action != VenvAction::Keep {
         // A rebuild deletes what is there, and it only starts here because
         // trainer_base_python has already proven there is something to
         // rebuild WITH.
         if action == VenvAction::Rebuild {
             push_log(state, &match venv_version.as_deref() {
+                Some(v) if !venv_arch_ok => format!(
+                    "The trainer environment was built with Python {v} at {}, which is not a 64-bit x86 build: no PyTorch wheel exists for it. Rebuilding it with Python {base_version}, your training images and base models are left alone.",
+                    vpy_path.display(),
+                ),
                 Some(v) => format!("The trainer environment was built with Python {v}, which the trainer cannot use (it needs {TRAINER_PYTHON_RANGE}). Rebuilding it with Python {base_version}, your training images and base models are left alone."),
                 None => "The trainer environment is there but its Python does not start any more. Rebuilding it from scratch, your training images and base models are left alone.".to_string(),
             });
         }
         set_status(state, status_kind, &format!("{tag} (2/4): creating the training environment (venv)..."));
-        let mut venv = Command::new(python_bin);
+        let mut venv = foreign_system_command(python_bin);
         venv.args(venv_create_args(action)).arg(root.join("venv"));
         run_streamed(venv, "venv create", state, cancel, pid_slot)?;
     }
@@ -1624,8 +2354,9 @@ fn provision_trainer_env(
     let vpy_for_torch = vpy.clone();
     pip_with_retry(
         || {
-            let mut torch = Command::new(&vpy_for_torch);
+            let mut torch = foreign_system_command(&vpy_for_torch);
             torch.args(&torch_args);
+            apply_trainer_cache_env(&mut torch, root, trainer_root_is_customized());
             torch
         },
         "torch install",
@@ -1639,9 +2370,10 @@ fn provision_trainer_env(
     let vpy_for_pkg = vpy.clone();
     pip_with_retry(
         || {
-            let mut pkg = Command::new(&vpy_for_pkg);
+            let mut pkg = foreign_system_command(&vpy_for_pkg);
             pkg.args(["-m", "pip", "install", "--progress-bar", "off", "--no-input", "-e", "."])
                 .current_dir(repo_dir(root));
+            apply_trainer_cache_env(&mut pkg, root, trainer_root_is_customized());
             pkg
         },
         "musubi install",
@@ -1658,7 +2390,7 @@ fn provision_trainer_env(
     set_status(state, status_kind, &format!("{tag}: checking that PyTorch loads..."));
     let gpu = training_gpu_label();
     let venv_exe = venv_python(root);
-    if let Preflight::TorchBroken(first_tail) = probe_trainer_env(&venv_exe, gpu, "after setup").verdict {
+    if let Preflight::TorchBroken(first_tail) = probe_trainer_env(root, &venv_exe, gpu, device, "after setup").verdict {
         let mut tail = first_tail;
         if std::env::consts::OS == "windows" && runtime_library_missing(&tail) {
             set_status(
@@ -1671,7 +2403,7 @@ fn provision_trainer_env(
                 Err(e) if e == "cancelled" => return Err(e),
                 Err(e) => push_log(state, &format!("LU could not install the Visual C++ runtime: {}", useful_tail(&e))),
             }
-            match probe_trainer_env(&venv_exe, gpu, "after the runtime install").verdict {
+            match probe_trainer_env(root, &venv_exe, gpu, device, "after the runtime install").verdict {
                 Preflight::TorchBroken(again) => tail = again,
                 _ => return Ok(()),
             }
@@ -1702,6 +2434,15 @@ pub fn character_trainer_status(
     let te = resolve_base_file(&root, comfy.as_deref(), TE_CANDIDATES, "text_encoders");
     let vae = resolve_base_file(&root, comfy.as_deref(), VAE_CANDIDATES, "vae");
     let install = state.trainer_install.lock().unwrap();
+    // K5 point 3/5: `customized` lets the frontend say the truth about where
+    // this install target actually is instead of assuming the default, and
+    // `suggestedRoot` is the sibling-of-ComfyUI suggestion from point 5,
+    // computed only while there is nothing customized yet to suggest over.
+    let customized = trainer_root_is_customized();
+    // `root` is exactly the default app-data trainer folder here: this branch
+    // only runs when `customized` is false, and `trainer_root` returns that
+    // same default in that case.
+    let suggested_root = if customized { None } else { suggested_trainer_root(comfy.as_deref(), &root) };
     Ok(serde_json::json!({
         "envReady": env_ready,
         "basesReady": dit.is_some() && te.is_some() && vae.is_some(),
@@ -1709,6 +2450,8 @@ pub fn character_trainer_status(
         "textEncoder": te.map(|p| p.to_string_lossy().to_string()),
         "vae": vae.map(|p| p.to_string_lossy().to_string()),
         "root": root.to_string_lossy().to_string(),
+        "customized": customized,
+        "suggestedRoot": suggested_root,
         "install": { "status": install.status, "logs": install.logs },
     }))
 }
@@ -1769,6 +2512,61 @@ pub fn clear_training_set(app: tauri::AppHandle, setId: String) -> Result<(), St
 
 // ── the training run ─────────────────────────────────────────────────────────
 
+/// The mixed-precision recipe a card's own compute capability can run.
+/// Nachbesserung after the Opus review of `0e826c22`/`4a3ba7a0`: `--mixed_precision
+/// bf16 --fp8_base --fp8_scaled --optimizer_type adamw8bit` used to be fixed
+/// regardless of the card.
+///
+/// `--fp8_base`/`--fp8_scaled` are weight STORAGE, not a compute path: read
+/// in the trainer's own source, `src/musubi_tuner/modules/fp8_optimization_utils.py:365-433`
+/// (`fp8_linear_forward_patch`). SM 8.9 is required only for `use_scaled_mm`
+/// (`torch._scaled_mm`, lines 409/411), which this recipe never sets; the
+/// default path (lines 418-433) dequantizes the stored fp8 weight back to
+/// bf16 and calls plain `F.linear`, which runs on any CUDA card. fp8 storage
+/// therefore stays on for any measured card, regardless of capability.
+///
+/// `--optimizer_type adamw8bit` stays on too: bitsandbytes' README states
+/// "SM60+ minimum" for its CUDA build, well below the floor bf16 itself
+/// needs (see below), so any card that clears bf16 clears this too.
+///
+/// bf16 is NOT optional the way `--mixed_precision fp16` would suggest, and
+/// this recipe never actually offers fp16 any more (Nachbesserung Runde 4,
+/// Opus review Runde 3 of bau/review-trainer.md): read in the trainer's own
+/// source, `src/musubi_tuner/zimage/zimage_utils.py:123` dequantizes the
+/// DiT's fp8 weight straight to `torch.bfloat16` on load, and
+/// `zimage_utils.py:211` wraps the text encoder cache step in
+/// `torch.autocast(dtype=torch.bfloat16)`, hardcoded, independent of
+/// `--mixed_precision`. A card without bf16 hardware therefore dies in the
+/// text encoder cache step regardless of what this recipe picks; `fp16` was
+/// never a rescue for this model, only a second, later, equally silent way
+/// to die. `capability_floor_refusal` (compute capability 8.0, Ampere) is
+/// what actually protects a card like this now, called before any card ever
+/// reaches this function: `install_character_trainer`/`provision_trainer_env`
+/// before the torch download, and `start_character_training` again before
+/// every run, download or not. This function can therefore assume any
+/// MEASURED capability it sees has already cleared that floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrainPrecision {
+    pub(crate) mixed_precision: &'static str,
+    pub(crate) save_precision: &'static str,
+    pub(crate) fp8: bool,
+    pub(crate) optimizer_type: &'static str,
+}
+
+/// `cap` is `None` only when the preflight could not read one at all (a
+/// probe that failed to run, or a non-NVIDIA card `capability_floor_refusal`
+/// has no opinion on), which should never reach step 3 on NVIDIA: kept
+/// conservative (fp16, no fp8, plain AdamW) rather than assuming the best
+/// case on an unmeasured card. Any MEASURED capability has already cleared
+/// `capability_floor_refusal`'s bf16 floor by the time it reaches here, see
+/// the doc comment on `TrainPrecision`.
+pub(crate) fn train_precision_for_capability(cap: Option<(u32, u32)>) -> TrainPrecision {
+    if cap.is_none() {
+        return TrainPrecision { mixed_precision: "fp16", save_precision: "fp16", fp8: false, optimizer_type: "AdamW" };
+    }
+    TrainPrecision { mixed_precision: "bf16", save_precision: "bf16", fp8: true, optimizer_type: "adamw8bit" }
+}
+
 /// The files and numbers one run of step 3 is made of.
 struct TrainStep<'a> {
     dit: &'a str,
@@ -1778,6 +2576,7 @@ struct TrainStep<'a> {
     steps: &'a str,
     out_dir: &'a str,
     out_name: &'a str,
+    precision: TrainPrecision,
 }
 
 /// Step 3, the train itself: the venv's own python runs musubi's trainer, the
@@ -1808,23 +2607,26 @@ struct TrainStep<'a> {
 /// minus its guesses about the machine. `--mixed_precision bf16` was already
 /// among the script's own arguments; musubi passes it to `Accelerator`.
 fn training_command(vpy: &str, repo: &Path, step: &TrainStep<'_>) -> Command {
-    let mut cmd = Command::new(vpy);
+    let mut cmd = foreign_system_command(vpy);
     // What `--num_cpu_threads_per_process 1` used to set, nothing more.
-    cmd.current_dir(repo).env("OMP_NUM_THREADS", "1").args([
-        "src/musubi_tuner/zimage_train_network.py",
+    cmd.current_dir(repo).env("OMP_NUM_THREADS", "1").arg("src/musubi_tuner/zimage_train_network.py").args([
         "--dit", step.dit,
         "--vae", step.vae,
         "--text_encoder", step.text_encoder,
         "--dataset_config", step.dataset,
-        "--sdpa", "--mixed_precision", "bf16",
-        "--fp8_base", "--fp8_scaled",
+    ]);
+    cmd.args(["--sdpa", "--mixed_precision", step.precision.mixed_precision]);
+    if step.precision.fp8 {
+        cmd.args(["--fp8_base", "--fp8_scaled"]);
+    }
+    cmd.args([
         "--blocks_to_swap", "16",
         "--timestep_sampling", "shift", "--weighting_scheme", "none", "--discrete_flow_shift", "2.0",
-        "--optimizer_type", "adamw8bit", "--learning_rate", "1e-4", "--gradient_checkpointing",
+        "--optimizer_type", step.precision.optimizer_type, "--learning_rate", "1e-4", "--gradient_checkpointing",
         "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
         "--network_module", "networks.lora_zimage", "--network_dim", "32",
         "--max_train_steps", step.steps,
-        "--save_precision", "bf16",
+        "--save_precision", step.precision.save_precision,
         "--seed", "42",
         "--output_dir", step.out_dir,
         "--output_name", step.out_name,
@@ -1914,6 +2716,10 @@ pub fn start_character_training(
     // ComfyUI's ACTUAL address here (user-configured host/port from AppState,
     // not a hardcoded localhost:8188) and move the verdict in.
     let comfy_vram_target = crate::commands::process::comfy_vram_target(state.inner());
+    // Same reason, same pattern: resolved for real (nvidia-smi and all)
+    // inside the thread, from the Hardware tab's own pick, so a repair mid
+    // run and the training step after it measure and train the same card.
+    let gpu_selection = state.gpu_selection.lock().map_err(|e| e.to_string())?.clone();
     cancel.store(false, Ordering::SeqCst);
 
     std::thread::spawn(move || {
@@ -1961,16 +2767,33 @@ pub fn start_character_training(
         // install plans from, so the check and the repair cannot disagree
         // about what is in the machine.
         let gpu_label = training_gpu_label();
+        // Resolved once, used everywhere below: the same card the VRAM
+        // preflight measures is the one CUDA_VISIBLE_DEVICES pins the whole
+        // run to (Opus review of K3: measuring device 0 while training
+        // whatever the Hardware tab or the user's own environment chose was
+        // the same class of bug as pinning the run to a bare index).
+        let device = resolve_trainer_gpu(&gpu_selection);
+        match &device {
+            Some(d) => push_log(&run, &format!(
+                "Training on {} (index {}, {}, {}).",
+                d.name,
+                d.index,
+                d.source,
+                d.memory_mib.map_or("memory unknown".to_string(), |m| format!("{:.0} GB", m as f64 / 1024.0)),
+            )),
+            None => push_log(&run, "Could not identify a single NVIDIA card to pin the run to; letting the driver pick."),
+        }
 
         set_status(&run, "running", "Checking the training environment...");
-        let first = probe_trainer_env(&vpy, gpu_label, "first check");
+        let first = probe_trainer_env(&root, &vpy, gpu_label, device.as_ref(), "first check");
         let verdict = first.verdict;
         let mut vram_mib = first.vram_mib;
+        let mut cap = first.cap;
         if !verdict.is_ok() {
             push_log(&run, &verdict.message());
             push_log(&run, "Repairing it now, no action needed. Your training images and base models are left alone.");
             let force = verdict.needs_torch_reinstall();
-            if let Err(e) = provision_trainer_env(&root, &python_bin, force, &run, "running", &cancel, &pid_slot) {
+            if let Err(e) = provision_trainer_env(&root, &python_bin, force, &run, "running", &cancel, &pid_slot, device.as_ref()) {
                 if e == "cancelled" {
                     set_status(&run, "cancelled", &e);
                     return;
@@ -1989,9 +2812,10 @@ pub fn start_character_training(
             // Only a SECOND failure is a dead end. Report what is still wrong
             // plus the tail of the repair log, so the message names the cause
             // instead of the symptom.
-            let repaired = probe_trainer_env(&vpy, gpu_label, "after repair");
+            let repaired = probe_trainer_env(&root, &vpy, gpu_label, device.as_ref(), "after repair");
             let after = repaired.verdict;
             vram_mib = repaired.vram_mib;
+            cap = repaired.cap;
             if !after.is_ok() {
                 let tail = run.lock().ok()
                     .map(|st| st.logs.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join(" | "))
@@ -2008,9 +2832,35 @@ pub fn start_character_training(
         } else {
             env_broken.store(false, Ordering::SeqCst);
         }
-        // The card's memory, before ten minutes of caching: the recipe is a
-        // 12 GB recipe, and a smaller card dies in the first training step.
-        if let Some(msg) = vram_verdict(vram_mib) {
+        // Nachbesserung Runde 4: `provision_trainer_env`'s own
+        // `capability_floor_refusal` call only fires on a fresh install or a
+        // repair. A card that already has a HEALTHY environment (the common
+        // case on a second run) skips that whole branch and would otherwise
+        // reach `train_precision_for_capability` with a capability the
+        // recipe cannot actually honour. This is the same refusal, reusing
+        // the capability the preflight already measured instead of a second
+        // nvidia-smi call, so every run gets it, downloaded or not.
+        if let Some(c) = cap {
+            let name = device.as_ref().map_or("This GPU", |d| d.name.as_str());
+            if let Some(msg) = capability_floor_refusal(c, name) {
+                set_status(&run, "error", &msg);
+                return;
+            }
+        }
+        // The recipe, chosen from the same capability the preflight just
+        // read: the VRAM floor right below depends on it (Runde 2, a fixed
+        // 12 GB floor was precision-blind).
+        let precision = train_precision_for_capability(cap);
+        push_log(&run, &format!(
+            "Training recipe: {} mixed precision, fp8 weights {}, optimizer {}.",
+            precision.mixed_precision,
+            if precision.fp8 { "on" } else { "off" },
+            precision.optimizer_type,
+        ));
+
+        // The card's memory, before ten minutes of caching: below the
+        // recipe's own floor the run dies in the first training step.
+        if let Some(msg) = vram_verdict(vram_mib, &precision) {
             set_status(&run, "error", &msg);
             return;
         }
@@ -2026,14 +2876,23 @@ pub fn start_character_training(
             return;
         }
 
+        // K5 Punkt 13: read once and reused by every step below, rather than
+        // re-reading config.json four times for what has to be the same
+        // answer within one run.
+        let cache_customized = trainer_root_is_customized();
+
         // 1) latent cache
         set_status(&run, "running", "Step 1/4: Caching image latents...");
-        let mut c1 = Command::new(&vpy_s);
+        let mut c1 = foreign_system_command(&vpy_s);
         c1.current_dir(&repo).args([
             "src/musubi_tuner/zimage_cache_latents.py",
             "--dataset_config", &toml_s,
             "--vae", &vae_s,
         ]);
+        apply_trainer_cache_env(&mut c1, &root, cache_customized);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c1, d);
+        }
         if let Err(e) = run_streamed(c1, "latent cache", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2045,7 +2904,7 @@ pub fn start_character_training(
         }
         // 2) text-encoder cache (fp8 keeps the 4B Qwen TE inside 12 GB)
         set_status(&run, "running", "Step 2/4: Caching text encoder outputs...");
-        let mut c2 = Command::new(&vpy_s);
+        let mut c2 = foreign_system_command(&vpy_s);
         c2.current_dir(&repo).args([
             "src/musubi_tuner/zimage_cache_text_encoder_outputs.py",
             "--dataset_config", &toml_s,
@@ -2053,6 +2912,10 @@ pub fn start_character_training(
             "--batch_size", "8",
             "--fp8_llm",
         ]);
+        apply_trainer_cache_env(&mut c2, &root, cache_customized);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c2, d);
+        }
         if let Err(e) = run_streamed(c2, "text encoder cache", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2088,7 +2951,7 @@ pub fn start_character_training(
         let steps_s = steps.to_string();
         let out_name = format!("char_{lora_name}_zimage");
         let out_dir_s = out_dir.to_string_lossy().to_string();
-        let c3 = training_command(&vpy_s, &repo, &TrainStep {
+        let mut c3 = training_command(&vpy_s, &repo, &TrainStep {
             dit: &dit_s,
             vae: &vae_s,
             text_encoder: &te_s,
@@ -2096,7 +2959,12 @@ pub fn start_character_training(
             steps: &steps_s,
             out_dir: &out_dir_s,
             out_name: &out_name,
+            precision,
         });
+        apply_trainer_cache_env(&mut c3, &root, cache_customized);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c3, d);
+        }
         if let Err(e) = run_streamed(c3, "training", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2116,13 +2984,17 @@ pub fn start_character_training(
         }
         let _ = fs::create_dir_all(&loras_dir);
         let final_path = loras_dir.join(format!("{out_name}.safetensors"));
-        let mut c4 = Command::new(&vpy_s);
+        let mut c4 = foreign_system_command(&vpy_s);
         c4.current_dir(&repo).args([
             "src/musubi_tuner/convert_lora.py",
             "--input", &trained.to_string_lossy(),
             "--output", &final_path.to_string_lossy(),
             "--target", "other",
         ]);
+        apply_trainer_cache_env(&mut c4, &root, cache_customized);
+        if let Some(d) = &device {
+            pin_trainer_gpu(&mut c4, d);
+        }
         if let Err(e) = run_streamed(c4, "lora convert", &run, &cancel, &pid_slot) {
             end_failed_run(&run, &e, vram_mib);
             return;
@@ -2132,7 +3004,8 @@ pub fn start_character_training(
             &run,
             "complete",
             &format!(
-                "Character ready: {out_name}.safetensors is in your loras. Put '{trigger}' in a prompt on the Image tab with the LoRA active.",
+                "Character ready: {out_name}.safetensors is saved at {} and already in the LoRA picker on the Image tab. Put '{trigger}' in a prompt with the LoRA active.",
+                final_path.display(),
             ),
         );
         info!("character training complete");
@@ -2536,6 +3409,78 @@ mod tests {
         assert!(v.needs_torch_reinstall());
     }
 
+    /// The Opus review's lower bound (Nachbesserung 1): a card OLDER than
+    /// this build's kernel floor. `preflight_names_the_kernel_gap_on_blackwell_with_cu121`
+    /// above is the mirror case; this direction never had a test before.
+    #[test]
+    fn preflight_names_a_card_below_the_kernel_floor() {
+        use super::{preflight_verdict, Preflight};
+        // A hypothetical build whose kernels start at sm_70, read against a
+        // Maxwell-class card (compute capability 5.0). The concrete melder
+        // (Tesla P100, 6.0) is NOT this case -- both real channels carry
+        // kernels well below 6.0 -- which is exactly why this stays a
+        // synthetic, defensive test rather than a reproduction.
+        let out = "TORCH_OK 2.7.0+cu128\nCAP 5 0\nNAME Tesla M40\nARCHS sm_70 sm_75 sm_80 sm_86 sm_90\nMUSUBI_OK\n";
+        let v = preflight_verdict(true, out, "", Some("NVIDIA"));
+        assert_eq!(
+            v,
+            Preflight::CardBelowKernelFloor { cap_major: 5, cap_minor: 0, min: 7, name: Some("Tesla M40".to_string()) },
+        );
+        assert!(v.message().contains("Tesla M40"), "{}", v.message());
+        assert!(v.message().contains("5.0"), "{}", v.message());
+        assert!(v.message().contains("7.0"), "{}", v.message());
+        // No channel trainer_torch_plan picks would fix this: reinstalling is
+        // pointless, unlike KernelsTooOld where a newer channel might help.
+        assert!(!v.needs_torch_reinstall());
+    }
+
+    /// Nachbesserung Runde 2: the pre-download refusal, entirely separate
+    /// from `CardBelowKernelFloor` above (that one reads torch's OWN kernel
+    /// list, after ~2.5 GB already downloaded; this one reads nvidia-smi
+    /// alone, before any of it).
+    ///
+    /// Nachbesserung Runde 4 (Opus review Runde 3): the floor moved from
+    /// bitsandbytes' SM60 to compute capability 8.0. bitsandbytes was never
+    /// the real constraint; zimage_utils.py hardcodes bfloat16 in the text
+    /// encoder cache step regardless of `--mixed_precision`
+    /// (`src/musubi_tuner/zimage/zimage_utils.py:211`), so a card without
+    /// bf16 hardware dies there no matter what the optimizer floor allows.
+    #[test]
+    fn capability_floor_refuses_a_card_without_bf16_hardware() {
+        use super::capability_floor_refusal;
+        // Maxwell, compute capability 5.0: below the floor by a wide margin.
+        let msg = capability_floor_refusal((5, 0), "Tesla M40").expect("below the floor");
+        assert!(msg.contains("Tesla M40"), "{msg}");
+        assert!(msg.contains("5.0"), "{msg}");
+        assert!(msg.contains("8.0"), "names the floor: {msg}");
+        assert!(msg.contains("bfloat16"), "names the real reason: {msg}");
+        assert!(msg.contains("Cloud mode"), "names the way out: {msg}");
+    }
+
+    /// Tesla P100, sdrairsoft's card: compute capability 6.0. Runde 2 left
+    /// this card unrefused (bitsandbytes' own SM60 floor); Runde 3's review
+    /// found that wrong, since bf16 is hardcoded in the text encoder cache
+    /// step regardless of the optimizer. This is the concrete melder case
+    /// the fix protects.
+    #[test]
+    fn capability_floor_now_refuses_pascal_the_concrete_melder_case() {
+        use super::capability_floor_refusal;
+        let msg = capability_floor_refusal((6, 0), "Tesla P100").expect("Pascal has no bf16 hardware");
+        assert!(msg.contains("Tesla P100"), "{msg}");
+        assert!(msg.contains("6.0"), "{msg}");
+        assert!(msg.contains("bfloat16"), "{msg}");
+    }
+
+    #[test]
+    fn capability_floor_clears_ampere_the_proof_box_case() {
+        use super::capability_floor_refusal;
+        // RTX 3060, our own proof box: compute capability 8.6, above the
+        // 8.0 floor.
+        assert!(capability_floor_refusal((8, 6), "GeForce RTX 3060").is_none());
+        // Exactly the floor clears it too.
+        assert!(capability_floor_refusal((8, 0), "Some Ampere Card").is_none());
+    }
+
     #[test]
     fn preflight_catches_the_trainer_package_a_healthy_torch_hides() {
         use super::{preflight_verdict, Preflight};
@@ -2646,6 +3591,17 @@ mod tests {
         let _ = fs::remove_dir_all(&root2);
     }
 
+    /// `config.json` is one real file on disk, shared by every test in this
+    /// module, and `cargo test` runs them concurrently on one process. Any
+    /// test that reads or writes the `trainer_root` key through
+    /// `read_config_value`/`write_config_value` takes this lock first, or
+    /// two such tests can interleave their reads and writes of the same
+    /// file.
+    fn config_json_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// The environment of a built command, as pairs a test can read.
     fn env_of(cmd: &std::process::Command) -> Vec<(String, Option<String>)> {
         cmd.get_envs()
@@ -2670,6 +3626,738 @@ mod tests {
             envs.contains(&("USE_LIBUV".into(), Some("0".into()))),
             "the libuv knob is gone from the trainer children",
         );
+    }
+
+    /// K3, 2026-09-18, nachgebessert nach dem Opus-Review: `pin_trainer_gpu`,
+    /// not `trainer_child_env`, is what keeps `torch.cuda.device_count() > 1`
+    /// from being true inside a trainer child: the review's finding that a
+    /// hardcoded index "0" is neither guaranteed to be the strong card nor
+    /// respects the Hardware tab's own picker or a user-set
+    /// `CUDA_VISIBLE_DEVICES`.
+    #[test]
+    fn pin_trainer_gpu_narrows_the_child_to_the_chosen_card() {
+        let mut cmd = std::process::Command::new("python");
+        let choice = super::TrainerGpuChoice {
+            index: 1,
+            name: "RTX 3090 Ti".to_string(),
+            memory_mib: Some(24564),
+            uuid: None,
+            source: "the Hardware tab's GPU selection",
+        };
+        super::pin_trainer_gpu(&mut cmd, &choice);
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&("CUDA_VISIBLE_DEVICES".into(), Some("1".into()))),
+            "the chosen card's index is not what the child sees: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "BLOCKER B2 (Runde 2): without this, CUDA's own FASTEST_FIRST default \
+             can pin a different physical card than the index promises: {envs:?}",
+        );
+    }
+
+    /// GPU-UUID Nachzug (review 2026-09-18 Runde 2, "UUID statt Index"): when
+    /// `detect_gpus()` could name the chosen card's uuid, the child must see
+    /// THAT, not the bare index -- the whole point being independence from
+    /// detection order, which a plain index re-introduces the moment
+    /// anything hotplugs or gets renumbered between detection and launch.
+    /// `CUDA_DEVICE_ORDER` stays set regardless, as the fallback net.
+    #[test]
+    fn pin_trainer_gpu_prefers_the_uuid_over_the_index_when_known() {
+        let mut cmd = std::process::Command::new("python");
+        let choice = super::TrainerGpuChoice {
+            index: 1,
+            name: "RTX 3090 Ti".to_string(),
+            memory_mib: Some(24564),
+            uuid: Some("GPU-3eb045fd-0000-0000-0000-000000000000".to_string()),
+            source: "the Hardware tab's GPU selection",
+        };
+        super::pin_trainer_gpu(&mut cmd, &choice);
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&(
+                "CUDA_VISIBLE_DEVICES".into(),
+                Some("GPU-3eb045fd-0000-0000-0000-000000000000".into())
+            )),
+            "the uuid form must win over the bare index: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "CUDA_DEVICE_ORDER must stay set even when a uuid is used: {envs:?}",
+        );
+    }
+
+    /// Trainer-3.0.1-Folgeauftrag B1: every foreign program trainer.rs starts
+    /// (python, pip, winget, the venv it builds) now goes through
+    /// `foreign_system_command`, the same AppImage-cleanup adapter the
+    /// engine branch introduced for K11/K14. That adapter strips
+    /// `LD_LIBRARY_PATH`/`PYTHONHOME`/etc. the moment the `Command` is
+    /// built; `pin_trainer_gpu` and `trainer_child_env` run AFTER that, on
+    /// the same `Command`. This locks the order in: the trainer-specific
+    /// variables have to survive a real AppImage cleanup, not merely avoid
+    /// being on the poisoned list by accident.
+    ///
+    /// Uses the guarded `APPDIR` env mutation `process_util`'s own tests
+    /// use, since `std::env` is process-wide and `cargo test` runs this
+    /// file's tests concurrently on one binary.
+    #[test]
+    fn trainer_env_survives_the_appimage_cleanup_the_adapter_runs_first() {
+        let _guard = crate::process_util::appimage_env_test_guard();
+        std::env::set_var("APPDIR", "/tmp/.mount_LocallieGkad");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_LocallieGkad/usr/lib:/tmp/.mount_LocallieGkad/usr/lib/x86_64-linux-gnu",
+        );
+        let mut cmd = super::foreign_system_command("python3");
+        super::trainer_child_env(&mut cmd);
+        let choice = super::TrainerGpuChoice {
+            index: 1,
+            name: "RTX 3090 Ti".to_string(),
+            memory_mib: Some(24564),
+            uuid: None,
+            source: "the Hardware tab's GPU selection",
+        };
+        super::pin_trainer_gpu(&mut cmd, &choice);
+        cmd.env("HF_HOME", "/data/lu/trainer/cache/huggingface");
+        let envs = env_of(&cmd);
+        assert!(
+            envs.contains(&("LD_LIBRARY_PATH".into(), None)),
+            "the AppImage-poisoned LD_LIBRARY_PATH must actually be gone: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_VISIBLE_DEVICES".into(), Some("1".into()))),
+            "the GPU pin must survive the adapter's cleanup: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("CUDA_DEVICE_ORDER".into(), Some("PCI_BUS_ID".into()))),
+            "CUDA_DEVICE_ORDER must survive the adapter's cleanup: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("PYTHONUTF8".into(), Some("1".into()))),
+            "trainer_child_env's variables must survive the adapter's cleanup: {envs:?}",
+        );
+        assert!(
+            envs.contains(&("HF_HOME".into(), Some("/data/lu/trainer/cache/huggingface".into()))),
+            "the trainer's own cache variables must survive the adapter's cleanup: {envs:?}",
+        );
+        std::env::remove_var("APPDIR");
+        std::env::remove_var("LD_LIBRARY_PATH");
+    }
+
+    // ── B2 (K5 Punkt 13): pip/HF/torch caches follow trainer_root ──────────
+
+    /// The five cache variables, all under the SAME root, none collapsing
+    /// onto each other.
+    #[test]
+    fn every_cache_follows_the_configured_root() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let env = super::trainer_cache_env(root);
+        assert_eq!(env.len(), 5);
+        for (name, path) in &env {
+            assert!(
+                path.starts_with(root),
+                "{name} ({}) is not under the configured trainer_root {}",
+                path.display(),
+                root.display(),
+            );
+        }
+        let names: Vec<&str> = env.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["PIP_CACHE_DIR", "HF_HOME", "HF_XET_CACHE", "TORCH_HOME", "XDG_CACHE_HOME"]);
+        let hf_home = &env[1].1;
+        let hf_xet = &env[2].1;
+        assert!(hf_xet.starts_with(hf_home), "HF_XET_CACHE must live under HF_HOME: {hf_xet:?} / {hf_home:?}");
+    }
+
+    /// Negative control: two DIFFERENT roots must not collapse onto the same
+    /// cache directory. A function that ignored its argument and always
+    /// returned a fixed path would still pass the "under root" check above
+    /// for a single root; this catches that.
+    #[test]
+    fn two_different_roots_get_two_different_cache_trees() {
+        let a = super::trainer_cache_env(Path::new("/data/a"));
+        let b = super::trainer_cache_env(Path::new("/data/b"));
+        for ((_, pa), (_, pb)) in a.iter().zip(b.iter()) {
+            assert_ne!(pa, pb, "{pa:?} should differ from {pb:?}");
+        }
+    }
+
+    /// Migration case: the user DID set a custom `trainer_root`, so the
+    /// caches are meant to follow it there. Behavioural test against
+    /// `apply_trainer_cache_env` itself (not the real config file), the same
+    /// function every real call site calls with `trainer_root_is_customized()`.
+    #[test]
+    fn a_customized_root_redirects_every_cache_onto_it() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let mut cmd = std::process::Command::new("python");
+        super::apply_trainer_cache_env(&mut cmd, root, true);
+        let envs = env_of(&cmd);
+        for (name, path) in super::trainer_cache_env(root) {
+            assert!(
+                envs.contains(&(name.to_string(), Some(path.to_string_lossy().into_owned()))),
+                "{name} must point under the customized root: {envs:?}",
+            );
+        }
+    }
+
+    /// Negative control, the actual point of B2: on the DEFAULT root
+    /// (`customized: false`), nothing is set at all. A customer who never
+    /// touched the `trainer_root` setting keeps pip/HF/torch pointed at
+    /// wherever they already were; setting these variables unconditionally
+    /// would silently orphan a multi-GB cache already sitting at the OS
+    /// default location and pay for the same downloads a second time.
+    #[test]
+    fn the_default_root_leaves_every_cache_variable_unset() {
+        let root = Path::new("/mnt/big-drive/musubi");
+        let mut cmd = std::process::Command::new("python");
+        super::apply_trainer_cache_env(&mut cmd, root, false);
+        assert_eq!(cmd.get_envs().count(), 0, "the default root must not touch the child's environment at all");
+    }
+
+    /// `trainer_root_is_customized` mirrors exactly the check `trainer_root`
+    /// itself makes on the same config key: present and non-empty is
+    /// customized, missing or blank ("", an explicitly cleared override,
+    /// distinct from a missing key, and `trainer_root` itself treats the
+    /// two identically, falling through to its default join in both cases)
+    /// is the default. Exercised against the REAL `config.json`
+    /// `read_config_value`/`write_config_value` read and write (there is no
+    /// dependency injection for it in this file), guarded so a run on a
+    /// machine that already has a `trainer_root` override set does not lose
+    /// it.
+    #[test]
+    fn trainer_root_is_customized_matches_trainer_roots_own_override_check() {
+        let _guard = config_json_test_guard();
+        let backup = super::read_config_value("trainer_root");
+        super::write_config_value("trainer_root", "");
+        assert!(!super::trainer_root_is_customized(), "an explicitly empty override must read as the default, not as customized");
+        super::write_config_value("trainer_root", "/mnt/big-drive/musubi");
+        assert!(super::trainer_root_is_customized(), "a real override must read as customized");
+        match backup {
+            Some(value) => super::write_config_value("trainer_root", &value),
+            None => {
+                // write_config_value has no delete: put back an empty
+                // override, which trainer_root_is_customized reads the same
+                // way as "the key was never there" (see the doc comment
+                // above), so a machine with no prior override is left
+                // exactly as it started.
+                super::write_config_value("trainer_root", "");
+            }
+        }
+    }
+
+    // ── K5 Nachbesserung (Opus review of `4fda5a0a`, three blockers) ───────
+
+    #[test]
+    fn a_leading_tilde_is_never_accepted() {
+        assert!(super::starts_with_tilde("~/LU-Trainer"));
+        assert!(super::starts_with_tilde("~"));
+        assert!(!super::starts_with_tilde("/home/dave/LU-Trainer"), "an absolute path must not be flagged");
+        assert!(!super::starts_with_tilde("D:\\LU-Trainer"), "a drive path must not be flagged");
+    }
+
+    /// BLOCKER 1: the field's own example must be an absolute path on every
+    /// platform, never the tilde Rust does not resolve.
+    #[test]
+    fn the_example_path_is_absolute_on_every_platform() {
+        assert!(!super::example_trainer_path().starts_with('~'), "the example itself must not be the mistake it warns against");
+    }
+
+    /// BLOCKER 1, negative control: a leading tilde is refused before
+    /// anything is written or created, so the historic bug (a literal folder
+    /// named `~`) cannot happen any more.
+    #[test]
+    fn validate_trainer_root_candidate_rejects_a_leading_tilde() {
+        let err = super::validate_trainer_root_candidate("~/LU-Trainer").expect_err("a tilde must be refused");
+        assert!(err.contains('~'), "the message must name the actual problem: {err}");
+        assert!(!Path::new("~").exists(), "no literal ~ folder must have been created");
+    }
+
+    /// BLOCKER 2, negative control: a relative path is refused, not silently
+    /// resolved against the process's current directory.
+    #[test]
+    fn validate_trainer_root_candidate_rejects_a_relative_path() {
+        let err = super::validate_trainer_root_candidate("LU-Trainer").expect_err("a relative path must be refused");
+        assert!(err.contains("absolute"), "the message must say why: {err}");
+    }
+
+    /// BLOCKER 2, the fix itself: an absolute, creatable, writable path is
+    /// accepted, the directory exists afterward, and the write probe this
+    /// function used to prove writability is cleaned up again.
+    #[test]
+    fn validate_trainer_root_candidate_accepts_a_real_absolute_folder() {
+        let root = std::env::temp_dir().join(format!("lu-trainer-validate-ok-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let accepted = super::validate_trainer_root_candidate(&root.to_string_lossy()).expect("a real, writable folder must be accepted");
+        assert_eq!(accepted, root);
+        assert!(root.is_dir(), "the folder must exist after validation");
+        assert!(!root.join(".lu-write-check").exists(), "the write probe must be cleaned up, not left behind");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// BLOCKER 2, negative control on the write-then-check order: pointing
+    /// the candidate at a path that already exists as a plain FILE (not a
+    /// folder) cannot be created as a directory, so validation must fail
+    /// instead of silently writing the probe next to an unrelated file.
+    #[test]
+    fn validate_trainer_root_candidate_rejects_a_path_that_is_already_a_file() {
+        let file = std::env::temp_dir().join(format!("lu-trainer-validate-file-{}", std::process::id()));
+        fs::write(&file, b"not a folder").unwrap();
+        let err = super::validate_trainer_root_candidate(&file.to_string_lossy());
+        assert!(err.is_err(), "a path that is already a file must be refused, not treated as an installable folder");
+        fs::remove_file(&file).unwrap();
+    }
+
+    /// BLOCKER 3, honesty: the suggestion is a sibling of the ComfyUI folder,
+    /// never the ComfyUI folder's own subtree, and it is a plain string for a
+    /// placeholder, not a value this function ever persists. Uses the
+    /// injected form of the drive check (review-teil10.md M1) because this
+    /// test asserts what happens when the drives DO differ, and a real
+    /// second filesystem is not something a test runner can rely on having.
+    ///
+    /// The paths are the ones the platform reading this actually has. The
+    /// suggestion is built with `Path::join`, so it carries the separator of
+    /// the platform it was built on, and a Unix-shaped literal claimed a
+    /// mixed `E:/...\LU-Trainer` was wrong when Windows had written the only
+    /// correct answer it could.
+    #[test]
+    fn suggested_trainer_root_proposes_a_sibling_of_comfyui_when_the_drive_really_differs() {
+        let (comfy, default_root, expected) = if cfg!(windows) {
+            ("E:\\ComfyUI", "C:\\AppData\\musubi", "E:\\LU-Trainer")
+        } else {
+            ("/mnt/e/ComfyUI", "/mnt/c/AppData/musubi", "/mnt/e/LU-Trainer")
+        };
+        let suggestion = super::suggested_trainer_root_with(
+            Some(Path::new(comfy)),
+            Path::new(default_root),
+            |_, _| Some(false),
+        )
+        .expect("a known ComfyUI folder on a different drive must produce a suggestion");
+        assert_eq!(suggestion, expected);
+    }
+
+    /// Negative control on the separator itself: whatever the suggestion is,
+    /// it must be a path this platform can open, not a mixture. A string built
+    /// by hand instead of by `Path::join` is what this catches.
+    #[test]
+    fn the_suggested_root_uses_only_this_platforms_separator() {
+        let (comfy, default_root) = if cfg!(windows) {
+            ("E:\\ComfyUI", "C:\\AppData\\musubi")
+        } else {
+            ("/mnt/e/ComfyUI", "/mnt/c/AppData/musubi")
+        };
+        let suggestion = super::suggested_trainer_root_with(
+            Some(Path::new(comfy)),
+            Path::new(default_root),
+            |_, _| Some(false),
+        )
+        .expect("a known ComfyUI folder on a different drive must produce a suggestion");
+        let foreign = if cfg!(windows) { '/' } else { '\\' };
+        assert!(
+            !suggestion.contains(foreign),
+            "the suggestion mixes separators and cannot be opened as typed: {suggestion}"
+        );
+    }
+
+    /// M1, the fix itself: a ComfyUI folder that is on the SAME drive as the
+    /// default trainer root must not produce a suggestion, because the
+    /// caption built from it ("Your model folder is on another drive")
+    /// would be false and a fresh install's default target would move for
+    /// every customer with a known ComfyUI folder, not only the ones with a
+    /// genuinely separate drive. This is the case review-teil10.md M1 named
+    /// directly (ComfyUI and app data both on `C:`).
+    #[test]
+    fn suggested_trainer_root_is_none_when_the_drive_is_the_same() {
+        let comfy = Path::new("/mnt/c/ComfyUI");
+        let default_root = Path::new("/mnt/c/AppData/musubi");
+        assert_eq!(super::suggested_trainer_root_with(Some(comfy), default_root, |_, _| Some(true)), None);
+    }
+
+    /// Negative control for the drive check itself: when it cannot be
+    /// determined at all, the function must not guess by falling back to
+    /// "assume different" (which would reproduce M1) or "assume same"
+    /// (which would silently drop a real suggestion). Either wrong fallback
+    /// would still pass the two tests above, since those pin `Some(false)`
+    /// resp. `Some(true)` directly; this test is the one that catches a
+    /// `.unwrap_or(..)` sneaking into the `?` on `same_drive(..)?`.
+    #[test]
+    fn suggested_trainer_root_is_none_when_the_drive_cannot_be_determined() {
+        let comfy = Path::new("/mnt/e/ComfyUI");
+        let default_root = Path::new("/mnt/c/AppData/musubi");
+        assert_eq!(super::suggested_trainer_root_with(Some(comfy), default_root, |_, _| None), None);
+    }
+
+    /// Negative control: no known ComfyUI folder means no suggestion, not a
+    /// guess. Goes through the real, non-injected function: `comfy_dir?`
+    /// returns before `same_drive` is ever called, so the real platform
+    /// drive check plays no part in this case.
+    #[test]
+    fn suggested_trainer_root_is_none_without_a_known_comfyui_folder() {
+        assert_eq!(super::suggested_trainer_root(None, Path::new("/mnt/c/AppData/musubi")), None);
+    }
+
+    /// The real, platform-specific `same_drive` end to end: two paths that
+    /// genuinely exist on the SAME filesystem (both under the process' own
+    /// temp directory) must suppress the suggestion. This is the
+    /// "Gleiches-Laufwerk-Fall" review-teil10.md M1 asked for, proven
+    /// against actual `stat`/prefix behaviour rather than an injected
+    /// closure.
+    #[test]
+    #[cfg(unix)]
+    fn suggested_trainer_root_real_same_drive_check_suppresses_a_same_drive_suggestion() {
+        let base = std::env::temp_dir().join(format!("lu-trainer-same-drive-{}", std::process::id()));
+        let comfy = base.join("ComfyUI");
+        let default_root = base.join("AppData").join("musubi");
+        fs::create_dir_all(&comfy).unwrap();
+        // `default_root` itself does not need to exist: the walk climbs to
+        // the nearest existing ancestor, here `base`, which is on the same
+        // device as `comfy` because both are under the same temp directory.
+        assert_eq!(super::suggested_trainer_root(Some(&comfy), &default_root), None);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Windows form of the same real, non-injected check: a drive letter is
+    /// part of the path text, so both the same-drive and the
+    /// different-drive case are real assertions here, no injected closure
+    /// needed and no filesystem access required.
+    #[test]
+    #[cfg(windows)]
+    fn suggested_trainer_root_real_same_drive_check_on_windows() {
+        let comfy_same = Path::new(r"C:\ComfyUI");
+        let default_root = Path::new(r"C:\Users\kunde\AppData\Roaming\lu\musubi");
+        assert_eq!(super::suggested_trainer_root(Some(comfy_same), default_root), None);
+
+        let comfy_other = Path::new(r"E:\ComfyUI");
+        assert_eq!(
+            super::suggested_trainer_root(Some(comfy_other), default_root),
+            Some(r"E:\LU-Trainer".to_string())
+        );
+
+        // Case must not matter: lowercase drive letter, same drive as above.
+        let comfy_lower = Path::new(r"c:\Games\ComfyUI");
+        assert_eq!(super::suggested_trainer_root(Some(comfy_lower), default_root), None);
+
+        // A UNC share is a different prefix from a drive letter, even one
+        // pointing at the very same physical machine, because there is no
+        // portable way to prove otherwise from the path text alone. The
+        // ComfyUI folder needs one path segment PAST the share itself
+        // (`\\nas\media\ComfyUI`, not `\\nas\ComfyUI`): a bare
+        // `\\server\share` is the whole prefix and root together on
+        // Windows, so `Path::parent()` on it alone returns `None` and
+        // `suggested_trainer_root` would bail out before it ever reaches
+        // the drive comparison (Opus review-teil11.md B1).
+        let comfy_unc = Path::new(r"\\nas\media\ComfyUI");
+        assert_eq!(
+            super::suggested_trainer_root(Some(comfy_unc), default_root),
+            Some(r"\\nas\media\LU-Trainer".to_string())
+        );
+    }
+
+    /// K5 point 3: an empty install path is the way back to the default, not
+    /// a no-op that keeps whatever `trainer_root` already held. Exercised
+    /// against the real config file like the other `trainer_root_is_customized`
+    /// test above, since `install_character_trainer` itself needs a live
+    /// `AppHandle` this module's tests do not build.
+    #[test]
+    fn an_empty_install_path_clears_a_previous_override_the_same_way_install_character_trainer_does() {
+        let _guard = config_json_test_guard();
+        let backup = super::read_config_value("trainer_root");
+        super::write_config_value("trainer_root", "/mnt/big-drive/musubi");
+        assert!(super::trainer_root_is_customized());
+        // This is the exact branch `install_character_trainer` takes for a
+        // None/empty `installPath`: reproduced here because that function
+        // needs a real `AppHandle`.
+        let trimmed = "";
+        if trimmed.is_empty() {
+            super::write_config_value("trainer_root", "");
+        }
+        assert!(!super::trainer_root_is_customized(), "an empty submission must reset to the default, not keep the old override");
+        match backup {
+            Some(value) => super::write_config_value("trainer_root", &value),
+            None => super::write_config_value("trainer_root", ""),
+        }
+    }
+
+    /// Source check that `install_character_trainer` actually validates
+    /// before it persists, in that order -- the one thing a behavioural test
+    /// against the real function cannot pin down without a live `AppHandle`
+    /// and a background thread.
+    #[test]
+    fn install_character_trainer_validates_before_it_persists() {
+        // N3 (Opus review of `3ef38668`): this used to cut a fixed 1800-byte
+        // window out of the function body, which would have broken from the
+        // wrong cause (an out-of-bounds slice, or a `write_at` that quietly
+        // stops matching) the day the function grows or a comment shifts the
+        // cut point. Searching the rest of the file after `body_start`
+        // instead of a fixed window avoids that: `write_at`'s needle is
+        // unique in the whole file (checked via grep), and `validate_at`'s
+        // needle also occurs later on, inside this very test and in a
+        // comment further down, but both of those sit well after the real
+        // call at the top of `install_character_trainer`, so `find` still
+        // lands on the production call first, before either later needle
+        // can be reached.
+        let src = include_str!("trainer.rs");
+        let body_start = src.find("pub fn install_character_trainer(").expect("install_character_trainer");
+        let body = &src[body_start..];
+        let validate_at = body.find("validate_trainer_root_candidate(trimmed)?").expect("validation call");
+        let write_at = body.find("write_config_value(\"trainer_root\", &validated").expect("persist call");
+        assert!(validate_at < write_at, "the candidate must be validated before it is written to config.json");
+    }
+
+    /// N2 (Opus review of `3ef38668`): the check ("already installing?") and
+    /// the set ("claim the slot") used to be two separate locks with the
+    /// expensive path validation running unlocked in between, so two
+    /// concurrent calls could both see an idle status and both go on to
+    /// start `provision_trainer_env`. review-teil10.md M2: a hand-copied
+    /// reimplementation of the check-and-set here would keep passing even if
+    /// tomorrow's edit pulled the real `InstallClaim::try_claim` apart into
+    /// two locks again, so this test calls that function directly, the exact
+    /// primitive `install_character_trainer` claims the slot through (the
+    /// full command still needs a live `AppHandle` this module's tests do
+    /// not build, same reason as the two tests above; `try_claim` is the
+    /// entire check-and-set, everything after it is unrelated IO).
+    ///
+    /// Both threads are held at a `Barrier` until they can both attempt the
+    /// claim in the same instant, and the "expensive check" is a real sleep
+    /// AFTER the slot is claimed and the lock released, so if `try_claim`
+    /// were still split into two separate locks (the bug) a second thread
+    /// timed to land inside that sleep would see "idle" and wrongly win too.
+    /// Repeated many times because a race is a probability, not a fact: one
+    /// lucky interleaving proves nothing.
+    ///
+    /// Negative control run by hand for this review (a temporary variant,
+    /// not part of this commit): replacing the single lock here with two
+    /// SEPARATE locks, one for the read and one for the write (the exact N2
+    /// shape), reproduced double claims across four separate runs of 200
+    /// reps each: 4, 5, 6 and 10 double claims out of 200. The real
+    /// `InstallClaim::try_claim` version below stayed at 0 double claims out
+    /// of 200 every time it was run.
+    #[test]
+    fn only_one_of_two_concurrent_installs_claims_the_slot() {
+        const REPETITIONS: usize = 200;
+        for rep in 0..REPETITIONS {
+            let install: Arc<Mutex<crate::state::InstallState>> = Arc::new(Mutex::new(crate::state::InstallState::default()));
+            let barrier = std::sync::Barrier::new(2);
+
+            let attempt = |install: &Arc<Mutex<crate::state::InstallState>>| -> &'static str {
+                barrier.wait();
+                match super::InstallClaim::try_claim(install) {
+                    None => "already_installing",
+                    Some(claim) => {
+                        // Stands in for `validate_trainer_root_candidate`'s
+                        // real disk IO: long enough that a still-racy
+                        // check-and-set would let a second thread's check
+                        // land inside this window and see "idle".
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        claim.defuse();
+                        "installing"
+                    }
+                }
+            };
+
+            let (a, b) = std::thread::scope(|scope| {
+                let t1 = scope.spawn(|| attempt(&install));
+                let t2 = scope.spawn(|| attempt(&install));
+                (t1.join().unwrap(), t2.join().unwrap())
+            });
+
+            let outcomes = [a, b];
+            assert_eq!(
+                outcomes.iter().filter(|o| **o == "installing").count(),
+                1,
+                "rep {rep}: exactly one of the two concurrent attempts must claim the slot: got {outcomes:?}"
+            );
+            assert_eq!(
+                outcomes.iter().filter(|o| **o == "already_installing").count(),
+                1,
+                "rep {rep}: the loser must see already_installing, not a second successful claim: got {outcomes:?}"
+            );
+        }
+    }
+
+    /// N2, negative control: a claim that is dropped WITHOUT `defuse()` (the
+    /// shape of a failed `validate_trainer_root_candidate`) must hand the
+    /// slot back, not leave it stuck on "installing" forever. Without this,
+    /// N2's own fix would trade a rare double-install race for a guaranteed
+    /// permanent lockout on the very first rejected path.
+    #[test]
+    fn a_claim_dropped_without_defusing_releases_the_slot_for_the_next_attempt() {
+        let install: Arc<Mutex<crate::state::InstallState>> = Arc::new(Mutex::new(crate::state::InstallState::default()));
+        {
+            let mut st = install.lock().unwrap();
+            st.status = "installing".to_string();
+        }
+        let claim = super::InstallClaim { install: &install, active: true };
+        assert_eq!(install.lock().unwrap().status, "installing", "the claim starts out holding the slot");
+        drop(claim); // simulates `validate_trainer_root_candidate(trimmed)?` returning Err
+
+        assert_eq!(install.lock().unwrap().status, "idle", "an undefused claim must reset the slot, not leave it stuck on installing");
+
+        // And a fresh attempt can now claim it, proving the slot is really free.
+        let mut st = install.lock().unwrap();
+        assert_ne!(st.status, "installing");
+        st.status = "installing".to_string();
+    }
+
+    /// The priority order the review asked for: the Hardware tab's own pick
+    /// wins, then a `CUDA_VISIBLE_DEVICES` already on the process, then the
+    /// card with the most memory -- never a bare index 0.
+    #[test]
+    fn choose_trainer_gpu_prefers_the_hardware_tab_pick() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "RTX 3050".into(),
+                memory_mib: Some(8192),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: None,
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "RTX 3090 Ti".into(),
+                memory_mib: Some(24564),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: None,
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection { vendor: "nvidia".into(), indices: vec![1] };
+        let choice = super::choose_trainer_gpu(&cards, &selection, None).expect("a card was chosen");
+        assert_eq!(choice.index, 1);
+        assert_eq!(choice.source, "the Hardware tab's GPU selection");
+    }
+
+    /// Without a Hardware-tab pick, a `CUDA_VISIBLE_DEVICES` the user already
+    /// set on the process is respected, narrowed to its strongest entry, not
+    /// overwritten with a default.
+    #[test]
+    fn choose_trainer_gpu_respects_an_existing_cuda_visible_devices() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "Tesla P100 (display)".into(),
+                memory_mib: Some(4096),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: None,
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "Tesla P100".into(),
+                memory_mib: Some(16384),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: None,
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection::default();
+        let choice = super::choose_trainer_gpu(&cards, &selection, Some("1")).expect("a card was chosen");
+        assert_eq!(choice.index, 1);
+        assert_eq!(choice.source, "the CUDA_VISIBLE_DEVICES already set for this process");
+    }
+
+    /// GPU-UUID Nachzug: a user who set `CUDA_VISIBLE_DEVICES` to a
+    /// `GPU-<uuid>` themselves (outside LU) is honoured exactly the same as
+    /// one who used a plain index -- the uuid form is not a second, unread
+    /// spelling.
+    #[test]
+    fn choose_trainer_gpu_matches_an_existing_cuda_visible_devices_given_as_a_uuid() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "Tesla P100 (display)".into(),
+                memory_mib: Some(4096),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: Some("GPU-aaaa".into()),
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "Tesla P100".into(),
+                memory_mib: Some(16384),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: Some("GPU-bbbb".into()),
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection::default();
+        let choice = super::choose_trainer_gpu(&cards, &selection, Some("GPU-bbbb")).expect("a card was chosen");
+        assert_eq!(choice.index, 1);
+        assert_eq!(choice.uuid.as_deref(), Some("GPU-bbbb"));
+        assert_eq!(choice.source, "the CUDA_VISIBLE_DEVICES already set for this process");
+    }
+
+    /// The normal (no existing env var, no user override) priority also
+    /// carries the uuid through, so `pin_trainer_gpu` can prefer it.
+    #[test]
+    fn choose_trainer_gpu_carries_the_uuid_through_on_the_hardware_tab_pick() {
+        let cards = vec![crate::commands::gpu::DetectedGpu {
+            index: 0,
+            vendor: "nvidia".into(),
+            name: "RTX 3060".into(),
+            memory_mib: Some(12288),
+            source: "nvidia-smi".into(),
+            note: None,
+            note_severity: None,
+            arch: None,
+            uuid: Some("GPU-cccc".into()),
+        }];
+        let selection = crate::commands::gpu::GpuSelection { vendor: "nvidia".into(), indices: vec![0] };
+        let choice = super::choose_trainer_gpu(&cards, &selection, None).expect("a card was chosen");
+        assert_eq!(choice.uuid.as_deref(), Some("GPU-cccc"));
+    }
+
+    /// Neither a Hardware-tab pick nor an existing env var: the card with the
+    /// most memory wins, not index 0. CUDA without `CUDA_DEVICE_ORDER` sorts
+    /// fastest-first, which is not the same promise.
+    #[test]
+    fn choose_trainer_gpu_falls_back_to_the_most_memory_not_index_zero() {
+        let cards = vec![
+            crate::commands::gpu::DetectedGpu {
+                index: 0,
+                vendor: "nvidia".into(),
+                name: "RTX 3050".into(),
+                memory_mib: Some(8192),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: None,
+            },
+            crate::commands::gpu::DetectedGpu {
+                index: 1,
+                vendor: "nvidia".into(),
+                name: "RTX 3090 Ti".into(),
+                memory_mib: Some(24564),
+                source: "nvidia-smi".into(),
+                note: None,
+                note_severity: None,
+                arch: None,
+                uuid: None,
+            },
+        ];
+        let selection = crate::commands::gpu::GpuSelection::default();
+        let choice = super::choose_trainer_gpu(&cards, &selection, None).expect("a card was chosen");
+        assert_eq!(choice.index, 1, "index 0 was chosen instead of the card with more memory");
+        assert_eq!(choice.source, "the card with the most memory");
     }
 
     /// Positive control, path 1 of 2: the setup's own smoke test. It runs
@@ -2708,6 +4396,7 @@ mod tests {
                 steps: "400",
                 out_dir: "/t/out",
                 out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 9))),
             },
         );
         super::trainer_child_env(&mut cmd);
@@ -2738,6 +4427,7 @@ mod tests {
                 steps: "400",
                 out_dir: "/t/out",
                 out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 9))),
             },
         );
         assert_eq!(
@@ -2764,6 +4454,74 @@ mod tests {
             !code.contains("accelerate.exe") && !code.contains("\"launch\""),
             "the accelerate launcher is back in the production code",
         );
+    }
+
+    // ── Nachbesserung 1 (Runde 4 corrected again): bf16 is not optional for
+    // this model, so it is no longer part of what this function decides ──
+    // Runde 2 had bf16 fall back to fp16 below compute capability 8.0. Runde
+    // 3's Opus review found that fp16 was never a real rescue: zimage_utils.py
+    // hardcodes bfloat16 in the text encoder cache step regardless of
+    // `--mixed_precision` (see the doc comment on TrainPrecision), so a card
+    // that cannot do bf16 dies there anyway. `capability_floor_refusal` now
+    // refuses such a card before this function is ever called with its
+    // capability, which makes the old fp16 branch dead code: deleted.
+
+    #[test]
+    fn train_precision_gives_any_measured_card_the_full_bf16_recipe() {
+        use super::train_precision_for_capability;
+        // Every one of these has already cleared capability_floor_refusal's
+        // 8.0 floor in practice; the function no longer branches on the
+        // exact number, only on whether one was measured at all.
+        for cap in [(8, 0), (8, 6), (8, 9), (9, 0), (12, 0)] {
+            let p = train_precision_for_capability(Some(cap));
+            assert_eq!(p.mixed_precision, "bf16", "{cap:?}");
+            assert_eq!(p.save_precision, "bf16", "{cap:?}");
+            assert!(p.fp8, "{cap:?}");
+            assert_eq!(p.optimizer_type, "adamw8bit", "{cap:?}");
+        }
+    }
+
+    #[test]
+    fn train_precision_with_no_measured_capability_stays_conservative() {
+        use super::train_precision_for_capability;
+        let unknown = train_precision_for_capability(None);
+        assert_eq!(unknown.mixed_precision, "fp16");
+        assert!(!unknown.fp8, "an unmeasured card gets the fully conservative recipe, fp8 included");
+        assert_eq!(unknown.optimizer_type, "AdamW");
+    }
+
+    /// Positive control: sdrairsoft's Tesla P100 (compute capability 6.0)
+    /// must never reach `training_command` at all any more; it is refused
+    /// by `capability_floor_refusal` before the trainer environment is even
+    /// installed. See `capability_floor_now_refuses_pascal_the_concrete_melder_case`.
+    #[test]
+    fn pascal_is_refused_before_training_command_is_ever_built() {
+        use super::capability_floor_refusal;
+        assert!(
+            capability_floor_refusal((6, 0), "Tesla P100").is_some(),
+            "a card this function would have to build fp16 for must be refused first",
+        );
+    }
+
+    #[test]
+    fn the_training_command_keeps_fp8_on_an_ampere_card() {
+        let cmd = super::training_command(
+            "/tmp/venv/bin/python",
+            std::path::Path::new("/tmp/musubi-tuner"),
+            &super::TrainStep {
+                dit: "/m/dit.safetensors",
+                vae: "/m/ae.safetensors",
+                text_encoder: "/m/qwen.safetensors",
+                dataset: "/t/set.toml",
+                steps: "400",
+                out_dir: "/t/out",
+                out_name: "char_dave_zimage",
+                precision: super::train_precision_for_capability(Some((8, 6))),
+            },
+        );
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "--fp8_base"), "the 3060 proof box needs fp8 to fit in 12 GB: {args:?}");
+        assert!(args.iter().any(|a| a == "--fp8_scaled"), "{args:?}");
     }
 
     #[test]
@@ -2862,7 +4620,7 @@ mod shutdown_tests {
     #[test]
     fn a_venv_whose_python_no_longer_starts_gets_rebuilt() {
         use super::{venv_action, venv_create_args, VenvAction};
-        assert_eq!(venv_action(true, None), VenvAction::Rebuild);
+        assert_eq!(venv_action(true, None, true), VenvAction::Rebuild);
         // A rebuild must clear: the old site-packages belongs to an
         // interpreter that no longer exists, and pip would repair on top of it.
         assert_eq!(venv_create_args(VenvAction::Rebuild), ["-m", "venv", "--clear"]);
@@ -2871,11 +4629,11 @@ mod shutdown_tests {
     #[test]
     fn a_working_venv_is_kept_and_a_missing_one_is_created() {
         use super::{venv_action, venv_create_args, VenvAction};
-        assert_eq!(venv_action(true, Some("3.11.7")), VenvAction::Keep);
-        assert_eq!(venv_action(false, None), VenvAction::Create);
+        assert_eq!(venv_action(true, Some("3.11.7"), true), VenvAction::Keep);
+        assert_eq!(venv_action(false, None, true), VenvAction::Create);
         // POSIX: venv/bin/python is a symlink, so a dead base already shows up
         // as absent. That is why this only ever bit Windows.
-        assert_eq!(venv_action(false, Some("3.12.1")), VenvAction::Create);
+        assert_eq!(venv_action(false, Some("3.12.1"), true), VenvAction::Create);
         assert_eq!(venv_create_args(VenvAction::Create), ["-m", "venv"]);
         assert_eq!(venv_create_args(VenvAction::Keep), ["-m", "venv"]);
     }
@@ -2892,12 +4650,30 @@ mod shutdown_tests {
     #[test]
     fn a_venv_from_a_python_the_trainer_cannot_use_is_rebuilt_not_kept() {
         use super::{venv_action, VenvAction};
-        assert_eq!(venv_action(true, Some("3.14.6")), VenvAction::Rebuild, "sockenmonster's venv");
-        assert_eq!(venv_action(true, Some("3.13.5")), VenvAction::Rebuild, "the box's newest Python");
-        assert_eq!(venv_action(true, Some("3.9.13")), VenvAction::Rebuild, "too old is as wrong as too new");
+        assert_eq!(venv_action(true, Some("3.14.6"), true), VenvAction::Rebuild, "sockenmonster's venv");
+        assert_eq!(venv_action(true, Some("3.13.5"), true), VenvAction::Rebuild, "the box's newest Python");
+        assert_eq!(venv_action(true, Some("3.9.13"), true), VenvAction::Rebuild, "too old is as wrong as too new");
         for v in ["3.10.6", "3.11.7", "3.12.1"] {
-            assert_eq!(venv_action(true, Some(v)), VenvAction::Keep, "{v}");
+            assert_eq!(venv_action(true, Some(v), true), VenvAction::Keep, "{v}");
         }
+    }
+
+    /// K4, nachgebessert nach dem Opus-Review: before this, `arch_ok` did not
+    /// exist and a venv built from a 32-bit or ARM64 Python 3.11 -- a version
+    /// `trainer_supports_python` accepts -- always read Keep on this Keep
+    /// path, so "delete the 3.11 environment" (gekiritz was told this) had
+    /// nothing to do here: the NEXT setup run rebuilt with the same bad
+    /// interpreter, because nothing on the Keep path ever asked its
+    /// architecture.
+    #[test]
+    fn a_venv_from_the_wrong_architecture_is_rebuilt_even_with_a_good_version() {
+        use super::{venv_action, VenvAction};
+        assert_eq!(
+            venv_action(true, Some("3.11.7"), false),
+            VenvAction::Rebuild,
+            "a right-looking version must not save a wrong-architecture venv",
+        );
+        assert_eq!(venv_action(true, Some("3.11.7"), true), VenvAction::Keep);
     }
 
     #[test]
@@ -2938,10 +4714,12 @@ mod shutdown_tests {
     #[test]
     fn when_no_python_fits_the_message_names_what_is_there_and_where_to_get_one() {
         use super::{install_failed_message, no_trainer_python_message, repair_aborted_message, Preflight};
-        let found = vec!["3.14.6".to_string()];
+        let found = vec![("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())];
         let win = no_trainer_python_message(&found, "windows", true);
         assert!(win.contains("3.10, 3.11 or 3.12"), "{win}");
         assert!(win.contains("has Python 3.14.6"), "{win}");
+        // K4: the path is what tells two same-version Pythons apart.
+        assert!(win.contains("at C:\\Python314\\python.exe"), "{win}");
         assert!(win.contains("winget") && win.contains("python.org/downloads/windows"), "{win}");
         assert!(win.contains("Set up trainer"), "{win}");
         // Settings > Install Python short-circuits as soon as ANY Python exists,
@@ -3000,7 +4778,7 @@ mod shutdown_tests {
         let step2 = &src[src.find("    // 2) venv").expect("step 2 marker")..];
         let step2 = &step2[..step2.find("// 3) torch").expect("step 3 marker")];
         assert!(
-            step2.contains("venv_action(exists, venv_version.as_deref())"),
+            step2.contains("venv_action(exists, venv_version.as_deref(), venv_arch_ok)"),
             "step 2 must decide with venv_action on the venv's version, not with a bare exists()",
         );
         assert!(
@@ -3089,7 +4867,7 @@ mod shutdown_tests {
     #[test]
     fn an_error_that_already_names_its_button_is_left_alone() {
         use super::{install_failed_message, no_trainer_python_message, repair_aborted_message, Preflight};
-        let eigen = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        let eigen = no_trainer_python_message(&[("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())], "windows", false);
         assert_eq!(install_failed_message(&eigen), eigen);
         assert_eq!(
             repair_aborted_message(&Preflight::TorchBroken("x".into()), &eigen),
@@ -3426,13 +5204,49 @@ mod journey_tests {
         assert!(TORCH_PREFLIGHT_PY.contains("VRAM_MIB"), "the probe script has to print it");
         assert_eq!(parse_vram_mib("TORCH_OK 2.5.1\nCUDA 1\nCAP 8 6\nARCHS sm_86\nVRAM_MIB 12288\n"), Some(12288));
         assert_eq!(parse_vram_mib("TORCH_OK 2.5.1\nCUDA 0\n"), None);
-        assert!(vram_verdict(Some(12288)).is_none(), "the box's 12 GB card trains");
-        assert!(vram_verdict(Some(16 * 1024)).is_none());
-        assert!(vram_verdict(None).is_none(), "no card reported is the processor case, handled elsewhere");
-        let small = vram_verdict(Some(8 * 1024)).expect("8 GB is below the floor");
+        let fp8_on = train_precision_for_capability(Some((8, 6)));
+        assert!(vram_verdict(Some(12288), &fp8_on).is_none(), "the box's 12 GB card trains");
+        assert!(vram_verdict(Some(16 * 1024), &fp8_on).is_none());
+        assert!(vram_verdict(None, &fp8_on).is_none(), "no card reported is the processor case, handled elsewhere");
+        let small = vram_verdict(Some(8 * 1024), &fp8_on).expect("8 GB is below the floor");
         assert!(small.contains("8 GB"), "{small}");
         assert!(small.contains("12 GB"), "{small}");
         assert!(small.contains("Cloud mode"), "names the way that works: {small}");
+    }
+
+    /// Nachbesserung Runde 2: the floor moves with the precision that will
+    /// actually run. An unmeasured card (fp8 off, the fully conservative
+    /// fallback) needs more headroom than the fp8-on floor the 3060 box
+    /// proved -- a card between the two floors must be refused only in the
+    /// no-fp8 case, not the fp8 one.
+    #[test]
+    fn vram_floor_follows_the_chosen_precision_not_a_fixed_number() {
+        let fp8_on = train_precision_for_capability(Some((8, 6)));
+        let fp8_off = train_precision_for_capability(None);
+        assert!(fp8_on.fp8);
+        assert!(!fp8_off.fp8);
+        let between = 16 * 1024; // 16 GB: above the fp8 floor, below the no-fp8 one.
+        assert!(vram_verdict(Some(between), &fp8_on).is_none(), "16 GB trains fine with fp8 on");
+        let msg = vram_verdict(Some(between), &fp8_off).expect("16 GB is below the no-fp8 floor");
+        assert!(msg.contains("16 GB"), "{msg}");
+        assert!(msg.contains("24 GB"), "names the higher floor: {msg}");
+    }
+
+    /// Nachbesserung Runde 4: `provision_trainer_env`'s own
+    /// `capability_floor_refusal` call only runs on a fresh install or a
+    /// repair. A card with an already-healthy environment (the common case
+    /// on every run after the first) skipped that branch entirely and would
+    /// have reached `train_precision_for_capability` unrefused -- this
+    /// wiring test pins the second call site `start_character_training`
+    /// needs so that gap cannot come back silently.
+    #[test]
+    fn every_run_checks_the_capability_floor_before_choosing_a_precision() {
+        let src = include_str!("trainer.rs");
+        let body = &src[src.find("pub fn start_character_training").expect("start fn")..];
+        let body = &body[..body.find("pub fn character_training_status").expect("end of run")];
+        let floor_at = body.find("capability_floor_refusal(").expect("the run checks the floor at all");
+        let precision_at = body.find("train_precision_for_capability(cap)").expect("the run picks a precision");
+        assert!(floor_at < precision_at, "the floor must be checked before a precision is chosen, not after");
     }
 
     #[test]
@@ -3491,7 +5305,7 @@ mod journey_tests {
         assert!(!body.contains("Command::new(\"git\")"), "provision itself must not require git");
         assert!(body.contains("disk_room_message(root, free, needed_gib)"), "room is asked before the first byte");
         assert_eq!(body.matches("pip_with_retry(").count(), 2, "both pip steps retry a dropped download");
-        assert!(body.contains("probe_trainer_env(&venv_exe, gpu, \"after setup\")"), "the setup proves the environment loads");
+        assert!(body.contains("probe_trainer_env(root, &venv_exe, gpu, device, \"after setup\")"), "the setup proves the environment loads");
         assert!(body.contains("winget_install(\"Microsoft.VCRedist.2015+.x64\", false"), "the runtime is installed, not linked");
         let base = &src[src.find("fn trainer_base_python(").expect("base")..];
         let base = &base[..base.find("fn musubi_source_marker").expect("end of base")];
@@ -3511,7 +5325,7 @@ mod journey_tests {
         let body = &src[src.find("fn provision_trainer_env(").expect("provision")..];
         let body = &body[..body.find("pub fn character_trainer_status").expect("end of provision")];
         let gate = body.find("trainer_base_python(python_bin").expect("the interpreter is chosen");
-        for later in ["fetch_musubi_source(", "Command::new(python_bin)", "pip_with_retry(", "create_dir_all("] {
+        for later in ["fetch_musubi_source(", "foreign_system_command(python_bin)", "pip_with_retry(", "create_dir_all("] {
             let at = body.find(later).unwrap_or_else(|| panic!("{later} is gone from the setup"));
             assert!(gate < at, "{later} runs before the Python rule is enforced");
         }
@@ -3520,7 +5334,7 @@ mod journey_tests {
         // The sentence names the versions, and the range is the one musubi and
         // the wheels agree on.
         assert_eq!(TRAINER_PYTHON_RANGE, "3.10, 3.11 or 3.12");
-        let msg = no_trainer_python_message(&["3.14.6".to_string()], "windows", false);
+        let msg = no_trainer_python_message(&[("C:\\Python314\\python.exe".to_string(), "3.14.6".to_string())], "windows", false);
         assert!(msg.contains("3.10, 3.11 or 3.12"), "{msg}");
         assert!(msg.contains("3.14.6"), "the message names what is on the machine: {msg}");
         assert!(!trainer_supports_python("3.13.0") && !trainer_supports_python("3.14.6"));
@@ -3590,5 +5404,58 @@ mod progress_line_tests {
         let body = &body[..body.find("let exit = loop").expect("wait loop")];
         assert!(body.contains("for_each_progress_line(stream"), "the reader goes through the \\r-aware splitter");
         assert!(!body.contains(".lines()"), "BufRead::lines would hide tqdm updates until the epoch ends");
+    }
+}
+
+/// Review Runde 2, B1: nothing may delete the Linux git preflight in
+/// `fetch_musubi_source` or move it after the `git clone` it is meant to
+/// guard, without a test going red. Same technique as
+/// process_util.rs's `the_argv_matchers_share_one_refresh`.
+#[cfg(test)]
+mod git_preflight_call_site_guard {
+    #[test]
+    fn fetch_musubi_source_checks_git_before_clone() {
+        let src = include_str!("trainer.rs");
+        let fn_start = src
+            .find("fn fetch_musubi_source(")
+            .expect("fetch_musubi_source is gone from trainer.rs");
+        let body = &src[fn_start..];
+
+        let at_probe = body.find("is_git_present()").expect(
+            "fetch_musubi_source no longer probes git before falling back to it: a \
+             fresh Debian 13 or Fedora 43 box without git would clone straight into \
+             a cryptic spawn error again instead of the distro-specific hint",
+        );
+        // The probe alone is not the whole guarantee: review Runde 2 merged
+        // the old git_download_preflight() call into is_git_present() plus
+        // this direct call to the same Linux hint builder, to avoid running
+        // `git --version` twice. Anchoring only on is_git_present() would
+        // stay green even if someone deleted the `#[cfg(target_os =
+        // "linux")]` arm that actually builds the distro-specific message,
+        // so the hint builder call has to be found too.
+        let at_hint = body.find("linux_git_missing_message(").expect(
+            "fetch_musubi_source no longer builds the Linux-specific git hint: a \
+             fresh Debian 13 or Fedora 43 box without git would get the bare \
+             network sentence again instead of the package manager command",
+        );
+        let at_clone = body
+            .find("\"clone\"")
+            .expect("the git clone literal is gone from fetch_musubi_source");
+
+        assert!(
+            at_probe < at_clone,
+            "is_git_present() (byte {at_probe}) must run before the clone \
+             (byte {at_clone}), not after"
+        );
+        assert!(
+            at_hint < at_clone,
+            "linux_git_missing_message(...) (byte {at_hint}) must run before the \
+             clone (byte {at_clone}), not after"
+        );
+        assert!(
+            at_probe < at_hint,
+            "is_git_present() (byte {at_probe}) must be checked before building \
+             the Linux hint (byte {at_hint}), not the other way round"
+        );
     }
 }

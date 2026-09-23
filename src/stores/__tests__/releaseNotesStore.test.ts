@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useReleaseNotesStore, shouldShowReleaseNotes } from '../releaseNotesStore'
-import { RELEASE_NOTES, releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
+import { RELEASE_NOTES, releaseNoteFor, itemDetail, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS, SHEET_MARKED_MODELS } from '../../lib/release-notes'
 import { CLOUD_PITCH, CLOUD_REFUSAL_LINE, CLOUD_SUBSCRIBER_LINE, cloudSalesLines } from '../../lib/cloud-pitch'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -24,12 +24,19 @@ const UNKNOWN = '9.9.9'
 
 beforeEach(() => useReleaseNotesStore.setState({ lastNotesVersion: null }))
 
+/**
+ * The long, guard-bound text of every line, headline included, regardless of
+ * whether a line is still the historic plain string or carries a `title`
+ * alongside its `detail` (Runde 2, 19.09.2026). This is what every anchor
+ * below matches against, so a title never has to repeat the anchor text: the
+ * detail underneath it still does.
+ */
 function proseOf(version: string): string {
   const note = releaseNoteFor(version)
   return [
     note?.headline ?? '',
-    ...(note?.lines ?? []),
-    ...(note?.details ?? []).flatMap((s) => s.items),
+    ...(note?.lines ?? []).map(itemDetail),
+    ...(note?.details ?? []).flatMap((s) => s.items).map(itemDetail),
   ]
     .join('\n')
     .toLowerCase()
@@ -46,7 +53,30 @@ describe('the notes table', () => {
     for (const n of RELEASE_NOTES) {
       expect(n.headline.trim().length, `${n.version}: headline`).toBeGreaterThan(10)
       expect(n.lines.length, `${n.version}: lines`).toBeGreaterThanOrEqual(2)
-      for (const l of n.lines) expect(l.trim().length, `${n.version}: empty line`).toBeGreaterThan(0)
+      for (const l of n.lines) expect(itemDetail(l).trim().length, `${n.version}: empty line`).toBeGreaterThan(0)
+    }
+  })
+
+  it('every line of the shipping entry has a title, and no title is a text wall', () => {
+    // Runde 2 (19.09.2026): the sheet used to show 35 developer paragraphs
+    // with nothing to skim. Every line of the SHIPPING version now has to
+    // carry a short `title`, or the redesign quietly regresses to walls of
+    // text the next time someone appends a line without writing one. Older
+    // entries are exempt: they were written before `title` existed and fall
+    // back to their own long text on the sheet, which is the documented,
+    // backward-compatible behaviour, not a gap to close retroactively.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    const note = releaseNoteFor(shipping)
+    const allItems = [...(note?.lines ?? []), ...(note?.details ?? []).flatMap((s) => s.items)]
+    expect(allItems.length, `${shipping}: no lines at all`).toBeGreaterThan(0)
+    for (const item of allItems) {
+      expect(typeof item, `${shipping}: a line is still a plain string, no title`).toBe('object')
+      if (typeof item === 'object') {
+        expect(item.title?.trim().length ?? 0, `${shipping}: a line has no title`).toBeGreaterThan(0)
+        expect(item.title!.length, `${shipping}: title too long: "${item.title}"`).toBeLessThanOrEqual(90)
+      }
     }
   })
 
@@ -191,10 +221,10 @@ describe('the notes table', () => {
     // field, custom backend context and its running window, download
     // progress) gets an anchor, plus the one report that stays open because
     // nobody here owns the card.
-    const shipping = JSON.parse(
-      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
-    ).version as string
-    expect(shipping).toBe('3.0.0')
+    // 3.0.1 shipped on top of it (package.json), so this pins the 3.0.0 entry
+    // by its own version like the 2.6.8 and 2.6.9 blocks above do, and the
+    // 3.0.1 entry gets its own anchors below.
+    const shipping = '3.0.0'
     const prose = proseOf(shipping)
     for (const anchor of [
       'without refusing', 'we asked them', 'carries no mark yet',
@@ -243,6 +273,64 @@ describe('the notes table', () => {
     // Die Ablehnung bleibt, und die zweite Haelfte des Satzes steht wortgleich.
     expect(prose).toContain('refused on every request')
     expect(prose).toContain('photograph of a real, identifiable person without their consent')
+  })
+
+  it('the 3.0.1 entry names its own fixes', () => {
+    // Auflage 2 (review-gesamt.md): package.json, Cargo.toml/.lock and
+    // tauri.conf.json all moved to 3.0.1 in one commit, so THIS is now the
+    // shipping entry the earlier existence guard checks. Same blind spot as
+    // 2.6.8/2.6.9/3.0.0 above: an anchor per fix, so a later edit that drops
+    // one fails here instead of shipping quietly incomplete.
+    // 3.0.2 shipped on top of it (package.json), so this pins the 3.0.1 entry
+    // by its own version like the 2.6.8, 2.6.9 and 3.0.0 blocks above do, and
+    // the 3.0.2 entry gets its own anchors below.
+    const shipping = '3.0.1'
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      'avx2', 'total capacity, not free memory', 'ld_library_path',
+      'pythonhome', 'refuses to write into the system python', 'pip call',
+      'searches the interpreters already on your machine',
+      // Auflage 1 Nachtrag: die Zeilen dieses Berichts.
+      'parks the api key it displaces', 'redirects pip, hugging face and torch',
+      'animate this image button', 'qwen-image-edit', 'enhance image',
+      'krea 2 checkpoints', 'stays disabled instead of failing on the server',
+      'failed to fetch', 'distinct title for each of its three reasons',
+      'crashes when grouping models', 'top k',
+      'survives export and import again', 'blocks the whole sync',
+      'composer lock during a send', 'a third remembered agent folder',
+      'asks the running engine directly',
+      // ENG-14, matrix point 83 (review-venvhint.md): the fix itself was
+      // stdout being discarded; this is the sentence the sheet promises for it.
+      'python3-venv', 'lu only read stderr',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
+  })
+
+  it('the 3.0.2 entry names the Code tab hotfix and the new count, now that it is the shipping version', () => {
+    // Hotfix fuer Issue 138: package.json, Cargo.toml/.lock and
+    // tauri.conf.json all moved to 3.0.2 in one commit, so THIS is now the
+    // shipping entry the earlier existence guard checks. Same blind spot as
+    // 2.6.8/2.6.9/3.0.0/3.0.1 above: an anchor per statement, so a later edit
+    // that drops one fails here instead of shipping quietly incomplete. The
+    // two statements are the only two the CHANGELOG carries for 3.0.2.
+    const shipping = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json'), 'utf8'),
+    ).version as string
+    expect(shipping).toBe('3.0.2')
+    const prose = proseOf(shipping)
+    for (const anchor of [
+      // Der Fehler, sein Bericht und die Version, aus der er stammt.
+      'issue 138', 'a regression in 3.0.1', 'scroll container',
+      'the mouse wheel did nothing', 'held to the window height again',
+      // Und die Grenze der Aussage: der Chat-Reiter war nie betroffen.
+      'the chat tab was never affected',
+      // Die neue Zaehlung, beide Gattungen und die Herkunft der Marke.
+      'fourteen video models', 'seven image models', 'create studio shelf',
+      'reported ten and three', 'never from the name',
+    ]) {
+      expect(prose, `${shipping}: nothing about "${anchor}"`).toContain(anchor)
+    }
   })
 
   it('the Flash allowance on the sheet hangs on a RUNNING plan, not on money that once arrived', () => {
@@ -333,9 +421,10 @@ describe('the notes table', () => {
     // Long sentences only: a short one can legitimately repeat.
     const sentences = (text: string) =>
       text.split(/(?<=\.)\s+/).map((x) => x.trim().toLowerCase()).filter((x) => x.length > 30)
-    const inLines = new Set((note?.lines ?? []).flatMap(sentences))
+    const inLines = new Set((note?.lines ?? []).map(itemDetail).flatMap(sentences))
     const repeated = (note?.details ?? [])
       .flatMap((s) => s.items)
+      .map(itemDetail)
       .flatMap(sentences)
       .filter((x) => inLines.has(x))
     expect(repeated, 'said word for word in both places').toEqual([])
@@ -364,7 +453,7 @@ describe('the notes table', () => {
     expect(titles).toContain('Cloud')
     for (const s of note?.details ?? []) {
       expect(s.items.length, `${s.title}: items`).toBeGreaterThanOrEqual(3)
-      for (const i of s.items) expect(i.trim().length, `${s.title}: empty item`).toBeGreaterThan(0)
+      for (const i of s.items) expect(itemDetail(i).trim().length, `${s.title}: empty item`).toBeGreaterThan(0)
     }
   })
 
@@ -401,14 +490,19 @@ describe('the notes table', () => {
     )
     expect(modal).toContain('release-cloud-block')
     expect(modal, 'the block has no way into the cloud').toContain('Turn on Cloud')
-    // Vor allem anderen: der Block steht im Quelltext vor der Ueberschrift
-    // des Blatts, und die Ueberschrift ist das erste, was sonst kam.
+    // Vor allem anderen: der Block steht im Quelltext vor der restlichen
+    // Prosa des Blatts.
     //
-    // Gegen die gerenderte Ueberschrift, nicht gegen die Zeichenkette: die
-    // Datei beginnt mit einem Kommentar, der "What is new" ebenfalls nennt,
-    // und gegen den stand der Block immer hinten.
+    // Runde 2 (19.09.2026): "What is new" plus ein separates Versions-Label
+    // wichen "What's new in {version}" in der FESTEN Kopfzeile (Logo und
+    // Ueberschrift bleiben beim Scrollen sichtbar, wie Version und Logo es
+    // vorher schon taten) und stehen darum vor JEDEM Inhalt, auch vor dem
+    // Cloud-Block. Das ist kein Verstoss gegen "vor allem anderen": der
+    // Massstab war immer der INHALT, nicht das Chrome. Der Marker fuer den
+    // ersten echten Inhaltssatz ist jetzt `release-intro`, das Gegenstueck zur
+    // fruehen "What is new</h3>"-Ueberschrift im Koerper.
     expect(modal.indexOf('release-cloud-block'))
-      .toBeLessThan(modal.indexOf('What is new</h3>'))
+      .toBeLessThan(modal.indexOf('data-testid="release-intro"'))
     // Der Knopf faellt auf denselben Weg zurueck wie der Schalter im Kopf.
     expect(modal).toContain('setCloudGateOpen(true)')
     expect(modal).toContain("updateSettings({ appMode: 'cloud' })")
@@ -425,16 +519,24 @@ describe('the notes table', () => {
       .not.toContain('more credits per euro')
   })
 
-  it('the modal renders the expander and the sections', () => {
-    // Source guard, same pattern as the settings guards: the sheet must offer
-    // Show all changes and map note.details, or the table above is dead data.
+  it('the modal renders every section and lets a line disclose its own detail', () => {
+    // Source guard, same pattern as the settings guards: the sheet must map
+    // note.details and section.items, or the table above is dead data.
+    //
+    // Runde 2 (19.09.2026): the one global "Show all changes" switch is gone,
+    // replaced by a per-line disclosure (aria-expanded) plus an "Expand all"
+    // convenience that opens every one of them at once. Both are pinned here
+    // so a later edit cannot quietly bring back one wall of always-visible
+    // text.
     const src = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), '../../components/release/ReleaseNotesModal.tsx'),
       'utf8',
     )
-    expect(src).toContain('Show all changes')
     expect(src).toContain('note.details.map')
     expect(src).toContain('section.items.map')
+    expect(src).toContain('aria-expanded')
+    expect(src).toContain('Expand all')
+    expect(src, 'the old global switch is back').not.toContain('Show all changes')
   })
 })
 

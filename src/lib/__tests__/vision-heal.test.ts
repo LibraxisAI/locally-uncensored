@@ -119,7 +119,7 @@ describe('the agent loop actually wires the N3 rules', () => {
   it('the multimodal branch asks whose picture it was before painting the error', () => {
     expect(hook).toContain('reportMultimodalRefusal(visionFeedbackGiven)')
     // The swallowed case closes with the normal turn summary, not an error.
-    expect(hook).toContain('(contentRef.current.trim() || closingSummary())')
+    expect(hook).toContain('(runState.content.trim() || closingSummary())')
   })
 
   it('the loop hands its own capability answer to the vision feedback', () => {

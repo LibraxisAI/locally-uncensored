@@ -72,7 +72,7 @@ export function BackendsStep({ skin, scan, fleet, setStep, nextStepAfterBackends
     lmstudioOfflineDetected, lmstudioModelCount, runDetection, stopDetection,
   } = scan
   const { ollama, ollamaDo, lmstudio, lmstudioDo, secondsOf } = fleet
-  const { setProviderConfig } = useProviderStore()
+  const { setProviderConfig, setEngineOptedOut } = useProviderStore()
 
   return (
     <>
@@ -363,6 +363,11 @@ export function BackendsStep({ skin, scan, fleet, setStep, nextStepAfterBackends
                           isLocal: true,
                           managed: false,
                         })
+                        // Opus review, R13D follow-up: the assistant just
+                        // installed and wired LM Studio on purpose, so the
+                        // missing-engine notice must not read this as an
+                        // eviction. See lib/builtin-engine-presence.ts.
+                        setEngineOptedOut(true)
                       } else if (s.status === 'error') {
                         clearInterval(poll)
                         lmstudioDo({ type: 'fail', error: withInstallerOutput('Installing LM Studio did not finish.', lastLog(s.logs)) })

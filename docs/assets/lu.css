@@ -236,6 +236,8 @@ html[data-theme="dark"] .switch::after{transform:translateX(16px);background:var
   display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin:0;
 }
 .mast-kicker .k-dot{color:var(--accent);font-weight:700;letter-spacing:0}
+.mast-lede a{color:var(--accent-soft);border-bottom:1px solid rgba(139,92,246,.42);text-decoration:none}
+.mast-lede a:hover{border-bottom-color:var(--accent-soft)}
 
 /* ═══════════════════════════════════════════════════════════════════════
    Shared section chrome
@@ -565,3 +567,49 @@ main.wrap.lu-doc{text-align:center;min-height:56vh;display:flex;flex-direction:c
 #lu-gt,#goog-gt-tt,.goog-te-banner-frame,.goog-te-balloon-frame,body>.skiptranslate,.VIpgJd-ZVi9od-aZ2wEe-wOHMyf{display:none!important}
 body{top:0!important}
 font.goog-text-highlight{background:none!important;box-shadow:none!important}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Cloud crossreference: the .lu-cloud-box aside used inside articles and
+   the .lu-cloud-grid card row used on the homepage. Purely additive.
+   ═══════════════════════════════════════════════════════════════════════ */
+.lu-cloud-box{
+  border:1px solid rgba(139,92,246,.30);
+  border-left:3px solid var(--accent);
+  border-radius:var(--radius-md);
+  background:var(--fill-faint);
+  padding:16px 20px;
+  margin:0 0 24px;
+}
+.lu-cloud-kicker{
+  display:block;font-family:var(--mono);font-size:.62rem;font-weight:500;
+  letter-spacing:0.14em;text-transform:uppercase;color:var(--accent-soft);margin-bottom:7px;
+}
+.lu-cloud-box p{font-family:var(--sans);font-size:.93rem;line-height:1.65;color:var(--fg-70);margin:0}
+.lu-cloud-box a{color:var(--accent-soft);border-bottom:1px solid transparent}
+.lu-cloud-box a:hover{color:var(--fg);border-bottom-color:var(--accent)}
+
+.lu-cloud{padding-top:clamp(40px,6vh,72px);padding-bottom:clamp(40px,6vh,72px)}
+.lu-cloud h2{font-size:clamp(1.5rem,3vw,2.3rem);max-width:28ch;margin-bottom:14px}
+.lu-cloud-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:32px;text-align:left}
+.lu-cloud-card{
+  padding:22px 20px;background:var(--panel);border:1px solid var(--line-subtle);
+  border-radius:var(--radius-lg);display:flex;flex-direction:column;gap:9px;
+  transition:border-color .3s,transform .3s;
+}
+.lu-cloud-card:hover{border-color:rgba(139,92,246,.45);transform:translateY(-2px)}
+.lu-cloud-card h3{font-family:var(--display);font-weight:600;font-size:1.02rem;letter-spacing:-0.01em;line-height:1.25;color:var(--fg)}
+.lu-cloud-card p{font-family:var(--sans);font-size:.82rem;line-height:1.55;color:var(--fg-50);flex:1;margin:0}
+.lu-cloud-card a{font-family:var(--sans);font-size:.78rem;font-weight:600;color:var(--accent-soft);transition:color .2s}
+.lu-cloud-card a::after{content:'→';margin-left:5px;opacity:.6;display:inline-block;transition:transform .2s}
+.lu-cloud-card a:hover{color:var(--fg)}
+.lu-cloud-card a:hover::after{transform:translateX(3px)}
+
+@media(max-width:900px){
+  .lu-cloud-grid{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:600px){
+  .lu-cloud-grid{grid-template-columns:1fr}
+  .lu-cloud-box{width:100%;padding:14px 16px;border-radius:var(--radius-sm)}
+  .lu-cloud-box p{font-size:.9rem}
+}
+

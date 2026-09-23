@@ -65,7 +65,7 @@ const removeButton = () => screen.queryByTestId('codex-remove-folder')
 beforeEach(() => {
   useCodexStore.setState({ workingDirectory: '', threads: {}, sendsInFlight: 0 })
   useGenerationStore.setState({ generating: {} })
-  useAgentLoopStore.setState({ loop: null })
+  useAgentLoopStore.setState({ loops: {} })
   useAgentModeStore.setState({ workspaces: {} })
   useSettingsStore.setState({ settings: { ...DEFAULT_SETTINGS } })
   useChatStore.setState({ conversations: [], activeConversationId: null })
@@ -143,6 +143,25 @@ describe('the header shows the folder, so it also gives it back', () => {
     expect(useCodexStore.getState().workingDirectory).toBe(WINDOWS_PATH)
   })
 
+  it('R2-21: the lock reason is visible, not just a title on a disabled button', async () => {
+    // The `title` on a disabled button never shows: disabled elements take no
+    // pointer events in Chromium, so the reason was invisible before this fix
+    // (same bug as the ExplorerPanel's `explorer-workdir-lock`, review R2-21).
+    act(() => {
+      useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH)
+      useCodexStore.getState().beginSend()
+    })
+    await show()
+    const lock = screen.getByTestId('codex-workdir-lock')
+    expect(lock.textContent).toContain('Wait for it to finish or press Stop')
+  })
+
+  it('and shows no lock line while nothing holds the folder (negative control)', async () => {
+    act(() => useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH))
+    await show()
+    expect(screen.queryByTestId('codex-workdir-lock')).toBeNull()
+  })
+
   it('and lets go again once the run is no longer alive', async () => {
     // Ein Faden bleibt auf 'running' stehen, bis der Lauf sich abgewickelt
     // hat. Haengt der Schwanz des Laufs, sperrte er diesen Knopf bis zum
@@ -164,7 +183,7 @@ describe('the header shows the folder, so it also gives it back', () => {
   it('is locked between two loop passes as well', async () => {
     act(() => useCodexStore.getState().setWorkingDirectory(WINDOWS_PATH))
     useAgentLoopStore.setState({
-      loop: { conversationId: 'conv-1', pass: 2, cap: 0, task: 'go', intervalMs: 30000, nextAt: 0 },
+      loops: { 'conv-1': { conversationId: 'conv-1', pass: 2, cap: 0, task: 'go', intervalMs: 30000, nextAt: 0 } },
     })
     await show()
     expect((removeButton() as HTMLButtonElement).getAttribute('title')).toContain('loop')

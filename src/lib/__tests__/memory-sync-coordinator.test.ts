@@ -9,7 +9,7 @@ vi.mock('../../api/cloud/memory-sync', async importOriginal => ({ ...await impor
   withMemorySyncSession: async (_owner: string, work: (session: unknown) => Promise<unknown>) =>
   work({ assertCurrent: () => {}, pull: fixture.pull, write: fixture.write }) }))
 vi.mock('../memory-persistence', async importOriginal => ({
-  ...await importOriginal<typeof import('../memory-persistence')>(), flushMemoryPersist: (guard: () => boolean) => fixture.flush(guard),
+  ...await importOriginal<typeof import('../memory-persistence')>(), flushMemoryPersist: (guard: () => void) => fixture.flush(guard),
 }))
 const { synchronizeMemoryCollection } = await import('../memory-sync')
 const memory: MemoryFile = { id: 'one', type: 'user', title: 'Fact', content: 'Original fact', description: '', tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }
@@ -22,7 +22,10 @@ beforeEach(() => {
   useMemoryStore.getState().selectMemoryCollection('A')
   remote = []
   fixture.pull.mockReset().mockImplementation(async () => remote)
-  fixture.flush.mockReset().mockImplementation(async (guard: () => boolean) => { if (!guard()) throw new Error('Fixture stale'); return 'confirmed' })
+  // R2-38: `guard` throws its OWN specific error (assertCurrent/check) rather
+  // than returning false; the mock lets that error surface directly instead
+  // of converting it to a generic "Fixture stale" rejection.
+  fixture.flush.mockReset().mockImplementation(async (guard: () => void) => { guard(); return 'confirmed' })
   fixture.write.mockReset().mockImplementation(async (id: string, revision: number, payload: Record<string, unknown> | null) => {
     expect(Object.hasOwn(useMemoryStore.getState().memorySyncPending.A, id)).toBe(true)
     const saved = { memory_id: id, revision: revision + 1, payload, deleted: payload === null, updated_at: '2026-09-09T00:00:00Z' }
@@ -88,11 +91,24 @@ it('preserves malformed saved metadata and refuses network work rather than trea
   expect(fixture.pull).not.toHaveBeenCalled()
   expect(fixture.write).not.toHaveBeenCalled()
 })
-it('requires extra consent before sending sensitive payloads', async () => {
+it('R2-37: leaves a sensitive memory out of the upload instead of blocking the whole sync', async () => {
   useMemoryStore.setState({ entries: [{ ...memory, sensitive: true }] })
-  await expect(synchronizeMemoryCollection('A')).rejects.toThrow('Sensitive memories need explicit permission')
+  const result = await synchronizeMemoryCollection('A')
+  expect(result.uploaded).toBe(0)
+  expect(result.omittedSensitive).toBe(1)
   expect(fixture.write).not.toHaveBeenCalled()
-  expect((await synchronizeMemoryCollection('A', true)).uploaded).toBe(1)
+  // With consent, the same write goes up after all.
+  const withConsent = await synchronizeMemoryCollection('A', true)
+  expect(withConsent.uploaded).toBe(1)
+  expect(withConsent.omittedSensitive).toBe(0)
+})
+it('R2-37: a harmless pull still lands even when a sensitive push is held back', async () => {
+  useMemoryStore.setState({ entries: [{ ...memory, sensitive: true }] })
+  remote = [{ memory_id: 'two', revision: 1, payload: { id: 'two', type: 'user', title: 'Other', content: 'Pulled fact', description: '', tags: [], source: 'manual', createdAt: 1, updatedAt: 1 }, deleted: false, updated_at: '2026-09-09T00:00:00Z' }]
+  const result = await synchronizeMemoryCollection('A')
+  expect(result.downloaded).toBe(1)
+  expect(result.omittedSensitive).toBe(1)
+  expect(useMemoryStore.getState().entries.some(e => e.id === 'two')).toBe(true)
 })
 it('preserves intent after an uncertain accepted first upload and propagates intervening deletion', async () => {
   useMemoryStore.setState({ entries: [memory] })

@@ -1,3 +1,4 @@
+import { Unlock } from 'lucide-react'
 import type { CloudModel } from '../../types/models'
 import { FLASH_MARK_LABEL, flashMarkTitle, useFlashEntitlement } from '../../lib/flash-entitlement'
 
@@ -26,11 +27,19 @@ export function ModelRowMarks({ model }: { model: { flash?: CloudModel['flash'];
   return (
     <>
       {model.unfiltered === 'full' && (
+        // K12 (3.0.1): unbeantwortete Discord-Meldung, die Marke war nicht
+        // auffindbar. Sie stand als reiner Fliesstext in derselben Groesse
+        // wie jede andere Kleinschrift der Zeile, ohne Icon, ohne Gewicht,
+        // im Sammelbild der Liste ging sie unter. Bleibt auf derselben
+        // Stufe der Typo-Leiter (t-micro setzt NUR die Groesse, siehe
+        // index.css), bekommt aber ein Icon und Fettung dazu, beides
+        // Tailwind-Utilities, die t-micro nicht ueberschreibt.
         <span
-          className="t-micro text-purple-600 dark:text-purple-300"
+          className="t-micro font-semibold text-purple-600 dark:text-purple-300 inline-flex items-center gap-0.5"
           title="Measured: this model answers without refusing. Your account's content policy still applies."
           data-mark="unfiltered"
         >
+          <Unlock size={9} className="shrink-0" aria-hidden="true" />
           No refusals
         </span>
       )}

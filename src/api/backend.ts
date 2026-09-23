@@ -225,24 +225,57 @@ export async function localFetch(
   const invoke = await getInvoke();
   const method = options?.method || "GET";
 
+  // Same callId/cancel mechanic as the chunked streaming path
+  // (proxyStreamChunked below): without it, Stop only settled the JS
+  // promise as "cancelled" while the Rust proxy sent the request to
+  // completion against the local engine: a non-streaming tool call (e.g.
+  // chatWithTools against the built-in engine or Ollama) kept computing
+  // after the user stopped it (review 2026-09-18, "Loch 3": the local
+  // engine ignores Stop). Already-aborted signals never open a call at all.
+  const signal = options?.signal;
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  const callId =
+    (globalThis.crypto as Crypto | undefined)?.randomUUID?.() ??
+    `c_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const cancelUpstream = () => { void invoke("cancel_proxy_call", { callId }).catch(() => { /* best-effort */ }); };
+  let onAbort: (() => void) | null = null;
+  if (signal) {
+    onAbort = () => cancelUpstream();
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  const detachAbort = () => { if (signal && onAbort) { signal.removeEventListener("abort", onAbort); onAbort = null; } };
+
   try {
     const text = await invoke("proxy_localhost", {
       url,
       method,
       body: options?.body || null,
-      // Snake-case to match the Rust parameter name. Tauri's invoke layer
-      // does NOT auto-convert camelCase here — the Rust command spec uses
-      // explicit field names.
-      timeout_ms: options?.timeoutMs ?? null,
+      // Camel-case, because Tauri's invoke layer DOES auto-convert the
+      // command's snake_case parameter names to camelCase for the JS side
+      // (tauri-macros, command/wrapper.rs: key.to_lower_camel_case(), unless
+      // the command opts out with rename_all). proxy_localhost declares
+      // timeout_ms; sending timeout_ms from here landed in nothing, so
+      // every probe silently ran with the 300 s default instead of its
+      // real timeout (review 2026-09-18, R3 Nachbesserung 4).
+      timeoutMs: options?.timeoutMs ?? null,
       // Forward caller headers (Authorization for keyed OpenAI-compat
       // backends). The proxy silently dropped them before, so a LAN vLLM/
       // TabbyAPI with an api key always got 401 through this path.
       headers: options?.headers ?? null,
+      callId,
     }) as string;
 
     return new Response(text, { status: 200, headers: { "Content-Type": "application/json" } });
   } catch (proxyErr) {
     const proxyErrMsg = String(proxyErr)
+
+    // The user aborted: Rust has already cancelled (or is cancelling) the
+    // upstream request via cancel_proxy_call. Surface the abort and stop
+    // here, since falling back to a direct fetch would fire a SECOND real
+    // request for work the caller no longer wants an answer to.
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
 
     // The Rust proxy DID reach the backend and the backend answered non-2xx
     // (Err("HTTP <status>: <body>")). That is a real HTTP response, not a
@@ -292,17 +325,16 @@ export async function localFetch(
     // Fallback: try direct fetch (works when ComfyUI has --enable-cors-header *)
     // Apply the same timeout to the fallback so a hanging probe doesn't sit
     // for minutes on this path either.
-    let signal = options?.signal;
+    let fallbackSignal = signal;
     let abortTimer: ReturnType<typeof setTimeout> | undefined;
     if (typeof options?.timeoutMs === "number" && options.timeoutMs > 0) {
       const controller = new AbortController();
       abortTimer = setTimeout(() => controller.abort(), options.timeoutMs);
-      if (options.signal) {
-        const userSig = options.signal;
-        if (userSig.aborted) controller.abort();
-        else userSig.addEventListener("abort", () => controller.abort(), { once: true });
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", () => controller.abort(), { once: true });
       }
-      signal = controller.signal;
+      fallbackSignal = controller.signal;
     }
     try {
       return await fetch(url, {
@@ -312,7 +344,7 @@ export async function localFetch(
           ...(options?.headers ?? {}),
         },
         body: options?.body,
-        signal,
+        signal: fallbackSignal,
       });
     } catch (fetchErr) {
       // Both failed — return the proxy error with details preserved
@@ -321,6 +353,8 @@ export async function localFetch(
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
     }
+  } finally {
+    detachAbort();
   }
 }
 
@@ -558,6 +592,10 @@ export async function backendCall<T = unknown>(
     comfyui_status: { path: "/local-api/comfyui-status" },
     comfyui_last_output: { path: "/local-api/comfyui-last-output" },
     find_comfyui: { path: "/local-api/find-comfyui" },
+    // K8 (GH #134): the primary auto-detect ComfyStep.tsx calls before
+    // falling back to find_comfyui above, see dev-server/comfy.ts for why
+    // both were needed, not just one.
+    detect_all_comfyui_installs: { path: "/local-api/detect-all-comfyui-installs" },
     set_comfyui_path: { path: "/local-api/set-comfyui-path", method: "POST" },
     install_comfyui: { path: "/local-api/install-comfyui", method: "POST" },
     install_comfyui_status: { path: "/local-api/install-comfyui" },
@@ -578,6 +616,36 @@ export async function backendCall<T = unknown>(
     // an honest "desktop-only" status instead of "Unknown backend command".
     install_tts: { path: "/local-api/install-tts", method: "POST" },
     install_tts_status: { path: "/local-api/install-tts" },
+    // K7 (GH #135): the MLX image/video pipeline had NO dev-server route at
+    // all, so any of these thrown from the browser dev surface (Mac running
+    // `npm run dev` without Tauri) surfaced as "Unknown backend command: X"
+    // instead of the same honest desktop-only answer install_tts already
+    // gives. See dev-server/mlx-media-stubs.ts for the shared stub handler
+    // and its reasoning; the systematic check behind this list is
+    // dev-server/__tests__/mlx-media-endpoint-coverage.test.ts.
+    mlx_status: { path: "/local-api/mlx-status" },
+    mlx_start: { path: "/local-api/mlx-start", method: "POST" },
+    mlx_unload: { path: "/local-api/mlx-unload", method: "POST" },
+    mlx_generate: { path: "/local-api/mlx-generate", method: "POST" },
+    mlx_image_models: { path: "/local-api/mlx-image-models" },
+    mlx_image_install_model: { path: "/local-api/mlx-image-install-model", method: "POST" },
+    mlx_image_install_status: { path: "/local-api/mlx-image-install-status" },
+    mlx_image_delete_model: { path: "/local-api/mlx-image-delete-model", method: "POST" },
+    install_mlx_diffusion: { path: "/local-api/install-mlx-diffusion", method: "POST" },
+    install_mlx_diffusion_status: { path: "/local-api/install-mlx-diffusion" },
+    set_hf_token: { path: "/local-api/set-hf-token", method: "POST" },
+    hf_token_present: { path: "/local-api/hf-token-present" },
+    video_status: { path: "/local-api/video-status" },
+    video_list_models: { path: "/local-api/video-list-models" },
+    video_install_mlx: { path: "/local-api/video-install-mlx", method: "POST" },
+    video_install_mlx_status: { path: "/local-api/video-install-mlx" },
+    video_install_model: { path: "/local-api/video-install-model", method: "POST" },
+    video_install_model_status: { path: "/local-api/video-install-model-status" },
+    video_delete_model: { path: "/local-api/video-delete-model", method: "POST" },
+    video_generate: { path: "/local-api/video-generate", method: "POST" },
+    video_progress: { path: "/local-api/video-progress" },
+    video_cancel: { path: "/local-api/video-cancel", method: "POST" },
+    read_media_file: { path: "/local-api/read-media-file", method: "POST" },
     transcribe: { path: "/local-api/transcribe", method: "POST" },
     execute_code: { path: "/local-api/execute-code", method: "POST" },
     // file_read / file_write: ABSICHTLICH NICHT HIER. Die beiden Dev-Endpunkte
@@ -848,6 +916,35 @@ export async function secretDelete(account: string): Promise<void> {
   if (!isTauri()) throw new Error('keychain unavailable (web build)')
   const invoke = await getInvoke()
   await invoke('secret_delete', { account })
+}
+
+// ── Parked provider key keychain (R9) ────────────────────────────
+// Same vault as secretSet/Get/Delete above, but a second, narrower namespace
+// (Rust: PARKED_PREFIX "parked-key:") for a backend that is NOT one of the
+// four fixed provider slots, e.g. an OpenAI-compatible backend the shared
+// `openai` slot just displaced. `backendId` must already be a valid slug
+// ([a-z0-9-]{1,64}, see lib/parked-key.ts) before it reaches here; an
+// invalid one is rejected on the Rust side with an error starting
+// "refused:", which never echoes the id or the value, and is a caller bug,
+// not a "no keychain here" signal (that is "keychain unavailable"/
+// "keychain unsupported", same two strings secretSet/Get/Delete's callers
+// already check for).
+export async function secretParkSet(backendId: string, value: string): Promise<void> {
+  if (!isTauri()) throw new Error('keychain unavailable (web build)')
+  const invoke = await getInvoke()
+  await invoke('secret_park_set', { backendId, value })
+}
+
+export async function secretParkGet(backendId: string): Promise<string | null> {
+  if (!isTauri()) throw new Error('keychain unavailable (web build)')
+  const invoke = await getInvoke()
+  return (await invoke('secret_park_get', { backendId })) as string | null
+}
+
+export async function secretParkDelete(backendId: string): Promise<void> {
+  if (!isTauri()) throw new Error('keychain unavailable (web build)')
+  const invoke = await getInvoke()
+  await invoke('secret_park_delete', { backendId })
 }
 
 // OAuth loopback (LU Cloud Google/GitHub login): bind a 127.0.0.1 port from

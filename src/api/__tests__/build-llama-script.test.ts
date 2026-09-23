@@ -79,12 +79,45 @@ describe('build-llama.sh', () => {
     expect(callFn('cmake_flags_for', 'x86_64-apple-darwin').out).toContain('x86_64')
   })
 
-  it('emits Vulkan flags for win/linux triples', () => {
+  it('emits Vulkan + dynamic-ISA flags for win/linux triples (K1, 3.0.1)', () => {
+    // K1: a fixed x86-64-v3 binary (SSE4.2+AVX+AVX2+BMI2+FMA+F16C baked in by
+    // GGML_NATIVE=OFF's INS_ENB=ON, ggml/CMakeLists.txt:141-166) crashed with
+    // 0xC000001D on Windows / SIGILL on Linux on any pre-Haswell/pre-Excavator
+    // CPU. GGML_BACKEND_DL + GGML_CPU_ALL_VARIANTS load the right CPU kernel
+    // at runtime instead, and that combination FATAL_ERRORs in the pinned
+    // llama.cpp unless BUILD_SHARED_LIBS=ON too
+    // (ggml/src/CMakeLists.txt:188-190, :371-376).
     for (const triple of ['x86_64-pc-windows-msvc', 'x86_64-unknown-linux-gnu']) {
       const { out } = callFn('cmake_flags_for', triple)
-      expect(out).toContain('-DGGML_VULKAN=ON')
-      expect(out).toContain('-DBUILD_SHARED_LIBS=OFF')
+      expect(out, triple).toContain('-DGGML_VULKAN=ON')
+      expect(out, triple).toContain('-DBUILD_SHARED_LIBS=ON')
+      expect(out, triple).toContain('-DGGML_BACKEND_DL=ON')
+      expect(out, triple).toContain('-DGGML_CPU_ALL_VARIANTS=ON')
+      // Unchanged: still no -march=native, still no runner-CPU lottery.
+      expect(out, triple).toContain('-DGGML_NATIVE=OFF')
     }
+  })
+
+  it('keeps mac static: no dynamic-ISA flags on either Metal triple', () => {
+    for (const triple of ['aarch64-apple-darwin', 'x86_64-apple-darwin']) {
+      const { out } = callFn('cmake_flags_for', triple)
+      expect(out, triple).not.toContain('GGML_BACKEND_DL')
+      expect(out, triple).not.toContain('GGML_CPU_ALL_VARIANTS')
+    }
+  })
+
+  it('is_dynamic_isa_triple: true only for the two win/linux triples', () => {
+    expect(callFn('is_dynamic_isa_triple', 'x86_64-pc-windows-msvc').code).toBe(0)
+    expect(callFn('is_dynamic_isa_triple', 'x86_64-unknown-linux-gnu').code).toBe(0)
+    expect(callFn('is_dynamic_isa_triple', 'aarch64-apple-darwin').code).not.toBe(0)
+    expect(callFn('is_dynamic_isa_triple', 'x86_64-apple-darwin').code).not.toBe(0)
+  })
+
+  it('resource_llama_dir_for: one directory per triple under src-tauri/resources/llama', () => {
+    const { out } = callFn('resource_llama_dir_for', 'x86_64-pc-windows-msvc')
+    expect(out.replace(/\\/g, '/')).toBe(
+      `${REPO_ROOT.replace(/\\/g, '/')}/src-tauri/resources/llama/x86_64-pc-windows-msvc`,
+    )
   })
 
   it('rejects an unsupported triple', () => {
@@ -111,6 +144,91 @@ describe('build-llama.sh', () => {
     const { code, out } = callFn('host_triple')
     expect(code).toBe(0)
     expect(out).toMatch(/-/)
+  })
+})
+
+/**
+ * K1 (3.0.1): staging the ggml-cpu-* and ggml-vulkan companion libraries a
+ * dynamic-ISA build produces next to llama-server. `stage_dynamic_isa_
+ * companions` is unit-tested against a directory of fake .dll/.so files
+ * rather than a real cmake build, the same way `ensure_src` above is tested
+ * against a fake git upstream instead of the real llama.cpp, the point is
+ * the shell logic, not the multi-minute compile.
+ */
+describe('build-llama.sh: staging the dynamic-ISA companion libraries', () => {
+  const temps: string[] = []
+  const tmp = (prefix: string) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix))
+    temps.push(dir)
+    return dir.replace(/\\/g, '/')
+  }
+  afterAll(() => {
+    for (const dir of temps) rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** Runs `stage_dynamic_isa_companions` with REPO_ROOT redirected into a
+   *  throwaway directory, so a test run never writes into the real
+   *  src-tauri/resources/llama/ tree. */
+  function stage(triple: string, binOutDir: string, exeOut: string) {
+    const repoRoot = tmp('llama-repo-root-')
+    const { code, out } = runScript(
+      `stage_dynamic_isa_companions '${triple}' '${binOutDir}' '${exeOut}'`,
+      { BUILD_LLAMA_REPO_ROOT: repoRoot },
+    )
+    return { code, out, repoRoot }
+  }
+
+  it('copies every matching .dll next to the resource dir on Windows, skipping the exe itself', () => {
+    const binOutDir = tmp('llama-bin-win-')
+    for (const name of ['llama-server.exe', 'ggml-cpu-x64.dll', 'ggml-cpu-haswell.dll', 'ggml-vulkan.dll', 'ggml-base.dll']) {
+      writeFileSync(join(binOutDir, name), name)
+    }
+    const { code, repoRoot } = stage('x86_64-pc-windows-msvc', binOutDir, join(binOutDir, 'llama-server.exe'))
+    expect(code).toBe(0)
+    const dir = join(repoRoot, 'src-tauri', 'resources', 'llama', 'x86_64-pc-windows-msvc')
+    for (const name of ['ggml-cpu-x64.dll', 'ggml-cpu-haswell.dll', 'ggml-vulkan.dll', 'ggml-base.dll']) {
+      expect(existsSync(join(dir, name)), name).toBe(true)
+    }
+    expect(existsSync(join(dir, 'llama-server.exe'))).toBe(false)
+  })
+
+  it('copies .so files on Linux, dereferencing symlinks (SONAME needs the real versioned name)', () => {
+    const binOutDir = tmp('llama-bin-linux-')
+    writeFileSync(join(binOutDir, 'llama-server'), 'exe')
+    writeFileSync(join(binOutDir, 'libggml-base.so.1.2.3'), 'real-bytes')
+    execFileSync('ln', ['-s', 'libggml-base.so.1.2.3', join(binOutDir, 'libggml-base.so.1')])
+    execFileSync('ln', ['-s', 'libggml-base.so.1', join(binOutDir, 'libggml-base.so')])
+    writeFileSync(join(binOutDir, 'libggml-cpu-haswell.so'), 'cpu-kernel')
+    const { code, repoRoot } = stage('x86_64-unknown-linux-gnu', binOutDir, join(binOutDir, 'llama-server'))
+    expect(code).toBe(0)
+    const dir = join(repoRoot, 'src-tauri', 'resources', 'llama', 'x86_64-unknown-linux-gnu')
+    // The exact SONAME the dynamic linker resolves DT_NEEDED against.
+    expect(readFileSync(join(dir, 'libggml-base.so.1'), 'utf8')).toBe('real-bytes')
+    // Dereferenced, not a dangling symlink: statSync follows by default, so
+    // this also proves it is a real file (a broken symlink throws ENOENT).
+    expect(statSync(join(dir, 'libggml-base.so.1')).isFile()).toBe(true)
+    expect(readFileSync(join(dir, 'libggml-cpu-haswell.so'), 'utf8')).toBe('cpu-kernel')
+  })
+
+  it('is a no-op for mac triples: no directory, no error, nothing staged', () => {
+    const binOutDir = tmp('llama-bin-mac-')
+    writeFileSync(join(binOutDir, 'llama-server'), 'exe')
+    const { code, out, repoRoot } = stage('aarch64-apple-darwin', binOutDir, join(binOutDir, 'llama-server'))
+    expect(code).toBe(0)
+    expect(out).toBe('')
+    expect(existsSync(join(repoRoot, 'src-tauri', 'resources', 'llama'))).toBe(false)
+  })
+
+  it('refuses a dynamic-ISA build with no companion libraries next to the exe', () => {
+    // Negative control for the fix itself: a plain llama-server with none of
+    // its ggml-cpu-*/ggml-vulkan libraries next to it is exactly the shape a
+    // broken cmake invocation (e.g. BUILD_SHARED_LIBS left OFF) would
+    // produce, and it must not ship silently as a single-ISA binary again.
+    const binOutDir = tmp('llama-bin-empty-')
+    writeFileSync(join(binOutDir, 'llama-server.exe'), 'exe')
+    const { code, out } = stage('x86_64-pc-windows-msvc', binOutDir, join(binOutDir, 'llama-server.exe'))
+    expect(code).not.toBe(0)
+    expect(out).toContain('produced no *.dll')
   })
 })
 

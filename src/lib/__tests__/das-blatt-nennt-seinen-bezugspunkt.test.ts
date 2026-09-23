@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { releaseNoteFor, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS } from '../release-notes'
+import { releaseNoteFor, itemDetail, SHEET_CATALOGUE_MODELS, SHEET_CHAT_MODELS } from '../release-notes'
 import { CLOUD_PITCH, cloudPitchLines } from '../cloud-pitch'
 
 /**
@@ -21,7 +21,7 @@ import { CLOUD_PITCH, cloudPitchLines } from '../cloud-pitch'
  */
 describe('das Blatt nennt seinen Bezugspunkt', () => {
   const blatt = releaseNoteFor('3.0.0')
-  const zeilen = [...(blatt?.lines ?? []), ...(blatt?.details ?? []).flatMap((s) => s.items)]
+  const zeilen = [...(blatt?.lines ?? []), ...(blatt?.details ?? []).flatMap((s) => s.items)].map(itemDetail)
 
   it('nennt die Freimenge gegen den Katalog, mit dem Wort Katalog', () => {
     const freimenge = zeilen.filter((l) => l.includes('cost no credits at all in chat'))

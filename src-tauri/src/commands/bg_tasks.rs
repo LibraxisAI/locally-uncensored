@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command as TokioCommand;
 use uuid::Uuid;
 
 // tokio::process::Command has `creation_flags` as an inherent method on
@@ -323,7 +322,12 @@ pub(crate) async fn shell_task_start_impl(args: &Value) -> CmdResult {
         &a.command,
     );
 
-    let mut cmd = TokioCommand::new(&program);
+    // K14 Runde 2, Punkt 5/6: the shell itself (bash/powershell/cmd) is a
+    // foreign program exactly like the one `shell.rs`'s foreground twin
+    // runs, an AppImage's poisoned LD_LIBRARY_PATH can break it the same
+    // way it broke `git`. The COMMAND the user typed stays theirs, only the
+    // shell binary's own environment is cleaned.
+    let mut cmd = crate::process_util::foreign_system_command_tokio(&program);
     cmd.args(&args_vec);
     if let Some(cwd) = &cwd {
         cmd.current_dir(cwd);
@@ -772,8 +776,10 @@ mod tests {
     async fn cancelling_during_shell_startup_drains_the_pipes() {
         let _isolation = super::sweep_isolation().await;
         // Exercise the startup window repeatedly, not just a settled tree.
-        // A missed ping child holds stdout open for30seconds with the old
-        // per-process snapshot kill, even after the shell itself is gone.
+        // A missed ping child holds stdout open for 30 seconds even after the
+        // shell itself is gone, which is what `kill_tree`'s settle window is
+        // there to prevent; measured on the box as a 30.4 s stall in two of
+        // five rounds before that window existed.
         for _ in 0..3 {
             let started = shell_task_start_impl(&json!({ "command": sleep_cmd_30s() })).await.unwrap();
             let id = started["id"].as_str().unwrap();

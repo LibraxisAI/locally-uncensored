@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Qwen 3.8 vs Qwen 3.6: What Actually Changed, and Which to Use</title>
+<title>Qwen 3.8 vs Qwen 3.6: What Changed, and Which to Use</title>
 <meta name="description" content="Qwen 3.8 Max vs Qwen 3.6: 2.4T vs 27B and 35B, 1M vs 256K context, the benchmark jumps, and which Qwen you can actually use today, hosted or locally.">
 <meta name="keywords" content="qwen 3.8 vs qwen 3.6, qwen 3.8 comparison, qwen 3.6 vs 3.8, qwen 3.8 max vs qwen 3.6, qwen 3.8 upgrade, should i wait for qwen 3.8">
-<meta property="og:title" content="Qwen 3.8 vs Qwen 3.6: What Actually Changed, and Which to Use">
+<meta property="og:title" content="Qwen 3.8 vs Qwen 3.6: What Changed, and Which to Use">
 <meta property="og:description" content="2.4T vs 27B and 35B, 1M vs 256K context, launch claims vs proven strength, and which Qwen fits which job today.">
 <meta property="og:image" content="https://raw.githubusercontent.com/PurpleDoubleD/locally-uncensored/master/docs/social-preview.png">
 <meta property="og:url" content="https://locallyuncensored.com/blog/qwen-3-8-vs-qwen-3-6.html">
@@ -25,7 +25,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="icon" href="../favicon.png">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"BlogPosting","headline":"Qwen 3.8 vs Qwen 3.6: What Actually Changed, and Which to Use","description":"An honest comparison of Qwen 3.8 (the 2.4T Max and the coming open weight 27B) against Qwen 3.6, the generation you can run locally today: context windows, benchmarks, pricing, and which model fits which job.","image":"https://raw.githubusercontent.com/PurpleDoubleD/locally-uncensored/master/docs/social-preview.png","datePublished":"2026-08-03","dateModified":"2026-08-14","author":{"@type":"Person","name":"PurpleDoubleD","url":"https://github.com/PurpleDoubleD"},"publisher":{"@type":"Organization","name":"Locally Uncensored","url":"https://locallyuncensored.com/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://locallyuncensored.com/blog/qwen-3-8-vs-qwen-3-6.html"},"keywords":"qwen 3.8 vs qwen 3.6, qwen 3.8 comparison, should i wait for qwen 3.8"}
+{"@context":"https://schema.org","@type":"BlogPosting","headline":"Qwen 3.8 vs Qwen 3.6: What Changed, and Which to Use","description":"An honest comparison of Qwen 3.8 (the 2.4T Max and the coming open weight 27B) against Qwen 3.6, the generation you can run locally today: context windows, benchmarks, pricing, and which model fits which job.","image":"https://raw.githubusercontent.com/PurpleDoubleD/locally-uncensored/master/docs/social-preview.png","datePublished":"2026-08-03","dateModified":"2026-08-14","author":{"@type":"Person","name":"PurpleDoubleD","url":"https://github.com/PurpleDoubleD"},"publisher":{"@type":"Organization","name":"Locally Uncensored","url":"https://locallyuncensored.com/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://locallyuncensored.com/blog/qwen-3-8-vs-qwen-3-6.html"},"keywords":"qwen 3.8 vs qwen 3.6, qwen 3.8 comparison, should i wait for qwen 3.8"}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is Qwen 3.8 better than Qwen 3.6?","acceptedAnswer":{"@type":"Answer","text":"The Max is, by a wide margin on the launch benchmarks: it is a 2.4 trillion parameter frontier model, while Qwen 3.6 tops out at 35B. But they are not really competitors. Qwen 3.8 Max is a hosted API model today; Qwen 3.6 is the generation you can download and run on your own GPU right now."}},{"@type":"Question","name":"Should I wait for Qwen 3.8 27B or run Qwen 3.6 now?","acceptedAnswer":{"@type":"Answer","text":"No need to wait any more: the 3.8 27B weights came out on August 13, 2026 and GGUFs appeared the same day. On 16 GB of VRAM or better, run the 3.8. Below that, Qwen 3.6 27B is still proven and runs from 8 GB up, and switching later is one click, not a migration."}},{"@type":"Question","name":"Does Qwen 3.8 have a bigger context window than Qwen 3.6?","acceptedAnswer":{"@type":"Answer","text":"Yes: 1 million tokens for Qwen 3.8 Max versus 256K for Qwen 3.6. The open weight 3.8 27B ships with a native 262,144 token window that stretches further with the usual scaling tricks."}},{"@type":"Question","name":"Is there an uncensored Qwen 3.8?","acceptedAnswer":{"@type":"Answer","text":"The weights are public and the 27B is Apache 2.0, so finetunes and abliterations are fully legal and community builds started appearing within a day. Qwen 3.6 abliterated builds are still the proven option and are among the strongest uncensored local models of 2026."}}]}
@@ -70,11 +70,16 @@
   </div>
 
   <article>
-    <h1>Qwen 3.8 vs Qwen 3.6: What Actually Changed, and Which to Use</h1>
+    <h1>Qwen 3.8 vs Qwen 3.6: What Changed, and Which to Use</h1>
 
     <p><strong>Update, August 14, 2026:</strong> the wait is over. The 2.4T Max checkpoint went public on Hugging Face on <strong>August 12</strong> as <code>Qwen/Qwen3.8-2.4T-A95B</code> under Alibaba's own qwen3.8-max terms, which is <em>not</em> Apache 2.0, and the consumer sized <strong>Qwen 3.8 27B</strong> followed on <strong>August 13</strong> under Apache 2.0. Real GGUF sizes, the VRAM math and the chat template trap are in <a href="how-to-run-qwen-3-8-27b-locally.html">How to Run Qwen 3.8 27B Locally</a>. Everything below is the pre drop picture, kept for context.</p>
 
     <p>With <a href="qwen-3-8-max-explained.html">Qwen 3.8 Max</a> generally available since August 3 and both sets of open weights out since August 12 and 13, the practical question is not "which is better" (the 2.4T flagship, obviously) but "which Qwen should I actually be using, today and next month". Here is the honest lineup.</p>
+
+    <aside class="lu-cloud-box">
+      <span class="lu-cloud-kicker">No GPU? Run it online</span>
+      <p>Both generations are also reachable without a download through our <a href="/uncensored-ai-api/">OpenAI-compatible API</a> at https://lu-labs.ai/api/inference/v1, where a key beginning with lu_ spends credits from the account instead of your own GPU hours.</p>
+    </aside>
 
     <h2>The Two Generations at a Glance</h2>
 

@@ -88,6 +88,33 @@ describe('classifyModel', () => {
     expect(classifyModel('ernie_image_turbo_bf16.safetensors')).toBe('ernie_image')
   })
 
+  // K9 (GH #136, eloieloie): Krea 2 checkpoints fell through to 'unknown' and
+  // got CheckpointLoaderSimple with no CLIP wired in ("clip input is invalid:
+  // None"). Filenames from the reporter's own install (krea-2, krea2, KREA_2).
+  it('classifies Krea 2 models (K9, GH #136)', () => {
+    expect(classifyModel('krea-2-dev-fp8.safetensors')).toBe('krea2')
+    expect(classifyModel('krea2_dev_bf16.safetensors')).toBe('krea2')
+    expect(classifyModel('KREA_2_base.safetensors')).toBe('krea2')
+  })
+
+  // Qwen-Image 2.1 is version-bound: the 2508/2509 generation carries the same
+  // stem but needs a different text-encode node, and both companion files of
+  // OTHER families sit one folder over under names that nearly match.
+  it('classifies Qwen-Image 2.1 models, and nothing that only looks like one', () => {
+    expect(classifyModel('qwen_image_2.1_int8_convrot.safetensors')).toBe('qwenimage')
+    expect(classifyModel('qwen_image_2.1_bf16.safetensors')).toBe('qwenimage')
+    expect(classifyModel('Qwen-Image-2.1-Q4_K_M.gguf')).toBe('qwenimage')
+    expect(classifyModel('qwenimage_2_1.safetensors')).toBe('qwenimage')
+    // Older Qwen-Image generations stay unknown rather than being routed onto
+    // the 2.1 pipeline, which would build a node graph they cannot run.
+    expect(classifyModel('qwen_image_fp8_e4m3fn.safetensors')).toBe('unknown')
+    expect(classifyModel('qwen_image_edit_2509_fp8.safetensors')).toBe('unknown')
+    // Companion files, which this same function also sees.
+    expect(classifyModel('qwen3vl_8b_int8_convrot.safetensors')).toBe('unknown')
+    expect(classifyModel('qwen_image_vae.safetensors')).toBe('unknown')
+    expect(classifyModel('qwen_3_4b.safetensors')).toBe('unknown')
+  })
+
   it('returns unknown for unrecognized models', () => {
     expect(classifyModel('totally_custom_model.safetensors')).toBe('unknown')
   })
@@ -109,7 +136,7 @@ describe('classifyModel', () => {
 
 describe('isVideoModelType', () => {
   const videoTypes = ['wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'cogvideo', 'svd', 'framepack', 'pyramidflow', 'allegro'] as const
-  const imageTypes = ['flux', 'flux2', 'zimage', 'ernie_image', 'sdxl', 'sd15', 'unknown'] as const
+  const imageTypes = ['flux', 'flux2', 'krea2', 'zimage', 'ernie_image', 'qwenimage', 'sdxl', 'sd15', 'unknown'] as const
 
   for (const t of videoTypes) {
     it(`${t} is a video model type`, () => {
@@ -157,7 +184,12 @@ describe('MODEL_TYPE_DEFAULTS', () => {
 // ─── COMPONENT_REGISTRY ───
 
 describe('COMPONENT_REGISTRY', () => {
-  const allTypes = ['sd15', 'sdxl', 'flux', 'flux2', 'zimage', 'ernie_image', 'wan', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'cogvideo', 'svd', 'framepack', 'pyramidflow', 'allegro', 'unknown']
+  // K9/component-registry consolidation: krea2 and wan22 are included here,
+  // wan22 was the drift the two duplicate registries had already accumulated
+  // (present in discover.ts's copy, missing from comfyui.ts's) before they
+  // were merged into one file (component-registry.ts); a loop like this one
+  // would have caught it.
+  const allTypes = ['sd15', 'sdxl', 'flux', 'flux2', 'krea2', 'zimage', 'ernie_image', 'qwenimage', 'wan', 'wan22', 'hunyuan', 'ltx', 'mochi', 'cosmos', 'cogvideo', 'svd', 'framepack', 'pyramidflow', 'allegro', 'unknown']
 
   for (const t of allTypes) {
     it(`${t} has a registry entry`, () => {

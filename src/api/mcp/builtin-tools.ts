@@ -11,7 +11,7 @@ import { backendCall, fetchExternal } from '../backend'
 import { getActiveChatId, getActiveConversationId, getActiveWorkspace, isChatArtifactMode, captureChatArtifact, isReadOnlyShellTurn } from '../agent-context'
 import type { AgentRunContext } from '../agent-context'
 import { useAgentWorkflowStore } from '../../stores/agentWorkflowStore'
-import { WorkflowEngine } from '../../lib/workflow-engine'
+import { WorkflowEngine, buildWorkflowApprovalGate, describeWorkflowCompletion, describeWorkflowStepFailure } from '../../lib/workflow-engine'
 import type { StepResult } from '../../types/agent-workflows'
 import { DELEGATE_TASK_TOOL_DEF, buildDelegateExecutor } from '../agents/sub-agent'
 import {
@@ -465,12 +465,12 @@ const BUILTIN_TOOLS: MCPToolDefinition[] = [
       'Execute a saved agent workflow by name. Runs a nested ReAct with a pre-built step chain. '
       + 'USE for repeatable multi-step tasks: "Research Topic", "Summarize URL", "Code Review", plus any user-created workflows. '
       + 'DO NOT call from inside another workflow tool — depth capped at 5 to prevent recursion fork-bombs. '
-      + 'Pass optional input as the starting variable. If the name is unknown, the error lists available names.',
+      + 'input answers the first user_input step or fails fast; else seeds user_input/last_output.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Name of the workflow (case-insensitive match)' },
-        input: { type: 'string', description: 'Initial input passed as user_input / last_output' },
+        input: { type: 'string', description: 'Answers first user_input step; else seeds user_input/last_output.' },
       },
       required: ['name'],
     },
@@ -515,7 +515,13 @@ async function executeWebSearch(args: ToolArgs): Promise<string> {
   }
   if (typeof data.error === 'string' && data.error) {
     const extra = typeof data.providerError === 'string' && data.providerError ? ` (${data.providerError})` : ''
-    return `Web search failed: ${data.error}${extra}`
+    // Auflage 2.1 (lu-301/bau/review-offload2.md): this text used to read
+    // "Web search failed: ..." without the "Error:" prefix `executeToolStep`
+    // checks for, so a search failure inside a `tool` workflow step counted
+    // as `status: 'completed'` and the run carried on with a failure message
+    // as if it were a real result, exactly the silent, GPU-idle-in-seconds
+    // run the box measured for "Research Topic".
+    return `Error: Web search failed: ${data.error}${extra}`
   }
   return JSON.stringify(data)
 }
@@ -531,12 +537,24 @@ async function executeWebFetch(args: ToolArgs): Promise<string> {
   // complaining it "only sees the header" of the page.
   try {
     const data = await backendCall<WebFetchResult>('web_fetch', { url })
+    // Auflage 2.1 (lu-301/bau/review-offload2.md): every response from the
+    // Rust command used to render as the SAME "Title/URL/Status/..." block
+    // regardless of the actual HTTP status or an empty body, so a 404, a
+    // 403 or a blank page all counted as `status: 'completed'` for
+    // `executeToolStep`'s `startsWith('Error:')` check. A non-2xx status or
+    // an empty body is a failed fetch, not a thin result.
+    if (data.status < 200 || data.status >= 300) {
+      return `Error: web_fetch got HTTP ${data.status} for ${url}${data.title ? ` (${data.title})` : ''}`
+    }
+    if (!data.text) {
+      return `Error: web_fetch got an empty body from ${url} (status ${data.status})`
+    }
     const parts: string[] = []
     if (data.title) parts.push(`Title: ${data.title}`)
     parts.push(`URL: ${data.url}`)
     parts.push(`Status: ${data.status}`)
     parts.push('')
-    parts.push(data.text || '(empty body)')
+    parts.push(data.text)
     if (data.truncated) parts.push('\n…(truncated to 24 000 chars)')
     return parts.join('\n')
   } catch (e) {
@@ -860,22 +878,52 @@ async function executeShellExecute(
   return output || (err ? `stderr: ${err}` : 'Done.')
 }
 
+/**
+ * `execute_code`, with the same abort griff as `invokeShell` (R2-44): a
+ * callId lets Stop reach a script that has already started, via
+ * `execute_code_cancel` (Rust `commands/agent.rs`). Without a signal, nothing
+ * changes: no callId, no listener, no cancel.
+ */
+async function invokeCode(
+  payload: Record<string, unknown>,
+  abort?: AbortSignal,
+): Promise<ShellExecResult> {
+  if (!abort) return backendCall<ShellExecResult>('execute_code', payload)
+  const callId = uuid()
+  const cancel = () => {
+    void backendCall('execute_code_cancel', { callId }).catch(() => {
+      // A failed cancel must not also fail the run with an error; the script
+      // then falls back to its own timeout, same as before this fix.
+    })
+  }
+  abort.addEventListener('abort', cancel, { once: true })
+  try {
+    return await backendCall<ShellExecResult>('execute_code', { ...payload, callId })
+  } finally {
+    abort.removeEventListener('abort', cancel)
+  }
+}
+
 async function executeCodeExecute(
   args: ToolArgs,
   run?: AgentRunContext,
   signal?: AbortSignal,
 ): Promise<string> {
+  const abort = signal ?? run?.abortSignal
   // Same contract as shell_execute: a stopped run does not START new code.
-  if ((signal ?? run?.abortSignal)?.aborted) {
+  if (abort?.aborted) {
     return 'Cancelled: the user stopped the run before this code ran.'
   }
   // Erreichbar nur noch über runRetiredTool, also OHNE die Prüfungen von
   // executeShellExecute — die eigene braucht es hier trotzdem.
   const bad = missingArgs('code_execute', args, 'code')
   if (bad) return bad
-  const data = await backendCall<ShellExecResult>('execute_code', { code: argString(args, 'code'), timeout: 30000, ...chatCtx(run) })
+  const data = await invokeCode({ code: argString(args, 'code'), timeout: 30000, ...chatCtx(run) }, abort)
   const output = data.stdout || ''
   const err = data.stderr || ''
+  // Vor `timedOut` geprueft, wie im Shell-Werkzeug: der Abbruch ist die
+  // genauere Auskunft.
+  if (data.cancelled) return 'Cancelled: the user stopped the run.'
   if (data.timedOut) return `Timed out.\n${err}`
   if (data.exitCode && data.exitCode !== 0) return `Error (${data.exitCode}):\n${err || output}`
   return output || (err ? `stderr: ${err}` : 'Done.')
@@ -1273,7 +1321,7 @@ async function executeScreenshot(): Promise<string> {
   return JSON.stringify(data)
 }
 
-async function executeImageGenerate(args: ToolArgs): Promise<string> {
+async function executeImageGenerate(args: ToolArgs, run?: AgentRunContext): Promise<string> {
   // Feature EE (v2.5.0): the whole generation flow now goes through the VRAM
   // hand-off orchestrator. It resolves the image model (args.model or first
   // installed), decides whether the resident local text model has to be evicted
@@ -1301,10 +1349,13 @@ async function executeImageGenerate(args: ToolArgs): Promise<string> {
   const picked = await pickModelForGeneration('image', merged)
   if (picked) merged.model = picked
   const { vramHandoffGenerate } = await import('../vram-handoff')
-  return vramHandoffGenerate('image', merged)
+  // Blocker 4 (review-lanes.md): thread the owning conversation through so
+  // requestGenerationCancel(convId) can tell this generation apart from one
+  // a DIFFERENT conversation's agent started.
+  return vramHandoffGenerate('image', merged, run?.conversationId ?? null)
 }
 
-async function executeVideoGenerate(args: ToolArgs): Promise<string> {
+async function executeVideoGenerate(args: ToolArgs, run?: AgentRunContext): Promise<string> {
   // Feature EE (v2.5.0): text-to-video via the same hand-off orchestrator.
   // Picks the first installed video model (or args.model), detects the video
   // backend (Wan / AnimateDiff), evicts the local text model from VRAM if it
@@ -1333,7 +1384,8 @@ async function executeVideoGenerate(args: ToolArgs): Promise<string> {
   const picked = await pickModelForGeneration('video', merged)
   if (picked) merged.model = picked
   const { vramHandoffGenerate } = await import('../vram-handoff')
-  return vramHandoffGenerate('video', merged)
+  // Blocker 4 (review-lanes.md): see executeImageGenerate above.
+  return vramHandoffGenerate('video', merged, run?.conversationId ?? null)
 }
 
 // ── macOS MLX generation (hard rule: local image/video on Mac is MLX only,
@@ -1529,7 +1581,7 @@ async function executeGetCurrentTime(_args: ToolArgs): Promise<string> {
 
 let _workflowDepth = 0
 
-async function executeRunWorkflow(args: ToolArgs): Promise<string> {
+async function executeRunWorkflow(args: ToolArgs, run?: AgentRunContext, abort?: AbortSignal): Promise<string> {
   const workflowName = argString(args, 'name')
   if (!workflowName) return 'Error: No workflow name provided'
   if (_workflowDepth >= 5) return 'Error: Maximum workflow nesting depth (5) exceeded'
@@ -1541,16 +1593,66 @@ async function executeRunWorkflow(args: ToolArgs): Promise<string> {
     return `Error: Workflow "${workflowName}" not found. Available: ${available}`
   }
 
-  const results: StepResult[] = []
+  // R2, bau/review-wfgate.md klein 2: a workflow with a user_input step
+  // cannot be answered mid-run (neither this executor nor the chat trigger
+  // wires anything to provideUserInput), so without `input` the FIRST such
+  // step would wait forever, all three built-in workflows included. Fail
+  // immediately with a message the model can act on instead of hanging and
+  // holding the lane on a question nobody will ever answer.
+  const firstAsk = workflow.steps.find(s => s.type === 'user_input')
+  if (firstAsk && !args.input) {
+    return `Error: Workflow "${workflow.name}" starts by asking "${firstAsk.userInputPrompt || 'for input'}", and nothing can answer that while it runs. Call run_workflow again with an "input" argument that answers it.`
+  }
+
   let finalOutput = ''
+  // Auflage 4, bau/review-wfgate.md: a no-op `onStepError` (the old body)
+  // left `finalOutput` empty on a rejected approval, so `run_workflow`
+  // returned '' to the model, no sign the user said no, and it just tried
+  // again. `runSteps` (workflow-engine.ts) calls `onStepError` and BREAKS
+  // the step loop on a failure, but still calls `onComplete` afterward (it
+  // is not the same as `onError`, which fires only on a thrown exception),
+  // so without `hadStepError` that handler would overwrite the error
+  // message set here with whatever ran before the failure. B1
+  // (lu-301/bau/klaerung-n7.md): the message itself now comes from
+  // `describeWorkflowCompletion` (workflow-engine.ts), shared with
+  // `useAgentChat.ts`'s "run workflow" chat trigger; the old
+  // `results.filter(r => r.output).pop()` here always picked a trailing
+  // `memory_save` step's own receipt over the actual content.
+  let hadStepError = false
   const callbacks = {
     onStepStart: () => {},
-    onStepComplete: (_idx: number, result: StepResult) => { results.push(result) },
-    onStepError: () => {},
+    onStepComplete: () => {},
+    onStepError: (idx: number, error: string) => {
+      hadStepError = true
+      // The step's own `error` is already the gate's English message
+      // ("Tool call rejected: ... was not approved.", `gatedApproval` in
+      // workflow-engine.ts) or, since Auflage 2.1 (review-offload2.md), a
+      // tool's own honest failure text (web_search/web_fetch). Named with
+      // its position now, not a bare "Workflow error: ...", so a caller
+      // sees WHERE in a multi-step chain things stopped.
+      //
+      // "Error: " prefix (on top of describeWorkflowStepFailure's own,
+      // chat-facing text): this return value is a TOOL RESULT, read back by
+      // `executeToolStep`'s `startsWith('Error:')` check whenever a workflow
+      // step calls `run_workflow` on ANOTHER workflow (third-degree nesting,
+      // workflow-engine-echte-kennung-bei-drittem-grad.test.ts). Without the
+      // prefix a nested failure read as a completed step one level up, and
+      // THAT engine's own `onComplete` then wrapped it in its own
+      // "Workflow complete" header, a false positive one level removed from
+      // the one Auflage 2.1 fixed at the tool layer.
+      // R2-5 (lu-301/bau/review-offload2.md, Runde 2): `error` itself is
+      // often already the tool's own "Error: ..." text (see the comment
+      // above), so prefixing blindly used to read "Error: Workflow stopped
+      // at step 1 of 5: Error: Web search failed: ...". One "Error:" is the
+      // detection prefix this tool result needs, the other is noise; strip a
+      // leading one from the inner text before adding the outer one.
+      const innerError = error.startsWith('Error: ') ? error.slice('Error: '.length) : error
+      finalOutput = `Error: ${describeWorkflowStepFailure(workflow, idx, innerError)}`
+    },
     onWaitingForInput: () => {},
-    onComplete: () => {
-      const lastOutput = results.filter(r => r.output).pop()
-      finalOutput = lastOutput?.output || 'Workflow completed with no output.'
+    onComplete: (allResults: StepResult[]) => {
+      if (hadStepError) return
+      finalOutput = describeWorkflowCompletion(workflow, allResults)
     },
     onError: (error: string) => { finalOutput = `Workflow error: ${error}` },
   }
@@ -1563,8 +1665,73 @@ async function executeRunWorkflow(args: ToolArgs): Promise<string> {
     : {}
   _workflowDepth++
   try {
-    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, initialVars, _workflowDepth)
-    await engine.run()
+    // `runsInHeldLane` (run-slot.ts header, "DIE WEITERGABE DES
+    // ELTERNLAUF-TOKENS"): this call is AWAITED here, from inside a tool
+    // step of a turn that may or may not hold the local lane. It used to be
+    // a bare `true`, on the claim that the calling turn "already booked the
+    // local lane", false in general, a cloud turn never books one (Opus
+    // review, bau/review-w2lane.md Runde 4). What actually made the old
+    // code safe was a narrower fact: a workflow step reads the same
+    // `activeModel` as its caller, so a cloud caller's nested run is cloud
+    // too and there was nothing to serialize against, not that this engine
+    // itself never books. `run?.heldLocalLane` carries the real proof now
+    // (`null` when the caller holds no local lane), and `runInLane` checks
+    // it against the actual holder at run time before skipping its own
+    // booking, so a stale or absent proof falls back to booking normally
+    // instead of silently trusting the marker.
+    //
+    // The gate (Nebenbefund, bau/review-wfplay.md Teil B): one approval for
+    // `run_workflow` itself already fell before this executor ran, but that
+    // approval was for "run this workflow", not for whatever it does inside.
+    // Passing `APPROVE_ALL` here, the reviewer's own first suggestion, would
+    // turn that single approval into a blank check for every tool the
+    // workflow's steps (or a model inside a prompt step) go on to call,
+    // including a `shell_execute` the user never saw. `buildWorkflowApprovalGate`
+    // resolves the REAL gate from `run`'s own conversation and read-only flag,
+    // same decision table `delegate_task` already goes through, so a
+    // `confirm` tool inside the workflow still asks, on the same queue the
+    // rest of Agent mode uses.
+    const approve = buildWorkflowApprovalGate(run)
+    // `run` itself is also passed as `invokingRun` (Auflage 2,
+    // bau/review-wfgate.md): 'tool-execution' above is only a lane-booking
+    // placeholder, not a real conversation, so IF this workflow's own step
+    // calls `run_workflow` again, the nested engine needs the REAL outer
+    // `run` (its conversation, `abortSignal`, `mode`) to build that
+    // third-level call's context from, not this placeholder. See
+    // `effectiveOuterRun`/`effectiveConversationId` in workflow-engine.ts.
+    const engine = new WorkflowEngine(workflow, 'tool-execution', callbacks, approve, initialVars, _workflowDepth, run?.heldLocalLane ?? null, run)
+    // klaerung-n5a Fix 2: `abort` is the merged signal toolRegistry.execute()
+    // hands every executor now (the run's Stop AND, since run_workflow sits
+    // in tool-timeout.ts's AGENT_LOOP_TOOLS, the JS race's own timeout
+    // controller). WorkflowEngine already has everything needed to react:
+    // `cancel()` flips its internal AbortController, checked at the top of
+    // every step and threaded into every provider call, so this executor
+    // just has to call it. Without this wire, a timed-out or Stop-hit
+    // `run_workflow` kept its engine running underneath, orphaned, holding
+    // the local lane `runInLane` had booked for it, the same failure class
+    // measured for delegate_task.
+    const onAbort = () => engine.cancel()
+    if (abort) {
+      if (abort.aborted) onAbort()
+      else abort.addEventListener('abort', onAbort, { once: true })
+    }
+    try {
+      await engine.run()
+    } finally {
+      abort?.removeEventListener('abort', onAbort)
+    }
+    // A1 (Final Review Teil 17, review-teil17-lintfix.md): a Stop hitting
+    // BETWEEN two steps trips `workflow-engine.ts`'s own abort check
+    // (`if (this.abortController.signal.aborted) break`), which skips
+    // `onComplete` entirely and fires no `onStepError` either (that only
+    // runs for a step that actually returned `status: 'failed'`, such as
+    // the waiting `user_input` step's own `error: 'Cancelled'` ->
+    // `Workflow error: Cancelled`). Without this line `finalOutput` stayed
+    // '' in that gap, and the model got back an empty tool result with no
+    // sign the run was ever stopped. Same English message as the waiting
+    // step, so a caller sees the identical text regardless of where the
+    // Stop landed.
+    if (abort?.aborted && !finalOutput) finalOutput = 'Workflow error: Cancelled'
   } finally {
     _workflowDepth--
   }
@@ -1706,7 +1873,7 @@ const RETIRED_HINT: Record<string, string> = {
   shell_task_list: 'shell_execute with task: "list"',
 }
 
-const RETIRED_EXECUTORS: Record<string, (args: ToolArgs, run?: AgentRunContext) => Promise<string>> = {
+const RETIRED_EXECUTORS: Record<string, (args: ToolArgs, run?: AgentRunContext, signal?: AbortSignal) => Promise<string>> = {
   git_status: executeGitStatus,
   git_log: executeGitLog,
   git_diff: executeGitDiff,
@@ -1748,6 +1915,7 @@ export async function runRetiredTool(
   name: string,
   args: ToolArgs,
   run?: AgentRunContext,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const exec = RETIRED_EXECUTORS[name]
   if (!exec) return null
@@ -1756,7 +1924,10 @@ export async function runRetiredTool(
   if (isReadOnlyShellTurn(run) && RETIRED_MUTATING_NAMES.has(name)) {
     return `Refused: this turn is read-only (/review, Code-Review Mode or Plan mode); ${name} changes state.`
   }
-  const result = await exec(args, run)
+  // R2-44: the registry's own `execute()` receives a signal, but the retired-
+  // name redirect used to drop it here, so a retired tool (code_execute via
+  // this path) never saw Stop except through run.abortSignal.
+  const result = await exec(args, run, signal)
   const hint = RETIRED_HINT[name]
   return hint ? `${result}\n\n(Note: ${name} is retired, next time use ${hint}.)` : result
 }

@@ -66,9 +66,32 @@ export const SHEET_MARKED_MODELS = CLOUD_PITCH.unfilteredChatModels
  */
 const FLASH_DAILY = CLOUD_PITCH.flashDailyTokens.toLocaleString('en-US')
 
+/**
+ * One change line.
+ *
+ * The historic shape is a plain string: the long, exact text a guard or
+ * CHANGELOG.md binds to, shown as-is. The sheet redesign (Bauer, Runde 2,
+ * 19.09.2026) adds a second shape for a line that also carries a short,
+ * plain-language `title`: the sheet then shows the title and reveals `detail`
+ * only once that one row is opened. A line written before this addition, or
+ * one nobody has rewritten yet, stays a plain string and renders exactly as
+ * it always has, title and detail being the same text.
+ */
+export type ReleaseNoteItem = string | { title?: string; detail: string }
+
+/** The long text bound to CHANGELOG.md and to the wording guards, whichever shape the line has. */
+export function itemDetail(item: ReleaseNoteItem): string {
+  return typeof item === 'string' ? item : item.detail
+}
+
+/** The short line the sheet shows first; falls back to the long text when no title was written. */
+export function itemTitle(item: ReleaseNoteItem): string {
+  return typeof item === 'string' ? item : (item.title ?? item.detail)
+}
+
 export interface ReleaseNoteSection {
   title: string
-  items: string[]
+  items: ReleaseNoteItem[]
 }
 
 export interface ReleaseNote {
@@ -101,18 +124,308 @@ export interface ReleaseNote {
     note: string
   }
   /** Two to five short lines. Anything longer goes into `details`. */
-  lines: string[]
+  lines: ReleaseNoteItem[]
   /** The full list behind the expander, grouped into sections. */
   details?: ReleaseNoteSection[]
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  // 3.0.0 ist gebaut, aber nicht veroeffentlicht: kein Tag, kein Release. Seit
-  // dem 11.09.2026 stehen alle fuenf Manifeste auf 3.0.0, also liest die
-  // Tabelle diesen Eintrag als den der LAUFENDEN Version, und der Waechter in
-  // stores/__tests__/releaseNotesStore.test.ts haelt ihn an die Version. Der
-  // Eintrag steht hier und nicht in einer Textdatei daneben, weil nur hier
-  // geprueft wird, ob eine Zusage im Text zur Wirklichkeit im Code passt.
+  // Stand 22.09.2026: package.json, src-tauri/Cargo.toml (plus Cargo.lock) und
+  // src-tauri/tauri.conf.json stehen jetzt alle auf 3.0.2, in einem Zug mit
+  // dem Eintrag darunter, damit kein Release still bleibt (Gedaechtnis
+  // lu-265-plan-2026-08-10, "release-notes.ts vergessen = stummes Release").
+  // 3.0.1 IST veroeffentlicht (v3.0.1 auf 49d276bd, 21.09.2026), der
+  // 3.0.1-Eintrag ist damit ein Notizzettel der Vergangenheit wie der
+  // 3.0.0-Eintrag darunter (v3.0.0 auf 10df943e, 14.09.2026): beide bleiben
+  // unveraendert und tragen keine Zusage, die ihre eigene Version nicht
+  // enthielt. Der Hotfix 3.0.2 repariert eine Regression AUS 3.0.1, also
+  // steht sie im neuen Eintrag beim Namen.
+  {
+    version: '3.0.2',
+    headline: 'A hotfix for the Code tab: a long conversation scrolls again and the input box stays in view. The count of open cloud models also takes the Create Studio shelf in now.',
+    lines: [
+      {
+        title: 'The Code tab scrolls again, and its input box stays in view.',
+        detail: 'The Code tab lost its scrollbar and its input box once a conversation grew taller than the window (issue 138, a regression in 3.0.1). The frame around the transcript and the composer stopped being a scroll container, so it grew with the transcript instead of staying inside the window: only the start of a long conversation was visible, the mouse wheel did nothing, and the composer with its toolbar sat below the bottom edge. The frame is held to the window height again, so the transcript scrolls and the input box stays where you can reach it. The Chat tab was never affected.',
+      },
+      {
+        title: 'The count of open cloud models now takes the Create Studio shelf in.',
+        detail: 'Fourteen video models and seven image models in the cloud catalogue run without a built-in content restriction, counted the way a customer picks them: every catalogue entry marked adult, whether it sits in the classic picker or on the Create Studio shelf. The old rule left the Studio shelf out and reported ten and three, so four open image-to-video endpoints and four open image models were sold short. Two of the fourteen, OpenVideo and OpenVideo + Style LoRA, do not carry Spicy in the name and are open all the same; the mark comes from the catalogue field, never from the name.',
+      },
+    ],
+  },
+  {
+    version: '3.0.1',
+    // Auflage 4 (Bauer, Runde 2, 19.09.2026): die zwei Saetze, die unter der
+    // Ueberschrift stehen. Der alte Satz hier war der GPU/Umgebungsvariablen-
+    // Satz aus Auflage 1, in Entwicklersprache und nur ueber EINEN der 35
+    // Fixes; er ist durch eine kurze Einordnung ersetzt. CHANGELOG.md behaelt
+    // seinen eigenen, technischeren Einleitungssatz (Auftrag Punkt 6: das
+    // CHANGELOG bleibt unveraendert), die zwei Texte duerfen auseinanderlaufen.
+    headline: 'This update fixes bugs you reported since 3.0.0. Most of them sit in the local engine on older machines, ComfyUI on Linux, the Stop button, and chats running at the same time.',
+    lines: [
+      {
+        title: 'Local models now run on older processors without AVX2.',
+        detail: 'The local engine now picks its CPU code path at startup, so older processors without AVX2 can run local models instead of the engine exiting right after start.',
+      },
+      {
+        title: 'GPU memory that cannot be measured now gets a safer estimate.',
+        detail: 'On a GPU where the free VRAM could not actually be measured (no nvidia-smi, for instance), the LU Engine used to plan layers as if the whole card were sitting empty and log "N MiB are free" for a number that was really the total size, other programs included. It now takes a bigger safety margin on that weaker reading and logs it correctly as total capacity, not free memory, so a start plans fewer layers rather than too many.',
+      },
+      {
+        title: 'Linux AppImage programs no longer inherit its own environment variables.',
+        detail: 'Linux AppImage: a foreign program the app starts (git, a system Python, pip, ffmpeg, nvidia-smi, the coding agent shell, and now every program the Character Trainer starts too) no longer inherits the AppImage runtime\'s own LD_LIBRARY_PATH, PYTHONHOME and related variables. That inheritance made a perfectly healthy system Python fail to import ssl or find its standard library, with a diagnosis that pointed at a broken Python install rather than the real cause.',
+      },
+      {
+        title: 'Pip installs work again on Linux distros that block system Python.',
+        detail: 'On a platform where pip refuses to write into the system Python (Arch, Debian 12+, Fedora 38+, Ubuntu 23.04+), the isolated venv LU already built there no longer dies at the first pip call, and the same fix keeps the Coding Agent\'s own terminal from picking up the same poisoned environment for every git, pip or python command typed into it.',
+      },
+      {
+        title: 'ComfyUI installs now pick a Python version PyTorch supports.',
+        detail: 'Installing or repairing ComfyUI, LU now searches the interpreters already on your machine for one PyTorch actually ships wheels for, and uses that one automatically, with no picker in Settings. If none is found, it says so and tells you what to install before starting the roughly 2 GB PyTorch download, instead of that download running for minutes and then failing with pip\'s own generic error.',
+      },
+    ],
+    // Auflage 3 (Bauer, 19.09.2026): dieselben 30 Zeilen wie zuvor, kein
+    // Wort geaendert (die Anker in releaseNotesStore.test.ts binden sie
+    // woertlich), nur auf vier Themen verteilt statt in einem Eimer
+    // "Fixes". 35 Zeilen in einem Block sind auf dem Blatt schwer zu lesen;
+    // vier betitelte Gruppen sind es nicht.
+    //
+    // Auflage 4 (Bauer, Runde 2, 19.09.2026): jede Zeile bekommt zusaetzlich
+    // einen `title`, den kurzen Satz, den das Blatt jetzt zeigt, bevor jemand
+    // klickt. `detail` ist zeichengleich mit Auflage 3, also mit dem, was die
+    // Waechter unten binden.
+    details: [
+      {
+        title: 'Engine and hardware',
+        items: [
+          {
+            title: 'A crash on an old CPU now names the missing instruction set.',
+            detail: 'The LU Engine crashing immediately on an old CPU now says which instruction set is missing, measured from the CPU itself rather than guessed, and stops retrying the same binary a second time since it would only fail the same way again.',
+          },
+          {
+            title: 'Engine startup messages now say clearly what stage a model is in.',
+            detail: 'The engine startup probe\'s log line read as if a model that is still loading, one that is thinking, and one that has genuinely failed all looked the same. The wording for each case is distinct now.',
+          },
+          {
+            title: 'The automated build check now reports each platform\'s failures separately.',
+            detail: 'The CI check that runs on every pull request now fails independently on each platform instead of one platform\'s failure hiding whatever the other platform would have found.',
+          },
+          {
+            title: 'A chosen GPU stays selected even if the system renumbers cards.',
+            detail: 'Picking a specific GPU for a local model or the Character Trainer now keeps using that physical card even if Windows or Linux renumber the cards between detection and start.',
+          },
+          {
+            title: 'The Hardware tab no longer freezes while a model is starting.',
+            detail: 'Opening the Hardware tab in Settings while a local model or the trainer was starting up could freeze it for a moment; it no longer waits on that GPU detection.',
+          },
+          {
+            title: 'Windows: a very long install path no longer stops the engine from starting.',
+            detail: 'Windows: installing to a very long folder path no longer stops the bundled engine from starting, and when Windows cannot shorten that path, the app now names the install path as the cause instead of showing a bare OS error.',
+          },
+        ],
+      },
+      {
+        title: 'Chat and agents',
+        items: [
+          {
+            title: 'Two chats running at once no longer mix up their text.',
+            detail: 'Sending in one conversation while another is still streaming no longer mixes their text together, and a second agent run no longer gets silently dropped while the first one is still going, both now finish on their own.',
+          },
+          {
+            title: 'A waiting chat now shows its place in the queue.',
+            detail: 'The local model runs one conversation at a time, and a chat that has to wait its turn now says so, with a line showing how many chats are ahead of it. Stop works while it is still waiting, and takes it out of the line.',
+          },
+          {
+            title: 'Stop now reaches every conversation, not just the open one.',
+            detail: 'Stop, signing out and quitting the app now reach every conversation, including one that has not started running yet and is only waiting its turn, not just the one open on screen.',
+          },
+          {
+            title: 'Temperature and other sliders now apply to one chat only.',
+            detail: 'Moving the Temperature, Top P or Max tokens slider now changes that one conversation only, instead of every open chat sharing one value from the Settings page. A chat with no slider of its own still follows Settings, and a field nobody moved anywhere is left out of the request so the model applies its own default.',
+          },
+          {
+            title: 'Stop now also ends commands the coding agent started.',
+            detail: 'Pressing Stop while the Coding Agent is running code now actually stops that run, the same way it already stopped a shell command.',
+          },
+          {
+            title: 'Workflow steps now ask for approval like the rest of Agent mode.',
+            detail: 'Workflow steps now go through the same tool approval as the rest of Agent mode, and only offer the tools your permissions allow. Built-in workflows now take their input from the call itself instead of waiting forever for an answer nobody could give, and the Play button in Settings under Agent Workflows that never did anything is gone.',
+          },
+          {
+            title: 'A foreground sub-agent is no longer cut off after 60 seconds.',
+            detail: 'A sub-agent delegated in the foreground is no longer cut off after 60 seconds, and a timeout or Stop now actually ends the tool call it was running instead of leaving it running in the background.',
+          },
+          {
+            title: 'Multi-line memory entries survive export and import again.',
+            detail: 'A memory entry with more than one line survives export and import again, both separator styles the web writes are read back, and one sensitive memory entry no longer blocks the whole sync.',
+          },
+          {
+            title: 'Sending in one chat no longer locks every other chat.',
+            detail: 'The composer lock during a send now only affects that one conversation, not every open chat, Stop in one chat no longer cancels an image or video render running in another, and picking a third remembered agent folder now asks for confirmation like the first two do.',
+          },
+          {
+            title: 'On Windows, Stop now also ends a build just started.',
+            detail: 'On Windows, pressing Stop on a command that had only just started now also ends the worker the shell launches a moment later, so a build or install cancelled at the very beginning stops instead of running on and writing files in the background.',
+          },
+          {
+            title: 'A timed-out cloud chat request no longer retries for minutes.',
+            detail: 'A Cloud chat request that hits its own four minute limit is now treated as finished right away instead of being retried up to three more times with the same four minute wait on each try.',
+          },
+          {
+            title: 'The No refusals mark is easier to notice in the picker.',
+            detail: 'The No refusals mark in the desktop model picker now carries an icon and bolder text so it is actually noticeable, instead of blending into the smallest text on the row.',
+          },
+          {
+            title: 'Dismissing the stale model notice now actually dismisses it.',
+            detail: 'Dismissing the stale model notice in the chat header now actually dismisses it, instead of it reappearing on the very next update.',
+          },
+          {
+            title: 'The coding agent now explains why it cannot change folders.',
+            detail: 'The reason the Coding Agent will not let go of its current folder is now shown as a visible line, instead of only a tooltip a disabled button never shows.',
+          },
+          {
+            title: 'The Memory sources chip under every answer is gone.',
+            detail: 'The Memory sources chip under every AI answer is gone; the purple brain icon in the session strip below the transcript, right above the composer, still opens Memory.',
+          },
+          {
+            title: 'A draft no longer merges into the next chat after switching.',
+            detail: 'A draft left in the message box no longer merges into the next thing you type after switching conversations, and the composer no longer gets stuck showing Stop after closing the window, signing out or quitting with a message still in flight.',
+          },
+          {
+            title: 'A brand new chat no longer shows a blank screen.',
+            detail: 'Right after "+ New Chat", with the side panel open, the main area could stay completely empty: no greeting, no history, nothing, even after a full reload of the same still-empty chat. Only switching to another tab and back brought it around. The greeting now shows for that chat from the first frame, the same as before the first message is sent.',
+          },
+          {
+            title: 'Switching to Cloud no longer drops a local generation running elsewhere.',
+            detail: 'Switching the app to Cloud used to free the local engine right away, even while another chat, agent, code or group run was still generating on it, and that run then ended with "Connection dropped". The switch to Cloud itself still happens right away; only that memory cleanup now waits until every local run in progress has ended (normally, by Stop, or by failing), and it is skipped entirely if you switch back to Local before that.',
+          },
+          {
+            title: 'A workflow now tells you where it stopped instead of claiming success.',
+            detail: 'A step whose web search or page fetch failed, or whose model answered nothing, ends the run with "Workflow stopped at step 2 of 6: ..." instead of carrying on and finishing with "Workflow complete"; a run that really did finish leads with its actual result rather than the "Saved to memory" receipt.',
+          },
+          {
+            title: 'Running a workflow from chat now shows its progress, step by step.',
+            detail: 'Running a workflow from chat ("run workflow ...") now shows its own progress, clickable and expandable exactly like a tool call: every step listed as waiting, running, done or failed, each finished step\'s result, and the currently running step\'s answer streaming in live. Before this it showed no more than three static dots for the whole run, sometimes several minutes, with no way to tell it was still working. A model step also now has an upper bound on how long it may reason before it must answer. Stop ends the progress block visibly instead of leaving it looking like it is still running, whether Stop was pressed mid-run or the app was closed and reopened partway through.',
+          },
+        ],
+      },
+      {
+        title: 'Create',
+        items: [
+          {
+            title: 'Animate this image now works from Create in the desktop app.',
+            detail: 'A finished image in Create has an Animate this image button that carries it straight into a video render, the same as the browser studio, and the No refusals mark now shows on cloud models in the desktop picker as well.',
+          },
+          {
+            title: 'qwen-image-edit is selectable again, and Krea 2 loads correctly.',
+            detail: 'qwen-image-edit is selectable from the seed and edit pickers again, the upscale tool is named Enhance Image to match the web, and Krea 2 checkpoints load with the right UNET, CLIP and VAE nodes instead of falling back to an unknown loader.',
+          },
+          {
+            title: 'Create now blocks a render before it fails on the server.',
+            detail: 'The Create button now stays disabled instead of failing on the server when the chosen model needs a mask that was never supplied, and the local character LoRA list refreshes itself right after a training finishes instead of needing a restart.',
+          },
+          {
+            title: 'A failed cloud render now explains itself instead of one error.',
+            detail: '"Failed to fetch" is no longer shown as the whole explanation for a failed cloud render, and the out of credits dialog now has a distinct title for each of its three reasons instead of one generic one.',
+          },
+          {
+            title: 'The model picker no longer crashes when grouping by family.',
+            detail: 'The model picker no longer crashes when grouping models by family, a custom OpenAI compatible endpoint now receives Top K, a model name is no longer cut off at its first colon, and a newly added provider starts with no value pre filled.',
+          },
+          // P9 (19.09.-20.09.2026, Portplan Abschnitt 5): das Studio aus dem
+          // Web nach Desktop 3.0.1 portiert. Vier Zeilen, jede zeichengleich
+          // mit einem Punkt der Auftragsvorgabe: Presets+gefuehrter Weg,
+          // Anbieterschema+bestaetigter Preis, Cliplaengen je Modell,
+          // Charakter-LoRA-Passung. Keine ueber die Quelle hinausgehenden
+          // Erwachsenenvokabeln, kein Tokens-je-Euro, und das Versprechen
+          // haengt ehrlich an der Server-CORS-Lage (Portplan Abschnitt 4:
+          // "Nie eine Serverversion fest verdrahten", die Erkennung laeuft
+          // ausschliesslich ueber die Anwesenheit von quote_required im
+          // Katalog).
+          {
+            title: 'Create-Studio: a new guided path on the cloud track.',
+            detail: 'A preset shelf next to the usual Create tab walks a render from image to motion to sound, in steps, each backed by any model that can do that step\'s job. Each step\'s controls come straight from the picked model\'s own provider schema, and the price shown is the one the provider actually confirms before Start, never a formula guessed on this side. This needs a server change that has not shipped on lu-labs.ai yet; until it does, the shelf stays hidden and every Create tab behaves exactly as before. If a future server ever advertises Studio without also fixing the two price-check routes, Create shows "This feature needs a newer LU Cloud server. Try again later." instead of guessing a price or booking one.',
+          },
+          {
+            title: 'Cloud video renders now offer exactly the lengths a model actually supports.',
+            detail: 'Cloud video renders now offer exactly the clip lengths the picked model actually supports, read from the live catalog, instead of a fixed 5s/8s pair for every model.',
+          },
+          {
+            title: 'A cloud render without a prompt still gets a real name in the gallery.',
+            detail: 'A cloud render without a prompt (a presenter reading a script, for example) still gets a real name in the gallery, instead of an empty tile.',
+          },
+          {
+            title: 'Character LoRAs now only offer models trained for that character.',
+            detail: 'Character LoRAs in Create now only offer the models actually trained for that character\'s family, so the picker cannot suggest a combination that would fail to generate.',
+          },
+        ],
+      },
+      {
+        title: 'Backends and settings',
+        items: [
+          {
+            title: 'Troubleshoot now tests the LM Studio address you configured.',
+            detail: 'The Troubleshoot panel now tests the LM Studio address you actually configured in Settings, instead of always trying the default 127.0.0.1:1234.',
+          },
+          {
+            title: 'Replacing a backend no longer throws away its API key.',
+            detail: 'Replacing an OpenAI compatible backend now parks the API key it displaces in the OS keychain instead of dropping it, and gives it back if you switch back to that backend or remove the one that replaced it. The warning that a key will be lost only shows on a device with no keychain to park it in.',
+          },
+          {
+            title: 'Picking the trainer\'s install folder at first setup now redirects its caches too.',
+            detail: 'Setting an install location for the Character Trainer during first setup now also redirects pip, Hugging Face and torch\'s own caches there, so choosing a folder off a small system drive keeps those caches off it too. This applies at first setup only; there is no way in the app yet to move an already installed trainer to a different folder. The field itself now rejects a path it cannot actually use, always shows the folder it will really install to, and an emptied field goes back to the default; the Z Image base model downloads always follow your configured model folder in Settings, ComfyUI, either way.',
+          },
+          {
+            title: 'Linux: a ComfyUI install missing python3-venv now says so.',
+            detail: 'The install used to end with "venv creation failed:" and nothing after the colon, because Python prints its python3-venv hint on stdout, and LU only read stderr.',
+          },
+          {
+            title: 'The Models folders tab now opens faster on the first click.',
+            detail: 'The first click into the Models folders tab is faster, since it asks the running engine directly instead of falling back to a stale cache, and the onboarding VRAM hint asks LU\'s own probe first so it works before ComfyUI is installed.',
+          },
+          {
+            title: 'Settings now says when Ollama is reachable but switched off.',
+            detail: 'Settings now says when Ollama is reachable but switched off, instead of just Reachable, which read as if it were actually being used.',
+          },
+          {
+            title: 'A backend that is not running reads as Not running on Windows.',
+            detail: 'On Windows, the Troubleshoot panel now says Not running for a backend that is switched off, instead of Reachable, slow to answer, which read as if the backend were alive and merely busy.',
+          },
+          {
+            title: 'Local Media now mentions that a Hugging Face token helps.',
+            detail: 'The Local Media (Apple MLX) panel now mentions that a Hugging Face token can help its downloads, the same hint ComfyUI already gives for its own model downloads.',
+          },
+          {
+            title: 'Reinstall trainer now confirms before it starts.',
+            detail: 'Reinstall trainer in Character Studio now opens a confirmation dialog first, showing the current trainer folder, instead of starting the reinstall the moment the button is clicked. A reinstall never changes the trainer folder itself.',
+          },
+          {
+            title: 'The model marks now live in the model list only.',
+            detail: 'The model marks now live in the model list only, the line above the message box is gone; the Flash notice sits next to the Agent toggle.',
+          },
+          {
+            title: 'A narrow window no longer scrolls the whole chat sideways.',
+            detail: 'At a narrow window width, picking a model, opening the sampling sliders or opening the plugins menu used to leave the whole chat shifted sideways afterward, because the shared chat area allowed the browser to scroll it into view when a clicked control sat partly off screen. That area no longer accepts a programmatic scroll, so it stays put.',
+          },
+          {
+            title: 'Models now has a LoRAs tab that searches and installs from CivitAI (Windows and Linux).',
+            detail: 'On Windows and Linux, Models has a LoRAs entry of its own next to Chat, Image and Video. Get new searches CivitAI for LoRAs and downloads what you pick into ComfyUI\'s models/loras folder; Installed lists what is already there with its size, marks the characters you trained yourself with their trigger word, and deletes a file you no longer want. LoRAs no longer sit unnamed among the checkpoints in the Image tab, where one could be picked as if it were a main model. The tab is not offered on a Mac, where local media runs on Apple MLX and there is no ComfyUI loras folder to list.',
+          },
+          {
+            title: 'Update ComfyUI now asks first and refuses while ComfyUI is busy.',
+            detail: 'Update ComfyUI in Settings now shows a confirmation dialog before it starts. It stops LU\'s own running ComfyUI first if there is one, refuses while a ComfyUI this app did not start or one that is generating something holds the port, and puts the ComfyUI code back to the version it had before if you cancel partway through; Python packages already installed during that attempt are not undone.',
+          },
+        ],
+      },
+    ],
+  },
+  // 3.0.0 ist getaggt (v3.0.0, 10df943e, 14.09.2026) und auf origin: dieser
+  // Eintrag ist der VEROEFFENTLICHTE Notizzettel und darf nachtraeglich
+  // keine Zusage mehr bekommen, die die veroeffentlichte 3.0.0 nicht
+  // enthielt. Solange package.json auf 3.0.0 steht, haelt der Waechter in
+  // stores/__tests__/releaseNotesStore.test.ts diesen Eintrag an der
+  // Version; der 3.0.1-Entwurf oben steht daneben, nicht an seiner Stelle.
   {
     version: '3.0.0',
     headline: 'Uncensored, measured instead of promised, and Flash chat that costs nothing on a plan',
@@ -147,7 +460,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
           `The ${SHEET_CHAT_MODELS} cloud chat models that were in the catalogue at measurement time were each asked the same question twice and judged on what came back, not on whether the reply started with a refusal sentence. ${CLOUD_PITCH.heldBackChatModels} answer but hold back and carry no mark: a mark that is sometimes right reads as a promise, and then you meet the refusal we just talked you out of. DeepSeek V4.1 Flash joined the catalogue after that run, so it carries no mark yet.`,
           'The old "(unrestricted)" suffix in some model names is gone. It was inherited, it was wrong on at least two models, and a name is not evidence.',
           'The same two marks appear in the picker and above the prompt: "No refusals" for the measured ones, "No credits" for the Flash class with its real daily number. The second one only shows on a plan that pays for it, because on any other account those models cost credits.',
-          `Chroma, Prefect Pony XL, Neta Lumina and the ${CLOUD_PITCH.openVideoModels} open video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.`,
+          `The ${CLOUD_PITCH.openImageModels} open image models and the ${CLOUD_PITCH.openVideoModels} open video endpoints are marked in the Create picker of the browser studio. The mark stays pale while your account still filters, so it is clear that the setting draws the line and not the model.`,
         ],
       },
       {

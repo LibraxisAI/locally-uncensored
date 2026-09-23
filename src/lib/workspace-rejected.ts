@@ -61,11 +61,12 @@ export function workspacePickRefusedMessage(fehler: unknown): string {
  * Derselbe Fall ohne jeden Dialog: ein Ordner, den die Oberflaeche sich
  * GEMERKT hat, wird gesetzt, und die Rust-Seite nimmt ihn nicht an.
  *
- * Zwei Wege tun das: der Knopf "Use last folder" und der Vorgabeordner aus den
- * Einstellungen, der ueber den Speicher des Browsers einen Neustart ueberlebt.
- * Eine frische Installation, geleerte Daten oder ein Ordner direkt unter
- * `$HOME` fuehren dort in dieselbe Sackgasse wie Fehler D, nur ohne Dialog,
- * also ohne Weg heraus.
+ * Drei Wege tun das: der Knopf "Use last folder", der Vorgabeordner aus den
+ * Einstellungen, und `codexStore.workingDirectory` (der Code-Reiter-Ordner
+ * selbst), alle drei ueber den Speicher des Browsers und einen Neustart
+ * hinweg. Eine frische Installation, geleerte Daten oder ein Ordner direkt
+ * unter `$HOME` fuehren dort in dieselbe Sackgasse wie Fehler D, nur ohne
+ * Dialog, also ohne Weg heraus.
  *
  * Der Pfad steht hier DRIN, anders als bei `workspacePickRefusedMessage`: der
  * Nutzer hat ihn nicht gerade ausgesucht, er liegt Wochen zurueck, und ohne

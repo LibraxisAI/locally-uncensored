@@ -163,9 +163,14 @@ describe('no composer on any surface shows a plan', () => {
         src: propValue(src, prop),
       })).filter((r) => r.src.length > 0)
       // Sanity: the extraction has to have found something, or this test would
-      // pass by reading nothing at all.
-      expect(roots.map((r) => r.label)).toContain(`${file} composerAbove`)
-      expect(roots.find((r) => r.label === `${file} composerAbove`)!.src).toMatch(/<LoopBar/)
+      // pass by reading nothing at all. `composerModel` is the anchor now, not
+      // `composerAbove`: on 21.09.2026 the prompt box was emptied out for real
+      // (David: „NICHTS im prompt fenster!"). The Code surface hands it
+      // nothing at all any more, and Chat hands it one money line. The picker
+      // is what every surface still puts INTO the box, so it is the thing
+      // whose absence would make this claim vacuous.
+      expect(roots.map((r) => r.label)).toContain(`${file} composerModel`)
+      expect(roots.find((r) => r.label === `${file} composerModel`)!.src).toMatch(/<ModelSelector/)
 
       const failures = scanTree(roots)
       expect(

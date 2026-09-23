@@ -73,13 +73,13 @@
 
     <p>Version 2.2.2 of <a href="https://github.com/PurpleDoubleD/locally-uncensored">Locally Uncensored</a> is the release where a chat app becomes an engineering tool. This update adds a built-in <strong>coding agent</strong> that reads, writes, and executes code directly on your machine, a <strong>13-tool MCP system</strong> that gives any LLM real-world capabilities, <strong>file upload with vision</strong> across every provider, <strong>thinking mode</strong> that works with any model, <strong>granular permissions</strong> to control exactly what the AI can touch, and a <strong>complete UI overhaul</strong> that makes everything 15% larger and easier to use.</p>
 
-    <p>This isn't an incremental polish release. It's the foundation for using local LLMs as agents. Not just conversational assistants, but tools that can navigate your filesystem, run shell commands, analyze images, and build software. All locally, all private, all under your control.</p>
+    <p>This isn't an incremental polish release. It's the foundation for using local LLMs as agents, not just conversational assistants, but tools that can navigate your filesystem, run shell commands, analyze images, and build software. All locally, all private, all under your control.</p>
 
     <p>Let's walk through every major feature.</p>
 
     <h2>Coding Agent</h2>
 
-    <p>The headline feature of v2.2.2 is the <strong>Coding Agent</strong>, a fully integrated coding environment that turns any LLM into a software development assistant. This isn't a prompt wrapper. It's an autonomous agent loop that can read your codebase, write new files, modify existing ones, and run shell commands to test its work.</p>
+    <p>The headline feature of v2.2.2 is the <strong>Coding Agent</strong>: a fully integrated coding environment that turns any LLM into a software development assistant. This isn't a prompt wrapper. It's an autonomous agent loop that can read your codebase, write new files, modify existing ones, and run shell commands to test its work.</p>
 
     <p>The interface introduces a <strong>3-tab system</strong>: <strong>LU</strong> (standard chat), <strong>Coding Agent</strong>, and <strong>OpenClaw</strong> (an open-ended task runner). Each tab maintains its own conversation history and context, so you can chat in LU while the Coding Agent works through a multi-step refactor in the background.</p>
 
@@ -102,11 +102,11 @@
 
     <h2>13 MCP Tools</h2>
 
-    <p>The Coding Agent is powered by <strong>MCP (Model Context Protocol) tools</strong>, a standardized way for LLMs to call functions in the real world. Version 2.2.2 ships with 13 built-in tools, and the architecture is designed for extensibility.</p>
+    <p>The Coding Agent is powered by <strong>MCP (Model Context Protocol) tools</strong>: a standardized way for LLMs to call functions in the real world. Version 2.2.2 ships with 13 built-in tools, and the architecture is designed for extensibility.</p>
 
     <h3>Dynamic Tool Registry</h3>
 
-    <p>Tools aren't hardcoded into the prompt. Instead, Locally Uncensored maintains a <strong>dynamic registry</strong> that injects only the relevant tools into each conversation based on context. If you're chatting in the standard LU tab, you might get web search and file read tools. In Coding Agent mode, the full suite of file write, shell execute and directory listing becomes available.</p>
+    <p>Tools aren't hardcoded into the prompt. Instead, Locally Uncensored maintains a <strong>dynamic registry</strong> that injects only the relevant tools into each conversation based on context. If you're chatting in the standard LU tab, you might get web search and file read tools. In Coding Agent mode, the full suite (file write, shell execute, directory listing) becomes available.</p>
 
     <h3>Smart Keyword Filtering</h3>
 
@@ -142,7 +142,7 @@
 
     <h3>3 Permission Levels</h3>
 
-    <p>Each category supports three levels: <strong>Deny</strong> (never allowed), <strong>Ask</strong> (prompt the user each time), and <strong>Allow</strong> (always permitted). The default for destructive operations like shell execute and file write is <strong>Ask</strong>, so you see a confirmation dialog before anything runs. You can upgrade trusted workflows to <strong>Allow</strong> or lock down categories to <strong>Deny</strong> if you want a read-only agent.</p>
+    <p>Each category supports three levels: <strong>Deny</strong> (never allowed), <strong>Ask</strong> (prompt the user each time), and <strong>Allow</strong> (always permitted). The default for destructive operations like shell execute and file write is <strong>Ask</strong>: you see a confirmation dialog before anything runs. You can upgrade trusted workflows to <strong>Allow</strong> or lock down categories to <strong>Deny</strong> if you want a read-only agent.</p>
 
     <h3>Per-Conversation Overrides</h3>
 
@@ -188,7 +188,7 @@
 
     <h3>Power Icons</h3>
 
-    <p>Each model in the model selector now has a <strong>power icon</strong>, a visual indicator showing whether the model is currently loaded in VRAM. Green means loaded and ready, gray means unloaded. Click the icon to toggle: load a model before you need it (pre-loading for faster first response), or unload it when you're done to free VRAM for other tasks.</p>
+    <p>Each model in the model selector now has a <strong>power icon</strong>: a visual indicator showing whether the model is currently loaded in VRAM. Green means loaded and ready, gray means unloaded. Click the icon to toggle: load a model before you need it (pre-loading for faster first response), or unload it when you're done to free VRAM for other tasks.</p>
 
     <h3>VRAM Status</h3>
 
@@ -210,11 +210,11 @@
       <li><strong>Native folder picker</strong>: the OS-native folder selection dialog, used by the Coding Agent to select project directories. No fake browser dialogs.</li>
     </ul>
 
-    <p>All of these run through Tauri's IPC bridge, which means they execute in the Rust process with full OS permissions while the frontend remains sandboxed. The <strong>sandbox bypass</strong> is intentional and controlled, because every native operation is gated by the permissions system described above. The AI can't run a shell command unless you've explicitly allowed (or approved) it.</p>
+    <p>All of these run through Tauri's IPC bridge, which means they execute in the Rust process with full OS permissions while the frontend remains sandboxed. The <strong>sandbox bypass</strong> is intentional and controlled: every native operation is gated by the permissions system described above. The AI can't run a shell command unless you've explicitly allowed (or approved) it.</p>
 
     <h2>UI Overhaul</h2>
 
-    <p>The entire interface has been redesigned in v2.2.2. This isn't a theme change. It's a structural overhaul that affects how you read, write, and interact with every element in the app.</p>
+    <p>The entire interface has been redesigned in v2.2.2. This isn't a theme change, it's a structural overhaul that affects how you read, write, and interact with every element in the app.</p>
 
     <h3>15% Larger Interface</h3>
 
@@ -226,7 +226,7 @@
 
     <h3>Monochrome Tool Blocks</h3>
 
-    <p>When the AI uses MCP tools (file read, shell execute, etc.), the tool call and result are displayed in <strong>monochrome blocks</strong>, visually distinct from the conversation but not attention-grabbing. Previous versions used colored badges for each tool type, which became visually noisy in a Coding Agent session with 15+ tool calls. The monochrome design keeps the focus on the AI's reasoning and the final output, not the mechanics of tool execution.</p>
+    <p>When the AI uses MCP tools (file read, shell execute, etc.), the tool call and result are displayed in <strong>monochrome blocks</strong>: visually distinct from the conversation but not attention-grabbing. Previous versions used colored badges for each tool type, which became visually noisy in a Coding Agent session with 15+ tool calls. The monochrome design keeps the focus on the AI's reasoning and the final output, not the mechanics of tool execution.</p>
 
     <h3>Elapsed Counter</h3>
 
@@ -238,7 +238,7 @@
 
     <h3>DWM Border Removed</h3>
 
-    <p>On Windows, the Tauri window previously displayed the default <strong>Desktop Window Manager border</strong>, a thin colored line around the window that looked out of place against the dark UI. This has been removed in v2.2.2 for a cleaner, borderless look that blends seamlessly with the app's dark theme. A small detail, but it eliminates one of the most common visual complaints from Windows users.</p>
+    <p>On Windows, the Tauri window previously displayed the default <strong>Desktop Window Manager border</strong>: a thin colored line around the window that looked out of place against the dark UI. This has been removed in v2.2.2 for a cleaner, borderless look that blends seamlessly with the app's dark theme. A small detail, but it eliminates one of the most common visual complaints from Windows users.</p>
 
     <h2>Upgrade Guide</h2>
 
@@ -249,7 +249,7 @@ git pull
 npm install
 npm run dev</code></pre>
 
-    <p>For the standalone desktop app, download the latest Windows <code>.exe</code> or a Linux build (<code>.AppImage</code>, <code>.deb</code>, <code>.rpm</code>) from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases">releases page</a>. Those are the only two platforms the app has ever shipped for; there is no Mac build and never was one. On a Mac the hosted studio at <a href="https://lu-labs.ai/" target="_blank" rel="noopener">lu-labs.ai</a> runs the same chat, code, image and video lanes in any browser. Your existing conversations, settings, and permissions carry over automatically, because they're stored in your OS's app data directory, not inside the app bundle.</p>
+    <p>For the standalone desktop app, download the latest <code>.exe</code> for Windows or <code>.AppImage</code> for Linux from the <a href="https://github.com/PurpleDoubleD/locally-uncensored/releases">releases page</a>. There is no Mac build and there never was one; on a Mac the hosted studio runs in the browser at <a href="https://lu-labs.ai">lu-labs.ai</a>. Your existing conversations, settings, and permissions carry over automatically: they're stored in your OS's app data directory, not inside the app bundle.</p>
 
     <p>New users can clone and run:</p>
 
@@ -273,13 +273,13 @@ cd locally-uncensored
     <h2>FAQ</h2>
 
     <h3>Does the Coding Agent work with small local models?</h3>
-    <p>It works with any model, but results scale with model quality. A 7B model can handle simple file reads and basic code edits. For multi-step refactoring, writing tests, and debugging, you'll want at least a 14B+ coding model like Qwen 2.5 Coder 14B/32B, DeepSeek Coder V2, or a cloud model like Claude 3.5 Sonnet. The tool system itself is model-agnostic, and the quality of the agent depends entirely on the model's coding ability.</p>
+    <p>It works with any model, but results scale with model quality. A 7B model can handle simple file reads and basic code edits. For multi-step refactoring, writing tests, and debugging, you'll want at least a 14B+ coding model like Qwen 2.5 Coder 14B/32B, DeepSeek Coder V2, or a cloud model like Claude 3.5 Sonnet. The tool system itself is model-agnostic: the quality of the agent depends entirely on the model's coding ability.</p>
 
     <h3>Is the Coding Agent safe to use on production code?</h3>
     <p>Use it with version control. The permissions system adds a safety net (set file write and shell execute to <strong>Ask</strong> mode so you approve every change), but the best safety net is a <code>git commit</code> before you start. If the agent makes a mess, <code>git checkout .</code> undoes everything. We recommend treating it like a junior developer with full repo access: powerful, but supervise it.</p>
 
     <h3>How does smart keyword filtering decide which tools to inject?</h3>
-    <p>Each tool has a set of associated keywords. The user's message is analyzed for keyword matches, and only tools with at least one match are included in the prompt. For example, "read the config file" matches <code>file_read</code>, while "what's the weather" matches nothing and skips tool injection entirely. The keyword sets are tuned to minimize false negatives, because it's better to inject an unnecessary tool than to miss one the model needs.</p>
+    <p>Each tool has a set of associated keywords. The user's message is analyzed for keyword matches, and only tools with at least one match are included in the prompt. For example, "read the config file" matches <code>file_read</code>, while "what's the weather" matches nothing and skips tool injection entirely. The keyword sets are tuned to minimize false negatives: it's better to inject an unnecessary tool than to miss one the model needs.</p>
 
     <h3>Can I use vision with local models?</h3>
     <p>Yes, if the model supports multimodal input. LLaVA 1.6, Llama 3.2 Vision, and BakLLaVA work through Ollama. The app detects whether the selected model supports vision and enables/disables the upload UI accordingly. Cloud providers (OpenAI, Anthropic, Gemini) all support vision with their latest models.</p>

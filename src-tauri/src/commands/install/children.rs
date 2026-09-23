@@ -141,6 +141,31 @@ pub(crate) fn tracked_installer_children() -> usize {
     }
 }
 
+/// Test-only synchronization for [`INSTALLER_CHILDREN`].
+///
+/// The registry is a single process-wide set, on purpose (see the module doc):
+/// production only ever runs one `kill_installer_children` call, at real app
+/// shutdown, and it is meant to sweep every installer child there is. Under
+/// `cargo test`'s default parallel harness that same breadth is a hazard:
+/// `state::shutdown_tests` calls the real `shutdown_subprocesses`, which calls
+/// the real `kill_installer_children`, which SIGKILLs every pid ANY
+/// concurrently running test has registered, not just its own. Review Runde 2
+/// found this the hard way: `install::pip`'s self-heal retry test spawns a
+/// short-lived tracked child and failed intermittently (signal 9, empty
+/// stderr) only when run alongside the rest of the suite, never alone.
+///
+/// Every test that either calls something which reaches `kill_installer_children`
+/// (directly, or via `AppState::shutdown_subprocesses`) or registers a
+/// `TrackedInstallerChild` it expects to survive for a measurable stretch must
+/// hold this lock for that stretch, so the two kinds of test never interleave.
+/// Cheap in production: this function does not exist outside `#[cfg(test)]`
+/// builds, so it costs nothing there.
+#[cfg(test)]
+pub(crate) fn installer_children_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

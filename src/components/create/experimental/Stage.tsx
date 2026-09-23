@@ -31,10 +31,14 @@ interface Props {
    *  Absent where the Edit intent has no working local lane (the MLX Mac),
    *  so the button only shows where inpainting actually runs. */
   onEditResult?: (item: GalleryItem) => void
+  /** C1: adopt a finished image as the Animate intent's source. Absent where
+   *  the Animate lane has no working local pipeline (MLX Mac), same reasoning
+   *  as onEditResult above. */
+  onAnimateResult?: (item: GalleryItem) => void
   onFullscreen: (item: GalleryItem) => void
 }
 
-export function Stage({ displayed, onOpenMaskEditor, onEditResult, onFullscreen }: Props) {
+export function Stage({ displayed, onOpenMaskEditor, onEditResult, onAnimateResult, onFullscreen }: Props) {
   const intent = useCreateStore((s) => s.intent())
   const meta = INTENT_MAP[intent]
   const isGenerating = useCreateStore((s) => s.isGenerating)
@@ -128,6 +132,7 @@ export function Stage({ displayed, onOpenMaskEditor, onEditResult, onFullscreen 
         item={displayed}
         onFullscreen={() => onFullscreen(displayed)}
         onSendToEditor={displayed.type === 'image' && onEditResult ? () => onEditResult(displayed) : undefined}
+        onAnimate={displayed.type === 'image' && onAnimateResult ? () => onAnimateResult(displayed) : undefined}
       />
     )
   } else {
