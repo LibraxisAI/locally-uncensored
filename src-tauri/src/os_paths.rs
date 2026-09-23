@@ -248,7 +248,7 @@ pub(crate) fn merge_config_file(
         let _ = std::fs::create_dir_all(dir);
     }
     let mut config: serde_json::Value = if file.exists() {
-        std::fs::read_to_string(&file)
+        std::fs::read_to_string(file)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| serde_json::json!({}))
@@ -259,11 +259,10 @@ pub(crate) fn merge_config_file(
         config = serde_json::json!({});
     }
     mutator(&mut config)?;
-    std::fs::write(
-        file,
-        serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| crate::os_error::english(&e))
+    // Serialised first: a serde error is our own wording, the write error is
+    // the OS's and goes through `os_error::english` (drift_guard).
+    let body = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(file, body).map_err(|e| crate::os_error::english(&e))
 }
 
 #[cfg(test)]

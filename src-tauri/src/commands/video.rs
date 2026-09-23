@@ -804,7 +804,7 @@ fn clamp_frames(family: &str, frames: u32) -> u32 {
 }
 
 fn valid_video_dimension(value: u32) -> bool {
-    (64..=2048).contains(&value) && value % 16 == 0
+    (64..=2048).contains(&value) && value.is_multiple_of(16)
 }
 
 pub(crate) fn run_streamed(slot: &crate::install_state::InstallSlot, cmd: &mut Command) -> Result<(), String> {
