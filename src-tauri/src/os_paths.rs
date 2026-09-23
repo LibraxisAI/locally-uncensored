@@ -214,12 +214,40 @@ fn resolve_models_root(config_raw: Option<&str>, env: Option<&str>) -> Option<Pa
 /// edits, and a global cache would make unit tests order-dependent. This is
 /// how the ~100 GB of MLX weights moves off the system disk onto an external
 /// volume (GOAL-mac-local, David 2026-09-14).
+///
+/// Reads [`app_config_json()`], never a hand-built `"locally-uncensored"`
+/// path — `keine_quelldatei_baut_einen_pfad_der_echten_app_von_hand`.
 pub fn configured_models_root() -> Option<PathBuf> {
-    let config_raw = dirs::config_dir().and_then(|d| {
-        std::fs::read_to_string(d.join("locally-uncensored").join("config.json")).ok()
-    });
+    let config_raw = std::fs::read_to_string(app_config_json()).ok();
     let env = std::env::var("LU_MODELS_ROOT").ok();
     resolve_models_root(config_raw.as_deref(), env.as_deref())
+}
+
+/// Read-modify-write `config.json` as a JSON object. Missing or unparseable
+/// files start as `{}`. The mutator returning Err aborts without writing.
+pub fn merge_app_config(
+    mutator: impl FnOnce(&mut serde_json::Value) -> Result<(), String>,
+) -> Result<(), String> {
+    let dir = app_config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let file = app_config_json();
+    let mut config: serde_json::Value = if file.exists() {
+        std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if !config.is_object() {
+        config = serde_json::json!({});
+    }
+    mutator(&mut config)?;
+    std::fs::write(
+        &file,
+        serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -259,6 +287,35 @@ mod models_root_tests {
     fn values_are_trimmed() {
         let r = resolve_models_root(Some(r#"{"models_root": "  /Volumes/X/models  "}"#), None);
         assert_eq!(r, Some(PathBuf::from("/Volumes/X/models")));
+    }
+
+    #[test]
+    fn configured_models_root_and_merge_use_app_config_json() {
+        let file = super::app_config_json();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"models_root":"/tmp/lu-models-from-app-config","comfyui_port":8188}"#).unwrap();
+        assert_eq!(
+            super::configured_models_root(),
+            Some(PathBuf::from("/tmp/lu-models-from-app-config"))
+        );
+        super::merge_app_config(|v| {
+            v["models_root"] = serde_json::json!("/workspace/lu-models");
+            Ok(())
+        })
+        .unwrap();
+        let got: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(got["comfyui_port"], 8188);
+        assert_eq!(got["models_root"], "/workspace/lu-models");
+        super::merge_app_config(|v| {
+            v.as_object_mut().unwrap().remove("models_root");
+            Ok(())
+        })
+        .unwrap();
+        let cleared: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(cleared.get("models_root").is_none());
+        assert_eq!(cleared["comfyui_port"], 8188);
     }
 }
 

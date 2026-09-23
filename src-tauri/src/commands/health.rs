@@ -237,14 +237,23 @@ fn collect_host_facts() -> HostFacts {
 }
 
 #[tauri::command]
-pub async fn system_health(_state: State<'_, AppState>) -> Result<SystemHealthReport, String> {
+pub async fn system_health(state: State<'_, AppState>) -> Result<SystemHealthReport, String> {
     // Probe all three backends concurrently — each is bounded by a 300 ms
     // client timeout, so worst case is ~300 ms total instead of 900 ms
     // serial. Async client (see probe_http note) — never reqwest::blocking
-    // here.
+    // here. ComfyUI uses the live host/port from AppState (macOS default
+    // 8080, persisted `set_comfyui_port`) — never a zombie :8188.
+    let comfy_port = *state.comfy_port.lock().unwrap();
+    let comfy_host = state.comfy_host.lock().unwrap().clone();
+    let probe_host = if comfy_host == "localhost" || comfy_host == "::1" {
+        "127.0.0.1".to_string()
+    } else {
+        comfy_host
+    };
+    let comfy_url = format!("http://{}:{}/system_stats", probe_host, comfy_port);
     let (ollama, comfyui, lm_studio) = tokio::join!(
         probe_http("http://127.0.0.1:11434/api/tags"),
-        probe_http("http://127.0.0.1:8188/system_stats"),
+        probe_http(&comfy_url),
         probe_http("http://127.0.0.1:1234/v1/models"),
     );
 

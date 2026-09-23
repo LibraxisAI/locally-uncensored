@@ -65,6 +65,8 @@ import {
 } from '../../lib/model-storage-rows'
 import { CivitaiApiKeySetting } from './CivitaiApiKeySetting'
 import { HfTokenSetting } from './HfTokenSetting'
+import { ModelsRootSetting } from './ModelsRootSetting'
+import { defaultComfyPort } from '../../lib/comfy-default-port'
 import { HINWEIS_TEXT, PUNKT_FARBE } from '../../lib/hinweis'
 import { ContentPolicySettings } from './ContentPolicySettings'
 
@@ -732,6 +734,8 @@ interface ComfyLastOutput {
 }
 
 export function ComfyUISettings() {
+  const canSpawnComfy = !isMacOS()
+  const comfyDefaultPort = defaultComfyPort({ isMac: isMacOS() })
   const [status, setStatus] = useState<ComfyStatusResponse | null>(null)
   // Why the last start attempt did not stick. The button used to swallow this
   // whole (E16): on a box with no ComfyUI python environment, Start answered
@@ -996,6 +1000,12 @@ export function ComfyUISettings() {
         </p>
       )}
 
+      {isMacOS() && (
+        <p className={`t-micro ${HINWEIS_TEXT.ruhig}`}>
+          Connect to a ComfyUI already running on this Mac (default port {comfyDefaultPort}). LU does not install or start ComfyUI here — local image and video also run on Apple MLX.
+        </p>
+      )}
+
       {/* Host - editable (supports remote ComfyUI: Docker, LAN, homelab) */}
       <div className="space-y-1">
         <span className="text-[0.7rem] text-gray-700 dark:text-gray-400">Host</span>
@@ -1039,8 +1049,9 @@ export function ComfyUISettings() {
         )}
       </div>
 
-      {/* Path - editable (LOCAL ONLY: remote ComfyUI manages its own path) */}
-      {status?.isLocal !== false && (
+      {/* Path - editable (LOCAL ONLY: remote ComfyUI manages its own path).
+          macOS is connect-only — spawn/install stay refused. */}
+      {status?.isLocal !== false && canSpawnComfy && (
       <div className="space-y-1">
         <span className="text-[0.7rem] text-gray-700 dark:text-gray-400">Path</span>
         <div className="flex gap-1.5">
@@ -1071,9 +1082,9 @@ export function ComfyUISettings() {
           <input
                 aria-label="Port"
             type="number"
-            value={customPort || status?.port || 8188}
+            value={customPort || status?.port || comfyDefaultPort}
             onChange={e => { setCustomPort(e.target.value); setPortSuccess(false) }}
-            placeholder="8188"
+            placeholder={String(comfyDefaultPort)}
             className="w-24 px-2 py-1 rounded-lg border text-[0.6rem] font-mono bg-transparent border-white/10 text-gray-300 focus:outline-none focus:border-white/25"
           />
           <button
@@ -1094,7 +1105,7 @@ export function ComfyUISettings() {
                 setPortError(withDetail('The port was not saved. Pick a free port and try again.', e))
               }
             }}
-            disabled={!customPort || parseInt(customPort) === (status?.port || 8188)}
+            disabled={!customPort || parseInt(customPort) === (status?.port || comfyDefaultPort)}
             className="px-2 py-1 rounded text-[0.6rem] bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 transition-colors disabled:opacity-30"
           >
             Set
@@ -1108,8 +1119,9 @@ export function ComfyUISettings() {
         )}
       </div>
 
-      {/* Controls, local host only (can't manage a remote process) */}
-      {status?.isLocal !== false && (
+      {/* Controls, local host only (can't manage a remote process). Hidden on
+          macOS because LU never spawns ComfyUI there. */}
+      {status?.isLocal !== false && canSpawnComfy && (
       <div className="flex items-center gap-1.5">
         {status?.found && !status.running && (
           <button onClick={handleStart} className="px-2 py-1 rounded text-[0.6rem] bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors">
@@ -1590,10 +1602,11 @@ export function SettingsPage() {
   const sectionFlags: SettingsSectionFlags = {
     gpuPicker: !isMlxImageHost(),
     builtinExpert: builtinManaged,
-    comfyui: !isMlxImageHost(),
+    comfyui: true,
+    mlxMedia: isMlxImageHost(),
     agentMode: FEATURE_FLAGS.AGENT_MODE,
     agentWorkflows: FEATURE_FLAGS.AGENT_WORKFLOWS,
-    mediaTimeouts: settings.appMode !== 'cloud' && !isMlxImageHost(),
+    mediaTimeouts: settings.appMode !== 'cloud',
   }
 
   return (
@@ -1903,9 +1916,9 @@ export function SettingsPage() {
             <ChatBackupSettings />
           </Section>
 
-          {/* ComfyUI-only knobs — cloud renders use server-side limits, and the
-              Mac's MLX pipeline has its own fixed timeout, so hide there too. */}
-          {settings.appMode !== 'cloud' && !isMlxImageHost() && (
+          {/* ComfyUI-only knobs — cloud renders use server-side limits. On Mac
+              these apply once ComfyUI is connected on 8080. */}
+          {settings.appMode !== 'cloud' && (
           <Section title="Image / Video Generation Timeouts">
             <div className="text-[0.6rem] text-gray-500 dark:text-gray-500 leading-relaxed pb-1.5">
               Maximum minutes a ComfyUI generation can run before LU aborts it. Bump these up if you run on iGPU or CPU only, because a 1024px image on integrated graphics can take 30+ min.
@@ -2025,6 +2038,7 @@ export function SettingsPage() {
           </Section>
 
           <Section title="Model Storage">
+            <ModelsRootSetting />
             <HfDownloadPathSetting />
             <LmStudioFolderSetting />
             <ImportLocalModels />
@@ -2053,21 +2067,9 @@ export function SettingsPage() {
             </Section>
           )}
 
-          {/* ComfyUI never runs on the Mac (MLX-only local media) — hide the whole
-              panel there so it isn't a dead Install/Start surface. The Mac gets
-              the MLX installer in its place; without it a fresh Mac has no way
-              to set up local image/video at all (MAC-3). */}
-          {!isMlxImageHost() ? (
-            // Arriving from the Models page's "Start ComfyUI to see your image
-            // models" hint: the Start button it names lives in here, so the
-            // section arrives open instead of costing one more click the hint
-            // never mentioned.
-            // A15: and open as well while an install, an update or a repair is
-            // in flight, or while a failure is still on screen. Read without
-            // subscribing, because the value is only ever wanted at the moment
-            // this Section mounts, which is the moment a section switch brings
-            // it back.
-            <Section title="ComfyUI (Image & Video)" defaultOpen={entryFocus?.section === 'comfyui' || comfySectionShouldOpen(useComfyInstallStore.getState())}>
+          {/* ComfyUI connect panel is always shown. Spawn/install stay refused
+              on macOS (`comfy_supported_here`); Mac also keeps the MLX installer. */}
+          <Section title="ComfyUI (Image & Video)" defaultOpen={entryFocus?.section === 'comfyui' || comfySectionShouldOpen(useComfyInstallStore.getState())}>
               {settings.appMode === 'cloud' && (
                 <p className="text-[0.55rem] text-gray-500 leading-snug pb-1">
                   Local mode only. Cloud renders run on lu-labs.ai and never use ComfyUI.
@@ -2075,7 +2077,7 @@ export function SettingsPage() {
               )}
               <ComfyUISettings />
             </Section>
-          ) : (
+          {isMlxImageHost() && (
             <Section title="Local Media (Apple MLX)">
               {settings.appMode === 'cloud' && (
                 <p className="text-[0.55rem] text-gray-500 leading-snug pb-1">

@@ -124,12 +124,23 @@ impl Default for InstallState {
     }
 }
 
+/// Platform default for ComfyUI. Windows/Linux ship on 8188; this Mac's
+/// already-running instance is on 8080. Spawn is still refused on macOS
+/// (`comfy_supported_here`); this default is for *connecting*.
+pub(crate) fn default_comfy_port() -> u16 {
+    if cfg!(target_os = "macos") {
+        8080
+    } else {
+        8188
+    }
+}
+
 /// Read persisted ComfyUI port + host from `os_paths::app_config_json()`
 /// (Windows: `%APPDATA%\\<APP_CONFIG_DIR>\\config.json`).
-/// Returns (port, host) with sensible defaults (8188, "localhost") on any error.
+/// Returns (port, host) with sensible defaults (platform port, "localhost") on any error.
 /// Called at startup so user-configured values survive app restarts.
 pub(crate) fn load_comfy_config_values() -> (u16, String) {
-    let mut port = 8188u16;
+    let mut port = default_comfy_port();
     let mut host = "localhost".to_string();
 
     {
@@ -387,7 +398,7 @@ impl AppState {
         // Fixes a pre-existing bug where `set_comfyui_port` wrote to disk but
         // startup never read it back. Same loader now handles the new host field.
         let (initial_port, initial_host) = load_comfy_config_values();
-        if initial_port != 8188 {
+        if initial_port != default_comfy_port() {
             println!("[ComfyUI] Loaded persisted port: {}", initial_port);
         }
         if initial_host != "localhost" {
@@ -685,6 +696,15 @@ mod shutdown_tests {
     // Unix behaviour is unchanged; before, both were spelled out here in Unix
     // terms only, which is what switched this test off on Windows.
     use crate::test_support::{is_alive as alive, sleeper as sleeper_cmd};
+
+    #[test]
+    fn default_comfy_port_is_the_platform_listen_port() {
+        let p = super::default_comfy_port();
+        #[cfg(target_os = "macos")]
+        assert_eq!(p, 8080);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(p, 8188);
+    }
 
     /// A live child that outlives the test unless something kills it.
     fn sleeper() -> std::process::Child {

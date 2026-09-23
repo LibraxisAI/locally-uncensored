@@ -42,9 +42,9 @@ Legenda: `[ ]` otwarte · `[~]` w trakcie · `[x]` zielone (zweryfikowane) · `[
 - Po restarcie Rust: aplikacja startuje w lokalnym (bez `[Offload] cloud`)
 - **TODO:** Pobranie Builtin-Engine-GGUF (Faza 2.4)
 
-### 1.6 **ComfyUI wyłączone wszędzie na Mac** `[ ]`
-- Twarda zasada
-- Brak crashy / ślepych uliczek
+### 1.6 **ComfyUI connect-only on Mac (default 8080)** `[~]`
+- Spawn/install stay refused (`comfy_supported_here`). Connecting to an already-running instance is the goal.
+- Default listen port on macOS is 8080 (elsewhere 8188). Settings Host/Port persist via `set_comfyui_port`. Health probes live `comfy_port`, not a zombie :8188.
 
 ### 1.7 **Modele na /workspace (config `models_root`)** `[~]`
 - Rust: `os_paths::configured_models_root()` (config.json `models_root` → env `LU_MODELS_ROOT` → domyślne ścieżki bez zmian)
@@ -52,6 +52,7 @@ Legenda: `[ ]` otwarte · `[~]` w trakcie · `[x]` zielone (zweryfikowane) · `[
 - `video.rs` `models_root()` → `<root>/mlx-video`; `engine.rs` `builtin_models_dir()` → `<root>/builtin-models`
 - Testy: 5 nowych w os_paths + 1 w mlx; pełny `cargo test` 546/546 zielonych
 - config.json zapisany: `"models_root": "/workspace/lu-models"`; builtin-models (80 MB) przeniesione
+- Settings UI: `ModelsRootSetting` writes `models_root` (folder picker + path). `get_models_root` returns the config key only (empty = defaults).
 - **TODO:** rsync ~97 GB `mlx/cache` → `<root>/hf-home` PO zakończeniu kopiowania 658 GB (dysk docelowy: 112 GB wolne), weryfikacja live (Models ✓ + render sd-turbo), dopiero potem usunięcie starego cache
 - Uwaga: zainstalowana 2.6.7 (stary binary) ignoruje `models_root` i czyta dalej stare ścieżki — do czasu nowego builda stary cache musi zostać na dysku
 
