@@ -130,6 +130,20 @@ Take these seriously — the app intentionally runs uncensored local models and 
 
 macOS release credentials and artifact layout: see `make help` / `Makefile` (`release/macos/LU.dmg`, versioned DMG, `SHA256SUMS.txt`).
 
+## Public-release hygiene (deprivatize)
+
+This is a standing gate, not a one-time scrub. "We already cleaned it" is not a reason to skip the next pass. Run it before a push, a PR, release notes, or any docs that ship — the same way a runtime bugfix is not done until the macOS lane above has run.
+
+The scanner and its private-term list stay **outside this repo** (the `deprivatize` skill config). Do not commit that list here; the list is itself a map of the private system.
+
+On each pass:
+
+1. Scan the tree. Separate a definite local-environment leak from a judgment call.
+2. **Change** only unambiguous leaks: this machine's home paths and private usernames. Replacements are `/Users/tester/...` and `/workspace/...`. No other placeholder style.
+3. **Leave** fictional fixtures (`/Users/dave`, `/home/builder`), upstream changelog paths, git authors, remotes, bundle IDs, and the signing identity. A word that is also an English word (`ops`) is not a machine name.
+4. **Review** anything that would change a symbol, test contract, URL, or runtime identifier. Write those to `~/.local/state/vetcoders/naming/need-decisions.md`. If it is not in that file, it is not a recorded decision.
+5. Do not rewrite git history to finish a scrub.
+
 ## Gotchas
 
 - `npm run dev` (browser mode) cannot call the Rust backend — use `npm run tauri:dev` for anything touching engines, files, or updates.

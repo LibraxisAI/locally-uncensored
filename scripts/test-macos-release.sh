@@ -106,8 +106,11 @@ else
     fail "internal shelf default is iCloud _RELEASES" "got='$LU_INTERNAL_RELEASES_DEFAULT'"
 fi
 rel="$MACOS_REPO_ROOT/scripts/macos-release.sh"
-if grep -q '/Volumes/vc-workspace/_RELEASES' "$rel"; then
-    fail "release lane must not use volume _RELEASES" "found old shelf parent"
+# A volume path next to _RELEASES means the shelf was hardcoded to one
+# machine. The comment in macos-release.sh may still say /Volumes/* as a
+# class of disks; that is not an assignment.
+if grep -E '/Volumes/.*/_RELEASES' "$rel"; then
+    fail "release lane must not use volume _RELEASES" "found a /Volumes shelf parent"
 elif grep -q 'LU_INTERNAL_RELEASES:-\$LU_INTERNAL_RELEASES_DEFAULT' "$rel"; then
     pass "release lane shelves via LU_INTERNAL_RELEASES override"
 else
