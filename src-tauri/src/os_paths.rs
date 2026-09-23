@@ -91,8 +91,8 @@ pub fn agent_workspace_root() -> PathBuf {
 
 #[cfg(test)]
 pub use test_storage::{
-    agent_workspace_root, app_config_dir, builtin_models_dir, cache_dir,
-    config_root, data_dir, tools_bin_dir,
+    agent_workspace_root, app_config_dir, builtin_models_dir, cache_dir, config_root, data_dir,
+    tools_bin_dir,
 };
 
 // No environment switch or test storage implementation exists in a release build.
@@ -218,7 +218,15 @@ fn resolve_models_root(config_raw: Option<&str>, env: Option<&str>) -> Option<Pa
 /// Reads [`app_config_json()`], never a hand-built `"locally-uncensored"`
 /// path — `keine_quelldatei_baut_einen_pfad_der_echten_app_von_hand`.
 pub fn configured_models_root() -> Option<PathBuf> {
-    let config_raw = std::fs::read_to_string(app_config_json()).ok();
+    configured_models_root_in(&app_config_json())
+}
+
+/// [`configured_models_root`] against an explicit `config.json`. Tests use
+/// their own file here: the test storage is one directory per process, and a
+/// test that rewrites the shared `config.json` races every parallel test that
+/// resolves `hf_home()` (seen as a flaky `image_cache_dir_lives_under_hf_home`).
+pub(crate) fn configured_models_root_in(config: &std::path::Path) -> Option<PathBuf> {
+    let config_raw = std::fs::read_to_string(config).ok();
     let env = std::env::var("LU_MODELS_ROOT").ok();
     resolve_models_root(config_raw.as_deref(), env.as_deref())
 }
@@ -228,9 +236,17 @@ pub fn configured_models_root() -> Option<PathBuf> {
 pub fn merge_app_config(
     mutator: impl FnOnce(&mut serde_json::Value) -> Result<(), String>,
 ) -> Result<(), String> {
-    let dir = app_config_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let file = app_config_json();
+    merge_config_file(&app_config_json(), mutator)
+}
+
+/// [`merge_app_config`] against an explicit file (see [`configured_models_root_in`]).
+pub(crate) fn merge_config_file(
+    file: &std::path::Path,
+    mutator: impl FnOnce(&mut serde_json::Value) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let mut config: serde_json::Value = if file.exists() {
         std::fs::read_to_string(&file)
             .ok()
@@ -244,10 +260,10 @@ pub fn merge_app_config(
     }
     mutator(&mut config)?;
     std::fs::write(
-        &file,
+        file,
         serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| crate::os_error::english(&e))
 }
 
 #[cfg(test)]
@@ -290,15 +306,17 @@ mod models_root_tests {
     }
 
     #[test]
-    fn configured_models_root_and_merge_use_app_config_json() {
-        let file = super::app_config_json();
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fn configured_models_root_and_merge_share_one_config_file() {
+        // Own file, never the process-wide test `config.json` (see
+        // `configured_models_root_in`): other tests read that one in parallel.
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("config.json");
         std::fs::write(&file, r#"{"models_root":"/tmp/lu-models-from-app-config","comfyui_port":8188}"#).unwrap();
         assert_eq!(
-            super::configured_models_root(),
+            super::configured_models_root_in(&file),
             Some(PathBuf::from("/tmp/lu-models-from-app-config"))
         );
-        super::merge_app_config(|v| {
+        super::merge_config_file(&file, |v| {
             v["models_root"] = serde_json::json!("/workspace/lu-models");
             Ok(())
         })
@@ -307,7 +325,7 @@ mod models_root_tests {
             serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(got["comfyui_port"], 8188);
         assert_eq!(got["models_root"], "/workspace/lu-models");
-        super::merge_app_config(|v| {
+        super::merge_config_file(&file, |v| {
             v.as_object_mut().unwrap().remove("models_root");
             Ok(())
         })

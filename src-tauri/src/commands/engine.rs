@@ -842,10 +842,7 @@ fn scan_gguf_dir(
 pub fn builtin_models_dir() -> Result<PathBuf, String> {
     let dir = match crate::os_paths::configured_models_root() {
         Some(root) => root.join("builtin-models"),
-        None => {
-            let base = dirs::data_dir().ok_or("Cannot resolve app data directory")?;
-            base.join("Locally Uncensored").join("models")
-        }
+        None => crate::os_paths::builtin_models_dir(),
     };
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Create LU Engine models folder: {}", os_error::english(&e)))?;

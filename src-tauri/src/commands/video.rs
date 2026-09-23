@@ -187,12 +187,7 @@ pub(crate) fn models_root() -> PathBuf {
     // next to the image models. Default unchanged otherwise.
     crate::os_paths::configured_models_root()
         .map(|r| r.join("mlx-video"))
-        .unwrap_or_else(|| {
-            dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("lu-labs")
-                .join("mlx-video")
-        })
+        .unwrap_or_else(|| crate::os_paths::cache_dir().join("mlx-video"))
 }
 
 pub(crate) fn outputs_root() -> PathBuf {
